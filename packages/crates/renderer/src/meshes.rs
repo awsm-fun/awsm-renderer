@@ -519,13 +519,22 @@ impl AwsmRenderer {
             .map(|off| (off / crate::instances::InstanceAttr::BYTE_SIZE) as u32)
             .unwrap_or(u32::MAX);
 
-        let mesh_keys: Vec<MeshKey> = self
-            .meshes
-            .keys_by_transform_key(transform_key)
-            .cloned()
-            .unwrap_or_default();
+        // Snapshot into the reused scratch (this runs every frame on the
+        // particle path) — decouples the `transform_to_meshes` borrow from
+        // the per-mesh meta refresh without a per-frame `Vec` clone. An
+        // error `?` below drops the scratch instead of restoring it —
+        // harmless, it just re-allocates next call.
+        let mut mesh_keys = std::mem::take(&mut self.meshes.instance_attr_keys_scratch);
+        mesh_keys.clear();
+        mesh_keys.extend(
+            self.meshes
+                .keys_by_transform_key(transform_key)
+                .into_iter()
+                .flatten()
+                .copied(),
+        );
 
-        for mesh_key in mesh_keys {
+        for mesh_key in mesh_keys.iter().copied() {
             if let Ok(mesh) = self.meshes.get_mut(mesh_key) {
                 mesh.instance_attr_base = base;
             }
@@ -535,6 +544,7 @@ impl AwsmRenderer {
                 &self.transforms,
             )?;
         }
+        self.meshes.instance_attr_keys_scratch = mesh_keys;
 
         Ok(())
     }
@@ -703,6 +713,23 @@ pub struct Meshes {
     /// remember to keep it in sync; reuse-and-clear gets us the bulk
     /// of the win with none of the maintenance burden.
     skin_consumers_scratch: HashMap<SkinKey, Vec<MeshKey>>,
+    /// Recycled backing storage for `update_world`'s returned
+    /// `touched` mesh list — handed out each call and returned via
+    /// [`Self::recycle_touched`], so the per-frame caller reuses its
+    /// capacity ([[avoid-per-frame-allocations]]).
+    touched_spare: Vec<MeshKey>,
+    /// Reused per-frame set of skins the skin-skip gate decided to
+    /// skip this frame (`update_world`; cleared, capacity kept).
+    skip_skins_scratch: std::collections::HashSet<SkinKey>,
+    /// Reused per-frame snapshot of the live skin keys (`update_world`
+    /// collects it to decouple the `skins` borrow from the per-skin
+    /// grace-counter writes; cleared, capacity kept).
+    skin_keys_scratch: Vec<SkinKey>,
+    /// Reused snapshot of a transform's mesh keys for the per-frame
+    /// `set_mesh_instance_attrs` path (decouples the
+    /// `transform_to_meshes` borrow from the per-mesh meta refresh;
+    /// cleared, capacity kept).
+    instance_attr_keys_scratch: Vec<MeshKey>,
     /// T2.6 sticky flag — set to `true` the first time any mesh
     /// transitions to the HUD render group, and never cleared. The
     /// HUD depth texture is allocated only when this flag is true,
@@ -814,6 +841,10 @@ impl Meshes {
             last_effective_material: SecondaryMap::new(),
             skin_zero_coverage_grace: SecondaryMap::new(),
             skin_consumers_scratch: HashMap::new(),
+            touched_spare: Vec::new(),
+            skip_skins_scratch: std::collections::HashSet::new(),
+            skin_keys_scratch: Vec::new(),
+            instance_attr_keys_scratch: Vec::new(),
             has_seen_hud: false,
             hud_revision: 0,
         })
@@ -1812,7 +1843,7 @@ impl Meshes {
     /// uses the list to mirror the new AABBs into the spatial index.
     pub fn update_world(
         &mut self,
-        dirty_transforms: HashMap<TransformKey, Mat4>,
+        dirty_transforms: &HashMap<TransformKey, Mat4>,
         dirty_instances: &std::collections::HashSet<TransformKey>,
         transforms: &Transforms,
         instances: &Instances,
@@ -1833,11 +1864,18 @@ impl Meshes {
         // have a camera matrix yet.
         frustum: Option<&crate::frustum::Frustum>,
     ) -> Vec<MeshKey> {
-        let mut update_keys = std::collections::HashSet::new();
-        update_keys.extend(dirty_transforms.keys().copied());
-        update_keys.extend(dirty_instances.iter().copied());
+        // Dedup'd union of the two dirty sets, without materialising a
+        // per-frame `HashSet`: walk the map's keys, then the instance keys
+        // that aren't already in the map ([[avoid-per-frame-allocations]]).
+        let update_keys = dirty_transforms.keys().copied().chain(
+            dirty_instances
+                .iter()
+                .copied()
+                .filter(|key| !dirty_transforms.contains_key(key)),
+        );
 
-        let mut touched = Vec::new();
+        let mut touched = std::mem::take(&mut self.touched_spare);
+        touched.clear();
 
         // This doesn't mark anything as dirty, it just updates the world AABB for frustum culling and depth sorting
         for transform_key in update_keys {
@@ -1926,7 +1964,10 @@ impl Meshes {
         // doesn't suffer from rest-pose persistence — it just picks
         // a cheaper shader on the next frame.
         const SKIN_COVERAGE_GRACE_FRAMES: u32 = 2;
-        let mut skip_skins: std::collections::HashSet<SkinKey> = std::collections::HashSet::new();
+        // Reused per-frame set (cleared, capacity kept) — restored to
+        // `self.skip_skins_scratch` at the end of this call.
+        let mut skip_skins = std::mem::take(&mut self.skip_skins_scratch);
+        skip_skins.clear();
         // Build the inverted index skin_key → Vec<MeshKey> once so the
         // per-skin BVH / coverage walk is O(meshes) total instead of
         // O(skins × meshes). Empty entries are fine (a skin with no
@@ -1970,8 +2011,13 @@ impl Meshes {
         let skin_consumers: &HashMap<SkinKey, Vec<MeshKey>> = &self.skin_consumers_scratch;
 
         if frame_index > 0 {
-            let skin_keys: Vec<SkinKey> = self.skins.iter_skin_keys().collect();
-            for skin_key in skin_keys {
+            // Reused per-frame snapshot (cleared, capacity kept) — collected
+            // to decouple the `skins` borrow from the grace-counter writes
+            // below; restored to `self.skin_keys_scratch` at the end.
+            let mut skin_keys = std::mem::take(&mut self.skin_keys_scratch);
+            skin_keys.clear();
+            skin_keys.extend(self.skins.iter_skin_keys());
+            for skin_key in skin_keys.iter().copied() {
                 // Layer 1: cadence gate.
                 if !self.skin_should_update_this_frame(skin_key, frame_index) {
                     skip_skins.insert(skin_key);
@@ -2032,6 +2078,7 @@ impl Meshes {
                     skip_skins.insert(skin_key);
                 }
             }
+            self.skin_keys_scratch = skin_keys;
         }
 
         // This does update the GPU as dirty, bit skins manage their own GPU dirty state
@@ -2039,8 +2086,17 @@ impl Meshes {
             .update_transforms(dirty_transforms, transforms, |skin_key| {
                 !skip_skins.contains(&skin_key)
             });
+        self.skip_skins_scratch = skip_skins;
 
         touched
+    }
+
+    /// Return the `touched` list handed out by [`Self::update_world`] so
+    /// its capacity is reused next frame. Dropping it instead is harmless —
+    /// the next call just re-allocates.
+    pub fn recycle_touched(&mut self, mut touched: Vec<MeshKey>) {
+        touched.clear();
+        self.touched_spare = touched;
     }
 
     fn update_mesh_transform(
@@ -2632,6 +2688,7 @@ impl Meshes {
                         self.mesh_geometry_pool_buffers.raw_slice(),
                         &ranges,
                     )?;
+                    self.mesh_geometry_pool_buffers.recycle_dirty_ranges(ranges);
                 }
             }
 
@@ -2669,6 +2726,8 @@ impl Meshes {
                         self.visibility_geometry_index_buffers.raw_slice(),
                         &ranges,
                     )?;
+                    self.visibility_geometry_index_buffers
+                        .recycle_dirty_ranges(ranges);
                 }
             }
 
@@ -2710,6 +2769,8 @@ impl Meshes {
                             self.transparency_geometry_data_buffers.raw_slice(),
                             &ranges,
                         )?;
+                    self.transparency_geometry_data_buffers
+                        .recycle_dirty_ranges(ranges);
                 }
             }
 

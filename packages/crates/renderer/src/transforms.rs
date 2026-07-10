@@ -119,7 +119,7 @@ impl AwsmRenderer {
             crate::frustum::Frustum::from_view_projection(m.view_projection(), m.reverse_z)
         });
         let touched = self.meshes.update_world(
-            dirty_transforms,
+            &dirty_transforms,
             &dirty_instances,
             &self.transforms,
             &self.instances,
@@ -127,9 +127,15 @@ impl AwsmRenderer {
             &self.coverage,
             frustum.as_ref(),
         );
-        for mesh_key in touched {
+        for mesh_key in touched.iter().copied() {
             self.sync_spatial_for_mesh(mesh_key);
         }
+        // Hand the per-frame scratch containers back so their capacity is
+        // reused next frame instead of re-allocated
+        // ([[avoid-per-frame-allocations]]).
+        self.meshes.recycle_touched(touched);
+        self.transforms.recycle_dirty_meshes(dirty_transforms);
+        self.instances.recycle_dirty_transforms(dirty_instances);
 
         // Per-frame BVH maintenance (refit + incremental rebalance; a
         // no-op on idle frames). Must run between the transform sync above
@@ -250,6 +256,12 @@ pub struct Transforms {
     /// refresh (decision A / H3).
     arena_pack_scratch: Vec<(TransformKey, Mat4)>,
 
+    /// Recycled backing map for [`Self::take_dirty_meshes`] — handed out
+    /// each frame and returned via [`Self::recycle_dirty_meshes`], so a
+    /// frame with movers reuses the map's capacity instead of allocating a
+    /// fresh `HashMap` ([[avoid-per-frame-allocations]]).
+    dirty_meshes_spare: HashMap<TransformKey, Mat4>,
+
     /// Stats from the most recent arena descent (shared mode) — exposed for
     /// the stress/hot-path proof (work tracks movers, not total slots).
     last_descend: TransformDescendStats,
@@ -352,6 +364,7 @@ impl Transforms {
             arena: None,
             arena_pack_scratch: Vec::new(),
             last_descend: TransformDescendStats::default(),
+            dirty_meshes_spare: HashMap::new(),
         })
     }
 
@@ -701,6 +714,7 @@ impl Transforms {
                     self.buffer.raw_slice(),
                     &transform_ranges,
                 )?;
+                self.buffer.recycle_dirty_ranges(transform_ranges);
             }
 
             self.gpu_dirty = false;
@@ -709,15 +723,28 @@ impl Transforms {
     }
 
     /// Takes and clears the list of dirty mesh transforms.
+    ///
+    /// The returned map's backing storage is recycled: hand it back via
+    /// [`Self::recycle_dirty_meshes`] after use so the per-frame caller
+    /// (`AwsmRenderer::update_transforms`) reuses its capacity instead of
+    /// allocating a fresh `HashMap` every frame with movers.
     pub fn take_dirty_meshes(&mut self) -> HashMap<TransformKey, Mat4> {
-        self.dirty_meshes
-            .drain(..)
-            .map(|key| {
-                // this for sure exists since we just drained the key
-                let world_matrix = self.world_matrices.get(key).copied().unwrap();
-                (key, world_matrix)
-            })
-            .collect()
+        let mut map = std::mem::take(&mut self.dirty_meshes_spare);
+        map.clear();
+        map.extend(self.dirty_meshes.drain(..).map(|key| {
+            // this for sure exists since we just drained the key
+            let world_matrix = self.world_matrices.get(key).copied().unwrap();
+            (key, world_matrix)
+        }));
+        map
+    }
+
+    /// Return the map handed out by [`Self::take_dirty_meshes`] so its
+    /// capacity is reused next frame. Dropping it instead is harmless —
+    /// the next take just re-allocates.
+    pub fn recycle_dirty_meshes(&mut self, mut map: HashMap<TransformKey, Mat4>) {
+        map.clear();
+        self.dirty_meshes_spare = map;
     }
 
     /// Returns the GPU buffer offset for a transform.

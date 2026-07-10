@@ -422,11 +422,14 @@ impl AwsmRenderer {
                 for (target, value) in samples.iter() {
                     let target = *target;
                     self.ensure_rest(target)?;
-                    let rest_val = match self.animations.rest.get(&target) {
-                        Some(r) => r.clone(),
-                        None => continue,
+                    // Skip unreadable targets (no rest); otherwise seed the
+                    // accumulator from rest ONLY on the first touch this frame
+                    // — the unconditional clone here was a per-sample heap
+                    // alloc for morph `Vertex` data.
+                    let Some(rest_ref) = self.animations.rest.get(&target) else {
+                        continue;
                     };
-                    let entry = acc.entry(target).or_insert_with(|| rest_val.clone());
+                    let entry = acc.entry(target).or_insert_with(|| rest_ref.clone());
                     *entry = blend_replace(entry, value, 1.0);
                 }
             }
@@ -441,16 +444,24 @@ impl AwsmRenderer {
         targets.clear();
         targets.extend(self.animations.rest.keys().copied());
         for &target in &targets {
-            let value = match acc.get(&target) {
-                Some(v) => v.clone(),
-                None => self
-                    .animations
-                    .rest
-                    .get(&target)
-                    .cloned()
-                    .expect("rest entry exists for a key drawn from rest"),
-            };
-            self.write_anim_target(target, &value)?;
+            // `acc` is an owned local (mem::take'n scratch), so the composited
+            // value can be written by reference — no per-target clone (a heap
+            // alloc for morph `Vertex` data). Only the rest-restore arm clones
+            // (its borrow of `self.animations.rest` can't cross the `&mut self`
+            // write call), and that arm only runs for targets with no
+            // contribution this frame.
+            match acc.get(&target) {
+                Some(v) => self.write_anim_target(target, v)?,
+                None => {
+                    let value = self
+                        .animations
+                        .rest
+                        .get(&target)
+                        .cloned()
+                        .expect("rest entry exists for a key drawn from rest");
+                    self.write_anim_target(target, &value)?;
+                }
+            }
         }
 
         // Return the scratch buffers (cleared — capacity retained for next frame).
@@ -522,24 +533,25 @@ impl AwsmRenderer {
                     }
                     // Lazy-capture rest BEFORE any write this frame.
                     self.ensure_rest(target)?;
-                    let rest_val = match self.animations.rest.get(&target) {
-                        Some(r) => r.clone(),
-                        None => continue, // unreadable target — skip
+                    // Borrow the rest value instead of cloning it per sample
+                    // (a heap alloc for morph `Vertex` data): `acc` is a
+                    // caller-owned scratch, so holding this `&self` borrow
+                    // across the accumulator writes is fine. The clone now
+                    // happens only when seeding a first-touch entry.
+                    let Some(rest_ref) = self.animations.rest.get(&target) else {
+                        continue; // unreadable target — skip
                     };
-                    let entry = acc.entry(target).or_insert_with(|| rest_val.clone());
+                    let entry = acc.entry(target).or_insert_with(|| rest_ref.clone());
                     match &layer.mode {
                         LayerMode::Replace => {
                             *entry = blend_replace(entry, value, w);
                         }
                         LayerMode::Additive { base_clip } => {
                             let reference = match base_clip {
-                                Some(_) => base
-                                    .get(&target)
-                                    .cloned()
-                                    .unwrap_or_else(|| rest_val.clone()),
-                                None => rest_val.clone(),
+                                Some(_) => base.get(&target).unwrap_or(rest_ref),
+                                None => rest_ref,
                             };
-                            *entry = blend_additive(entry, value, &reference, w);
+                            *entry = blend_additive(entry, value, reference, w);
                         }
                     }
                 }

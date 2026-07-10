@@ -18,6 +18,13 @@ thread_local! {
     /// Selected object's screen-space rect in CSS px: `[x, y, w, h]`, or `None`
     /// when nothing is selected / the object is off-screen.
     static RECT: Mutable<Option<[f64; 4]>> = Mutable::new(None);
+
+    /// Per-frame scratch for the selected node's mesh keys (reused; clear
+    /// keeps capacity) — this runs EVERY frame while something is selected,
+    /// so cloning the node's `model_meshes` Vec each time was a per-frame
+    /// heap allocation ([[avoid-per-frame-allocations]]).
+    static MESH_KEYS_SCRATCH: std::cell::RefCell<Vec<MeshKey>> =
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// Signal of the current selection rect for the viewport overlay.
@@ -39,23 +46,25 @@ pub fn update(renderer: &AwsmRenderer, matrices: &CameraMatrices) {
     RECT.with(|m| m.set_neq(rect));
 }
 
-fn selected_mesh_keys() -> Option<Vec<MeshKey>> {
+/// Fill `out` with the single selected node's mesh keys. Returns `false`
+/// when there is no single selection or it has no meshes. Copies into the
+/// caller's scratch instead of cloning the node's `model_meshes` Vec.
+fn selected_mesh_keys(out: &mut Vec<MeshKey>) -> bool {
     let id = {
         let ctrl = controller();
         let sel = ctrl.selected.lock_ref();
         if sel.len() != 1 {
-            return None;
+            return false;
         }
         sel[0]
     };
     let bridge = bridge();
     let nodes = bridge.nodes.lock().unwrap();
-    let keys = nodes.get(&id)?.model_meshes.lock().unwrap().clone();
-    if keys.is_empty() {
-        None
-    } else {
-        Some(keys)
-    }
+    let Some(node) = nodes.get(&id) else {
+        return false;
+    };
+    out.extend(node.model_meshes.lock().unwrap().iter().copied());
+    !out.is_empty()
 }
 
 /// Expand the screen rect a few px past the object's tight bound, like the
@@ -63,8 +72,21 @@ fn selected_mesh_keys() -> Option<Vec<MeshKey>> {
 const PAD: f64 = 5.0;
 
 fn compute(renderer: &AwsmRenderer, matrices: &CameraMatrices) -> Option<[f64; 4]> {
-    let mesh_keys = selected_mesh_keys()?;
+    MESH_KEYS_SCRATCH.with(|scratch| {
+        let mesh_keys = &mut *scratch.borrow_mut();
+        mesh_keys.clear();
+        if !selected_mesh_keys(mesh_keys) {
+            return None;
+        }
+        compute_inner(renderer, matrices, mesh_keys)
+    })
+}
 
+fn compute_inner(
+    renderer: &AwsmRenderer,
+    matrices: &CameraMatrices,
+    mesh_keys: &[MeshKey],
+) -> Option<[f64; 4]> {
     // Union the world AABBs of the node's meshes (object passes only — never the
     // gizmo's HUD renderables).
     let rs = renderer.renderables();

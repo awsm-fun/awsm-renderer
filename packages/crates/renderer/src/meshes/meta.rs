@@ -339,6 +339,7 @@ impl MeshMeta {
                     self.geometry_buffers.raw_slice(),
                     &ranges,
                 )?;
+                self.geometry_buffers.recycle_dirty_ranges(ranges);
             }
 
             self.geometry_dirty = false;
@@ -377,6 +378,7 @@ impl MeshMeta {
                     self.material_buffers.raw_slice(),
                     &ranges,
                 )?;
+                self.material_buffers.recycle_dirty_ranges(ranges);
             }
 
             self.material_dirty = false;

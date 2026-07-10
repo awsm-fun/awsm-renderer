@@ -293,7 +293,7 @@ impl Skins {
     /// preserves the previous behaviour.
     pub fn update_transforms(
         &mut self,
-        dirty_skin_joints: HashMap<TransformKey, Mat4>,
+        dirty_skin_joints: &HashMap<TransformKey, Mat4>,
         transforms: &crate::transforms::Transforms,
         mut should_update_skin: impl FnMut(SkinKey) -> bool,
     ) {
@@ -432,6 +432,7 @@ impl Skins {
                     self.skin_matrices.raw_slice(),
                     &ranges,
                 )?;
+                self.skin_matrices.recycle_dirty_ranges(ranges);
             }
 
             self.matrices_gpu_dirty = false;
@@ -480,6 +481,7 @@ impl Skins {
                     self.joint_index_weights.raw_slice(),
                     &ranges,
                 )?;
+                self.joint_index_weights.recycle_dirty_ranges(ranges);
             }
 
             self.joint_index_weights_gpu_dirty = false;

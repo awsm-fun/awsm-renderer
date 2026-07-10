@@ -357,6 +357,7 @@ impl<Key: slotmap::Key, Info: MorphInfo> MorphData<Key, Info> {
                     self.weights.raw_slice(),
                     &ranges,
                 )?;
+                self.weights.recycle_dirty_ranges(ranges);
             }
 
             self.weights_dirty = false;
@@ -396,6 +397,7 @@ impl<Key: slotmap::Key, Info: MorphInfo> MorphData<Key, Info> {
                     self.values.raw_slice(),
                     &ranges,
                 )?;
+                self.values.recycle_dirty_ranges(ranges);
             }
 
             self.values_dirty = false;

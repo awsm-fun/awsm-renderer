@@ -21,7 +21,13 @@ use crate::scene_spatial::SceneSpatial;
 /// in the shader.
 #[derive(Default)]
 pub struct LightMeshBuckets {
-    per_light: SecondaryMap<LightKey, Vec<MeshKey>>,
+    /// Per-light buckets, parallel to `light_order` (`buckets[i]` belongs
+    /// to `light_order[i]`). Stored as a plain Vec-of-Vecs (not a keyed
+    /// map) so `rebuild` reuses each bucket's capacity frame-to-frame —
+    /// clearing a keyed map dropped and re-allocated every bucket every
+    /// frame ([[avoid-per-frame-allocations]]). Entries past
+    /// `light_order.len()` are stale spares kept for their capacity.
+    buckets: Vec<Vec<MeshKey>>,
     /// Stable iteration order over the punctual lights we processed
     /// this frame. Matches `Lights::iter_active_punctual` ordering.
     light_order: Vec<LightKey>,
@@ -39,6 +45,9 @@ pub struct LightMeshBuckets {
     /// so, every mesh is conservatively flagged shadow-receiver. Set by
     /// `mark_shadow_receivers`.
     any_directional_shadow_caster: bool,
+    /// Reused scratch for `mark_shadow_receivers`' two-pass walk
+    /// (cleared, capacity kept).
+    to_mark_scratch: Vec<MeshKey>,
 }
 
 impl LightMeshBuckets {
@@ -47,7 +56,6 @@ impl LightMeshBuckets {
     /// meshes it overlaps. O(n_lights × visible_per_light), no GPU
     /// work. Called from the per-frame `write_gpu` path.
     pub fn rebuild(&mut self, lights: &Lights, spatial: &SceneSpatial) {
-        self.per_light.clear();
         self.light_order.clear();
         self.last_max_bucket = 0;
         self.shadow_receiver.clear();
@@ -64,13 +72,18 @@ impl LightMeshBuckets {
                     let Some(aabb) = light.world_aabb() else {
                         continue;
                     };
-                    let bucket: Vec<MeshKey> = spatial
-                        .query_envelope(&aabb)
-                        .map(|node| node.mesh_key)
-                        .collect();
+                    // Reuse the pooled bucket at this slot (clear keeps
+                    // capacity); grow the pool only when the light count
+                    // exceeds any previous frame's.
+                    let slot = self.light_order.len();
+                    if self.buckets.len() == slot {
+                        self.buckets.push(Vec::new());
+                    }
+                    let bucket = &mut self.buckets[slot];
+                    bucket.clear();
+                    bucket.extend(spatial.query_envelope(&aabb).map(|node| node.mesh_key));
                     self.last_max_bucket = self.last_max_bucket.max(bucket.len());
 
-                    self.per_light.insert(light_key, bucket);
                     self.light_order.push(light_key);
                 }
             }
@@ -101,17 +114,20 @@ impl LightMeshBuckets {
         }
 
         // Two-pass to avoid a self-borrow conflict: snapshot the keys
-        // that we need to mark, then write to `shadow_receiver`.
-        let mut to_mark: Vec<MeshKey> = Vec::new();
+        // that we need to mark, then write to `shadow_receiver`. The
+        // scratch is reused across frames (cleared, capacity kept).
+        let mut to_mark = std::mem::take(&mut self.to_mark_scratch);
+        to_mark.clear();
         for (light_key, bucket) in self.iter_punctual() {
             if !casts_shadow_for(light_key) {
                 continue;
             }
             to_mark.extend(bucket.iter().copied());
         }
-        for mesh_key in to_mark {
+        for mesh_key in to_mark.iter().copied() {
             self.shadow_receiver.entry(mesh_key).unwrap().or_insert(());
         }
+        self.to_mark_scratch = to_mark;
     }
 
     /// Whether this mesh sees at least one shadow-casting light this
@@ -125,10 +141,7 @@ impl LightMeshBuckets {
     /// `Vec<MeshKey>` is the set of meshes whose AABB overlaps the
     /// light's influence volume this frame.
     pub fn iter_punctual(&self) -> impl Iterator<Item = (LightKey, &Vec<MeshKey>)> {
-        self.light_order
-            .iter()
-            .copied()
-            .filter_map(move |key| self.per_light.get(key).map(|bucket| (key, bucket)))
+        self.light_order.iter().copied().zip(self.buckets.iter())
     }
 
     /// Largest single-light bucket seen in the most recent rebuild.

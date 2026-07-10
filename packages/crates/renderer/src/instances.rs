@@ -93,6 +93,11 @@ pub struct Instances {
     gpu_transform_buffer: web_sys::GpuBuffer,
     transform_gpu_dirty: bool,
     transform_dirty: HashSet<TransformKey>,
+    /// Recycled backing set for [`Self::take_dirty_transforms`] — handed
+    /// out each frame and returned via [`Self::recycle_dirty_transforms`],
+    /// so instanced updates (e.g. the per-frame particle tick) reuse the
+    /// set's capacity instead of allocating a fresh `HashSet` every frame.
+    transform_dirty_spare: HashSet<TransformKey>,
     // Per-instance attribute block parallel to the transform buffer. Keyed by the
     // same `TransformKey` so a mesh's instance attributes live next to its
     // transforms.
@@ -129,6 +134,7 @@ impl Instances {
             cpu_transforms: SecondaryMap::new(),
             transform_gpu_dirty: false,
             transform_dirty: HashSet::new(),
+            transform_dirty_spare: HashSet::new(),
             attribute_buffer,
             gpu_attribute_buffer: gpu_create_storage_buffer(gpu, Self::ATTRIBUTE_INITIAL_SIZE)?,
             attribute_count: SecondaryMap::new(),
@@ -542,8 +548,23 @@ impl Instances {
     }
 
     /// Takes and clears dirty transform keys.
+    ///
+    /// The returned set's backing storage is recycled: hand it back via
+    /// [`Self::recycle_dirty_transforms`] after use so the per-frame caller
+    /// reuses its capacity instead of allocating a fresh `HashSet`.
     pub fn take_dirty_transforms(&mut self) -> HashSet<TransformKey> {
-        std::mem::take(&mut self.transform_dirty)
+        std::mem::replace(
+            &mut self.transform_dirty,
+            std::mem::take(&mut self.transform_dirty_spare),
+        )
+    }
+
+    /// Return the set handed out by [`Self::take_dirty_transforms`] so its
+    /// capacity is reused next frame. Dropping it instead is harmless —
+    /// the next take just re-allocates.
+    pub fn recycle_dirty_transforms(&mut self, mut set: HashSet<TransformKey>) {
+        set.clear();
+        self.transform_dirty_spare = set;
     }
 
     // This *does* write to the gpu, should be called only once per frame
@@ -586,6 +607,7 @@ impl Instances {
                     self.transform_buffer.raw_slice(),
                     &ranges,
                 )?;
+                self.transform_buffer.recycle_dirty_ranges(ranges);
             }
 
             self.transform_gpu_dirty = false;
@@ -623,6 +645,7 @@ impl Instances {
                     self.attribute_buffer.raw_slice(),
                     &ranges,
                 )?;
+                self.attribute_buffer.recycle_dirty_ranges(ranges);
             }
 
             self.attribute_gpu_dirty = false;

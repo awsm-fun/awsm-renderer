@@ -178,6 +178,11 @@ pub struct Lights {
     lighting_info_gpu_dirty: bool,
     punctual_uploader: crate::buffer::mapped_uploader::MappedUploader,
     info_uploader: crate::buffer::mapped_uploader::MappedUploader,
+    /// Reused staging bytes for the punctual-light pack in `write_gpu`.
+    /// Rebuilt (cleared, capacity kept) every dirty frame — a moving light
+    /// dirties every frame, so a fresh `Vec` here was a per-frame heap
+    /// allocation.
+    punctual_scratch: Vec<u8>,
 }
 
 impl Lights {
@@ -224,6 +229,7 @@ impl Lights {
                 "Punctual Lights",
             ),
             info_uploader: crate::buffer::mapped_uploader::MappedUploader::new("Lights Info"),
+            punctual_scratch: Vec::new(),
         })
     }
 
@@ -437,12 +443,12 @@ impl Lights {
                 );
             }
 
-            let punctual_light_buffer: Vec<u8> = self
-                .lights
-                .iter()
-                .take(MAX_PUNCTUAL_LIGHTS)
-                .flat_map(|(key, light)| light.storage_buffer_data(shadow_index_for(key)))
-                .collect();
+            self.punctual_scratch.clear();
+            for (key, light) in self.lights.iter().take(MAX_PUNCTUAL_LIGHTS) {
+                self.punctual_scratch
+                    .extend_from_slice(&light.storage_buffer_data(shadow_index_for(key)));
+            }
+            let punctual_light_buffer = &self.punctual_scratch;
 
             if !punctual_light_buffer.is_empty() {
                 // The punctual buffer is fixed-size (MAX_PUNCTUAL_LIGHTS *
@@ -471,7 +477,8 @@ impl Lights {
                 None
             };
 
-            let mut data = vec![0u8; Self::INFO_SIZE];
+            // Fixed 48-byte block — stack array, no per-frame heap allocation.
+            let mut data = [0u8; Self::INFO_SIZE];
             data[0..4].copy_from_slice(&(self.lights.len() as u32).to_ne_bytes());
             data[4..8].copy_from_slice(&self.ibl.prefiltered_env.mip_count.to_ne_bytes());
             data[8..12].copy_from_slice(&self.ibl.irradiance.mip_count.to_ne_bytes());
