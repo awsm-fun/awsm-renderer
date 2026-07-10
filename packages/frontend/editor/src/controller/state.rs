@@ -1185,6 +1185,7 @@ impl EditorController {
                 crate::engine::bridge::bridge().clear_templates();
                 crate::engine::bridge::skinned_bake_cache::clear();
                 crate::engine::bridge::texture_cache::clear();
+                crate::engine::bridge::material::clear_texture_keys();
                 crate::engine::bridge::buffer_cache::clear();
                 self.project_name.set("untitled.awsm".to_string());
                 self.missing_assets.set(Vec::new());
@@ -1270,6 +1271,7 @@ impl EditorController {
                 crate::engine::bridge::bridge().clear_templates();
                 crate::engine::bridge::skinned_bake_cache::clear();
                 crate::engine::bridge::texture_cache::clear();
+                crate::engine::bridge::material::clear_texture_keys();
                 crate::engine::bridge::buffer_cache::clear();
                 // Unregister the editor session's dynamic materials BEFORE the
                 // player populate: the round-trip shares this renderer, and the
@@ -1345,6 +1347,7 @@ impl EditorController {
                 crate::engine::bridge::bridge().clear_templates();
                 crate::engine::bridge::skinned_bake_cache::clear();
                 crate::engine::bridge::texture_cache::clear();
+                crate::engine::bridge::material::clear_texture_keys();
                 crate::engine::bridge::buffer_cache::clear();
                 // View-only cluster ("nanite") DAGs live only in `cluster_cache`;
                 // drop it too so the round-trip exercises the real save→reload
@@ -1371,6 +1374,7 @@ impl EditorController {
                 crate::engine::bridge::bridge().clear_templates();
                 crate::engine::bridge::skinned_bake_cache::clear();
                 crate::engine::bridge::texture_cache::clear();
+                crate::engine::bridge::material::clear_texture_keys();
                 crate::engine::bridge::buffer_cache::clear();
                 crate::engine::bridge::cluster_cache::clear();
                 crate::engine::bridge::mesh_cache::clear();

@@ -90,6 +90,20 @@ pub(crate) fn register_texture_key(asset_id: AssetId, key: TextureKey) {
     TEXTURE_KEYS_ANY.with(|c| c.borrow_mut().insert(asset_id, key));
 }
 
+/// Drop every asset→[`TextureKey`] registration. MUST run wherever a project
+/// teardown/reload clears the other session caches: removing the old scene's
+/// meshes releases their pooled GPU textures, so a surviving registration is a
+/// dangling key — `resolve_texture`'s cache-hit path then binds a dead texture
+/// and the slot silently renders untextured. Raster assets were masked by
+/// `restore_textures` overwriting their entries with fresh keys; PROCEDURAL
+/// assets have no restore step (they regenerate lazily at bind time), so the
+/// stale hit shadowed the regen path entirely — a checker bound to a material
+/// came back white after every reload.
+pub(crate) fn clear_texture_keys() {
+    TEXTURE_KEYS.with(|c| c.borrow_mut().clear());
+    TEXTURE_KEYS_ANY.with(|c| c.borrow_mut().clear());
+}
+
 /// Register an uploaded texture under its exact upload semantics, so slot
 /// bindings that MATCH reuse it and slot bindings that DIFFER re-materialize
 /// with their own semantics instead of silently inheriting these.

@@ -116,3 +116,57 @@ fn value_noise2(x: f32, y: f32, seed: u32) -> f32 {
     let cd = c + (d - c) * u;
     ab + (cd - ab) * v
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 005 §4: procedural textures persist as their DEF (the recipe), and the
+    /// editor + bundle exporter both regenerate pixels from it — so the
+    /// generators must be byte-deterministic or a save/reload (or a re-export)
+    /// silently changes the art. Two invocations with identical params must
+    /// produce identical bytes for every kind, including the seeded noise.
+    #[test]
+    fn generators_are_byte_deterministic() {
+        let a = checker_rgba(
+            64,
+            32,
+            8,
+            4,
+            [255.0, 0.0, 0.0, 255.0],
+            [0.0, 0.0, 255.0, 255.0],
+        );
+        let b = checker_rgba(
+            64,
+            32,
+            8,
+            4,
+            [255.0, 0.0, 0.0, 255.0],
+            [0.0, 0.0, 255.0, 255.0],
+        );
+        assert_eq!(a, b, "checker must be deterministic");
+        assert_eq!(a.len(), 64 * 32 * 4);
+
+        let a = gradient_rgba(
+            48,
+            48,
+            [0.0, 0.0, 0.0, 255.0],
+            [255.0, 255.0, 255.0, 255.0],
+            true,
+        );
+        let b = gradient_rgba(
+            48,
+            48,
+            [0.0, 0.0, 0.0, 255.0],
+            [255.0, 255.0, 255.0, 255.0],
+            true,
+        );
+        assert_eq!(a, b, "gradient must be deterministic");
+
+        let a = noise_rgba(32, 32, 1234, 4.0);
+        let b = noise_rgba(32, 32, 1234, 4.0);
+        assert_eq!(a, b, "seeded noise must be deterministic");
+        let c = noise_rgba(32, 32, 999, 4.0);
+        assert_ne!(a, c, "a different seed must change the pixels");
+    }
+}
