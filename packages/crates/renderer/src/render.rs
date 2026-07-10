@@ -592,27 +592,6 @@ impl AwsmRenderer {
             }
         }
 
-        // SSR min-Z pyramid (M2c): resize to the live viewport before the
-        // recreate dispatch below, so the SSR trace bind group (which binds the
-        // pyramid's `view_all` under Hi-Z) rebinds against the fresh views. The
-        // pyramid pass EXISTS whenever Hi-Z is the production trace (to satisfy
-        // the SSR layout binding), but we only grow it to viewport size when SSR
-        // is actually ENABLED — while SSR is off it stays a 1×1 placeholder
-        // (bound but never sampled, since the trace doesn't dispatch), so an
-        // inactive Hi-Z SSR costs no pyramid memory.
-        if self.post_processing.ssr.enabled {
-            if let Some(ssr_minz) = self.render_passes.ssr_minz.as_mut() {
-                if ssr_minz.ensure_size(
-                    &self.gpu,
-                    render_texture_views.width,
-                    render_texture_views.height,
-                )? {
-                    self.bind_groups
-                        .mark_create(BindGroupCreate::TextureViewRecreate);
-                }
-            }
-        }
-
         // Bloom pyramid upkeep — only when bloom is enabled (matches the
         // dispatch gate below), so a disabled bloom costs no memory or work.
         // Both the resize and the live-param upload happen HERE, before the
@@ -767,11 +746,6 @@ impl AwsmRenderer {
                     .hzb
                     .as_ref()
                     .map(|hzb| hzb.texture.view_all.clone()),
-                ssr_minz_full_view: self
-                    .render_passes
-                    .ssr_minz
-                    .as_ref()
-                    .map(|p| p.texture.view_all.clone()),
                 decal_classify_buffers: self.decal_classify_buffers.as_ref(),
                 compaction_buffers: self.compaction_buffers.as_ref(),
                 coverage_buffers: self.coverage_buffers.as_ref(),
@@ -1643,19 +1617,6 @@ impl AwsmRenderer {
         // single-sample — a compute pass can't storage-write / single-sample-
         // blit a multisampled `transparent`. Records nothing when disabled.
         if ctx.post_processing.ssr.enabled {
-            // Build the min-Z pyramid FIRST (M2c) — the depth buffer is final
-            // here (post-opaque, post-resolve), and the Hi-Z trace below
-            // descends this pyramid. Gated on the same `ssr.enabled`, so the
-            // pass exists (`Some`) whenever this branch runs.
-            if let Some(ssr_minz) = self.render_passes.ssr_minz.as_ref() {
-                let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
-                    Some(tracing::span!(tracing::Level::INFO, "SSR MinZ RenderPass").entered())
-                } else {
-                    None
-                };
-                ssr_minz.render(&ctx)?;
-            }
-
             let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
                 Some(tracing::span!(tracing::Level::INFO, "SSR RenderPass").entered())
             } else {

@@ -23,7 +23,6 @@ pub mod shadow_masked;
 pub mod shadow_masked_custom_vertex;
 pub mod shared;
 pub mod ssr;
-pub mod ssr_minz;
 
 use std::ops::Range;
 
@@ -135,10 +134,6 @@ pub struct RenderPasses {
     /// bloom, gated per-frame on `post_processing.ssr.enabled` (records +
     /// allocates nothing when off).
     pub ssr: SsrRenderPass,
-    /// SSR min-Z (nearest-depth) pyramid build (M2c). `Some` only when
-    /// `post_processing.ssr.enabled` at build; the Hi-Z trace descends its
-    /// `texture.view_all` to skip empty space. Built + resized like bloom.
-    pub ssr_minz: Option<ssr_minz::render_pass::SsrMinzRenderPass>,
     pub display: DisplayRenderPass,
 }
 
@@ -249,9 +244,6 @@ pub struct RenderPassesDescriptors {
     bloom: BloomRenderPass,
     /// Fully-constructed SSR pass — self-contained like bloom.
     ssr: SsrRenderPass,
-    /// Fully-constructed SSR min-Z pyramid pass — `Some` only when SSR is
-    /// enabled at build. Self-contained like bloom.
-    ssr_minz: Option<ssr_minz::render_pass::SsrMinzRenderPass>,
 }
 
 impl RenderPassesDescriptors {
@@ -787,26 +779,9 @@ impl RenderPasses {
 
         // SSR — self-contained like bloom (own bind groups + pipeline + params).
         // Its reflection target lives in RenderTextures; the pass just needs its
-        // bind group recreated once the views exist (via bind_groups.rs).
+        // bind group recreated once the views exist (via bind_groups.rs). The
+        // trace is the linear-DDA march (`SsrTrace::PRODUCTION`).
         let ssr = SsrRenderPass::new(ctx).await?;
-
-        // SSR min-Z pyramid (M2c) — self-contained like bloom + the SSR pass
-        // itself: built at boot whenever Hi-Z is the PRODUCTION trace, so it
-        // exists to satisfy the SSR trace layout's always-present pyramid binding
-        // (the layout's `hiz` flag is the SAME compile-const, so the two can
-        // never disagree — this is what the earlier `ssr.enabled` gate got wrong:
-        // SSR is disabled at boot but enabled later without rebuilding passes, so
-        // the pyramid was absent exactly when the layout demanded it → white
-        // frame). When DDA is PRODUCTION the pyramid is never read, so `is_hiz()`
-        // gates it to `None` (zero-cost). The texture stays 1×1 until SSR is
-        // actually enabled (see the `ssr.enabled`-gated `ensure_size` in
-        // render.rs), so an inactive Hi-Z SSR still costs only a 1×1 pyramid.
-        let ssr_minz =
-            if crate::render_passes::ssr::shader::cache_key::SsrTrace::PRODUCTION.is_hiz() {
-                Some(ssr_minz::render_pass::SsrMinzRenderPass::new(ctx).await?)
-            } else {
-                None
-            };
 
         Ok(RenderPassesDescriptors {
             bindings,
@@ -840,7 +815,6 @@ impl RenderPasses {
             hzb_texture,
             bloom,
             ssr,
-            ssr_minz,
         })
     }
 
@@ -875,7 +849,6 @@ impl RenderPasses {
             hzb_texture,
             bloom,
             ssr,
-            ssr_minz,
             ..
         } = descs;
         let RenderPassesBindings {
@@ -1097,7 +1070,6 @@ impl RenderPasses {
             effects,
             bloom,
             ssr,
-            ssr_minz,
             display,
         })
     }

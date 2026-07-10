@@ -887,45 +887,45 @@ fn custom_transparent_shaders_validate() {
 #[test]
 fn ssr_shaders_validate() {
     // SSR trace shader must naga-validate for
-    // EVERY permutation (mode × trace × temporal × half_res) — proving the §5a
+    // EVERY permutation (mode × temporal × half_res × msaa) — proving the §5a
     // zero-cost templating emits valid WGSL for each variant, and that the
     // shared `camera.wgsl` / `math.wgsl` includes resolve. Also asserts the
-    // compute entry point exists (the dispatch selects it by name).
+    // compute entry point exists (the dispatch selects it by name). The trace
+    // is always the linear-DDA march (`SsrTrace::PRODUCTION` — the Hi-Z
+    // accelerator was deleted).
     use crate::render_passes::ssr::shader::cache_key::{ShaderCacheKeySsr, SsrMode, SsrTrace};
     use crate::render_passes::ssr::shader::template::ShaderTemplateSsr;
     for mode in [SsrMode::Mirror, SsrMode::Glossy] {
-        for trace in [SsrTrace::LinearDda, SsrTrace::HiZ] {
-            for temporal in [false, true] {
-                for half_res in [false, true] {
-                    for multisampled_geometry in [false, true] {
-                        let key = ShaderCacheKeySsr {
-                            mode,
-                            trace,
-                            temporal,
-                            half_res,
-                            multisampled_geometry,
-                            reverse_z: false,
-                        };
-                        let label = format!(
-                            "ssr mode={mode:?} trace={trace:?} temporal={temporal} \
-                             half_res={half_res} msaa={multisampled_geometry}"
-                        );
-                        let src = ShaderTemplateSsr::try_from(&key)
-                            .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
-                            .into_source()
-                            .unwrap_or_else(|e| panic!("{label}: render failed: {e:?}"));
-                        naga_validate(&src, &label);
+        for temporal in [false, true] {
+            for half_res in [false, true] {
+                for multisampled_geometry in [false, true] {
+                    let key = ShaderCacheKeySsr {
+                        mode,
+                        trace: SsrTrace::PRODUCTION,
+                        temporal,
+                        half_res,
+                        multisampled_geometry,
+                        reverse_z: false,
+                    };
+                    let label = format!(
+                        "ssr mode={mode:?} temporal={temporal} \
+                         half_res={half_res} msaa={multisampled_geometry}"
+                    );
+                    let src = ShaderTemplateSsr::try_from(&key)
+                        .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
+                        .into_source()
+                        .unwrap_or_else(|e| panic!("{label}: render failed: {e:?}"));
+                    naga_validate(&src, &label);
+                    assert!(
+                        src.contains("fn cs_main("),
+                        "{label}: SSR module missing `fn cs_main` entry point"
+                    );
+                    // The multisampled variant must bind the MSAA depth type.
+                    if multisampled_geometry {
                         assert!(
-                            src.contains("fn cs_main("),
-                            "{label}: SSR module missing `fn cs_main` entry point"
+                            src.contains("texture_depth_multisampled_2d"),
+                            "{label}: MSAA SSR must bind texture_depth_multisampled_2d"
                         );
-                        // The multisampled variant must bind the MSAA depth type.
-                        if multisampled_geometry {
-                            assert!(
-                                src.contains("texture_depth_multisampled_2d"),
-                                "{label}: MSAA SSR must bind texture_depth_multisampled_2d"
-                            );
-                        }
                     }
                 }
             }

@@ -1,19 +1,19 @@
 // SSR trace — screen-space reflections (docs/plans/ssr.md).
 //
-// Production path (the else-branches below): reflection via a view-space
-// linear DDA march. Reconstruct the shaded pixel's view-space position +
-// normal, reflect the view ray, march it against the scene depth buffer, and
-// on a hit sample the HDR color there; Fresnel-weight + edge-fade it. The
-// output is reflection-ONLY premultiplied color with alpha = coverage (1 on a
-// hit, 0 on miss/sky/opt-out); the composite pass ADDITIVELY blends it over
-// the HDR target — no read-modify-write hazard, and zero-coverage pixels are
-// left untouched.
+// Production path: reflection via a view-space linear DDA march (the Hi-Z
+// min-Z-pyramid accelerator was deleted; LinearDda is the production trace).
+// Reconstruct the shaded pixel's view-space position + normal, reflect the
+// view ray, march it against the scene depth buffer, and on a hit sample the
+// HDR color there; Fresnel-weight + edge-fade it. The output is
+// reflection-ONLY premultiplied color with alpha = coverage (1 on a hit, 0 on
+// miss/sky/opt-out); the composite pass ADDITIVELY blends it over the HDR
+// target — no read-modify-write hazard, and zero-coverage pixels are left
+// untouched.
 //
-// The glossy / hiz / temporal / half_res template blocks are the structural
+// The glossy / temporal / half_res template blocks are the structural
 // permutation axes (§5a): each compiles ONLY into the variant that needs it, so
 // Mirror carries none of the glossy/denoise code, non-temporal none of the
-// reproject code, etc. They fill in at M2-M3; M1 requests mirror/linear/
-// non-temporal/full-res.
+// reproject code, etc.
 
 // CameraRaw + camera_from_raw (view / proj / inv_proj for reconstruction).
 {% include "shared_wgsl/camera.wgsl" %}
@@ -60,19 +60,6 @@ struct SsrParams {
 @group(0) @binding(7) var history_prev_tex: texture_2d<f32>;
 @group(0) @binding(8) var history_sampler: sampler;
 @group(0) @binding(9) var history_curr_tex: texture_storage_2d<rgba16float, write>;
-{% endif %}
-{% if hiz %}
-// M2c: dedicated min-Z (nearest-depth) pyramid for the Hi-Z ray march. Stores
-// per-tile MIN hardware depth across a full mip chain; the trace descends it to
-// skip empty space. Read via integer textureLoad(..., lod) — unfilterable float.
-// The binding number is APPENDED after the optional temporal 7/8/9 block (the
-// Rust layout is positional), so it is 7 when non-temporal and 10 when temporal;
-// the two branches below keep the WGSL in lockstep with `SsrBindGroups`.
-{% if temporal %}
-@group(0) @binding(10) var ssr_minz_tex: texture_2d<f32>;
-{% else %}
-@group(0) @binding(7) var ssr_minz_tex: texture_2d<f32>;
-{% endif %}
 {% endif %}
 
 // Reconstruct VIEW-space position from a hardware depth sample at `uv`
@@ -160,121 +147,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var t_prev = 0.0;
     var t = step_len;
 
-    {% if hiz %}
-    // ---- M2c Hi-Z min-Z descent ----
-    // A min-Z hierarchical-depth ray march: the linear DDA below, accelerated by
-    // the dedicated min-Z pyramid. INVARIANT (parity with the DDA): the pyramid
-    // stores per-tile NEAREST depth, so whenever the reflected ray is IN FRONT
-    // of a tile's min-Z, EVERY surface in that tile is farther than the ray →
-    // the DDA's `ray_z > scene_z` hit test is false for every pixel in the tile
-    // → that span holds no hit and is safe to skip. Near surfaces the march
-    // degrades to per-`step_len` stepping and applies the IDENTICAL thickness
-    // test + 5-step binary refinement the DDA uses, so a found hit resolves to
-    // the same surface point / UV. Reference: McGuire & Mara; Uludağ, "Hi-Z
-    // Screen-Space Cone-Traced Reflections."
-    let ss_dims = vec2<f32>(full_dims);
-    // Cap the working coarseness: a skip advances ~half a tile, so the
-    // refinement bracket [t_prev, t] is ~half a tile at the lod where a surface
-    // is first met. Capping at ≤64px tiles keeps that bracket small enough that
-    // the SAME 5-step bisection localizes the hit to sub-pixel — matching the
-    // DDA's hit UV — while still skipping large empty spans (≫ per-pixel).
-    // KNOWN-DEFECT NOTE (M2c, see cache_key.rs::PRODUCTION): with `max_lod > 0`
-    // the coarse-mip skip below advances a FRACTION of a tile (`dt_cell * 0.5`)
-    // rather than to the exact screen-space cell boundary, so the refinement
-    // bracket lands inconsistently across scanlines and reflections show
-    // horizontal banding. A/B-proven: capping this to 0 (pure fine march)
-    // removes the banding entirely. The canonical fix is a perspective-correct
-    // cell-boundary DDA (not a fractional advance), coupled to reverse-Z. Until
-    // then production ships `LinearDda`; this `min(…, 6)` cap is the tile-size
-    // ceiling for that future work, not a live production path.
-    let max_lod = min(i32(textureNumLevels(ssr_minz_tex)) - 1, 6);
-    // Start fine (lod 0) so the region just off the reflecting surface is tested
-    // exactly like the DDA; coarsen only once empty space is confirmed.
-    var lod = 0;
-    // Bounded iteration budget: each iteration either advances `t` (≥ step_len)
-    // or descends a mip (bounded per occupied-region entry), so this always
-    // terminates. Generous headroom over the DDA's `steps` so descents /
-    // grazing-surface oscillation can never exhaust the budget before the ray
-    // reaches `max_distance` (which would drop distant hits the DDA finds).
-    let iter_max = steps * 4 + max_lod * 2 + 16;
-    for (var i = 0; i < iter_max; i = i + 1) {
-        if (t > params.max_distance) { break; }
-        let pi = p + refl * t;
-        let proj = view_to_uv(pi, cam);
-        if (proj.z < 0.0 || proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0) {
-            break;
-        }
-        let ray_z = -pi.z;
-        // Nearest surface in the tile the ray projects into at this mip.
-        let cell = vec2<i32>(proj.xy * ss_dims);
-        let lod_cell = cell >> vec2<u32>(u32(lod), u32(lod));
-        let cell_minz_hw = textureLoad(ssr_minz_tex, lod_cell, lod).r;
-        // Sky / empty tiles seed at the far plane (depth ≈ 1) → cell_z huge →
-        // always "in front" → skipped (sky reflects nothing here).
-        let cell_z = -view_pos_from_depth(proj.xy, cell_minz_hw, cam).z;
-
-        if (ray_z < cell_z) {
-            // In front of the nearest surface across the whole tile → no hit in
-            // this span. Advance ~one tile in screen space (finite-difference
-            // the screen velocity, then take a conservative fraction so we never
-            // overshoot the tile and skip an untested cell), and coarsen for
-            // bigger future skips. Always advance ≥ step_len so near-surface
-            // stepping matches the DDA grid.
-            let cell_px = f32(1u << u32(lod));
-            let probe = view_to_uv(p + refl * (t + step_len), cam);
-            let dpix = max(length((probe.xy - proj.xy) * ss_dims), 1e-4);
-            let px_per_t = dpix / step_len;
-            let dt_cell = cell_px / max(px_per_t, 1e-4);
-            t_prev = t;
-            t = t + max(dt_cell * 0.5, step_len);
-            lod = min(lod + 1, max_lod);
-        } else {
-            // Ray has reached the tile's near-depth band → a hit may lie here.
-            if (lod > 0) {
-                // Localize: descend a mip WITHOUT advancing, so the exact test
-                // runs at pixel granularity. (`t` is NOT rewound — rewinding
-                // fights the coarsening and starves forward progress, so the ray
-                // never reaches distant reflectors. Instead the lod-0 refinement
-                // below uses extra bisection steps to localize the wider bracket.)
-                lod = lod - 1;
-            } else {
-                // Finest level → EXACT test, identical to the DDA path.
-                let scoords = vec2<i32>(proj.xy * ss_dims);
-                let sdepth = textureLoad(depth_tex, scoords, 0);
-                let scene_z = -view_pos_from_depth(proj.xy, sdepth, cam).z;
-                if (ray_z > scene_z && (ray_z - scene_z) < params.thickness) {
-                    // Binary refinement between the last in-front `t` and this
-                    // one. Unlike the DDA (whose bracket is one `step_len`), the
-                    // Hi-Z bracket [t_prev, t] can be up to ~half a max-lod tile
-                    // (≤64px) wide because the coarse skip jumped here, so it
-                    // needs MORE bisection steps to localize to sub-pixel: 10
-                    // steps → bracket/1024 (a 32px bracket → 0.03px). Fewer steps
-                    // quantize the hit into visible horizontal bands.
-                    var lo = t_prev;
-                    var hi = t;
-                    for (var b = 0; b < 10; b = b + 1) {
-                        let mid = 0.5 * (lo + hi);
-                        let pm = p + refl * mid;
-                        let pj = view_to_uv(pm, cam);
-                        let mc = vec2<i32>(pj.xy * ss_dims);
-                        let md = textureLoad(depth_tex, mc, 0);
-                        let mz = -view_pos_from_depth(pj.xy, md, cam).z;
-                        if (-pm.z > mz) { hi = mid; } else { lo = mid; }
-                    }
-                    let pf = p + refl * hi;
-                    hit_uv = view_to_uv(pf, cam).xy;
-                    hit = true;
-                    break;
-                }
-                // Behind beyond `thickness` (an occluder passed) → keep marching
-                // one fine step, exactly like the DDA's non-hit continuation.
-                t_prev = t;
-                t = t + step_len;
-            }
-        }
-    }
-    {% else %}
-    // Linear DDA march in view space (M1). depth_tex is non-filterable, so
+    // Linear DDA march in view space. depth_tex is non-filterable, so
     // every scene-depth probe is an integer textureLoad.
     for (var i = 0; i < steps; i = i + 1) {
         let pi = p + refl * t;
@@ -309,7 +182,6 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         t_prev = t;
         t = t + step_len;
     }
-    {% endif %}
 
     var reflection = vec3<f32>(0.0, 0.0, 0.0);
     if (hit) {

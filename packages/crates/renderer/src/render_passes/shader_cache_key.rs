@@ -26,7 +26,6 @@ use crate::render_passes::{
         ShaderCacheKeyOcclusionCompaction, ShaderCacheKeyOcclusionCull,
     },
     ssr::shader::cache_key::ShaderCacheKeySsr,
-    ssr_minz::shader::cache_key::{ShaderCacheKeySsrMinzReduce, ShaderCacheKeySsrMinzSeed},
 };
 
 /// Cache key variants for render-pass shader templates.
@@ -73,12 +72,7 @@ pub enum ShaderCacheKeyRenderPass {
     ClusterCompaction(ShaderCacheKeyClusterCompaction),
     Effects(ShaderCacheKeyEffects),
     Display(ShaderCacheKeyDisplay),
-    /// Screen-space reflections trace. Permutes on mode
-    /// (mirror/glossy) × trace (linear/Hi-Z) × temporal × half-res.
+    /// Screen-space reflections trace (linear-DDA march). Permutes on mode
+    /// (mirror/glossy) × temporal × half-res.
     Ssr(ShaderCacheKeySsr),
-    /// SSR min-Z pyramid seed (depth → mip 0). MSAA-aware, in lockstep with
-    /// the SSR trace's depth binding.
-    SsrMinzSeed(ShaderCacheKeySsrMinzSeed),
-    /// SSR min-Z pyramid reduce (mip N-1 → mip N). Format-only.
-    SsrMinzReduce(ShaderCacheKeySsrMinzReduce),
 }

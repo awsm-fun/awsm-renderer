@@ -1,10 +1,9 @@
 //! SSR pass compute pipeline.
 //!
 //! Self-contained (like bloom): compiles its own shader + pipeline rather than
-//! joining the cross-renderer pool. M1 builds the single mirror / linear-DDA /
-//! non-temporal / full-res variant; M2–M3 add the glossy / Hi-Z / temporal /
-//! half-res variants (each a distinct cache key → distinct compiled shader,
-//! §5a).
+//! joining the cross-renderer pool. The trace is always the linear-DDA march
+//! (`SsrTrace::PRODUCTION`); the glossy / temporal / half-res axes each key a
+//! distinct cache key → distinct compiled shader (§5a).
 
 use crate::error::Result;
 use crate::pipeline_layouts::PipelineLayoutCacheKey;
@@ -36,9 +35,8 @@ impl SsrPipelines {
     ) -> ShaderCacheKeySsr {
         ShaderCacheKeySsr {
             mode: SsrMode::Glossy,
-            // M2c: production marches the min-Z pyramid (Hi-Z). `SsrTrace::PRODUCTION`
-            // is the shared source of truth with `SsrBindGroups` so the compiled
-            // shader's pyramid binding always matches the bind-group layout.
+            // LinearDda — the only trace strategy (the Hi-Z accelerator was
+            // deleted).
             trace: SsrTrace::PRODUCTION,
             temporal,
             half_res,

@@ -163,11 +163,6 @@ impl AwsmRenderer {
                 .hzb
                 .as_ref()
                 .map(|hzb| hzb.texture.view_all.clone()),
-            ssr_minz_full_view: self
-                .render_passes
-                .ssr_minz
-                .as_ref()
-                .map(|p| p.texture.view_all.clone()),
             decal_classify_buffers: self.decal_classify_buffers.as_ref(),
             compaction_buffers: self.compaction_buffers.as_ref(),
             coverage_buffers: self.coverage_buffers.as_ref(),

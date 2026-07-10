@@ -9,9 +9,9 @@
 //!
 //! Shipped path: view-space linear-DDA trace into the (half-res by default)
 //! `ssr` target as reflection-only premultiplied color, then an edge-aware
-//! additive composite over `composite`. The min-Z pyramid + Hi-Z descent and
-//! the temporal reprojection are built but gated off pending plan 004's
-//! promote-or-delete decision.
+//! additive composite over `composite`. Plan 004 Part 2 deleted the dormant
+//! Hi-Z (min-Z pyramid) acceleration wholesale — linear DDA is the one and
+//! only trace strategy.
 
 pub mod bind_group;
 pub mod composite;

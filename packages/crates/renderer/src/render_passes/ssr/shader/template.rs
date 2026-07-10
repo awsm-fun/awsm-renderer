@@ -3,13 +3,13 @@
 //! The askama `{% if %}` flags below are how SSR stays granular + zero-cost
 //! (§5a): each structural axis is a template flag, so `Mirror` compiles without
 //! the glossy sampling/denoise code, non-temporal compiles without the
-//! reproject code, etc. The M1 path is the else-branches (mirror / linear DDA /
-//! non-temporal); the glossy / Hi-Z / temporal branches fill in at M2–M3.
+//! reproject code, etc. The trace itself is always the linear-DDA march (the
+//! Hi-Z accelerator was deleted; `SsrTrace::PRODUCTION` is `LinearDda`).
 
 use askama::Template;
 
 use crate::{
-    render_passes::ssr::shader::cache_key::{ShaderCacheKeySsr, SsrMode, SsrTrace},
+    render_passes::ssr::shader::cache_key::{ShaderCacheKeySsr, SsrMode},
     shaders::{AwsmShaderError, Result},
 };
 
@@ -19,8 +19,6 @@ use crate::{
 pub struct ShaderTemplateSsr {
     /// GGX importance-sampled glossy path vs. the tight mirror ray.
     pub glossy: bool,
-    /// Hi-Z (min-Z pyramid) march vs. the linear DDA march.
-    pub hiz: bool,
     /// Temporal reproject + neighbourhood clamp.
     pub temporal: bool,
     /// Half-res trace + guided upsample.
@@ -37,7 +35,6 @@ impl TryFrom<&ShaderCacheKeySsr> for ShaderTemplateSsr {
     fn try_from(value: &ShaderCacheKeySsr) -> Result<Self> {
         Ok(Self {
             glossy: value.mode == SsrMode::Glossy,
-            hiz: value.trace == SsrTrace::HiZ,
             temporal: value.temporal,
             half_res: value.half_res,
             multisampled_geometry: value.multisampled_geometry,

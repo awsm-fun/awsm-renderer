@@ -28,7 +28,6 @@ use crate::{
         },
         shader_cache_key::ShaderCacheKeyRenderPass,
         ssr::shader::template::ShaderTemplateSsr,
-        ssr_minz::shader::template::{ShaderTemplateSsrMinzReduce, ShaderTemplateSsrMinzSeed},
     },
     shaders::AwsmShaderError,
 };
@@ -62,8 +61,6 @@ pub enum ShaderTemplateRenderPass {
     Effects(ShaderTemplateEffects),
     Display(ShaderTemplateDisplay),
     Ssr(ShaderTemplateSsr),
-    SsrMinzSeed(ShaderTemplateSsrMinzSeed),
-    SsrMinzReduce(ShaderTemplateSsrMinzReduce),
 }
 
 impl TryFrom<&ShaderCacheKeyRenderPass> for ShaderTemplateRenderPass {
@@ -148,12 +145,6 @@ impl TryFrom<&ShaderCacheKeyRenderPass> for ShaderTemplateRenderPass {
             ShaderCacheKeyRenderPass::Ssr(cache_key) => {
                 Ok(ShaderTemplateRenderPass::Ssr(cache_key.try_into()?))
             }
-            ShaderCacheKeyRenderPass::SsrMinzSeed(cache_key) => {
-                Ok(ShaderTemplateRenderPass::SsrMinzSeed(cache_key.try_into()?))
-            }
-            ShaderCacheKeyRenderPass::SsrMinzReduce(cache_key) => Ok(
-                ShaderTemplateRenderPass::SsrMinzReduce(cache_key.try_into()?),
-            ),
         }
     }
 }
@@ -189,8 +180,6 @@ impl ShaderTemplateRenderPass {
             ShaderTemplateRenderPass::Effects(tmpl) => tmpl.into_source(),
             ShaderTemplateRenderPass::Display(tmpl) => tmpl.into_source(),
             ShaderTemplateRenderPass::Ssr(tmpl) => tmpl.into_source(),
-            ShaderTemplateRenderPass::SsrMinzSeed(tmpl) => tmpl.into_source(),
-            ShaderTemplateRenderPass::SsrMinzReduce(tmpl) => tmpl.into_source(),
         }
     }
 
@@ -226,8 +215,6 @@ impl ShaderTemplateRenderPass {
             ShaderTemplateRenderPass::Effects(tmpl) => tmpl.debug_label(),
             ShaderTemplateRenderPass::Display(tmpl) => tmpl.debug_label(),
             ShaderTemplateRenderPass::Ssr(tmpl) => tmpl.debug_label(),
-            ShaderTemplateRenderPass::SsrMinzSeed(tmpl) => tmpl.debug_label(),
-            ShaderTemplateRenderPass::SsrMinzReduce(tmpl) => tmpl.debug_label(),
         }
     }
 }

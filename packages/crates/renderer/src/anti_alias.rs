@@ -539,12 +539,6 @@ impl AwsmRenderer {
             };
             let ssr = crate::render_passes::ssr::render_pass::SsrRenderPass::new(&mut ctx).await?;
             self.render_passes.ssr = ssr;
-            if self.render_passes.ssr_minz.is_some() {
-                let minz =
-                    crate::render_passes::ssr_minz::render_pass::SsrMinzRenderPass::new(&mut ctx)
-                        .await?;
-                self.render_passes.ssr_minz = Some(minz);
-            }
         }
 
         Ok(())

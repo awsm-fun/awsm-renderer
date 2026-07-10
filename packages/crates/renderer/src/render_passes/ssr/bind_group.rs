@@ -32,7 +32,6 @@ use crate::bind_group_layout::{
 };
 use crate::bind_groups::{AwsmBindGroupError, BindGroupRecreateContext};
 use crate::error::Result;
-use crate::render_passes::ssr::shader::cache_key::SsrTrace;
 use crate::render_passes::RenderPassInitContext;
 
 pub struct SsrBindGroups {
@@ -41,15 +40,6 @@ pub struct SsrBindGroups {
     /// (entries 7/8/9), whether the linear `sampler` exists, and whether one or
     /// two parity bind groups are built. Derived from `ssr.temporal` at `new()`.
     temporal: bool,
-    /// M2c: whether the Hi-Z (min-Z pyramid) trace variant is compiled — adds
-    /// the pyramid binding (entry 10) to the layout + each bind group. Derived
-    /// from `SsrTrace::PRODUCTION` so it stays in lockstep with the compiled
-    /// shader (`SsrPipelines::m1_key`). When true, `recreate` needs the min-Z
-    /// pyramid's `view_all` (threaded on `BindGroupRecreateContext`); if that
-    /// view is absent (SSR disabled → no pyramid pass), the trace bind group is
-    /// left unbuilt — the trace only dispatches when SSR is enabled, which is
-    /// exactly when the pyramid exists.
-    hiz: bool,
     /// Linear, clamp-to-edge sampler for the reprojected history fetch (binding
     /// 8). `None` unless temporal — the non-temporal path binds no sampler
     /// (everything is integer `textureLoad`), so it allocates nothing new.
@@ -67,11 +57,7 @@ impl SsrBindGroups {
         // Under MSAA the depth + normal G-buffer targets are multisampled.
         let multisampled = ctx.anti_aliasing.msaa_sample_count.is_some();
         let temporal = ctx.post_processing.ssr.temporal;
-        // M2c: keyed off the shared production-trace constant, NOT a
-        // post_processing field (trace mode isn't runtime-configurable) — so
-        // the layout matches the shader `SsrPipelines::m1_key` compiles.
-        let hiz = SsrTrace::PRODUCTION.is_hiz();
-        let layout_key = create_layout(ctx, multisampled, temporal, hiz)?;
+        let layout_key = create_layout(ctx, multisampled, temporal)?;
         // The temporal reprojected history fetch (binding 7) is a genuinely
         // filtered sample — unlike every other SSR input, which is integer
         // `textureLoad`. Create its linear sampler only for the temporal variant.
@@ -96,7 +82,6 @@ impl SsrBindGroups {
         Ok(Self {
             layout_key,
             temporal,
-            hiz,
             sampler,
             trace_bind_groups: [None, None],
         })
@@ -122,28 +107,10 @@ impl SsrBindGroups {
         params_buffer: &web_sys::GpuBuffer,
     ) -> Result<()> {
         let layout = ctx.bind_group_layouts.get(self.layout_key)?;
-        // M2c Hi-Z: the min-Z pyramid's all-mips view (binding 10). Threaded on
-        // the recreate context (a clone, like `hzb_full_view`). When the Hi-Z
-        // variant is compiled but the pyramid pass is absent (SSR disabled →
-        // no pyramid), skip building the trace bind group entirely: the layout
-        // requires binding 10, and the trace never dispatches while SSR is off,
-        // so an unbuilt group loses nothing.
-        let minz_view = ctx.ssr_minz_full_view.as_ref();
-        if self.hiz && minz_view.is_none() {
-            self.trace_bind_groups = [None, None];
-            return Ok(());
-        }
-        // Binding numbers are POSITIONAL (layout entry index == binding), so the
-        // pyramid entry is appended AFTER the temporal 7/8/9 block in
-        // `create_layout` to leave those untouched. That puts it at binding 7
-        // when non-temporal, 10 when temporal — the WGSL declares the matching
-        // number off its own `temporal` flag.
-        let minz_binding: u32 = if self.temporal { 10 } else { 7 };
-        // Bindings 0-6 (+ 10 under Hi-Z) are identical every frame + across
-        // parity. Rebuilt fresh per call (Cow-borrowed views) since the entries
-        // borrow `ctx`.
+        // Bindings 0-6 are identical every frame + across parity. Rebuilt fresh
+        // per call (Cow-borrowed views) since the entries borrow `ctx`.
         let base_entries = || {
-            let mut base = vec![
+            vec![
                 BindGroupEntry::new(
                     0,
                     BindGroupResource::Buffer(BufferBinding::new(&ctx.camera.gpu_buffer)),
@@ -178,22 +145,7 @@ impl SsrBindGroups {
                         &ctx.render_texture_views.reflection_descriptor,
                     )),
                 ),
-            ];
-            // min-Z pyramid (all mips), read via textureLoad(lod) during the
-            // Hi-Z descent. Bound on EVERY variant (non-temporal + both temporal
-            // parity groups) at `minz_binding` (7 non-temporal / 10 temporal) so
-            // it composes with the temporal 7/8/9 bindings without collision.
-            // `minz_view` is guaranteed `Some` here — the `hiz && none` case
-            // returned early above.
-            if self.hiz {
-                if let Some(view) = minz_view {
-                    base.push(BindGroupEntry::new(
-                        minz_binding,
-                        BindGroupResource::TextureView(Cow::Borrowed(view)),
-                    ));
-                }
-            }
-            base
+            ]
         };
 
         if self.temporal {
@@ -238,7 +190,6 @@ fn create_layout(
     ctx: &mut RenderPassInitContext<'_>,
     multisampled: bool,
     temporal: bool,
-    hiz: bool,
 ) -> Result<BindGroupLayoutKey> {
     let compute_only = |resource: BindGroupLayoutResource| BindGroupLayoutCacheKeyEntry {
         resource,
@@ -311,21 +262,6 @@ fn create_layout(
             StorageTextureBindingLayout::new(TextureFormat::Rgba16float)
                 .with_view_dimension(TextureViewDimension::N2d)
                 .with_access(StorageTextureAccess::WriteOnly),
-        )));
-    }
-
-    // M2c Hi-Z: min-Z pyramid (single-sample, unfilterable float, read via
-    // integer textureLoad at a chosen LOD). Appended LAST — after the optional
-    // temporal 7/8/9 block — so binding numbers land at 7 (non-temporal) / 10
-    // (temporal), leaving the existing bindings byte-identical. A distinct
-    // layout key per (temporal, hiz) combination keeps the non-Hi-Z layout
-    // unchanged.
-    if hiz {
-        entries.push(compute_only(BindGroupLayoutResource::Texture(
-            TextureBindingLayout::new()
-                .with_view_dimension(TextureViewDimension::N2d)
-                .with_sample_type(TextureSampleType::UnfilterableFloat)
-                .with_multisampled(false),
         )));
     }
 

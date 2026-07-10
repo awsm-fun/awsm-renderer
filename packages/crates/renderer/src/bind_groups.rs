@@ -85,10 +85,6 @@ pub struct BindGroupRecreateContext<'a> {
     /// per-instance mip levels. `None` when
     /// `features.gpu_culling == false`.
     pub hzb_full_view: Option<web_sys::GpuTextureView>,
-    /// Full-chain SSR min-Z pyramid view the Hi-Z trace descends. `None`
-    /// when the min-Z pass is absent (`post_processing.ssr.enabled == false`);
-    /// the SSR recreate leaves the trace bind group unbuilt in that case.
-    pub ssr_minz_full_view: Option<web_sys::GpuTextureView>,
     /// Per-tile decal classify buckets. `None` when
     /// `features.decals == false`.
     pub decal_classify_buffers:
@@ -710,20 +706,6 @@ impl BindGroups {
                     bind_groups.recreate(&ctx, texture, &params.gpu_buffer)?;
                 }
                 FunctionToCall::Ssr => {
-                    // M2c: rebuild the min-Z pyramid's own seed + reduce bind
-                    // groups first — its texture may have just resized. `None`
-                    // when SSR is disabled (the pyramid pass wasn't built). The
-                    // SSR trace bind group below binds the pyramid's cloned
-                    // `view_all` via `ctx.ssr_minz_full_view` (already pointing
-                    // at the resized texture).
-                    if let Some(minz) = render_passes.ssr_minz.as_mut() {
-                        let crate::render_passes::ssr_minz::render_pass::SsrMinzRenderPass {
-                            bind_groups,
-                            texture,
-                            ..
-                        } = minz;
-                        bind_groups.recreate(&ctx, texture)?;
-                    }
                     let crate::render_passes::ssr::render_pass::SsrRenderPass {
                         bind_groups,
                         params,

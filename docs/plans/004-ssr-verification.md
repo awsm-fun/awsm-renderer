@@ -73,6 +73,26 @@ cell-boundary DDA and (b) forward-Z far-precision quantization of the coarse mip
   ssr_minz pass + hiz template branch instead of carrying dormant compiled surface
   area — record the numbers and the decision here either way. No third option.
 
+### Part 2 RESULT (2026-07-10): **DELETED** — banding survives the correct traversal
+
+The McGuire/Mara cell-boundary advance WAS implemented (exact per-axis
+cell-exit crossing + 5% epsilon, replacing the fractional half-cell step) and
+Hi-Z force-enabled. The banding scene (3 emissive columns at z=-4/-8/-16 over
+a rough-0.05 floor) still rendered reflections chopped into discrete
+horizontal segments at radius 8 (screenshot evidence), while LinearDda renders
+them continuous. Numbers:
+
+| | r8 PNG | r20 PNG | r50 PNG | render_cpu EMA |
+|---|---|---|---|---|
+| Hi-Z (+cell-boundary DDA) | 102,590 (banded) | 55,322 | 33,062 | 6.04 ms |
+| LinearDda | 109,118 (continuous) | 59,770 | 35,290 | **5.53 ms** |
+
+Hi-Z lost on BOTH criteria (visual: still banded; perf: 0.5 ms/frame SLOWER —
+the pyramid build + descent overhead exceeds its skip savings at these scene
+scales). Per the no-third-option rule: `ssr_minz` + the hiz axis are deleted
+wholesale. If screen-space reflection acceleration is ever revisited, start
+from a fresh design (froxel-bucketed or interval-based), not this pyramid.
+
 ## Part 3 — Close out
 - `temporal_weight` exposure (editor row + MCP param) if not already landed in 001.
 - Update all SSR docstrings to describe the shipped design (001 lists the stale ones).
