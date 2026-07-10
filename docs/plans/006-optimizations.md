@@ -1,5 +1,17 @@
 # 006 — Renderer-wide optimization + feature-robustness sweep
 
+**STATUS: ✅ COMPLETE (2026-07-10).** Phase 0: 21/21 permanent test scenes
+authored, verified on-device, versioned (examples/test-scenes/ + README with
+the axes list + baselines). Phase 0.5: renderer-wide ShadowsConfig wired
+(live apply + set_shadows MCP). All 8 axes landed with numbers — see the
+per-axis RESULT blocks inline. Regressions found AND fixed by this sweep:
+froxel light culling dead under reverse-Z; editor decals never projected
+(3 stacked bugs); stale texture-key registry; skinned duplication mangled/
+frozen/re-uploading; SSR pass lost on AA flips (001-era, re-locked here).
+Headline numbers: empty-scene census 68/31/49 → 68/22/40; skinned clones
+share geometry (3 walkers = 3 resources flat); 3000-instance instancer at
+vsync; load = one settle-visible transaction.
+
 **Order:** sixth — the core of the effort. This is NOT scoped to the current branch:
 it is a comprehensive audit of the renderer **as a whole**, in service of one goal:
 **players consuming baked bundles get an optimal, fully-featured runtime**, while the
