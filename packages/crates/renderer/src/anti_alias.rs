@@ -508,6 +508,45 @@ impl AwsmRenderer {
         //    pipelines aren't yet compiled. No-op when nothing to do.
         self.ensure_shadow_pipelines_compiled().await?;
 
+        // ── Phase 10: SSR pass rebuild. The SSR trace + composite bake the
+        //    DEPTH binding's `multisampled` flag into their bind-group
+        //    LAYOUTS at construction (`ctx.anti_aliasing`), so an MSAA flip
+        //    leaves them binding the wrong depth-texture sample count —
+        //    invalid bind group → the whole frame's command buffer fails
+        //    (black screen; found by the 004 verification matrix). Rebuild
+        //    exactly like `set_post_processing` does for the structural SSR
+        //    axes; cheap when SSR is off (1×1 placeholders, tiny layouts).
+        {
+            let mut ctx = crate::render_passes::RenderPassInitContext {
+                gpu: &self.gpu,
+                bind_group_layouts: &mut self.bind_group_layouts,
+                pipeline_layouts: &mut self.pipeline_layouts,
+                pipelines: &mut self.pipelines,
+                shaders: &mut self.shaders,
+                render_texture_formats: &mut self.render_textures.formats,
+                textures: &mut self.textures,
+                features: &self.features,
+                anti_aliasing: &self.anti_aliasing,
+                post_processing: &self.post_processing,
+                prep_config: &self.prep_config,
+                max_edge_budget: self
+                    .material_edge_buffers
+                    .as_ref()
+                    .map(|b| b.max_edge_budget)
+                    .unwrap_or(
+                        crate::render_passes::material_opaque::edge_buffers::DEFAULT_MAX_EDGE_BUDGET_DESKTOP,
+                    ),
+            };
+            let ssr = crate::render_passes::ssr::render_pass::SsrRenderPass::new(&mut ctx).await?;
+            self.render_passes.ssr = ssr;
+            if self.render_passes.ssr_minz.is_some() {
+                let minz =
+                    crate::render_passes::ssr_minz::render_pass::SsrMinzRenderPass::new(&mut ctx)
+                        .await?;
+                self.render_passes.ssr_minz = Some(minz);
+            }
+        }
+
         Ok(())
     }
 }
