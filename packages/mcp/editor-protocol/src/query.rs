@@ -315,6 +315,11 @@ pub enum EditorQuery {
     /// slopes mean healthy; a steady climb on an idle scene is a leak. A read —
     /// no mutation.
     MemoryStats,
+
+    /// The scene's global post-process config — tonemapping / bloom / dof /
+    /// exposure / the bloom knobs / the full SSR block — as its serialized
+    /// `PostProcessConfig` JSON. The read half of `SetPostProcess`.
+    PostProcess,
     /// Save-completeness census (Phase 0.2 roundtrip oracle): how many mesh /
     /// raster-texture assets exist vs how many lack their persistable bytes in the
     /// session cache (so a save would drop them). Returned as a JSON `Text` payload

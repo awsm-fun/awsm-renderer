@@ -1171,6 +1171,12 @@ pub struct PostProcessParams {
     /// STRUCTURAL — changing it recompiles. Omit to leave unchanged.
     #[serde(default)]
     pub ssr_resolution_scale: Option<f32>,
+    /// SSR temporal history blend weight 0..1 (default 0.9) — fraction of the
+    /// previous frame's accumulated reflection kept each frame (higher =
+    /// smoother, more ghosting). Live uniform; only meaningful when
+    /// ssr_temporal is on. Omit to leave unchanged.
+    #[serde(default)]
+    pub ssr_temporal_weight: Option<f32>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -3892,7 +3898,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Set the global post-processing settings: tonemapping ('none' | 'khronos_neutral_pbr' | 'aces'), bloom (bool), dof (bool — depth of field, uses the active camera's focus/aperture), exposure (f32, EV stops pre-tonemap: 0 unity, +1 twice as bright), and the bloom tuning knobs bloom_threshold / bloom_knee / bloom_intensity / bloom_scatter (all f32). Bloom is a COD/Jimenez-style mip-pyramid glow: bloom_threshold (default 1.0) is the HDR luminance above which pixels glow, bloom_knee (0.5) softens the fade-in, bloom_intensity (1.0) is the mix strength, bloom_scatter (1.0) widens the halo toward coarser mips. Persisted on scene.post_process + carried in the player bundle; applied to the live renderer immediately. Every field is optional (patch semantics — only the ones you pass change). tonemapping/bloom/dof recompile the effects+display pipelines (wait_render_settled after); exposure + the four bloom_* knobs are LIVE uniforms (no recompile). Defaults: khronos_neutral_pbr, bloom off, dof off, exposure 0, threshold 1.0, knee 0.5, intensity 1.0, scatter 1.0."
+        description = "Set the global post-processing settings: tonemapping ('none' | 'khronos_neutral_pbr' | 'aces'), bloom (bool), dof (bool — depth of field, uses the active camera's focus/aperture), exposure (f32, EV stops pre-tonemap: 0 unity, +1 twice as bright), and the bloom tuning knobs bloom_threshold / bloom_knee / bloom_intensity / bloom_scatter (all f32). Bloom is a COD/Jimenez-style mip-pyramid glow: bloom_threshold (default 1.0) is the HDR luminance above which pixels glow, bloom_knee (0.5) softens the fade-in, bloom_intensity (1.0) is the mix strength, bloom_scatter (1.0) widens the halo toward coarser mips. Also SCREEN-SPACE REFLECTIONS via the ssr_* fields: ssr_enabled (bool, default off — zero cost when off), ssr_intensity / ssr_max_distance / ssr_thickness / ssr_max_steps / ssr_spread_cutoff / ssr_edge_fade / ssr_temporal_weight (LIVE uniforms), ssr_temporal + ssr_resolution_scale (0.5 half-res default / 1.0 full — STRUCTURAL, recompile the SSR pass). Glossy/metallic PBR surfaces reflect on-screen content; roughness beyond ssr_spread_cutoff falls back to IBL. Persisted on scene.post_process + carried in the player bundle; applied to the live renderer immediately. Every field is optional (patch semantics — only the ones you pass change). tonemapping/bloom/dof/ssr_enabled/ssr_temporal/ssr_resolution_scale recompile pipelines (wait_render_settled after); everything else is a LIVE uniform (no recompile). Defaults: khronos_neutral_pbr, bloom off, dof off, exposure 0, threshold 1.0, knee 0.5, intensity 1.0, scatter 1.0. Read the current values back with get_post_process."
     )]
     async fn set_post_process(
         &self,
@@ -3933,8 +3939,17 @@ impl EditorMcp {
             ssr_edge_fade: p.ssr_edge_fade,
             ssr_temporal: p.ssr_temporal,
             ssr_resolution_scale: p.ssr_resolution_scale,
+            ssr_temporal_weight: p.ssr_temporal_weight,
         })
         .await
+    }
+
+    #[tool(
+        annotations(read_only_hint = true),
+        description = "Current global post-processing settings as JSON (the read half of set_post_process): tonemapping, bloom, dof, exposure, bloom_threshold/knee/intensity/scatter, and the full ssr block (enabled, intensity, max_distance, thickness, max_steps, spread_cutoff, edge_fade, resolution_scale, temporal, temporal_weight). Pure read."
+    )]
+    async fn get_post_process(&self) -> Result<CallToolResult, McpError> {
+        self.query(EditorQuery::PostProcess).await
     }
 
     // ── view / camera ───────────────────────────────────────────────────────

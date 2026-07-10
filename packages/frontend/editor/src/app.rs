@@ -798,7 +798,7 @@ fn post_processing_section() -> Dom {
             first = false;
             async move {
                 if fire {
-                    dispatch_ssr(Some(on), None, None, None, None, None, None, None, None);
+                    dispatch_ssr(Some(on), None, None, None, None, None, None, None, None, None);
                 }
             }
         }).await;
@@ -811,7 +811,7 @@ fn post_processing_section() -> Dom {
             first = false;
             async move {
                 if fire {
-                    dispatch_ssr(None, None, None, None, None, None, None, Some(on), None);
+                    dispatch_ssr(None, None, None, None, None, None, None, Some(on), None, None);
                 }
             }
         }).await;
@@ -825,7 +825,7 @@ fn post_processing_section() -> Dom {
             async move {
                 if fire {
                     let scale = if on { 0.5 } else { 1.0 };
-                    dispatch_ssr(None, None, None, None, None, None, None, None, Some(scale));
+                    dispatch_ssr(None, None, None, None, None, None, None, None, Some(scale), None);
                 }
             }
         }).await;
@@ -866,7 +866,9 @@ fn post_processing_section() -> Dom {
                      max distance / thickness / max steps / spread cutoff / edge fade are live \
                      uniforms (tune freely, no recompile). Half-res and Temporal are structural \
                      (they rebuild the SSR pass). Temporal accumulates across frames for static \
-                     scenes but ghosts moving objects — leave off for gameplay cameras.",
+                     scenes but ghosts moving objects — leave off for gameplay cameras. \
+                     Temporal weight = history kept per frame (0..1, higher = smoother \
+                     but more ghosting).",
                 ),
             ],
         ))
@@ -945,6 +947,7 @@ fn post_processing_section() -> Dom {
                         None,
                         None,
                         None,
+                        None,
                     )
                 })
                 .render(),
@@ -958,6 +961,7 @@ fn post_processing_section() -> Dom {
                         None,
                         None,
                         Some(v as f32),
+                        None,
                         None,
                         None,
                         None,
@@ -983,6 +987,7 @@ fn post_processing_section() -> Dom {
                         None,
                         None,
                         None,
+                        None,
                     )
                 })
                 .render(),
@@ -998,6 +1003,7 @@ fn post_processing_section() -> Dom {
                         None,
                         None,
                         Some(v.max(1.0) as u32),
+                        None,
                         None,
                         None,
                         None,
@@ -1021,6 +1027,7 @@ fn post_processing_section() -> Dom {
                         None,
                         None,
                         None,
+                        None,
                     )
                 })
                 .render(),
@@ -1040,12 +1047,33 @@ fn post_processing_section() -> Dom {
                         Some(v as f32),
                         None,
                         None,
+                        None,
                     )
                 })
                 .render(),
         ))
         .child(row("SSR half-res", toggle(ssr_half_res)))
         .child(row("SSR temporal", toggle(ssr_temporal)))
+        .child(row(
+            "SSR temporal weight",
+            NumField::new(pp.ssr.temporal_weight as f64)
+                .step(0.05)
+                .on_change(|v| {
+                    dispatch_ssr(
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        Some((v as f32).clamp(0.0, 1.0)),
+                    )
+                })
+                .render(),
+        ))
         .render()
 }
 
@@ -1073,8 +1101,8 @@ fn dispatch_post(
                 bloom_knee,
                 bloom_intensity,
                 bloom_scatter,
-                // SSR has no settings-drawer control yet (set via MCP); leave
-                // every SSR field unchanged from this UI path.
+                // SSR rides its own patch path (`dispatch_ssr`, the drawer's SSR
+                // rows); leave every SSR field unchanged from this bloom/tonemap path.
                 ssr_enabled: None,
                 ssr_intensity: None,
                 ssr_max_distance: None,
@@ -1084,6 +1112,7 @@ fn dispatch_post(
                 ssr_edge_fade: None,
                 ssr_temporal: None,
                 ssr_resolution_scale: None,
+                ssr_temporal_weight: None,
             })
             .await
         {
@@ -1108,6 +1137,7 @@ fn dispatch_ssr(
     ssr_edge_fade: Option<f32>,
     ssr_temporal: Option<bool>,
     ssr_resolution_scale: Option<f32>,
+    ssr_temporal_weight: Option<f32>,
 ) {
     spawn_local(async move {
         if let Err(e) = controller()
@@ -1129,6 +1159,7 @@ fn dispatch_ssr(
                 ssr_edge_fade,
                 ssr_temporal,
                 ssr_resolution_scale,
+                ssr_temporal_weight,
             })
             .await
         {

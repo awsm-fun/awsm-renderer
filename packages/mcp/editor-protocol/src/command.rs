@@ -584,6 +584,11 @@ pub enum EditorCommand {
         /// SSR resolution scale: 0.5 half-res, 1.0 full-res (STRUCTURAL — recompiles).
         #[serde(default)]
         ssr_resolution_scale: Option<f32>,
+        /// SSR temporal history blend weight 0..1 — the fraction of the previous
+        /// frame's accumulated reflection kept each frame (higher = smoother but
+        /// more ghosting). Live uniform; only meaningful when `ssr_temporal` is on.
+        #[serde(default)]
+        ssr_temporal_weight: Option<f32>,
     },
 
     /// Snap the viewport camera to a world axis (the nav-cube directions).

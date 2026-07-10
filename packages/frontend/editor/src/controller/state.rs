@@ -3077,6 +3077,7 @@ impl EditorController {
                 ssr_edge_fade,
                 ssr_temporal,
                 ssr_resolution_scale,
+                ssr_temporal_weight,
             } => {
                 let prev = self.scene.post_process.get_cloned();
                 let mut next = prev.clone();
@@ -3131,6 +3132,9 @@ impl EditorController {
                 if let Some(v) = ssr_resolution_scale {
                     next.ssr.resolution_scale = v;
                 }
+                if let Some(v) = ssr_temporal_weight {
+                    next.ssr.temporal_weight = v;
+                }
                 self.scene.post_process.set(next);
                 self.scene.bump_revision();
                 self.dirty.set_neq(true);
@@ -3153,6 +3157,7 @@ impl EditorController {
                     ssr_edge_fade: Some(prev.ssr.edge_fade),
                     ssr_temporal: Some(prev.ssr.temporal),
                     ssr_resolution_scale: Some(prev.ssr.resolution_scale),
+                    ssr_temporal_weight: Some(prev.ssr.temporal_weight),
                 }))
             }
             EditorCommand::SnapCameraToAxis { axis } => {
@@ -5872,6 +5877,9 @@ impl EditorController {
             EditorQuery::SaveCensus => QueryResult::Text(
                 serde_json::to_string(&crate::controller::persistence::save_census(self))
                     .unwrap_or_default(),
+            ),
+            EditorQuery::PostProcess => QueryResult::Text(
+                serde_json::to_string(&self.scene.post_process.get_cloned()).unwrap_or_default(),
             ),
             EditorQuery::MemoryStats => {
                 use serde_json::json;
