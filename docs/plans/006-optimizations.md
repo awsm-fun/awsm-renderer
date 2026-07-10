@@ -200,6 +200,22 @@ but coverage is thin.
   need — record the decision.
 - Acceptance: both scenes golden-stable across budgets; bake CLI reproducible.
 
+#### Axis 6 RESULT (2026-07-10, partial — runtime budgets fold into 007)
+- **Bake determinism: VERIFIED.** Two consecutive exports of the same
+  project (DamagedHelmet) produced byte-identical artifacts across the
+  board: `clusters.bin` (nanite DAG), `lod1-3.glb` + `lod.toml` (discrete
+  chain), all lossless-WebP textures, canonical `.glb`.
+- **Bake tooling note:** the export pipeline IS the baker (there is no
+  standalone CLI); only imported static models take the canonical
+  glb+lod+clusters path — captured primitives regenerate from their stacks.
+  Recorded in the lod-nanite author.js recipe.
+- **Coverage locks:** `lod-classic` (per-mesh opt-out flag round-trip) and
+  `lod-nanite` (2 simultaneous DAG meshes on one bake) scenes shipped in
+  Phase 0. Streaming budgets (`?stream`/`?streambudget=N`) and the LOD
+  switch-distance assert are player-side — implemented as plan 007 tests.
+- **Dynamic paging (Step 2): stays design-only** — nothing in the scene
+  work surfaced a need beyond the shipped global residency budget.
+
 ### Axis 7 — Shading code and math
 Highest performance without sacrificing quality; goldens are the quality lock.
 - WGSL audit across material_opaque/compute, shadows, effects, SSR, froxels: redundant
