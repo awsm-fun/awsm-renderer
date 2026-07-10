@@ -591,6 +591,37 @@ pub enum EditorCommand {
         ssr_temporal_weight: Option<f32>,
     },
 
+    /// Set editor viewport view options — partial update, every field
+    /// `Option` (only the ones you pass change). **Transient** — view state
+    /// (same class as camera/selection): NOT persisted to the project, not
+    /// recorded in the undo log. The read half is `EditorQuery::ViewOptions`.
+    /// Agents: turn `grid`/`gizmos`/`light_gizmos`/`skeleton_viz` OFF for
+    /// clean feature-verification screenshots, restore after.
+    SetViewOptions {
+        /// Ground grid visibility.
+        #[serde(default)]
+        grid: Option<bool>,
+        /// Transform gizmo visibility.
+        #[serde(default)]
+        gizmos: Option<bool>,
+        /// Pickable light-icon HUD markers.
+        #[serde(default)]
+        light_gizmos: Option<bool>,
+        /// Skeleton bone-line overlay on skinned rigs.
+        #[serde(default)]
+        skeleton_viz: Option<bool>,
+        /// Auto-switch the workspace to the mode a remote command edits
+        /// (default off).
+        #[serde(default)]
+        follow_agent: Option<bool>,
+        /// The agent activity narration overlay + panel spotlight (default off).
+        #[serde(default)]
+        activity_overlay: Option<bool>,
+        /// MCP info/error toasts (default off).
+        #[serde(default)]
+        mcp_notifications: Option<bool>,
+    },
+
     /// Snap the viewport camera to a world axis (the nav-cube directions).
     /// **Transient** — camera/view state, not recorded in the undo log.
     SnapCameraToAxis { axis: CameraAxis },
@@ -1537,6 +1568,7 @@ impl EditorCommand {
             EditorCommand::PatchEnvironment { .. } => "Set environment",
             EditorCommand::SetShadowsSscs { .. } => "Set SSCS",
             EditorCommand::SetPostProcess { .. } => "Set post-processing",
+            EditorCommand::SetViewOptions { .. } => "Set view options",
             EditorCommand::SnapCameraToAxis { .. } => "Snap camera",
             EditorCommand::ResetCamera => "Reset view",
             EditorCommand::SetCameraOrbit { .. } => "Orbit camera",

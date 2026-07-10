@@ -36,11 +36,25 @@ and the MCP info overlay has no switch.
    first; restore after"*. This is the discoverability half of the fix — the toggles
    are useless if agents don't know when to hit them.
 
-### Acceptance
-- Fresh editor: no follow-agent, no MCP overlay, until a human enables them.
-- Over MCP: toggle grid/gizmos/light-gizmos off → screenshot contains geometry only;
-  toggle back on → chrome returns. Values visible in a query/snapshot.
-- Tool descriptions updated; browser-verified end-to-end.
+### Acceptance — ✅ DONE (browser-verified)
+- [x] Fresh editor: activity overlay, follow-agent, and MCP notifications all default OFF
+      (`activity_feed.rs` ENABLED/FOLLOW statics, `remote.rs` SHOW_NOTIFICATIONS). The old
+      single "Follow agent activity" toggle split into "Agent activity overlay" +
+      "Follow agent workspace" (Settings + MCP tab).
+- [x] `EditorCommand::SetViewOptions` partial-update (grid/gizmos/light_gizmos/skeleton_viz/
+      follow_agent/activity_overlay/mcp_notifications) — transient view state (same class as
+      camera; deviation from the sketch's "undoable": selection/camera aren't undoable either).
+      Read half: `EditorQuery::ViewOptions`. MCP `set_view_options` + `get_view_options` tools.
+- [x] Verified defaults query: {overlay,follow,notifications}=false, {grid,gizmos,light_gizmos,
+      skeleton_viz}=true; toggle-off → screenshot contains GEOMETRY ONLY (no grid, no gizmo,
+      no selection rect) even with a node selected; round-trip query confirms.
+- [x] Fixed two pre-existing gating bugs this exposed: (1) `transform_controller::set_hidden`
+      only flipped flags — the force-hidden path returned before the per-frame redraw, so the
+      last-drawn gizmo lines stayed on screen forever; all-hidden now clears drawn lines
+      immediately (web-shared, benefits every consumer). (2) The screen-space selection box
+      (DOM overlay, `selection_box.rs`) was ungated; it now rides the same `gizmo` setting.
+- [x] `screenshot_scene` + `set_view_options` tool descriptions carry the when-to-toggle
+      guidance (the discoverability half).
 
 ## Part B — Hidden-tab / offscreen capture (from the retired offscreen-editor-screenshots plan)
 

@@ -1180,6 +1180,34 @@ pub struct PostProcessParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ViewOptionsParams {
+    /// Ground grid visibility. Omit to leave unchanged.
+    #[serde(default)]
+    pub grid: Option<bool>,
+    /// Transform gizmo visibility. Omit to leave unchanged.
+    #[serde(default)]
+    pub gizmos: Option<bool>,
+    /// Pickable light-icon HUD markers. Omit to leave unchanged.
+    #[serde(default)]
+    pub light_gizmos: Option<bool>,
+    /// Skeleton bone-line overlay on skinned rigs. Omit to leave unchanged.
+    #[serde(default)]
+    pub skeleton_viz: Option<bool>,
+    /// Auto-switch the editor workspace to the mode a remote command edits
+    /// (default off). Omit to leave unchanged.
+    #[serde(default)]
+    pub follow_agent: Option<bool>,
+    /// The agent-activity narration overlay + panel spotlight (default off).
+    /// Omit to leave unchanged.
+    #[serde(default)]
+    pub activity_overlay: Option<bool>,
+    /// MCP info/error toasts in the viewport (default off). Omit to leave
+    /// unchanged.
+    #[serde(default)]
+    pub mcp_notifications: Option<bool>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ModeArg {
     Scene,
@@ -1892,7 +1920,7 @@ impl EditorMcp {
 
     #[tool(
         annotations(read_only_hint = true),
-        description = "PNG screenshot of the scene viewport (through the active camera). Optional width/height scale the output (one given preserves aspect). Frame a subject first with frame_node / set_camera_orbit."
+        description = "PNG screenshot of the scene viewport (through the active camera). Optional width/height scale the output (one given preserves aspect). Frame a subject first with frame_node / set_camera_orbit. FOR CLEAN FEATURE VERIFICATION: call set_view_options {grid:false, gizmos:false, light_gizmos:false, skeleton_viz:false} first so viewport chrome does not contaminate the pixels, and restore the options after."
     )]
     async fn screenshot_scene(
         &self,
@@ -3950,6 +3978,33 @@ impl EditorMcp {
     )]
     async fn get_post_process(&self) -> Result<CallToolResult, McpError> {
         self.query(EditorQuery::PostProcess).await
+    }
+
+    #[tool(
+        description = "Set editor viewport view options (partial update — only the fields you pass change; transient view state, never persisted): grid, gizmos, light_gizmos, skeleton_viz, follow_agent, activity_overlay, mcp_notifications (all bool). FOR CLEAN VERIFICATION SCREENSHOTS: set {grid:false, gizmos:false, light_gizmos:false, skeleton_viz:false} before screenshot_scene so viewport chrome does not contaminate the pixels, and restore afterwards. follow_agent / activity_overlay / mcp_notifications default OFF and are human-courtesy toggles — leave them off during automated work. Read the current values back with get_view_options."
+    )]
+    async fn set_view_options(
+        &self,
+        Parameters(p): Parameters<ViewOptionsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::SetViewOptions {
+            grid: p.grid,
+            gizmos: p.gizmos,
+            light_gizmos: p.light_gizmos,
+            skeleton_viz: p.skeleton_viz,
+            follow_agent: p.follow_agent,
+            activity_overlay: p.activity_overlay,
+            mcp_notifications: p.mcp_notifications,
+        })
+        .await
+    }
+
+    #[tool(
+        annotations(read_only_hint = true),
+        description = "Current editor viewport view options as JSON booleans (grid, gizmos, light_gizmos, skeleton_viz, follow_agent, activity_overlay, mcp_notifications) — the read half of set_view_options. Pure read."
+    )]
+    async fn get_view_options(&self) -> Result<CallToolResult, McpError> {
+        self.query(EditorQuery::ViewOptions).await
     }
 
     // ── view / camera ───────────────────────────────────────────────────────

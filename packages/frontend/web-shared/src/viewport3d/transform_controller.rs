@@ -198,10 +198,14 @@ impl TransformController {
     }
 
     /// Set which modes are shown (and thus grabbable). Cheap — the actual redraw
-    /// happens in [`Self::zoom_gizmo_transforms`], called every frame.
+    /// happens in [`Self::zoom_gizmo_transforms`], called every frame. Fully
+    /// hidden (all three) clears the drawn lines IMMEDIATELY: callers that
+    /// force-hide (e.g. the editor's "Show gizmo" toggle) return before the
+    /// per-frame redraw, so without this the last-drawn handles stayed on
+    /// screen forever.
     pub fn set_hidden(
         &mut self,
-        _renderer: &mut AwsmRenderer,
+        renderer: &mut AwsmRenderer,
         translation_hidden: bool,
         rotation_hidden: bool,
         scale_hidden: bool,
@@ -211,6 +215,9 @@ impl TransformController {
             rotation: !rotation_hidden,
             scale: !scale_hidden,
         };
+        if translation_hidden && rotation_hidden && scale_hidden {
+            self.hide_all(renderer);
+        }
         Ok(())
     }
 

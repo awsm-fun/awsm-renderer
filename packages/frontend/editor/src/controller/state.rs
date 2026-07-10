@@ -3160,6 +3160,40 @@ impl EditorController {
                     ssr_temporal_weight: Some(prev.ssr.temporal_weight),
                 }))
             }
+            EditorCommand::SetViewOptions {
+                grid,
+                gizmos,
+                light_gizmos,
+                skeleton_viz,
+                follow_agent,
+                activity_overlay,
+                mcp_notifications,
+            } => {
+                let s = &self.settings;
+                if let Some(v) = grid {
+                    s.grid.set_neq(v);
+                }
+                if let Some(v) = gizmos {
+                    s.gizmo.set_neq(v);
+                }
+                if let Some(v) = light_gizmos {
+                    s.light_gizmos.set_neq(v);
+                }
+                if let Some(v) = skeleton_viz {
+                    s.skeleton_viz.set_neq(v);
+                }
+                if let Some(v) = follow_agent {
+                    crate::engine::activity_feed::follow_enabled().set_neq(v);
+                }
+                if let Some(v) = activity_overlay {
+                    crate::engine::activity_feed::enabled().set_neq(v);
+                }
+                if let Some(v) = mcp_notifications {
+                    crate::remote::show_notifications().set_neq(v);
+                }
+                // Transient view state — no undo entry (same class as camera).
+                Ok(None)
+            }
             EditorCommand::SnapCameraToAxis { axis } => {
                 use std::f32::consts::PI;
                 // Just under ±90° for top/bottom to dodge the look-at gimbal.
@@ -5881,6 +5915,21 @@ impl EditorController {
             EditorQuery::PostProcess => QueryResult::Text(
                 serde_json::to_string(&self.scene.post_process.get_cloned()).unwrap_or_default(),
             ),
+            EditorQuery::ViewOptions => {
+                use serde_json::json;
+                QueryResult::Text(
+                    json!({
+                        "grid": self.settings.grid.get(),
+                        "gizmos": self.settings.gizmo.get(),
+                        "light_gizmos": self.settings.light_gizmos.get(),
+                        "skeleton_viz": self.settings.skeleton_viz.get(),
+                        "follow_agent": crate::engine::activity_feed::follow_enabled().get(),
+                        "activity_overlay": crate::engine::activity_feed::enabled().get(),
+                        "mcp_notifications": crate::remote::show_notifications().get(),
+                    })
+                    .to_string(),
+                )
+            }
             EditorQuery::MemoryStats => {
                 use serde_json::json;
                 // Renderer-side object counts (under the renderer guard)…

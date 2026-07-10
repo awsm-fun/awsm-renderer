@@ -320,6 +320,11 @@ pub enum EditorQuery {
     /// exposure / the bloom knobs / the full SSR block — as its serialized
     /// `PostProcessConfig` JSON. The read half of `SetPostProcess`.
     PostProcess,
+
+    /// The editor viewport view options — grid / gizmos / light_gizmos /
+    /// skeleton_viz / follow_agent / activity_overlay / mcp_notifications —
+    /// as a flat JSON object of booleans. The read half of `SetViewOptions`.
+    ViewOptions,
     /// Save-completeness census (Phase 0.2 roundtrip oracle): how many mesh /
     /// raster-texture assets exist vs how many lack their persistable bytes in the
     /// session cache (so a save would drop them). Returned as a JSON `Text` payload

@@ -525,8 +525,12 @@ fn settings_drawer() -> Dom {
                 .child(row("Shadow denoise", toggle(s.shadow_denoise.clone())))
                 .child(row("Light heatmap", toggle(s.heatmap.clone())))
                 .child(row(
-                    "Follow agent activity",
+                    "Agent activity overlay",
                     toggle(crate::engine::activity_feed::enabled()),
+                ))
+                .child(row(
+                    "Follow agent workspace",
+                    toggle(crate::engine::activity_feed::follow_enabled()),
                 ))
                 .child(row(
                     "Show MCP notifications",
@@ -1558,8 +1562,10 @@ fn open_mcp_modal() {
             // usual local server).
             .child(row("Use TLS (wss / https)", toggle(crate::remote::tls())))
             // Live work display — the activity feed (narration + panel spotlight)
-            // that lets you watch the agent build. Also under Settings.
-            .child(row("Follow agent activity", toggle(crate::engine::activity_feed::enabled())))
+            // that lets you watch the agent build. Also under Settings, with the
+            // separate "follow agent workspace" (mode-switching) toggle.
+            .child(row("Agent activity overlay", toggle(crate::engine::activity_feed::enabled())))
+            .child(row("Follow agent workspace", toggle(crate::engine::activity_feed::follow_enabled())))
             // Action: Connect / Connecting… / Disconnect, by live status. (Help
             // lives in the header now.)
             .child(html!("div", {

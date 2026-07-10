@@ -27,8 +27,15 @@ pub fn rect_signal() -> impl Signal<Item = Option<[f64; 4]>> {
 
 /// Recompute the selection rect from the single selection + live camera. Call
 /// once per frame after the renderables are collected (i.e. after `render`).
+/// Rides the "Show gizmo" setting: selection chrome contaminates verification
+/// screenshots exactly like the transform gizmo, so `gizmo = false` (UI or
+/// `SetViewOptions { gizmos }`) hides both.
 pub fn update(renderer: &AwsmRenderer, matrices: &CameraMatrices) {
-    let rect = compute(renderer, matrices);
+    let rect = if controller().settings.gizmo.get() {
+        compute(renderer, matrices)
+    } else {
+        None
+    };
     RECT.with(|m| m.set_neq(rect));
 }
 
