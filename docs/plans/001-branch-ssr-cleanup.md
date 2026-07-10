@@ -23,15 +23,18 @@ traversal and temporal denoise are built but deliberately parked (gated off) —
 
 ## P0 — CI blockers (branch does not pass `task lint`)
 
-- [ ] `cargo fmt --all` — `--check` fails across ~10 files (ssr/, bloom/, ssr_minz/, app.rs,
-      render_textures.rs, scene-loader/lib.rs, meshes.rs, render.rs, render_passes.rs,
-      shader_template.rs).
-- [ ] clippy `-D warnings`: `needless_option_as_deref` at
-      `packages/crates/scene-loader/src/lib.rs:1924` (`maps.as_deref_mut()` → `maps`).
+- [x] `cargo fmt --all` — DONE (commit 8139e24a); `task lint` fmt step green.
+- [x] clippy `needless_option_as_deref` fixed (`maps.as_deref_mut()` → `maps`, + dropped the
+      then-unused `mut`) — commit 8139e24a; full `task lint` exit 0.
 
 ## P0 — SSR correctness bugs (confirmed by direct inspection)
 
-- [ ] **MSAA edge pixels never write `reflection_descriptor`, and the texture is never cleared.**
+- [x] **FIXED (commit 3dcebbd6): MSAA edge pixels never wrote `reflection_descriptor`.**
+      Fix: `shade_sample` now textureStores the descriptor when `sample_index == 0` (the
+      owning bucket writes; exclusive ownership ⇒ race-free; sky-at-sample-0 needs no store —
+      trace bails on depth ≥ 1.0). naga-validated by the wgsl_validation suite; browser
+      smoke-verified with MSAA on: emissive-sphere reflections on a glossy floor, structural
+      SSR off→on + half↔full-res toggles, zero console errors. Original finding:
       Stores exist in `cs_opaque` (`compute.wgsl:438`) and the cs_shade interior/sample-0 arm
       (`compute.wgsl:1072`), but the EDGE ARM (`compute.wgsl:~1077-1176`) returns without a
       `textureStore` — `shade_sample` computes `ssr_reflectivity`/`ssr_spread` (`:547/:646`) and
@@ -40,9 +43,9 @@ traversal and temporal denoise are built but deliberately parked (gated off) —
       Fix: store a descriptor in the edge arm (e.g. sample-0's, or coverage-weighted), or clear the
       texture when SSR+MSAA are both on. Then browser-verify with MSAA on
       ([[wgsl-cross-stage-interpolation-must-match]]: WGSL is runtime-only, cargo can't catch it).
-- [ ] **Dead `ssr_to_transparent_blit_bind_group`** — created on every texture rebuild
-      (`render_textures.rs:406,482-483,596,1270,1335`) but consumed by no pass (grep: zero use
-      sites). Leftover from the abandoned overwrite-blit design; delete the field + creation.
+- [x] **Dead `ssr_to_transparent_blit_bind_group` deleted** (commit 3dcebbd6) — field +
+      creation removed from `render_textures.rs`; stale ssr-texture docstring corrected while
+      there (reflection-only premultiplied + additive composite, half-res default).
 
 ## P1 — SSR exposure/persistence gaps
 
