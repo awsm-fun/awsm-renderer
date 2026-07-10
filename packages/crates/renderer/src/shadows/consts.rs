@@ -74,7 +74,10 @@ pub fn clamp_point_shadow_resolution(res: u32) -> u32 {
 /// the shadow VS writes perspective NDC.z with this near, and the
 /// receiver remaps its linear distance to the same NDC.z curve for
 /// the comparison. Diverging values cause silent failure (no shadow
-/// or all shadow).
+/// or all shadow). This is the SEMANTIC near distance — under
+/// reverse-Z (003 stage 7) `DepthConvention::perspective` consumes it
+/// unchanged on the writer side, and the receiver's reverse formula
+/// arm uses the same value; no flip needed here.
 pub const POINT_SHADOW_NEAR: f32 = 0.05;
 
 /// Sentinel meaning "this light has no shadow descriptor allocated"

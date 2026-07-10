@@ -9,6 +9,7 @@
 use glam::{Mat4, Vec3, Vec4};
 
 use crate::bounds::Aabb;
+use crate::depth_convention::DepthConvention;
 
 /// Maximum number of cascades per directional light, matching the
 /// schema's `cascade_count: u8` valid range.
@@ -50,6 +51,10 @@ pub struct Cascade {
 ///
 /// `resolution` is the cascade's atlas resolution in texels — needed
 /// for the stable-fit snap.
+///
+/// `depth` is the renderer's depth convention (003 stage 7): the light's
+/// orthographic projection is built through it, so under reverse-Z the
+/// cascade writes near→1 / far→0 like every other depth producer.
 pub fn fit_cascade(
     camera_inv_view_projection: Mat4,
     direction: Vec3,
@@ -57,10 +62,14 @@ pub fn fit_cascade(
     far_normalized: f32,
     resolution: u32,
     casters_world_aabbs: &[Aabb],
+    depth: DepthConvention,
 ) -> Cascade {
     // Eight NDC corners of the camera's view frustum, parameterised by
-    // the slice's near/far z in NDC. WebGPU NDC z is [0, 1] (near = 0,
-    // far = 1) — we interpolate between those.
+    // the slice's near/far z in NDC. WebGPU NDC z is [0, 1] under both
+    // conventions (forward: near→0/far→1; reverse: near→1/far→0) — the
+    // caller computes `near_normalized`/`far_normalized` by projecting
+    // through the camera's OWN matrix, so the values are already
+    // convention-correct and the unproject below is convention-agnostic.
     let z_near = near_normalized.clamp(0.0, 1.0);
     let z_far = far_normalized.clamp(0.0, 1.0);
     let ndc_corners = [
@@ -220,7 +229,10 @@ pub fn fit_cascade(
     let near = visible_near - z_pull_back;
     let far = visible_far;
 
-    let projection = Mat4::orthographic_rh(min.x, max.x, min.y, max.y, near, far);
+    // 003 stage 7: build the light projection through the depth convention —
+    // under reverse-Z this swaps near/far so the cascade depth runs near→1 /
+    // far→0, in lockstep with the shadow compare/clear and the receiver.
+    let projection = depth.orthographic(min.x, max.x, min.y, max.y, near, far);
     let view_projection = projection * view;
 
     // World-units-per-texel along the cascade's XY axes. After the
@@ -280,6 +292,7 @@ pub fn cascade_resolution(base: u32, _cascade_index: u32, min_res: u32) -> u32 {
 /// `world_near` / `world_far` are the camera's view-space near and
 /// far planes; the cascades partition that range using
 /// [`pssm_splits`].
+#[allow(clippy::too_many_arguments)]
 pub fn fit_cascades(
     camera_view_projection: Mat4,
     camera_view: Mat4,
@@ -291,18 +304,22 @@ pub fn fit_cascades(
     base_resolution: u32,
     min_resolution: u32,
     casters_world_aabbs: &[Aabb],
+    depth: DepthConvention,
 ) -> Vec<(Cascade, u32, f32)> {
     let inv_view_proj = camera_view_projection.inverse();
     let splits = pssm_splits(world_near, world_far, lambda, cascade_count);
 
     // Convert world-space splits to NDC z. Project a view-space point
     // at the split's z onto clip space, then divide by w to get NDC.z.
+    // The camera matrix already follows the active convention, so the
+    // result is convention-correct; only the degenerate-w fallback needs
+    // to name the far plane explicitly (forward → 1.0, reverse → 0.0).
     let proj = camera_view_projection * camera_view.inverse();
     let split_to_ndc = |z: f32| {
         let view_p = Vec4::new(0.0, 0.0, -z, 1.0);
         let clip = proj * view_p;
         if clip.w.abs() < 1e-8 {
-            return 1.0;
+            return depth.clear_value();
         }
         (clip.z / clip.w).clamp(0.0, 1.0)
     };
@@ -343,6 +360,7 @@ pub fn fit_cascades(
             ndc_far,
             res,
             casters_world_aabbs,
+            depth,
         );
         cascades.push((cascade, res, *split_world));
         prev_split_world = *split_world;
@@ -460,7 +478,19 @@ mod tests {
         let view = Mat4::look_at_rh(Vec3::new(0.0, 5.0, 10.0), Vec3::ZERO, Vec3::Y);
         let view_proj = proj * view;
         let dir = Vec3::new(0.3, -1.0, 0.2).normalize();
-        let out = fit_cascades(view_proj, view, dir, near, far, count, 0.5, 2048, 16, &[]);
+        let out = fit_cascades(
+            view_proj,
+            view,
+            dir,
+            near,
+            far,
+            count,
+            0.5,
+            2048,
+            16,
+            &[],
+            DepthConvention::FORWARD,
+        );
         assert_eq!(out.len(), count as usize, "one entry per cascade");
         // split_far (the f32) must strictly increase and end at far.
         let fars: Vec<f32> = out.iter().map(|(_, _, f)| *f).collect();

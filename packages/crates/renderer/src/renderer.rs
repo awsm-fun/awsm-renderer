@@ -2284,6 +2284,10 @@ impl AwsmRendererBuilder {
             render_passes_plan.geometry_bind_groups(),
             &render_textures.formats,
             shadows_config.unwrap_or_default(),
+            // 003 stage 7: shadows follow the renderer-wide depth convention
+            // (writer projections + sampler + pipeline compare/bias + clear +
+            // receiver WGSL all flip together off this one value).
+            features.depth(),
         )
         .await?;
 

@@ -22,7 +22,6 @@
 use std::collections::HashMap;
 
 use awsm_renderer_core::buffers::{BufferDescriptor, BufferUsage};
-use awsm_renderer_core::compare::CompareFunction;
 use awsm_renderer_core::pipeline::depth_stencil::DepthStencilState;
 use awsm_renderer_core::pipeline::multisample::MultisampleState;
 use awsm_renderer_core::pipeline::primitive::{
@@ -140,6 +139,7 @@ impl ShadowCustomVertexPipelines {
                     self.pipeline_layout_key_storage,
                     cube_face,
                     double_sided,
+                    ctx.features.depth(),
                 )
             })
             .collect();
@@ -251,6 +251,7 @@ fn build_shadow_custom_vertex_cache_key(
     pipeline_layout_key: PipelineLayoutKey,
     cube_face: bool,
     double_sided: bool,
+    depth: crate::depth_convention::DepthConvention,
 ) -> RenderPipelineCacheKey {
     let front_face = if cube_face {
         FrontFace::Cw
@@ -267,11 +268,14 @@ fn build_shadow_custom_vertex_cache_key(
         .with_front_face(front_face)
         .with_cull_mode(cull_mode);
 
+    // 003 stage 7: compare + rasterizer bias follow the depth convention —
+    // mirrors `shadow_pipeline_cache_key` (bias sign flips because "away
+    // from the light" is a SMALLER depth under reverse-Z).
     let depth_stencil = DepthStencilState::new(TextureFormat::Depth32float)
         .with_depth_write_enabled(true)
-        .with_depth_compare(CompareFunction::LessEqual)
-        .with_depth_bias(1)
-        .with_depth_bias_slope_scale(1.5);
+        .with_depth_compare(depth.compare())
+        .with_depth_bias(if depth.reverse_z { -1 } else { 1 })
+        .with_depth_bias_slope_scale(if depth.reverse_z { -1.5 } else { 1.5 });
 
     let multisample = MultisampleState::new().with_count(1);
 

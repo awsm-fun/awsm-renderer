@@ -199,10 +199,10 @@ pub struct RendererFeatures {
 }
 
 impl RendererFeatures {
-    /// The active main-camera depth convention, derived from
-    /// [`Self::reverse_z`]. Shadow paths pin
-    /// [`DepthConvention::FORWARD`](crate::depth_convention::DepthConvention::FORWARD)
-    /// until the stage-7 lockstep migration.
+    /// The active depth convention, derived from [`Self::reverse_z`].
+    /// Read by every depth site — main camera AND shadows (the stage-7
+    /// lockstep migration moved shadow writers/receiver/compare/clear
+    /// onto the same value).
     pub fn depth(&self) -> crate::depth_convention::DepthConvention {
         crate::depth_convention::DepthConvention {
             reverse_z: self.reverse_z,

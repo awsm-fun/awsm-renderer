@@ -140,10 +140,13 @@ pub fn record(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
             } else {
                 LoadOp::Load
             };
+            // 003 stage 7: clear to the convention's FARTHEST depth
+            // (forward → 1.0, reverse → 0.0), matching the flipped
+            // writer projection + compare.
             let depth_attachment = DepthStencilAttachment::new(depth_view)
                 .with_depth_load_op(load_op)
                 .with_depth_store_op(StoreOp::Store)
-                .with_depth_clear_value(1.0);
+                .with_depth_clear_value(ctx.features.depth().clear_value());
             if !is_cube && !is_cascade {
                 atlas_cleared = true;
             }
@@ -225,9 +228,12 @@ pub fn record(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
                         // Directional cascades especially see geometry the
                         // camera doesn't — cull against the light-space
                         // frustum, not the camera's.
-                        // Shadow views stay forward-Z until the stage-7 lockstep migration.
-                        let shadow_frustum =
-                            Frustum::from_view_projection(view.view_projection, false);
+                        // 003 stage 7: shadow view-projections follow the
+                        // renderer's depth convention.
+                        let shadow_frustum = Frustum::from_view_projection(
+                            view.view_projection,
+                            ctx.features.reverse_z,
+                        );
                         cache_fallback = ctx
                             .scene_spatial
                             .query_frustum(&shadow_frustum, NodeFilter::shadow_caster())

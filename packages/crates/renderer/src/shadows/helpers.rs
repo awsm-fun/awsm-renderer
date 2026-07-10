@@ -12,7 +12,6 @@ use std::sync::LazyLock;
 use awsm_renderer_core::{
     bind_groups::{BindGroupDescriptor, BindGroupEntry, BindGroupResource},
     buffers::BufferBinding,
-    compare::CompareFunction,
     error::AwsmCoreError,
     pipeline::{
         depth_stencil::DepthStencilState,
@@ -243,6 +242,7 @@ pub(crate) fn shadow_pipeline_cache_key(
     instancing: bool,
     cube_face: bool,
     double_sided: bool,
+    depth: crate::depth_convention::DepthConvention,
 ) -> RenderPipelineCacheKey {
     let mut vertex_buffer_layouts = vec![VERTEX_BUFFER_LAYOUT.clone()];
     if instancing {
@@ -284,11 +284,15 @@ pub(crate) fn shadow_pipeline_cache_key(
         .with_front_face(front_face)
         .with_cull_mode(cull_mode);
 
+    // 003 stage 7: compare + rasterizer bias follow the depth convention.
+    // Under reverse-Z "farther from the light" is a SMALLER depth value, so
+    // the constant + slope-scale bias (which push the stored caster depth
+    // away from the light to prevent acne) must flip sign with the compare.
     let depth_stencil = DepthStencilState::new(TextureFormat::Depth32float)
         .with_depth_write_enabled(true)
-        .with_depth_compare(CompareFunction::LessEqual)
-        .with_depth_bias(1)
-        .with_depth_bias_slope_scale(1.5);
+        .with_depth_compare(depth.compare())
+        .with_depth_bias(if depth.reverse_z { -1 } else { 1 })
+        .with_depth_bias_slope_scale(if depth.reverse_z { -1.5 } else { 1.5 });
 
     // Shadow atlas / cube faces are never multisampled — the depth
     // textures are single-sample. Pinning sample-count to 1 explicitly

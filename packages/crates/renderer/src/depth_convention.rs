@@ -10,9 +10,11 @@
 //! subset silently over/under-culls or mis-renders — never hardcode a depth
 //! constant in a main-camera path; read the convention.
 //!
-//! Shadows keep their OWN convention until the stage-7 lockstep migration
-//! (writer + receiver + compare + clear move together) — shadow code uses
-//! [`DepthConvention::FORWARD`] explicitly, not the feature flag.
+//! Shadows follow the SAME convention (stage-7 lockstep migration):
+//! writer projections, the comparison sampler, caster pipeline
+//! compare + rasterizer bias, the depth clear, the receiver's NDC-z
+//! reconstruction, and the EVSM remap all read this one value and flip
+//! together — see [`crate::shadows::Shadows::depth`].
 
 use awsm_renderer_core::compare::CompareFunction;
 
@@ -25,8 +27,8 @@ pub struct DepthConvention {
 }
 
 impl DepthConvention {
-    /// The classic forward-Z convention (near→0/far→1). Shadow paths pin this
-    /// until their stage-7 lockstep migration.
+    /// The classic forward-Z convention (near→0/far→1). For tests and
+    /// placeholder sites that must stay convention-independent.
     pub const FORWARD: Self = Self { reverse_z: false };
 
     /// Depth-buffer clear value = the FARTHEST depth (background sentinel).

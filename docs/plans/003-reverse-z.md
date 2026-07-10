@@ -112,8 +112,23 @@ auto_clip_planes.
       Browser A/B: SSR glossy-floor reflections identical across conventions
       (157,022 vs 157,266 B, 0.16%); bloom+DoF verified working under reverse.
       320 renderer tests green.
-- [ ] Stage 7: shadows lockstep migration (writers + receiver NDC + bounds +
-      EVSM remap + compare + clear together).
+- [x] Stage 7 (this commit): full shadows lockstep. Writers via new
+      Shadows.depth DepthConvention (cascade ortho, spot + point/cube persp
+      incl. y_flip); pipeline compares + comparison sampler + clear via the
+      convention; RASTERIZER DEPTH-BIAS SIGN flipped (with_depth_bias ±1,
+      slope ±1.5 — a coupled site the original inventory missed: positive
+      bias pushes casters TOWARD the light under reverse = acne). Receiver
+      WGSL: 18 {% if reverse_z %} branches on the stage-6 axis — cube
+      analytic NDC.z (exact writer mirror, ×4), ref-depth bias sign (×6),
+      PCSS blocker tests (×3), PCSS penumbra math (×3), EVSM receiver remap
+      (1−2·ndc.z); EVSM writer remap via /*EVSM_DEPTH_REMAP*/ marker
+      substitution (guarded by a new test). Bounds checks / gradients (used
+      as magnitudes) / POINT_SHADOW_NEAR / caster vertex shaders audited
+      convention-agnostic with comments. NEW: wgsl_validation naga-compiles
+      the reverse shadow arms (previously browser-only exposure). 322 tests
+      green. Browser A/B: floor + 3 boxes + directional+spot+point — shadows
+      present + equivalent both conventions (137,970 vs 138,334 B, 0.26%),
+      no acne/peter-pan/missing.
 - [ ] Stage 8: infinite-far main perspective camera
       (perspective_infinite_reverse_rh; ortho paths stay finite reverse).
 - [ ] Stage 9: relax auto_clip_planes ratio cap; synthetic z-fight repros A/B

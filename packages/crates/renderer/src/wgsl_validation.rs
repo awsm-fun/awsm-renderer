@@ -183,6 +183,78 @@ fn sscs_enabled_shaders_validate() {
 }
 
 #[test]
+fn reverse_z_shadow_shaders_validate() {
+    // 003 stage 7: the shared shadow receiver
+    // (`shared_wgsl/shadow/bind_groups.wgsl`) grew `{% if reverse_z %}` arms —
+    // cube-face NDC.z reconstruction, ref-depth bias directions, PCSS blocker
+    // tests + penumbra math, and the EVSM remap. Every other validation test
+    // renders `reverse_z: false`, so without this test a syntax/type error in
+    // a reverse arm would only surface at pipeline compile in a real browser.
+    use crate::render_passes::material_prep::shader::cache_key::ShaderCacheKeyMaterialPrep;
+    use crate::render_passes::material_prep::shader::template::ShaderTemplateMaterialPrep;
+
+    // The forward/reverse cube-face NDC.z formulas — exactly one must be
+    // compiled in, matching the writer projection the convention builds.
+    const CUBE_NDC_FORWARD: &str =
+        "(range / (range - near)) * (1.0 - near / max(view_depth, near))";
+    const CUBE_NDC_REVERSE: &str =
+        "(near / (range - near)) * (range / max(view_depth, near) - 1.0)";
+
+    for msaa in [None, Some(4u32)] {
+        // Prep owns the shadow-sampling call sites (SSCS on to compile that
+        // branch's reverse-z sentinel too).
+        let label = format!("reverse-z prep msaa={msaa:?}");
+        let src = ShaderTemplateMaterialPrep::try_from(&ShaderCacheKeyMaterialPrep {
+            msaa_sample_count: msaa,
+            max_shadow_casters: 4,
+            sscs_enabled: true,
+            sscs_step_count: 16,
+            reverse_z: true,
+        })
+        .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
+        .into_source()
+        .unwrap_or_else(|e| panic!("{label}: render failed: {e:?}"));
+        naga_validate(&src, &label);
+        assert!(
+            src.contains(CUBE_NDC_REVERSE) && !src.contains(CUBE_NDC_FORWARD),
+            "{label}: reverse-z module must compile the REVERSE cube NDC.z arm only"
+        );
+
+        // Opaque + transparent compile the same shared receiver include.
+        let mut key = first_party_key(MaterialShaderId::PBR, ShadingBase::Pbr, false, msaa, false);
+        key.reverse_z = true;
+        let label = format!("reverse-z opaque msaa={msaa:?}");
+        naga_validate(&render(&key, &label), &label);
+
+        let mut tkey = transparent_first_party_key(ShadingBase::Pbr, msaa);
+        tkey.reverse_z = true;
+        let label = format!("reverse-z transparent msaa={msaa:?}");
+        let src = ShaderTemplateMaterialTransparent::try_from(&tkey)
+            .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
+            .into_source()
+            .unwrap_or_else(|e| panic!("{label}: render failed: {e:?}"));
+        naga_validate(&src, &label);
+    }
+
+    // Forward stays forward: the default-off path must keep the forward arm.
+    let label = "forward-z prep (control)";
+    let src = ShaderTemplateMaterialPrep::try_from(&ShaderCacheKeyMaterialPrep {
+        msaa_sample_count: None,
+        max_shadow_casters: 4,
+        sscs_enabled: false,
+        sscs_step_count: 16,
+        reverse_z: false,
+    })
+    .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
+    .into_source()
+    .unwrap_or_else(|e| panic!("{label}: render failed: {e:?}"));
+    assert!(
+        src.contains(CUBE_NDC_FORWARD) && !src.contains(CUBE_NDC_REVERSE),
+        "{label}: forward module must compile the FORWARD cube NDC.z arm only"
+    );
+}
+
+#[test]
 fn first_party_opaque_shaders_validate() {
     let bases = [
         (MaterialShaderId::PBR, ShadingBase::Pbr, false, "pbr"),
