@@ -30,6 +30,7 @@ vars:
   PORT_MCP_HTTP_DEV: 9086 # TCP — rmcp /mcp + the editor link + control surface. The "prod" default: baked into editor builds (URL_MCP_DEFAULT) so deployed editors dial here.
   PORT_MCP_HTTP_LOCAL_DEV: 9186 # Dedicated port for `task mcp-dev` so a local dev MCP server never collides with a prod one on 9086. Override: `task mcp-dev -- <port>`.
   PORT_MULTITHREADED_DEV: 9090 # threaded reference app (COOP/COEP, shared memory)
+  PORT_PLAYER_TESTS_DEV: 9091 # `task player-tests` — the plan-007 player-runtime harness (loads the :9084 bundles)
 
   # URLs — dev (served by the per-frontend dev recipes + media servers)
   URL_DEV_MODEL_TESTS: "http://localhost:{{.PORT_MODEL_TESTS_DEV}}"

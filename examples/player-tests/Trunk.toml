@@ -1,0 +1,10 @@
+# Trunk config for the player-tests harness.
+#
+# Deliberately NO COOP/COEP headers (unlike examples/multithreaded): this
+# harness embeds the renderer single-threaded on the main thread (the same
+# shape as the editor / model-tests frontends, stable toolchain, no shared
+# memory), and `Cross-Origin-Embedder-Policy: require-corp` would block the
+# cross-origin bundle fetches from the test-scenes server on :9084 unless that
+# server also sent CORP headers. Plain CORS (which :9084's `http-server --cors`
+# already sends) is all the harness needs.
+[serve]

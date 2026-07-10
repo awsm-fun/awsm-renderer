@@ -20,6 +20,7 @@ members = [
     "packages/frontend/model-tests",
     "examples/render-worker",
     "examples/multithreaded",
+    "examples/player-tests",
     "packages/debugging",
     "packages/mcp",
     "packages/tools/lod-bake-cli",

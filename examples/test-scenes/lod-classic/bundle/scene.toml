@@ -44,35 +44,13 @@ resolution_scale = 0.5
 temporal = false
 temporal_weight = 0.8999999761581421
 
-[assets.00000000-0000-4000-8000-000000000011]
+[assets.c92961e5-bbd2-489a-9b10-a4700cd4c839]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
 
-[assets.00000000-0000-4000-8000-000000000011.source.mesh.primitive.sphere]
-radius = 0.8999999761581421
-segments_long = 96
-segments_lat = 64
-
-[assets.00000000-0000-4000-8000-000000000010]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-
-[assets.00000000-0000-4000-8000-000000000010.source.mesh.primitive.sphere]
-radius = 0.8999999761581421
-segments_long = 96
-segments_lat = 64
-
-[assets.00000000-0000-4000-8000-000000000012]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-
-[assets.00000000-0000-4000-8000-000000000012.source.mesh.primitive.sphere]
-radius = 0.8999999761581421
-segments_long = 96
-segments_lat = 64
+[assets.c92961e5-bbd2-489a-9b10-a4700cd4c839.source]
+mesh = "glb"
 
 [assets.00000000-0000-4000-8000-000000000001]
 gltf_material_asset_ids = []
@@ -85,11 +63,71 @@ depth = 14.0
 segments_x = 1
 segments_z = 1
 
+[assets.00000000-0000-4000-8000-000000000012]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+
+[assets.00000000-0000-4000-8000-000000000012.source.mesh.primitive.sphere]
+radius = 0.8999999761581421
+segments_long = 96
+segments_lat = 64
+
+[assets.7bba0fef-6807-4c7f-86e3-0dfa22323d29]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = "dd0057989f22f93a4ab796d06ebf85a7c12fbfae1d59a86ae8b0c54770dc1159"
+texture_encoding = "webp"
+
+[assets.7bba0fef-6807-4c7f-86e3-0dfa22323d29.source.texture.raster]
+display_name = "Material_MR · emissive.jpg"
+color_kind = "emissive"
+
+[assets.3a9a25c4-cd5f-4b12-b90c-ae17ee452f29]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = "f253ba09a90a86ffd8a807dc45d7953111f8b3421e15d7a21d1e915b01dd33c1"
+texture_encoding = "webp"
+
+[assets.3a9a25c4-cd5f-4b12-b90c-ae17ee452f29.source.texture.raster]
+display_name = "Material_MR · normal.jpg"
+color_kind = "normal"
+
+[assets.2d78fedd-e528-4351-9827-69beb7f0cdf2]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = "7024051b65ed2ead8d24ebc9bd5ea61d4c21639a57b15dab29870668bcc6b90f"
+texture_encoding = "webp"
+
+[assets.2d78fedd-e528-4351-9827-69beb7f0cdf2.source.texture.raster]
+display_name = "Material_MR · occlusion.jpg"
+color_kind = "occlusion"
+
+[assets.9afe1ce4-a597-459c-8c93-e08dca667577]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = "2dc95e87aeb0cd7c8a65ef0eb8b23212388da0534ca379811427a9a8780511f5"
+texture_encoding = "webp"
+
+[assets.9afe1ce4-a597-459c-8c93-e08dca667577.source.texture.raster]
+display_name = "Material_MR · base color.jpg"
+color_kind = "albedo"
+
+[assets.ca773927-49fe-4fbd-b5c9-dcf898ab5a88]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = "0f05e7ffbeaa974f7d2c83436b04109969966d64ab188cbc3a19a265a0a69ae0"
+texture_encoding = "webp"
+
+[assets.ca773927-49fe-4fbd-b5c9-dcf898ab5a88.source.texture.raster]
+display_name = "Material_MR · metal/rough.jpg"
+color_kind = "metallic_roughness"
+
 [mixer]
 layers = []
 
 [[nodes]]
-id = "dbac7189-61e4-4090-9f7b-b592e20ffa85"
+id = "e5390049-3d79-4d9e-9209-14c8168edb25"
 name = "Directional Light"
 locked = false
 visible = true
@@ -213,8 +251,8 @@ receive = true
 enabled = true
 
 [[nodes]]
-id = "00000000-0000-4000-8000-000000000010"
-name = "lod-on-a"
+id = "c92961e5-bbd2-489a-9b10-a4700cd4c839"
+name = "node_damagedHelmet_-6514"
 locked = false
 visible = true
 prefab = false
@@ -222,15 +260,15 @@ children = []
 
 [nodes.transform]
 translation = [
-    -2.200000047683716,
-    1.0,
+    -1.5,
+    1.100000023841858,
     0.0,
 ]
 rotation = [
+    0.707099974155426,
     0.0,
     0.0,
-    0.0,
-    1.0,
+    0.707099974155426,
 ]
 scale = [
     1.0,
@@ -239,30 +277,30 @@ scale = [
 ]
 
 [nodes.kind.mesh]
-mesh = "00000000-0000-4000-8000-000000000010"
-selected_variant = "00000000-0000-4000-8000-000000000020"
+mesh = "c92961e5-bbd2-489a-9b10-a4700cd4c839"
+selected_variant = "d39205f9-26ce-4da5-a36d-f5e99b811686"
 
 [[nodes.kind.mesh.material_variants]]
-id = "00000000-0000-4000-8000-000000000020"
-name = "lod-on-a"
+id = "d39205f9-26ce-4da5-a36d-f5e99b811686"
+name = "Material_MR"
 
 [nodes.kind.mesh.material_variants.instance]
-asset = "00000000-0000-4000-8000-000000000002"
+asset = "47cbb08f-3b58-4e47-9679-9f97eb148f39"
 
 [nodes.kind.mesh.material_variants.instance.inline]
-label = ""
+label = "Material_MR"
 base_color = [
-    0.75,
-    0.3499999940395355,
-    0.25,
+    1.0,
+    1.0,
+    1.0,
     1.0,
 ]
-metallic = 0.0
-roughness = 0.699999988079071
+metallic = 1.0
+roughness = 1.0
 emissive = [
-    0.0,
-    0.0,
-    0.0,
+    1.0,
+    1.0,
+    1.0,
 ]
 normal_scale = 1.0
 occlusion_strength = 1.0
@@ -271,79 +309,20 @@ vertex_colors_enabled = false
 alpha_mode = "opaque"
 shading = "pbr"
 
-[nodes.kind.mesh.material_variants.instance.inline.extensions]
+[nodes.kind.mesh.material_variants.instance.inline.base_color_texture]
+asset = "9afe1ce4-a597-459c-8c93-e08dca667577"
 
-[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+[nodes.kind.mesh.material_variants.instance.inline.metallic_roughness_texture]
+asset = "ca773927-49fe-4fbd-b5c9-dcf898ab5a88"
 
-[nodes.kind.mesh.material_variants.instance.texture_overrides]
+[nodes.kind.mesh.material_variants.instance.inline.emissive_texture]
+asset = "7bba0fef-6807-4c7f-86e3-0dfa22323d29"
 
-[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+[nodes.kind.mesh.material_variants.instance.inline.normal_texture]
+asset = "3a9a25c4-cd5f-4b12-b90c-ae17ee452f29"
 
-[nodes.kind.mesh.shadow]
-cast = true
-receive = true
-
-[nodes.kind.mesh.lod]
-enabled = true
-
-[[nodes]]
-id = "00000000-0000-4000-8000-000000000011"
-name = "lod-on-b"
-locked = false
-visible = true
-prefab = false
-children = []
-
-[nodes.transform]
-translation = [
-    0.0,
-    1.0,
-    0.0,
-]
-rotation = [
-    0.0,
-    0.0,
-    0.0,
-    1.0,
-]
-scale = [
-    1.0,
-    1.0,
-    1.0,
-]
-
-[nodes.kind.mesh]
-mesh = "00000000-0000-4000-8000-000000000011"
-selected_variant = "00000000-0000-4000-8000-000000000021"
-
-[[nodes.kind.mesh.material_variants]]
-id = "00000000-0000-4000-8000-000000000021"
-name = "lod-on-b"
-
-[nodes.kind.mesh.material_variants.instance]
-asset = "00000000-0000-4000-8000-000000000002"
-
-[nodes.kind.mesh.material_variants.instance.inline]
-label = ""
-base_color = [
-    0.30000001192092896,
-    0.550000011920929,
-    0.75,
-    1.0,
-]
-metallic = 0.0
-roughness = 0.699999988079071
-emissive = [
-    0.0,
-    0.0,
-    0.0,
-]
-normal_scale = 1.0
-occlusion_strength = 1.0
-double_sided = false
-vertex_colors_enabled = false
-alpha_mode = "opaque"
-shading = "pbr"
+[nodes.kind.mesh.material_variants.instance.inline.occlusion_texture]
+asset = "2d78fedd-e528-4351-9827-69beb7f0cdf2"
 
 [nodes.kind.mesh.material_variants.instance.inline.extensions]
 
@@ -370,7 +349,7 @@ children = []
 
 [nodes.transform]
 translation = [
-    2.200000047683716,
+    1.7999999523162842,
     1.0,
     0.0,
 ]
@@ -392,7 +371,7 @@ selected_variant = "00000000-0000-4000-8000-000000000022"
 
 [[nodes.kind.mesh.material_variants]]
 id = "00000000-0000-4000-8000-000000000022"
-name = "lod-opt-out"
+name = "opt-out"
 
 [nodes.kind.mesh.material_variants.instance]
 asset = "00000000-0000-4000-8000-000000000002"

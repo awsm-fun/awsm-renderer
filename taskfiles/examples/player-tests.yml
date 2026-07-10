@@ -1,0 +1,49 @@
+version: "3"
+
+includes:
+  config:
+    taskfile: ../config.yml
+    flatten: true
+
+vars:
+  PATH_CRATE: '{{joinPath .PATH_REPO_ROOT "examples" "player-tests"}}'
+  PATH_DIST: '{{joinPath .PATH_BUILD_ARTIFACTS "player-tests"}}'
+
+# Unlike the multithreaded example this is a SINGLE-THREADED main-thread
+# embedding (the editor/model-tests shape): stable default toolchain, no
+# THREADED_RUSTFLAGS / build-std, and no COOP/COEP serve headers — cross-origin
+# isolation would block the harness's bundle fetches from the test-scenes
+# server on :9084 (plain CORS is all it needs).
+
+tasks:
+  dev:
+    desc: "player-tests harness: trunk serve on :{{.PORT_PLAYER_TESTS_DEV}} (expects `task test-scenes` on :{{.PORT_TEST_SCENES_DEV}} for the bundles)"
+    cmds:
+      - >
+        cd {{.PATH_CRATE}} &&
+        trunk serve --port {{.PORT_PLAYER_TESTS_DEV}}
+        --watch "{{.PATH_CRATE}}"
+        --watch "{{.PATH_CRATE_RENDERER}}"
+        --watch "{{.PATH_CRATE_RENDERER_CORE}}"
+        --watch "{{joinPath .PATH_CRATES "scene"}}"
+        --watch "{{joinPath .PATH_CRATES "scene-loader"}}"
+
+  build:
+    desc: "player-tests harness: production build"
+    cmds:
+      - rm -rf {{joinPath .PATH_CRATE "dist"}}
+      - rm -rf {{.PATH_DIST}}
+      - cd {{.PATH_CRATE}} && trunk build --release --public-url "/"
+      - mkdir -p {{.PATH_DIST}}
+      - cp -r {{joinPath .PATH_CRATE "dist"}}/* {{.PATH_DIST}}/
+
+  check:
+    desc: "player-tests harness: cargo check for wasm (no serve)"
+    cmds:
+      - cd {{.PATH_CRATE}} && cargo check --target wasm32-unknown-unknown
+
+  clean:
+    desc: "player-tests harness: remove dist + .build-artifacts output"
+    cmds:
+      - rm -rf {{joinPath .PATH_CRATE "dist"}}
+      - rm -rf {{.PATH_DIST}}

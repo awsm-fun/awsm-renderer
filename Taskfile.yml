@@ -16,6 +16,8 @@ includes:
     taskfile: ./taskfiles/mcp.yml
   mt:
     taskfile: ./taskfiles/examples/multithreaded.yml
+  pt:
+    taskfile: ./taskfiles/examples/player-tests.yml
   debug-mobile:
     taskfile: ./taskfiles/debugging/mobile.yml
 
@@ -101,6 +103,11 @@ tasks:
       - >
         cd {{joinPath .PATH_REPO_ROOT "examples/test-scenes"}} &&
         http-server --cors -p {{.PORT_TEST_SCENES_DEV}}
+
+  player-tests:
+    desc: "Player-runtime test harness (plan 007). Start `task test-scenes` (:{{.PORT_TEST_SCENES_DEV}}) FIRST — the harness loads the baked player bundles from http://localhost:{{.PORT_TEST_SCENES_DEV}}/<scene>/bundle through the player loader — then this serves the wasm harness on :{{.PORT_PLAYER_TESTS_DEV}}. Open http://localhost:{{.PORT_PLAYER_TESTS_DEV}} and read the console: one `PLAYER-TEST <name>: PASS/FAIL — <detail>` line per check, ending with `PLAYER-TESTS COMPLETE: <pass>/<total>`."
+    deps:
+      - pt:dev
 
   lint:
     desc: "Run the exact lints CI runs (rustfmt + clippy with -D warnings, all features, tests). Mirrors .github/workflows/test.yml."
