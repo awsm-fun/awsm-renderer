@@ -60,6 +60,8 @@ impl Camera {
             position_world: self.position_world(),
             focus_distance: self.focus_distance,
             aperture: self.aperture,
+            // Model-tests stay forward-Z (features default; 003)
+            reverse_z: false,
         }
     }
 }

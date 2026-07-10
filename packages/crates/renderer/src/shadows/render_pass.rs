@@ -225,7 +225,9 @@ pub fn record(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
                         // Directional cascades especially see geometry the
                         // camera doesn't — cull against the light-space
                         // frustum, not the camera's.
-                        let shadow_frustum = Frustum::from_view_projection(view.view_projection);
+                        // Shadow views stay forward-Z until the stage-7 lockstep migration.
+                        let shadow_frustum =
+                            Frustum::from_view_projection(view.view_projection, false);
                         cache_fallback = ctx
                             .scene_spatial
                             .query_frustum(&shadow_frustum, NodeFilter::shadow_caster())

@@ -49,6 +49,11 @@ pub struct CameraMatrices {
     pub focus_distance: f32,
     /// Aperture f-stop for depth of field. Lower = more blur. Default: 5.6
     pub aperture: f32,
+    /// Depth convention the `projection` was built under (003). Consumers that
+    /// derive convention-dependent data from these matrices (frustum-plane
+    /// extraction, near/far recovery) read this instead of guessing from the
+    /// matrix. MUST match the renderer's `features.reverse_z`.
+    pub reverse_z: bool,
 }
 
 impl CameraMatrices {
@@ -71,6 +76,7 @@ impl CameraMatrices {
         Self {
             view: Mat4::look_at_rh(eye, target, up),
             projection: convention.perspective(fov_y, aspect, near, far),
+            reverse_z: convention.reverse_z,
             position_world: eye,
             focus_distance: (target - eye).length().max(0.001),
             aperture: 16.0,

@@ -71,15 +71,22 @@ fn extract_planes(view_proj: mat4x4<f32>) -> array<vec4<f32>, 6> {
     //   right  = row3 - row0
     //   bottom = row3 + row1
     //   top    = row3 - row1
-    //   near   = row3 + row2   (WebGPU's [0,1] depth → near is `row2`-positive)
-    //   far    = row3 - row2
+    //   near   = row2          (WebGPU [0,1] depth, forward-Z: near is z >= 0)
+    //   far    = row3 - row2    (forward-Z: far is z <= w)
+    // Under reverse-Z (003) the two swap: near = row3 - row2, far = row2 —
+    // in lockstep with the CPU extraction in frustum.rs.
     return array<vec4<f32>, 6>(
         row3 + row0,
         row3 - row0,
         row3 + row1,
         row3 - row1,
-        row2,        // near (D = 0 in NDC)
-        row3 - row2, // far
+        {% if reverse_z %}
+        row3 - row2, // near (z <= w under reverse)
+        row2,        // far  (z >= 0 under reverse)
+        {% else %}
+        row2,        // near (z >= 0 forward)
+        row3 - row2, // far  (z <= w forward)
+        {% endif %}
     );
 }
 

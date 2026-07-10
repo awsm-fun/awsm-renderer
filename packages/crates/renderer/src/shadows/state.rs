@@ -2741,7 +2741,7 @@ impl Shadows {
             // recompute below always fires for them.
             entries.resize_with(record.views.len(), || ViewCasterCache {
                 view_projection: Mat4::IDENTITY,
-                frustum: crate::frustum::Frustum::from_view_projection(Mat4::IDENTITY),
+                frustum: crate::frustum::Frustum::from_view_projection(Mat4::IDENTITY, false),
                 casters: Vec::new(),
                 dirty: true,
             });
@@ -2752,7 +2752,9 @@ impl Shadows {
                 if !entry.dirty && entry.view_projection == view.view_projection {
                     continue;
                 }
-                let frustum = crate::frustum::Frustum::from_view_projection(view.view_projection);
+                // Shadow views stay forward-Z until the stage-7 lockstep migration.
+                let frustum =
+                    crate::frustum::Frustum::from_view_projection(view.view_projection, false);
                 entry.casters.clear();
                 entry.casters.extend(
                     spatial

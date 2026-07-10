@@ -219,6 +219,8 @@ async fn run_renderer(
             position_world: Vec3::new(0.0, 1.5, 3.0),
             focus_distance: 10.0,
             aperture: 5.6,
+            // Examples/model-tests stay forward-Z (features default; 003)
+            reverse_z: false,
         });
         r.update_transforms();
         if let Err(err) = r.render(None) {

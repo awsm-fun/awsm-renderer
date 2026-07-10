@@ -38,8 +38,13 @@ pub struct Frustum {
 
 impl Frustum {
     // Assumes a right-handed view-projection with WebGPU depth range [0, 1].
-    /// Builds a frustum from a view-projection matrix.
-    pub fn from_view_projection(view_projection: Mat4) -> Self {
+    /// Builds a frustum from a view-projection matrix. `reverse_z` MUST match
+    /// the convention the projection was built under (003): the near/far
+    /// clip-space halfspaces swap rows (forward: near is z>=0 i.e. row2, far
+    /// is z<=w i.e. row3-row2; reverse: near is z<=w i.e. row3-row2, far is
+    /// z>=0 i.e. row2). The extracted WORLD-space planes are identical either
+    /// way -- only which row encodes which plane changes.
+    pub fn from_view_projection(view_projection: Mat4, reverse_z: bool) -> Self {
         let x = view_projection.x_axis;
         let y = view_projection.y_axis;
         let z = view_projection.z_axis;
@@ -54,8 +59,11 @@ impl Frustum {
         let right = Plane::from_row(row3 - row0);
         let bottom = Plane::from_row(row3 + row1);
         let top = Plane::from_row(row3 - row1);
-        let near = Plane::from_row(row2);
-        let far = Plane::from_row(row3 - row2);
+        let (near, far) = if reverse_z {
+            (Plane::from_row(row3 - row2), Plane::from_row(row2))
+        } else {
+            (Plane::from_row(row2), Plane::from_row(row3 - row2))
+        };
 
         Self {
             planes: [left, right, bottom, top, near, far],

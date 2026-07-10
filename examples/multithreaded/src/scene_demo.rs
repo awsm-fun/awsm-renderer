@@ -271,6 +271,8 @@ async fn run_render(
             position_world: eye,
             focus_distance: radius * 2.0,
             aperture: 5.6,
+            // Examples/model-tests stay forward-Z (features default; 003)
+            reverse_z: false,
         });
         r.update_transforms();
         if let Err(err) = r.render(None) {

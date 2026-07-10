@@ -75,7 +75,18 @@ auto_clip_planes.
       IDENTICAL across conventions (26,506 B both); behind-view within 28 B;
       culled spheres reappear byte-identically after orbiting back (no stuck
       culls). Zero console errors both modes.
-- [ ] Stage 4: frustum extraction both crates + fix stale cull.wgsl:74 comment.
+- [x] Stage 4 (this commit): CameraMatrices carries reverse_z (set by every
+      producer; frustum extraction + future near/far recovery read it instead
+      of guessing from the matrix). frustum.rs from_view_projection(vp,
+      reverse_z) swaps the near/far rows under reverse (world-space planes
+      identical — proven by a new equivalence unit test with relative f32
+      tolerance); GPU extract_planes in cull.wgsl mirrors the swap via the
+      stage-3 reverse_z axis, and its stale OpenGL row3+row2 comment is fixed.
+      Shadow-path callers pin false until stage 7. The geometry crate's [-1,1]
+      extractor has NO renderer consumers (doc note was stale — audited, left
+      untouched). Browser A/B: 12-sphere ring, camera inside, 6 orbit angles —
+      4/6 captures byte-identical across conventions, rest within 40 B; no
+      popping at screen edges, zero console errors.
 - [ ] Stage 5: thread explicit near/far to froxels + cascade fit (MANDATORY —
       infinite-far breaks matrix recovery).
 - [ ] Stage 6: depth-consumer sentinels (decal, SSCS, DoF load_depth, material

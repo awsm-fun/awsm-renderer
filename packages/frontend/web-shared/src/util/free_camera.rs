@@ -150,6 +150,7 @@ impl FreeCamera {
             position_world: self.view.get_position(),
             aperture: self.aperture,
             focus_distance: self.focus_distance,
+            reverse_z: self.reverse_z,
         }
     }
 

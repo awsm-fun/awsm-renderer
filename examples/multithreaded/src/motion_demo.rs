@@ -448,12 +448,15 @@ async fn run_render(
             position_world: eye,
             focus_distance: 10.0,
             aperture: 5.6,
+            // Examples/model-tests stay forward-Z (features default; 003)
+            reverse_z: false,
         });
         r.update_transforms();
         // Probe the spatial index AFTER the descent has refreshed sim-owned
         // bounds — this is what frustum culling / shadows / picking consult.
         {
-            let frustum = awsm_renderer::frustum::Frustum::from_view_projection(projection * view);
+            let frustum =
+                awsm_renderer::frustum::Frustum::from_view_projection(projection * view, false);
             let visible = r.scene_spatial.query_frustum_raw(&frustum).count();
             let mn = &mut *min_visible.borrow_mut();
             if visible < *mn {

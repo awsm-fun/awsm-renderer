@@ -434,6 +434,7 @@ fn scene_camera_matrices(renderer: &AwsmRenderer, node_id: NodeId) -> Option<Cam
         position_world: pos,
         focus_distance,
         aperture,
+        reverse_z: convention.reverse_z,
     })
 }
 

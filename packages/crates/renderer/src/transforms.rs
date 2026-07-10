@@ -115,11 +115,9 @@ impl AwsmRenderer {
         // first frame before `update_camera` has run; the skin-skip
         // logic treats `None` conservatively (assume every consumer
         // is in-frustum, so never skip via coverage).
-        let frustum = self
-            .camera
-            .last_matrices
-            .as_ref()
-            .map(|m| crate::frustum::Frustum::from_view_projection(m.view_projection()));
+        let frustum = self.camera.last_matrices.as_ref().map(|m| {
+            crate::frustum::Frustum::from_view_projection(m.view_projection(), m.reverse_z)
+        });
         let touched = self.meshes.update_world(
             dirty_transforms,
             &dirty_instances,

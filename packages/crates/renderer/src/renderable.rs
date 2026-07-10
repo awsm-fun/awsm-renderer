@@ -102,11 +102,9 @@ impl AwsmRenderer {
         let mut pool = std::mem::take(&mut self.renderable_pool);
         pool.clear();
 
-        let frustum = self
-            .camera
-            .last_matrices
-            .as_ref()
-            .map(|matrices| Frustum::from_view_projection(matrices.view_projection()));
+        let frustum = self.camera.last_matrices.as_ref().map(|matrices| {
+            Frustum::from_view_projection(matrices.view_projection(), matrices.reverse_z)
+        });
 
         // Build the visible mesh-key set into the pool's reused `visible`
         // scratch (cleared above) from the BVH instead of walking every mesh.
