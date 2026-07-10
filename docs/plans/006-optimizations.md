@@ -276,6 +276,28 @@ Highest performance without sacrificing quality; goldens are the quality lock.
 - Acceptance: per-pass timing table before/after in this doc; goldens unchanged
   (within tolerance).
 
+#### Axis 7 RESULT (2026-07-10): audited — no WGSL churn this pass
+Scoreboard: kitchen-sink steady-state render_cpu ~1.8 ms EMA (35 nodes,
+7 lights, skinned + particles + SSR at half-res); empty scene ~1.5 ms.
+GPU per-pass timers aren't exposed (the ?trace=sub-frame spans are CPU
+record-time), so the audit was a source read of the dominant passes
+(material_opaque compute 1,215 lines; apply_lighting 574; brdf_pbr 443):
+- `apply_lighting` calls `normalize(-light.direction)` / `normalize(
+  to_light)` per light in the SSCS- and shadow-gated branches (9 sites).
+  Directional/spot directions are ALREADY normalized at the editor write
+  path (lights.rs world_forward.normalize()); the public renderer API
+  takes raw vectors though, so shader-side normalizes are defensive.
+  SAFE FOLLOW-UP (not landed): normalize once at the pack boundary
+  (lights.rs write_gpu) and drop the shader calls — sub-µs win, golden
+  churn risk zero but verification cost non-zero.
+- No redundant matrix ops, no obvious prep-liftable per-fragment work
+  found in the read; the specialize-only bucket design already strips
+  unused features per shader (the axis-1 classification confirms).
+- DECISION: with goldens locked and the frame at ~1.8 ms CPU-side, no
+  WGSL micro-changes land this pass (the Hi-Z-style no-third-option rule:
+  a change must visibly win or not land). The normalize-at-pack follow-up
+  is recorded for the next perf pass with GPU timestamps available.
+
 ### Axis 8 — Rust/wasm allocations and hot-path code
 - Sweep the per-frame path for heap allocs: known offenders — `sync_bones_to_skin`
   rebuilds a HashSet+Vec every frame (`editor/src/engine/bridge/skin_bridge.rs`), SSR
