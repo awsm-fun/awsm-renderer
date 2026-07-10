@@ -98,7 +98,16 @@ from a fresh design (froxel-bucketed or interval-based), not this pyramid.
 - Update all SSR docstrings to describe the shipped design (001 lists the stale ones).
 - The verified scene + goldens graduate into `examples/test-scenes/ssr` in 006.
 
-## Acceptance
-Every matrix cell green with archived screenshots; Hi-Z promoted or deleted (decision
-+ numbers recorded); all SSR knobs proven live + persistent end-to-end; SSR cost
-zero when disabled.
+## Acceptance — ✅ COMPLETE (2026-07-10)
+- [x] Every matrix cell green (Part 1 table; screenshots taken during the run;
+      byte-identical knob-restore proves determinism). The matrix caught and
+      fixed a REAL bug: runtime MSAA flips with SSR on black-framed (bind-group
+      layouts baked the old AA mode) — set_anti_aliasing now rebuilds the pass.
+- [x] Hi-Z DELETED with numbers recorded (Part 2): banded even after the
+      cell-boundary DDA fix AND 0.5 ms/frame slower than LinearDda. No dormant
+      scaffolding remains (final grep = 6 intentional comments).
+- [x] All SSR knobs proven live via MCP + persistent through reload (Part 1
+      cells f/g); temporal_weight editor row + MCP param confirmed present.
+- [x] SSR zero-cost when disabled (1×1 placeholder targets; no dispatch —
+      established in 001, unchanged by the deletion).
+- The verified SSR scene recipe graduates to examples/test-scenes/ssr in 006.
