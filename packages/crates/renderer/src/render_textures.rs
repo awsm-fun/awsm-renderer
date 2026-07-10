@@ -933,7 +933,10 @@ impl RenderTexturesInner {
             )
             .map_err(AwsmRenderTextureError::CreateTexture)
         };
-        let ssr_history = [make_history("SSR History 0")?, make_history("SSR History 1")?];
+        let ssr_history = [
+            make_history("SSR History 0")?,
+            make_history("SSR History 1")?,
+        ];
 
         // M2a: material-owned SSR reflection descriptor. `material_opaque`
         // storage-writes it per pixel; the SSR pass texture-reads it. Always

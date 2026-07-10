@@ -140,9 +140,9 @@ impl BloomRenderPass {
     ///
     /// `view_width` / `view_height` size the final combine dispatch (full-res).
     pub fn render(&self, ctx: &RenderContext, view_width: u32, view_height: u32) -> Result<()> {
-        let compute_pass = ctx
-            .command_encoder
-            .begin_compute_pass(Some(&ComputePassDescriptor::new(Some("Bloom Build")).into()));
+        let compute_pass = ctx.command_encoder.begin_compute_pass(Some(
+            &ComputePassDescriptor::new(Some("Bloom Build")).into(),
+        ));
 
         // Prefilter — composite → pyramid mip 0 (half-res).
         compute_pass.set_pipeline(ctx.pipelines.compute.get(self.pipelines.prefilter)?);

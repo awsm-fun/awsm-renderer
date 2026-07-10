@@ -196,8 +196,11 @@ impl SsrComposite {
         // same buffer under both AA configs.
         let multisampled = ctx.anti_aliasing.msaa_sample_count.is_some();
         let shader_module = gpu.compile_shader(
-            &ShaderModuleDescriptor::new(&shader_source(multisampled), Some("SSR Composite shader"))
-                .into(),
+            &ShaderModuleDescriptor::new(
+                &shader_source(multisampled),
+                Some("SSR Composite shader"),
+            )
+            .into(),
         );
         shader_module.validate_shader().await?;
 

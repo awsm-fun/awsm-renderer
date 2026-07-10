@@ -41,7 +41,6 @@ use crate::{
     pipelines::Pipelines,
     render_passes::{
         bloom::render_pass::BloomRenderPass,
-        ssr::render_pass::SsrRenderPass,
         coverage::render_pass::CoverageRenderPass,
         display::render_pass::DisplayRenderPass,
         geometry::render_pass::GeometryRenderPass,
@@ -60,6 +59,7 @@ use crate::{
         material_transparent::render_pass::MaterialTransparentRenderPass,
         occlusion::compaction::CompactionRenderPass,
         occlusion::render_pass::OcclusionRenderPass,
+        ssr::render_pass::SsrRenderPass,
     },
     render_textures::RenderTextureFormats,
     shaders::Shaders,
@@ -794,12 +794,12 @@ impl RenderPasses {
         // gates it to `None` (zero-cost). The texture stays 1×1 until SSR is
         // actually enabled (see the `ssr.enabled`-gated `ensure_size` in
         // render.rs), so an inactive Hi-Z SSR still costs only a 1×1 pyramid.
-        let ssr_minz = if crate::render_passes::ssr::shader::cache_key::SsrTrace::PRODUCTION.is_hiz()
-        {
-            Some(ssr_minz::render_pass::SsrMinzRenderPass::new(ctx).await?)
-        } else {
-            None
-        };
+        let ssr_minz =
+            if crate::render_passes::ssr::shader::cache_key::SsrTrace::PRODUCTION.is_hiz() {
+                Some(ssr_minz::render_pass::SsrMinzRenderPass::new(ctx).await?)
+            } else {
+                None
+            };
 
         Ok(RenderPassesDescriptors {
             bindings,

@@ -48,7 +48,10 @@ impl BloomPipelines {
             .shaders
             .get_key(ctx.gpu, ShaderCacheKeyBloomDownsample { prefilter: false })
             .await?;
-        let combine_shader = ctx.shaders.get_key(ctx.gpu, ShaderCacheKeyBloomCombine).await?;
+        let combine_shader = ctx
+            .shaders
+            .get_key(ctx.gpu, ShaderCacheKeyBloomCombine)
+            .await?;
 
         let cache_keys = vec![
             ComputePipelineCacheKey::new(prefilter_shader, pipeline_layout),

@@ -1536,7 +1536,15 @@ impl Meshes {
         transforms: &Transforms,
     ) -> Result<MeshKey> {
         let source_resource_key = self.resource_key(mesh_key)?;
-        let (buffer_info_key, aabb, geometry_morph_key, material_morph_key, vis_off, idx_off, data_off) = {
+        let (
+            buffer_info_key,
+            aabb,
+            geometry_morph_key,
+            material_morph_key,
+            vis_off,
+            idx_off,
+            data_off,
+        ) = {
             let r = self
                 .resources
                 .get(source_resource_key)
@@ -2213,7 +2221,9 @@ impl Meshes {
         let ibms = self.skins.read_inverse_bind_matrices(template_skin_key)?;
         let weights = self.skins.read_joint_index_weights(template_skin_key)?;
         let set_len = self.skins.sets_len(template_skin_key)?;
-        Ok(self.skins.insert(instance_joints, &ibms, set_len, &weights)?)
+        Ok(self
+            .skins
+            .insert(instance_joints, &ibms, set_len, &weights)?)
     }
 
     /// Convenience accessor for the optional `GeometryMorphKey` on a mesh

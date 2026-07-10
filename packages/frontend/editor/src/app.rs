@@ -887,73 +887,161 @@ fn post_processing_section() -> Dom {
             "Exposure (EV)",
             NumField::new(pp.exposure as f64)
                 .step(0.25)
-                .on_change(|v| dispatch_post(None, None, None, Some(v as f32), None, None, None, None))
+                .on_change(|v| {
+                    dispatch_post(None, None, None, Some(v as f32), None, None, None, None)
+                })
                 .render(),
         ))
         .child(row(
             "Bloom threshold",
             NumField::new(pp.bloom_threshold as f64)
                 .step(0.1)
-                .on_change(|v| dispatch_post(None, None, None, None, Some(v as f32), None, None, None))
+                .on_change(|v| {
+                    dispatch_post(None, None, None, None, Some(v as f32), None, None, None)
+                })
                 .render(),
         ))
         .child(row(
             "Bloom knee",
             NumField::new(pp.bloom_knee as f64)
                 .step(0.05)
-                .on_change(|v| dispatch_post(None, None, None, None, None, Some(v as f32), None, None))
+                .on_change(|v| {
+                    dispatch_post(None, None, None, None, None, Some(v as f32), None, None)
+                })
                 .render(),
         ))
         .child(row(
             "Bloom intensity",
             NumField::new(pp.bloom_intensity as f64)
                 .step(0.05)
-                .on_change(|v| dispatch_post(None, None, None, None, None, None, Some(v as f32), None))
+                .on_change(|v| {
+                    dispatch_post(None, None, None, None, None, None, Some(v as f32), None)
+                })
                 .render(),
         ))
         .child(row(
             "Bloom scatter",
             NumField::new(pp.bloom_scatter as f64)
                 .step(0.1)
-                .on_change(|v| dispatch_post(None, None, None, None, None, None, None, Some(v as f32)))
+                .on_change(|v| {
+                    dispatch_post(None, None, None, None, None, None, None, Some(v as f32))
+                })
                 .render(),
         ))
         // ── Screen-space reflections ──
         .child(row("SSR", toggle(ssr_enabled)))
-        .child(row("SSR intensity",
+        .child(row(
+            "SSR intensity",
             NumField::new(pp.ssr.intensity as f64)
                 .step(0.05)
-                .on_change(|v| dispatch_ssr(None, Some(v as f32), None, None, None, None, None, None, None))
+                .on_change(|v| {
+                    dispatch_ssr(
+                        None,
+                        Some(v as f32),
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                    )
+                })
                 .render(),
         ))
-        .child(row("SSR max distance",
+        .child(row(
+            "SSR max distance",
             NumField::new(pp.ssr.max_distance as f64)
                 .step(1.0)
-                .on_change(|v| dispatch_ssr(None, None, Some(v as f32), None, None, None, None, None, None))
+                .on_change(|v| {
+                    dispatch_ssr(
+                        None,
+                        None,
+                        Some(v as f32),
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                    )
+                })
                 .render(),
         ))
-        .child(row("SSR thickness",
+        .child(row(
+            "SSR thickness",
             NumField::new(pp.ssr.thickness as f64)
                 .step(0.1)
-                .on_change(|v| dispatch_ssr(None, None, None, Some(v as f32), None, None, None, None, None))
+                .on_change(|v| {
+                    dispatch_ssr(
+                        None,
+                        None,
+                        None,
+                        Some(v as f32),
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                    )
+                })
                 .render(),
         ))
-        .child(row("SSR max steps",
+        .child(row(
+            "SSR max steps",
             NumField::new(pp.ssr.max_steps as f64)
                 .step(8.0)
-                .on_change(|v| dispatch_ssr(None, None, None, None, Some(v.max(1.0) as u32), None, None, None, None))
+                .on_change(|v| {
+                    dispatch_ssr(
+                        None,
+                        None,
+                        None,
+                        None,
+                        Some(v.max(1.0) as u32),
+                        None,
+                        None,
+                        None,
+                        None,
+                    )
+                })
                 .render(),
         ))
-        .child(row("SSR spread cutoff",
+        .child(row(
+            "SSR spread cutoff",
             NumField::new(pp.ssr.spread_cutoff as f64)
                 .step(0.05)
-                .on_change(|v| dispatch_ssr(None, None, None, None, None, Some(v as f32), None, None, None))
+                .on_change(|v| {
+                    dispatch_ssr(
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        Some(v as f32),
+                        None,
+                        None,
+                        None,
+                    )
+                })
                 .render(),
         ))
-        .child(row("SSR edge fade",
+        .child(row(
+            "SSR edge fade",
             NumField::new(pp.ssr.edge_fade as f64)
                 .step(0.02)
-                .on_change(|v| dispatch_ssr(None, None, None, None, None, None, Some(v as f32), None, None))
+                .on_change(|v| {
+                    dispatch_ssr(
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        Some(v as f32),
+                        None,
+                        None,
+                    )
+                })
                 .render(),
         ))
         .child(row("SSR half-res", toggle(ssr_half_res)))

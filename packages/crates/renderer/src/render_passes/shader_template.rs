@@ -95,9 +95,9 @@ impl TryFrom<&ShaderCacheKeyRenderPass> for ShaderTemplateRenderPass {
             ShaderCacheKeyRenderPass::BloomDownsample(cache_key) => Ok(
                 ShaderTemplateRenderPass::BloomDownsample(cache_key.try_into()?),
             ),
-            ShaderCacheKeyRenderPass::BloomCombine(cache_key) => {
-                Ok(ShaderTemplateRenderPass::BloomCombine(cache_key.try_into()?))
-            }
+            ShaderCacheKeyRenderPass::BloomCombine(cache_key) => Ok(
+                ShaderTemplateRenderPass::BloomCombine(cache_key.try_into()?),
+            ),
             ShaderCacheKeyRenderPass::LightCulling(cache_key) => Ok(
                 ShaderTemplateRenderPass::LightCulling(cache_key.try_into()?),
             ),

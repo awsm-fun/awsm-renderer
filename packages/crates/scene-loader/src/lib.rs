@@ -611,7 +611,11 @@ impl PrefabTemplate {
                             .collect();
                         let instance_skin =
                             renderer.clone_skin_for_joints(*tsk, instance_joints)?;
-                        renderer.duplicate_skinned_mesh_with_skin(template_key, tk, instance_skin)?
+                        renderer.duplicate_skinned_mesh_with_skin(
+                            template_key,
+                            tk,
+                            instance_skin,
+                        )?
                     }
                     None => renderer.duplicate_mesh_with_transform(template_key, tk)?,
                 };
@@ -1761,11 +1765,25 @@ async fn capture_prefab(
             loaded.prefabs.insert(n.id, tmpl);
             continue;
         }
-        let mat = maps.node_materials.get(&n.id).copied().unwrap_or(placeholder);
+        let mat = maps
+            .node_materials
+            .get(&n.id)
+            .copied()
+            .unwrap_or(placeholder);
         // Build this node's meshes (hidden) under the scratch transform; non-mesh
         // kinds yield an empty vec (their transform is still recorded).
-        let template_meshes =
-            build_node_meshes(renderer, cache, scene, n, scratch, mat, assets, Some(&mut *maps), true).await?;
+        let template_meshes = build_node_meshes(
+            renderer,
+            cache,
+            scene,
+            n,
+            scratch,
+            mat,
+            assets,
+            Some(&mut *maps),
+            true,
+        )
+        .await?;
         // A.3: capture the non-mesh renderable to replay per instance. The decal
         // texture is resolved NOW (assets are available here; `instantiate` is
         // asset-free). Light/Camera/Line carry their authored config verbatim.
@@ -1883,7 +1901,7 @@ async fn build_node_meshes(
     // `Some` from prefab capture (needs the rig cache + skin-joint binding so a
     // skinned prefab shares ONE skeleton and its clips find their joints); `None`
     // from the standalone public `materialize_node_mesh` path (no anim context).
-    mut maps: Option<&mut AnimResolveMaps>,
+    maps: Option<&mut AnimResolveMaps>,
     hidden: bool,
 ) -> Result<Vec<MeshKey>> {
     let mut keys: Vec<MeshKey> = Vec::new();
@@ -1921,7 +1939,7 @@ async fn build_node_meshes(
             // node's OWN primitive via `skin.primitive_index`. Loading per-node
             // (the old path) minted a duplicate skeleton per part AND bound no
             // joints → the clips had no targets and the rig sat at bind pose.
-            if let Some(maps) = maps.as_deref_mut() {
+            if let Some(maps) = maps {
                 let rig_key = (
                     mesh_glb_filename(skin.source),
                     skin.joints.first().map(|j| j.node).unwrap_or(node.id),

@@ -75,18 +75,20 @@ impl SsrBindGroups {
         // filtered sample — unlike every other SSR input, which is integer
         // `textureLoad`. Create its linear sampler only for the temporal variant.
         let sampler = if temporal {
-            Some(ctx.gpu.create_sampler(Some(
-                &SamplerDescriptor {
-                    label: Some("SSR History Linear Sampler"),
-                    mag_filter: Some(FilterMode::Linear),
-                    min_filter: Some(FilterMode::Linear),
-                    address_mode_u: Some(AddressMode::ClampToEdge),
-                    address_mode_v: Some(AddressMode::ClampToEdge),
-                    address_mode_w: Some(AddressMode::ClampToEdge),
-                    ..SamplerDescriptor::default()
-                }
-                .into(),
-            )))
+            Some(
+                ctx.gpu.create_sampler(Some(
+                    &SamplerDescriptor {
+                        label: Some("SSR History Linear Sampler"),
+                        mag_filter: Some(FilterMode::Linear),
+                        min_filter: Some(FilterMode::Linear),
+                        address_mode_u: Some(AddressMode::ClampToEdge),
+                        address_mode_v: Some(AddressMode::ClampToEdge),
+                        address_mode_w: Some(AddressMode::ClampToEdge),
+                        ..SamplerDescriptor::default()
+                    }
+                    .into(),
+                )),
+            )
         } else {
             None
         };
@@ -145,7 +147,10 @@ impl SsrBindGroups {
                     0,
                     BindGroupResource::Buffer(BufferBinding::new(&ctx.camera.gpu_buffer)),
                 ),
-                BindGroupEntry::new(1, BindGroupResource::Buffer(BufferBinding::new(params_buffer))),
+                BindGroupEntry::new(
+                    1,
+                    BindGroupResource::Buffer(BufferBinding::new(params_buffer)),
+                ),
                 BindGroupEntry::new(
                     2,
                     BindGroupResource::TextureView(Cow::Borrowed(&ctx.render_texture_views.depth)),
@@ -191,9 +196,10 @@ impl SsrBindGroups {
         };
 
         if self.temporal {
-            let sampler = self.sampler.as_ref().ok_or_else(|| {
-                AwsmBindGroupError::NotFound("SSR History Sampler".to_string())
-            })?;
+            let sampler = self
+                .sampler
+                .as_ref()
+                .ok_or_else(|| AwsmBindGroupError::NotFound("SSR History Sampler".to_string()))?;
             let history = &ctx.render_texture_views.ssr_history;
             // Build BOTH parity bind groups now — the history views swap by
             // frame parity every frame but `recreate` only runs on resize /
@@ -221,8 +227,7 @@ impl SsrBindGroups {
             self.trace_bind_groups = groups;
         } else {
             let descriptor = BindGroupDescriptor::new(layout, Some("SSR Trace"), base_entries());
-            self.trace_bind_groups =
-                [Some(ctx.gpu.create_bind_group(&descriptor.into())), None];
+            self.trace_bind_groups = [Some(ctx.gpu.create_bind_group(&descriptor.into())), None];
         }
         Ok(())
     }

@@ -81,7 +81,9 @@ impl SsrMinzPipelines {
         }
     }
 
-    pub fn shader_cache_keys(anti_aliasing: &crate::anti_alias::AntiAliasing) -> Vec<ShaderCacheKey> {
+    pub fn shader_cache_keys(
+        anti_aliasing: &crate::anti_alias::AntiAliasing,
+    ) -> Vec<ShaderCacheKey> {
         vec![
             ShaderCacheKey::from(ShaderCacheKeySsrMinzSeed {
                 msaa_sample_count: Self::seed_msaa(anti_aliasing),

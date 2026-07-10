@@ -114,7 +114,10 @@ impl BloomBindGroups {
                     )),
                 ),
                 BindGroupEntry::new(1, BindGroupResource::Sampler(&self.sampler)),
-                BindGroupEntry::new(2, BindGroupResource::Buffer(BufferBinding::new(params_buffer))),
+                BindGroupEntry::new(
+                    2,
+                    BindGroupResource::Buffer(BufferBinding::new(params_buffer)),
+                ),
                 BindGroupEntry::new(
                     3,
                     BindGroupResource::TextureView(Cow::Borrowed(&tex.views_per_mip[0])),
@@ -133,7 +136,10 @@ impl BloomBindGroups {
                     BindGroupResource::TextureView(Cow::Borrowed(&tex.views_per_mip[n - 1])),
                 ),
                 BindGroupEntry::new(1, BindGroupResource::Sampler(&self.sampler)),
-                BindGroupEntry::new(2, BindGroupResource::Buffer(BufferBinding::new(params_buffer))),
+                BindGroupEntry::new(
+                    2,
+                    BindGroupResource::Buffer(BufferBinding::new(params_buffer)),
+                ),
                 BindGroupEntry::new(
                     3,
                     BindGroupResource::TextureView(Cow::Borrowed(&tex.views_per_mip[n])),
@@ -152,7 +158,10 @@ impl BloomBindGroups {
                     BindGroupResource::TextureView(Cow::Borrowed(&tex.view_all)),
                 ),
                 BindGroupEntry::new(1, BindGroupResource::Sampler(&self.sampler)),
-                BindGroupEntry::new(2, BindGroupResource::Buffer(BufferBinding::new(params_buffer))),
+                BindGroupEntry::new(
+                    2,
+                    BindGroupResource::Buffer(BufferBinding::new(params_buffer)),
+                ),
                 BindGroupEntry::new(
                     3,
                     BindGroupResource::TextureView(Cow::Borrowed(&ctx.render_texture_views.bloom)),

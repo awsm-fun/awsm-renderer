@@ -1527,7 +1527,6 @@ impl AwsmRenderer {
             }
         }
 
-
         // Built-in line render pass — must run after the opaque->transparent
         // blit (so depth + transparent target are populated) and before any
         // `before_transparent_pass` hook so editor overlays can draw on top.
