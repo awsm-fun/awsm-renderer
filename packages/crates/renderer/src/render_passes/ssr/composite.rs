@@ -186,6 +186,10 @@ pub struct SsrComposite {
     bind_group_layout: web_sys::GpuBindGroupLayout,
     pipeline: web_sys::GpuRenderPipeline,
     bind_group: Option<web_sys::GpuBindGroup>,
+    /// Pre-built render-pass descriptor targeting the current `composite`
+    /// view. Rebuilt in [`Self::recreate`] (texture identity changes there and
+    /// only there) so the per-frame `render()` allocates nothing.
+    pass_descriptor: Option<web_sys::GpuRenderPassDescriptor>,
 }
 
 impl SsrComposite {
@@ -276,6 +280,7 @@ impl SsrComposite {
             bind_group_layout,
             pipeline,
             bind_group: None,
+            pass_descriptor: None,
         })
     }
 
@@ -307,14 +312,10 @@ impl SsrComposite {
         let descriptor =
             BindGroupDescriptor::new(&self.bind_group_layout, Some("SSR Composite"), entries);
         self.bind_group = Some(ctx.gpu.create_bind_group(&descriptor.into()));
-        Ok(())
-    }
-
-    /// Records the additive composite render pass — fullscreen triangle onto
-    /// `composite` with a Load op (the blend reads the existing HDR content).
-    pub fn render(&self, ctx: &RenderContext) -> Result<()> {
-        let render_pass = ctx.command_encoder.begin_render_pass(
-            &RenderPassDescriptor {
+        // Rebuild the cached pass descriptor against the (possibly new)
+        // composite view — render() reuses it every frame, allocation-free.
+        self.pass_descriptor = Some(
+            RenderPassDescriptor {
                 label: Some("SSR Composite Pass"),
                 color_attachments: vec![ColorAttachment::new(
                     &ctx.render_texture_views.composite,
@@ -325,7 +326,17 @@ impl SsrComposite {
                 ..Default::default()
             }
             .into(),
-        )?;
+        );
+        Ok(())
+    }
+
+    /// Records the additive composite render pass — fullscreen triangle onto
+    /// `composite` with a Load op (the blend reads the existing HDR content).
+    pub fn render(&self, ctx: &RenderContext) -> Result<()> {
+        let descriptor = self.pass_descriptor.as_ref().ok_or_else(|| {
+            AwsmBindGroupError::NotFound("SSR Composite pass descriptor".to_string())
+        })?;
+        let render_pass = ctx.command_encoder.begin_render_pass(descriptor)?;
         render_pass.set_pipeline(&self.pipeline);
         render_pass.set_bind_group(0, self.get_bind_group()?, None)?;
         render_pass.draw(3);

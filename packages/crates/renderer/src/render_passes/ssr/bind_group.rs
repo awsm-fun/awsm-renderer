@@ -7,7 +7,8 @@
 //! - 3 `normal_tangent` (packed octahedral world normal)
 //! - 4 HDR color source = the RESOLVED single-sample `composite` target (SSR
 //!   runs post-resolve so the color source is never multisampled)
-//! - 5 storage-write reflection target = the full-res `ssr` render texture
+//! - 5 storage-write reflection target = the `ssr` render texture (half-res
+//!   by default via `resolution_scale`)
 //! - 6 material-owned `reflection_descriptor` (M2a): RGB = reflectivity color
 //!   (0 = opt out), A = spread. Always single-sample (written full-res by
 //!   `material_opaque` at sample 0)

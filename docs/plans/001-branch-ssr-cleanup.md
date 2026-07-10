@@ -49,18 +49,26 @@ traversal and temporal denoise are built but deliberately parked (gated off) —
 
 ## P1 — SSR exposure/persistence gaps
 
-- [ ] **`ssr.temporal_weight` has no live control surface anywhere.** It persists and the renderer
+- [x] DONE (commit 718181bd) — `ssr_temporal_weight` added to the SetPostProcess command
+      (undoable), the editor drawer ("SSR temporal weight" row, clamped 0..1), and MCP
+      `PostProcessParams`. Browser-verified round trip (dispatch 0.42 → query reads it back).
+      Original finding: **`ssr.temporal_weight` has no live control surface anywhere.** It persists and the renderer
       writes it per-frame (`render.rs:639`), but there's no editor UI row (`app.rs` only has the
       `SSR temporal` toggle) and no `ssr_temporal_weight` field in MCP `PostProcessParams` /
       `SetPostProcess`. Only reachable by hand-editing TOML. Add both (or decide it's intentional
       and document that).
-- [ ] **No MCP read-back for post-process state** — `set_post_process` exists, no
+- [x] DONE (commit 718181bd) — read-only `get_post_process` MCP tool via new
+      `EditorQuery::PostProcess` (full PostProcessConfig JSON incl. the ssr block).
+      Original finding: **No MCP read-back for post-process state** — `set_post_process` exists, no
       `get_post_process` (pre-existing: bloom/exposure were never readable either; SSR inherits
       it). An agent can set SSR blind but can't query current values. Worth adding while in here.
-- [ ] **`set_post_process` tool description omits SSR** (`packages/mcp/src/mcp.rs:~3895`) — prose
+- [x] DONE (commit 718181bd) — description now documents the whole ssr_* surface, live-vs-
+      structural split, and points at get_post_process. Original finding:
+      **`set_post_process` tool description omits SSR** (`packages/mcp/src/mcp.rs:~3895`) — prose
       lists tonemapping/bloom/dof/exposure but never mentions SSR (per-field schema descriptions do
       cover it). Update the summary.
-- [ ] **Stale comment** in `dispatch_post` (`packages/frontend/editor/src/app.rs:~988`): "SSR has
+- [x] DONE (commit 718181bd) — comment rewritten to point at dispatch_ssr. Original finding:
+      **Stale comment** in `dispatch_post` (`packages/frontend/editor/src/app.rs:~988`): "SSR has
       no settings-drawer control yet (set via MCP)" — false; full drawer controls exist right above.
 
 ## P1 — Bloom migration: old path half-removed
@@ -78,45 +86,42 @@ duplicated rather than deleted:
 
 ## P2 — SSR polish / doc drift (stale M1 blit-design docstrings in shipped M4 code)
 
-- [ ] `ssr/mod.rs:6-7` + `render_passes.rs:129-132` say the pass runs "before the transparent
-      pass" — it runs after transparent/resolve (`render.rs:1624-1671`).
-- [ ] `ssr/render_pass.rs:1-9` + `trace.wgsl:7-10` describe "base + reflection, blit back over
-      composite" — actual: reflection-only premultiplied + additive composite.
-- [ ] `trace.wgsl:389` writes alpha=1.0 on a MISS while `composite.rs:3` documents "alpha =
-      coverage; misses write 0". Harmless today (additive blend uses rgb), but a latent trap —
-      make alpha actually be coverage, or fix the doc.
-- [ ] `ssr/bind_group.rs:10` calls the target "full-res" (half-res by default).
-- [ ] Duplicated `ssr_reflectivity/ssr_spread` init+store copy-pasted across `cs_opaque` /
-      `shade_sample` / interior arm in compute.wgsl — extract a helper to reduce drift risk.
-- [ ] Per-frame `vec![]` for color attachments / descriptors in `ssr/composite.rs:316`,
-      `ssr/render_pass.rs:143` — [[avoid-per-frame-allocations-standard]] applies even if
-      idiomatic elsewhere in the renderer; pool or hoist.
-- [ ] Stray double blank line in `render.rs` ~:1527 (fmt will catch).
+- [x] `ssr/mod.rs` + `render_passes.rs` placement/staging docs rewritten (post-resolve,
+      before bloom; shipped-vs-gated state).
+- [x] `ssr/render_pass.rs` + `trace.wgsl` head docs rewritten to the shipped reflection-only
+      + additive-composite design.
+- [x] Alpha IS coverage now: `let coverage = select(0.0, 1.0, hit)` stored in both the out
+      and temporal-history writes — matches composite.rs's documented contract. Browser-verified
+      output-identical (additive blend uses rgb).
+- [x] `ssr/bind_group.rs` binding-5 doc corrected (half-res by default).
+- [x] `ssr_pbr_descriptor()` helper extracted; all three arms (cs_opaque / shade_sample /
+      interior) call it. naga-validated + browser-verified identical reflections.
+- [x] `SsrComposite` render-pass descriptor now built once in `recreate()` and reused every
+      frame (allocation-free render()); the trace dispatch had no per-frame vec after the
+      baseline. Browser-verified.
+- [x] Handled by the fmt pass (commit 8139e24a).
 
 ## P2 — Non-SSR diff findings
 
-- [ ] **`worker_job.rs::execute_async` parity path missed by the glTF fetch fixes** — still uses
-      `get_type_from_filename(..).unwrap_or(Json)` + text fetch (`worker_job.rs:509-546`) and has
-      no `bypass_http_cache`. Latent (path is A/B-gated, non-default), but it's the exact bug just
-      fixed in `GltfLoader::load`; port the content-sniff + cache flag or delete the parity path.
-- [ ] **`skin_bridge.rs::sync_bones_to_skin` allocates per frame** — rebuilds a
-      `HashSet<TransformKey>` + `Vec` snapshot every call even when idle (~:60). The equality guard
-      only skips writes, not construction. Cache/reuse ([[avoid-per-frame-allocations-standard]]).
-- [ ] **Skinned duplicate: verify opaque pipeline key cloning.** `duplicate_skinned_with_new_skin`
-      (meshes.rs ~1520) clones the transparent pipeline key; confirm an opaque skinned mesh
-      duplicate also lands in the opaque pass's pipeline map (the non-skinned duplicate path does).
-- [ ] Pool-slicing math in `duplicate_skinned_with_new_skin` assumes `[vis || attr_index ||
-      attr_data]` contiguous packing — add a debug assert on offset monotonicity.
-- [ ] **Stale off-by-one binding comments** in `material_opaque/bind_group.rs` after the 24→25..28
-      prep-binding shift: lines ~377, ~400 ("binding 26"→27), ~412 ("27"→28), and layout-section
-      comments ~841, ~872, ~889/892. Runtime is positional and correct; comments lie.
-- [ ] **Docs stale vs. MCP-BUGS fixes**: `docs/ASSET_WORKFLOWS.md:23,50,56` still document only
-      `"builtin"` as the env-slot reset string (code now also accepts `"built_in_default"`); the
-      new `set_camera_clip` tool description says "near 0.1, far 10000" but actual manual defaults
-      are `1.0/5000.0` (`editor/src/controller/state.rs:251-255`).
-- [ ] No tests were added for any of the MCP-BUGS fixes (all verified manually/live). At minimum:
-      a unit test for the loader content-sniff (GLB magic vs JSON) and the `/glb` upload/download
-      `.glb`-suffix symmetry.
+- [x] `worker_job.rs::execute_async` ported to the single-binary-fetch + `parse_gltf_lenient`
+      content-sniff (extension never consulted; Draco rejected up front). Cache-bypass wiring
+      deferred with a doc note — the path has ZERO dispatch sites today (register-only A/B
+      scaffold); wire `bypass_http_cache` through `GltfParseInput` when 006 axis 2 decides its
+      fate (promote or delete).
+- [x] `sync_bones_to_skin` now reuses thread-local scratch (Vec + HashSet, clear keeps
+      capacity) — zero steady-state allocations.
+- [x] VERIFIED NO GAP: the opaque pass has no per-mesh pipeline map to clone — opaque
+      pipelines are bucket-driven (classify by shader_id; the duplicate's material meta routes it
+      to the same bucket). Both duplicate fns clone exactly the transparent per-mesh key, and the
+      skinned fn mirrors the static fn line-for-line (meshes.rs:38-58 vs :77-99).
+- [x] debug_asserts added on offset monotonicity + section-length bounds in both match arms.
+- [x] All seven stale binding-number comments corrected (25/26/27/28).
+- [x] `ASSET_WORKFLOWS.md` now documents all three reset aliases; `set_camera_clip` description
+      corrected (AUTO default; manual 1.0/5000).
+- [x] Tests added: `loader.rs::content_sniff_parses_glb_and_json_bytes` (builds a minimal GLB
+      container + raw JSON, both parse via the content sniff) and
+      `http.rs::glb_id_suffix_symmetry` (upload/download now share `canonical_glb_id`, extracted
+      so they can't drift apart again). Both green.
 
 ## Parked by design (tracked, not TODO for this branch)
 

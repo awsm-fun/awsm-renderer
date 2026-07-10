@@ -20,7 +20,7 @@ The environment has **three independent slots**, each set separately:
   ("prefiltered env" and "specular" are the same thing).
 - **irradiance** — the diffuse-convolved IBL map that drives ambient light.
 
-Omit a slot to leave it unchanged; pass `"builtin"` to reset it to the default sky.
+Omit a slot to leave it unchanged; pass `"builtin"` (aliases: `"builtin_default"`, `"built_in_default"` — the form the exporter serializes) to reset it to the default sky.
 Two ways, pick by need:
 
 ### a) Two-color sky gradient — no hosting, instant
@@ -53,7 +53,7 @@ Notes:
   lights own the primary specular hotspot. (`zenith`/`nadir` sets all three slots
   to the same gradient; to get a gradient *look* with a separate KTX IBL, bake the
   gradient into a skybox `.ktx2` too.)
-- Each of `skybox` / `specular` / `irradiance` also accepts `"builtin"` (or omit)
+- Each of `skybox` / `specular` / `irradiance` also accepts `"builtin"` / `"builtin_default"` / `"built_in_default"` (or omit)
   for the default sky, an existing KTX cubemap asset UUID, or a `https://` `.ktx2` URL.
 - Read what's set via `get_snapshot` → `project.environment` (per-slot kind + asset).
 

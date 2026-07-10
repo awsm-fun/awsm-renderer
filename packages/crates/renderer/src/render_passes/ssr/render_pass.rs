@@ -1,12 +1,12 @@
 //! SSR pass execution.
 //!
-//! M1: one compute dispatch that reads depth + `normal_tangent` + the resolved
-//! single-sample `composite` HDR, marches a mirror reflection ray, and writes
-//! `base + reflection` into the full-res `ssr` target. The result then blits
-//! back over `composite` (reusing the single-sample color blit pipeline), so
-//! bloom + the display pass see reflections composited into the HDR. Writing to
-//! a separate target + blitting avoids a read-modify-write hazard, and running
-//! post-resolve keeps the color source single-sample under MSAA.
+//! One compute dispatch reads depth + `normal_tangent` + the resolved
+//! single-sample `composite` HDR, marches the reflection ray (linear DDA), and
+//! writes reflection-ONLY premultiplied color into the (half-res by default)
+//! `ssr` target. [`SsrComposite`] then ADDITIVELY blends that over `composite`
+//! with an edge-aware upsample, so bloom + the display pass see reflections in
+//! the HDR. Writing to a separate target avoids a read-modify-write hazard, and
+//! running post-resolve keeps the color source single-sample under MSAA.
 
 use awsm_renderer_core::{
     buffers::{BufferDescriptor, BufferUsage},

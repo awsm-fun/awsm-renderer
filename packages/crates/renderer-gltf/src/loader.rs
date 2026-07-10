@@ -370,3 +370,43 @@ fn get_url(base: &str, uri: &str) -> anyhow::Result<String> {
         Ok(format!("{base}{uri}"))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::parse_gltf_lenient;
+
+    const MIN_JSON: &str = r#"{"asset":{"version":"2.0"}}"#;
+
+    /// Build a minimal valid GLB container around `MIN_JSON` (header + one
+    /// 4-byte-aligned JSON chunk), per the glTF 2.0 binary container spec.
+    fn min_glb() -> Vec<u8> {
+        let mut json = MIN_JSON.as_bytes().to_vec();
+        while json.len() % 4 != 0 {
+            json.push(b' ');
+        }
+        let mut out = Vec::new();
+        out.extend_from_slice(b"glTF"); // magic
+        out.extend_from_slice(&2u32.to_le_bytes()); // version
+        out.extend_from_slice(&((12 + 8 + json.len()) as u32).to_le_bytes()); // total length
+        out.extend_from_slice(&(json.len() as u32).to_le_bytes()); // chunk length
+        out.extend_from_slice(b"JSON"); // chunk type
+        out.extend_from_slice(&json);
+        out
+    }
+
+    /// The loader decides GLB-vs-JSON from the CONTENT (the "glTF" magic), not
+    /// the URL extension — the regression that made extensionless or
+    /// query-suffixed URLs (`…/glb/arena88`, `model.glb?v=1`) fetch as text and
+    /// fail with "could not completely read the object" (MCP-BUGS 2026-07-08).
+    #[test]
+    fn content_sniff_parses_glb_and_json_bytes() {
+        // Binary GLB bytes → sniffed as GLB.
+        let glb = min_glb();
+        let parsed = parse_gltf_lenient(&glb).expect("glb bytes parse");
+        assert_eq!(parsed.document.nodes().len(), 0);
+
+        // Raw JSON bytes (what a .gltf fetch yields) → sniffed as JSON.
+        let parsed = parse_gltf_lenient(MIN_JSON.as_bytes()).expect("json bytes parse");
+        assert_eq!(parsed.document.nodes().len(), 0);
+    }
+}

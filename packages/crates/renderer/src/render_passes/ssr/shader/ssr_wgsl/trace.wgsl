@@ -1,13 +1,13 @@
 // SSR trace — screen-space reflections (docs/plans/ssr.md).
 //
-// M1 path (the else-branches below): MIRROR reflection via a view-space linear
-// DDA march. Reconstruct the shaded pixel's view-space position + normal,
-// reflect the view ray, march it against the scene depth buffer, and on a hit
-// sample the HDR color there; Fresnel-weight + edge-fade the reflection and
-// composite it over the base color. On a miss we keep the base color (IBL
-// fallback lands in a later step). The output fully REPLACES the sampled color
-// (base + reflection), so the pass's composite is a plain copy back into the
-// HDR target — no read-modify-write hazard.
+// Production path (the else-branches below): reflection via a view-space
+// linear DDA march. Reconstruct the shaded pixel's view-space position +
+// normal, reflect the view ray, march it against the scene depth buffer, and
+// on a hit sample the HDR color there; Fresnel-weight + edge-fade it. The
+// output is reflection-ONLY premultiplied color with alpha = coverage (1 on a
+// hit, 0 on miss/sky/opt-out); the composite pass ADDITIVELY blends it over
+// the HDR target — no read-modify-write hazard, and zero-coverage pixels are
+// left untouched.
 //
 // The glossy / hiz / temporal / half_res template blocks are the structural
 // permutation axes (§5a): each compiles ONLY into the variant that needs it, so
@@ -377,14 +377,19 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Half-res trace: the guided upsample runs in the composite step.
     {% endif %}
 
+    // Alpha = COVERAGE for real: 1 on a hit, 0 on a miss (sky/opt-out wrote 0
+    // and returned above). The additive composite blends rgb, so a miss is a
+    // no-op either way, but downstream consumers (the joint-bilateral upsample,
+    // any future coverage-aware denoise) can trust the channel.
+    let coverage = select(0.0, 1.0, hit);
+
     {% if temporal %}
     // Persist the blended result so next frame's reprojection reads it.
-    textureStore(history_curr_tex, coords, vec4<f32>(reflection, 1.0));
+    textureStore(history_curr_tex, coords, vec4<f32>(reflection, coverage));
     {% endif %}
 
-    // Reflection-ONLY, premultiplied (alpha = coverage). `reflection` is vec3(0)
-    // on a miss, so those pixels write 0 and the additive composite is a no-op
-    // there. Full-res invariant: composite_old + reflection == the old
-    // base + reflection overwrite, since composite_old == base at this pixel.
-    textureStore(out_tex, coords, vec4<f32>(reflection, 1.0));
+    // Reflection-ONLY, premultiplied. Full-res invariant: composite_old +
+    // reflection == the old base + reflection overwrite, since composite_old
+    // == base at this pixel.
+    textureStore(out_tex, coords, vec4<f32>(reflection, coverage));
 }

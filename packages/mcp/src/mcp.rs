@@ -4020,7 +4020,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Set the viewport camera near/far clip planes. `manual=true` pins the planes to `near`/`far` (metres); `manual=false` restores auto (planes track the orbit distance). Any omitted field is left unchanged. Editor default is manual, near 0.1, far 10000."
+        description = "Set the viewport camera near/far clip planes. `manual=true` pins the planes to `near`/`far` (metres); `manual=false` restores auto (planes track the orbit distance). Any omitted field is left unchanged. Editor default is AUTO (manual=false); manual-mode defaults are near 1.0, far 5000."
     )]
     async fn set_camera_clip(
         &self,

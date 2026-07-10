@@ -130,9 +130,10 @@ pub struct RenderPasses {
     /// full-res `bloom` render texture the effects pass samples. The
     /// per-frame `render()` / `ensure_size` wiring lives in `render.rs`.
     pub bloom: BloomRenderPass,
-    /// Screen-space reflections. Self-contained like bloom;
-    /// runs after HZB + before the transparent pass, gated per-frame on
-    /// `post_processing.ssr.enabled` (records + allocates nothing when off).
+    /// Screen-space reflections. Self-contained like bloom; runs after the
+    /// transparent pass / MSAA resolve (single-sample color source) and before
+    /// bloom, gated per-frame on `post_processing.ssr.enabled` (records +
+    /// allocates nothing when off).
     pub ssr: SsrRenderPass,
     /// SSR min-Z (nearest-depth) pyramid build (M2c). `Some` only when
     /// `post_processing.ssr.enabled` at build; the Hi-Z trace descends its

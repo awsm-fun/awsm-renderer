@@ -277,7 +277,7 @@ async fn glb_upload(State(s): State<AppState>, Path(id): Path<String>, body: Byt
     // canonicalize to the SAME file — otherwise the `.glb`-suffixed POST writes
     // `<id>.glb.glb`, which the suffix-stripping GET can never read, yielding a
     // silent 404 on an upload that returned 200.
-    let id = id.strip_suffix(".glb").unwrap_or(&id).to_string();
+    let id = canonical_glb_id(&id).to_string();
     let path = glb_path(&id);
     if let Err(e) = std::fs::write(&path, &body) {
         tracing::warn!("glb upload write failed ({}): {e}", path.display());
@@ -295,9 +295,18 @@ async fn glb_upload(State(s): State<AppState>, Path(id): Path<String>, body: Byt
     StatusCode::OK
 }
 
+/// Canonical stored id for `/glb/{id}`: a trailing `.glb` is stripped so a
+/// model can be addressed as a real-looking `/glb/<id>.glb` URL while stored
+/// under `<id>`. Upload and download MUST both go through this — an
+/// asymmetric strip once produced 200-OK uploads (`<id>.glb.glb`) that every
+/// subsequent GET 404'd.
+fn canonical_glb_id(id: &str) -> &str {
+    id.strip_suffix(".glb").unwrap_or(id)
+}
+
 /// `GET /glb/{id}` — serve a previously-exported `.glb` (for humans / tooling).
 async fn glb_download(Path(id): Path<String>) -> impl IntoResponse {
-    let id = id.strip_suffix(".glb").unwrap_or(&id);
+    let id = canonical_glb_id(&id);
     match std::fs::read(glb_path(id)) {
         Ok(bytes) => ([(header::CONTENT_TYPE, "model/gltf-binary")], bytes).into_response(),
         Err(_) => (StatusCode::NOT_FOUND, "no such glb").into_response(),
@@ -363,5 +372,21 @@ fn bundle_mime(path: &str) -> &'static str {
         Some("ktx2") => "image/ktx2",
         Some("json") => "application/json",
         _ => "application/octet-stream",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::canonical_glb_id;
+
+    /// POST `/glb/<id>.glb` and GET `/glb/<id>.glb` must address the same
+    /// stored id as their suffix-free forms (the upload/download asymmetry
+    /// regression from MCP-BUGS 2026-07-08).
+    #[test]
+    fn glb_id_suffix_symmetry() {
+        assert_eq!(canonical_glb_id("model.glb"), "model");
+        assert_eq!(canonical_glb_id("model"), "model");
+        assert_eq!(canonical_glb_id("model.glb.glb"), "model.glb");
+        assert_eq!(canonical_glb_id("a1b2-c3d4"), "a1b2-c3d4");
     }
 }

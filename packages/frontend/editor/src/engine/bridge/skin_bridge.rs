@@ -33,6 +33,7 @@
 //! parents the rig under the placement node itself (`populate_gltf_under`), so
 //! neither is touched.
 
+use std::cell::RefCell;
 use std::collections::HashSet;
 
 use awsm_renderer::transforms::{Transform, TransformKey};
@@ -41,28 +42,53 @@ use glam::Mat4;
 
 use super::bridge;
 
+thread_local! {
+    /// Per-frame scratch for [`sync_bones_to_skin`] — this runs EVERY frame,
+    /// so the snapshot Vec + root-detection HashSet are reused (clear keeps
+    /// capacity) instead of reallocated ([[avoid-per-frame-allocations]]).
+    /// Main-thread only, like the render loop that calls it.
+    #[allow(clippy::type_complexity)]
+    static SYNC_SCRATCH: RefCell<(
+        Vec<(crate::engine::scene::NodeId, TransformKey)>,
+        HashSet<TransformKey>,
+    )> = RefCell::new((Vec::new(), HashSet::new()));
+}
+
 /// Sync every mapped mirror bone onto its baked joint (placement-aware). Call
 /// under the held renderer guard, AFTER `animation_sync::pin_pose` and BEFORE
 /// `update_transforms` (so the dirtied baked joints feed the skin update).
 pub fn sync_bones_to_skin(renderer: &mut AwsmRenderer) {
+    SYNC_SCRATCH.with(|scratch| {
+        let (pairs, baked_keys) = &mut *scratch.borrow_mut();
+        pairs.clear();
+        baked_keys.clear();
+        sync_bones_to_skin_inner(renderer, pairs, baked_keys);
+    });
+}
+
+fn sync_bones_to_skin_inner(
+    renderer: &mut AwsmRenderer,
+    pairs: &mut Vec<(crate::engine::scene::NodeId, TransformKey)>,
+    baked_keys: &mut HashSet<TransformKey>,
+) {
     let bridge = bridge();
     // Snapshot the map (NodeId → baked key) so we don't hold its lock while
     // touching the renderer / the nodes map.
-    let pairs: Vec<(crate::engine::scene::NodeId, TransformKey)> = {
+    {
         let map = bridge.skin_joint_baked.lock().unwrap();
         if map.is_empty() {
             return;
         }
-        map.iter().map(|(n, k)| (*n, *k)).collect()
-    };
+        pairs.extend(map.iter().map(|(n, k)| (*n, *k)));
+    }
 
     // The set of driven baked joints. A baked joint whose parent is NOT in this
     // set is a skeleton ROOT: its baked parent is the static copy root, so the
     // placement/ancestor offset must be folded in here (see module docs).
-    let baked_keys: HashSet<TransformKey> = pairs.iter().map(|(_, k)| *k).collect();
+    baked_keys.extend(pairs.iter().map(|(_, k)| *k));
 
     let mut copied = 0usize;
-    for (node_id, baked_key) in pairs {
+    for &(node_id, baked_key) in pairs.iter() {
         // Resolve the mirror bone's renderer transform key (materialized async by
         // node_sync; absent until then → skip this frame).
         let editor_key = {

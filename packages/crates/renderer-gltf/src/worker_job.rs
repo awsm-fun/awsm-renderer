@@ -41,7 +41,7 @@ use wasm_bindgen::{JsCast, JsValue};
 use web_sys::js_sys::{Array, Object, Reflect, Uint8Array};
 
 use crate::error::AwsmGltfError;
-use crate::loader::{get_type_from_filename, GltfFileType, GltfLoader};
+use crate::loader::{GltfFileType, GltfLoader};
 
 // Worker-side thread-local: per-image-index slot for the
 // `ImageBitmap` handle that the most recent `execute_async` run
@@ -508,41 +508,35 @@ impl WorkerJob for GltfParseJob {
 /// constructing a `WorkerPool`.
 pub async fn execute_async(input: GltfParseInput) -> anyhow::Result<GltfParseOutput> {
     let url = input.url;
-    let file_type: GltfFileType = match input.file_type {
-        Some(hint) => hint.into(),
-        None => get_type_from_filename(&url).unwrap_or(GltfFileType::Json),
-    };
-
-    let (doc, blob, doc_bytes) = match file_type {
-        GltfFileType::Json => {
-            let text = gloo_net::http::Request::get(&url)
-                .send()
-                .await?
-                .text()
-                .await?;
-            let bytes = text.into_bytes();
-            let Gltf {
-                document: doc,
-                blob,
-            } = crate::loader::parse_gltf_lenient(&bytes)?;
-            (doc, blob, bytes)
-        }
-        GltfFileType::Glb => {
-            let bytes = gloo_net::http::Request::get(&url)
-                .send()
-                .await?
-                .binary()
-                .await?;
-            // For GLB the worker keeps the original bytes — the
-            // main thread can re-parse `Gltf::from_slice(&bytes)`
-            // and recover both the document and the blob.
-            let Gltf {
-                document: doc,
-                blob,
-            } = crate::loader::parse_gltf_lenient(&bytes)?;
-            (doc, blob, bytes)
-        }
-        _ => return Err(AwsmGltfError::Load.into()),
+    // Mirror `GltfLoader::load`: Draco needs its explicit hint (and is
+    // rejected here); everything else is ONE binary fetch and
+    // `parse_gltf_lenient` sniffs GLB-vs-JSON from the CONTENT ("glTF"
+    // magic ⇒ GLB, else JSON bytes) — the URL extension is never consulted,
+    // so extensionless / query-suffixed URLs parse correctly. A `.gltf`
+    // JSON body is just its UTF-8 bytes, so the binary fetch serves both.
+    // NOTE: no `bypass_http_cache` here yet — this parity path has no live
+    // dispatch site (GltfParseJob is registered but never dispatched); wire
+    // the cache-mode through `GltfParseInput` when/if it is promoted.
+    if matches!(
+        input.file_type.map(GltfFileType::from),
+        Some(GltfFileType::Draco)
+    ) {
+        return Err(AwsmGltfError::Load.into());
+    }
+    let (doc, blob, doc_bytes) = {
+        let bytes = gloo_net::http::Request::get(&url)
+            .send()
+            .await?
+            .binary()
+            .await?;
+        // The worker keeps the original bytes — the main thread can
+        // re-parse `Gltf::from_slice(&bytes)` and recover both the
+        // document and the blob.
+        let Gltf {
+            document: doc,
+            blob,
+        } = crate::loader::parse_gltf_lenient(&bytes)?;
+        (doc, blob, bytes)
     };
 
     let base_path = get_base_path(&url);

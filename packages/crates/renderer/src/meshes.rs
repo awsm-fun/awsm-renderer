@@ -1571,8 +1571,23 @@ impl Meshes {
                 .ok_or(AwsmMeshError::ResourceNotFound(source_resource_key))?;
             match vis_off {
                 Some(vis_abs) => {
+                    // The section math is load-bearing on `insert_resource`'s
+                    // contiguous [vis || attr_index || attr_data] packing with
+                    // the data section running to end-of-run — pin the offset
+                    // monotonicity that packing implies.
+                    debug_assert!(
+                        vis_abs <= idx_off && idx_off <= data_off,
+                        "geometry pool offsets not monotonic: vis {vis_abs} idx {idx_off} data {data_off}"
+                    );
                     let vis_len = idx_off - vis_abs;
                     let idx_len = data_off - idx_off;
+                    debug_assert!(
+                        vis_len + idx_len <= pool.len(),
+                        "geometry pool run shorter than its sections: {} + {} > {}",
+                        vis_len,
+                        idx_len,
+                        pool.len()
+                    );
                     (
                         Some(pool[..vis_len].to_vec()),
                         pool[vis_len..vis_len + idx_len].to_vec(),
@@ -1580,7 +1595,12 @@ impl Meshes {
                     )
                 }
                 None => {
+                    debug_assert!(
+                        idx_off <= data_off,
+                        "geometry pool offsets not monotonic: idx {idx_off} data {data_off}"
+                    );
                     let idx_len = data_off - idx_off;
+                    debug_assert!(idx_len <= pool.len());
                     (None, pool[..idx_len].to_vec(), pool[idx_len..].to_vec())
                 }
             }
