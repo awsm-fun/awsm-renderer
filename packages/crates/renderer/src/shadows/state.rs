@@ -2224,7 +2224,7 @@ impl Shadows {
                     // 003 stage 7: the spot projection follows the depth
                     // convention (finite reverse = near/far swapped, near→1 /
                     // far→0), in lockstep with the compare/clear + receiver.
-                    let projection = self.depth.perspective(fov, 1.0, near, far);
+                    let projection = self.depth.perspective_finite(fov, 1.0, near, far);
                     let view_projection = projection * view;
                     // Approximate world-per-texel for the spot cone at
                     // its far plane: the perspective frustum's footprint
@@ -2376,8 +2376,10 @@ impl Shadows {
                     // the `reverse_z` template axis — they MUST flip together.
                     // The Y-flip only touches NDC.y, so it composes the same
                     // way under both conventions.
-                    let projection =
-                        y_flip * self.depth.perspective(cube_fov, 1.0, POINT_SHADOW_NEAR, r);
+                    let projection = y_flip
+                        * self
+                            .depth
+                            .perspective_finite(cube_fov, 1.0, POINT_SHADOW_NEAR, r);
                     // glTF cube-map face conventions, in the order
                     // WebGPU lays out cube layers: +X, -X, +Y, -Y, +Z, -Z.
                     let face_dirs = [

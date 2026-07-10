@@ -60,7 +60,22 @@ impl Frustum {
         let bottom = Plane::from_row(row3 + row1);
         let top = Plane::from_row(row3 - row1);
         let (near, far) = if reverse_z {
-            (Plane::from_row(row3 - row2), Plane::from_row(row2))
+            // Under INFINITE-far reverse-Z (the main-camera projection) the
+            // far halfspace `z_clip >= 0` is satisfied by every finite point:
+            // row2 degenerates to a zero normal with d = near·w > 0, i.e. an
+            // always-pass plane — geometrically correct (nothing lies beyond
+            // infinity). Normalize that case explicitly so a future refactor
+            // can't accidentally turn it into a cull-everything plane.
+            let far_row = row2;
+            let far = if far_row.truncate().length_squared() < 1e-12 {
+                Plane {
+                    normal: Vec3::ZERO,
+                    d: f32::MAX,
+                }
+            } else {
+                Plane::from_row(far_row)
+            };
+            (Plane::from_row(row3 - row2), far)
         } else {
             (Plane::from_row(row2), Plane::from_row(row3 - row2))
         };

@@ -129,8 +129,19 @@ auto_clip_planes.
       green. Browser A/B: floor + 3 boxes + directional+spot+point — shadows
       present + equivalent both conventions (137,970 vs 138,334 B, 0.26%),
       no acne/peter-pan/missing.
-- [ ] Stage 8: infinite-far main perspective camera
-      (perspective_infinite_reverse_rh; ortho paths stay finite reverse).
+- [x] Stage 8 (this commit): DepthConvention::perspective reverse arm =
+      perspective_infinite_reverse_rh (authored far ignored by the matrix,
+      still carried on CameraMatrices.far for the stage-5 froxel/cascade
+      clamps); NEW perspective_finite (near/far swap) for consumers needing a
+      real far bound — the shadow spot+point writers use it (shadow receivers
+      analytically reconstruct against a finite range). Frustum extraction
+      under infinite-reverse yields an EXPLICIT always-pass far plane (zero
+      normal, d = f32::MAX) — the degenerate row2 was accidentally-safe
+      (d = near·w > 0); now normalized + asserted so a refactor can't turn it
+      into cull-everything. Tests: at-far depth small-positive asymptotic to
+      0, finite helper far → exactly 0, frustum plane-5 sentinel. Browser
+      verify under ?reversez: near sphere (5 u) + walls at 500 u and 2000 u
+      all render with correct occlusion, zero console errors.
 - [ ] Stage 9: relax auto_clip_planes ratio cap; synthetic z-fight repros A/B
       (§9.A scenes); flag default ON (?noreversez rollback).
 

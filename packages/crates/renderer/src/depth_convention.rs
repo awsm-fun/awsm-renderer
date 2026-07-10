@@ -95,10 +95,25 @@ impl DepthConvention {
     }
 
     /// Right-handed perspective projection under this convention ([0,1] NDC
-    /// depth). Finite reverse-Z = the standard matrix with near/far swapped —
-    /// maps near→1, far→0. Stage 8 upgrades the reverse arm to
-    /// `perspective_infinite_reverse_rh`.
-    pub fn perspective(self, fov_y: f32, aspect: f32, near: f32, far: f32) -> glam::Mat4 {
+    /// depth) for the MAIN camera. Reverse-Z uses the INFINITE-far form
+    /// (`perspective_infinite_reverse_rh`) — maximum precision, near→1 and
+    /// depth asymptotically →0 with distance; the authored `far` is ignored
+    /// by the matrix but still carried on `CameraMatrices.far` for the
+    /// froxel/cascade clamps. Consumers needing a REAL finite far plane
+    /// (shadow maps bound their range) use [`Self::perspective_finite`].
+    pub fn perspective(self, fov_y: f32, aspect: f32, near: f32, _far: f32) -> glam::Mat4 {
+        if self.reverse_z {
+            glam::Mat4::perspective_infinite_reverse_rh(fov_y, aspect, near)
+        } else {
+            glam::Mat4::perspective_rh(fov_y, aspect, near, _far)
+        }
+    }
+
+    /// FINITE perspective under this convention — reverse-Z via the near/far
+    /// swap (near→1, far→exactly 0). Shadow writers use this: a shadow map's
+    /// far plane bounds the light range, so infinite-far would break the
+    /// receiver's analytic NDC reconstruction.
+    pub fn perspective_finite(self, fov_y: f32, aspect: f32, near: f32, far: f32) -> glam::Mat4 {
         if self.reverse_z {
             glam::Mat4::perspective_rh(fov_y, aspect, far, near)
         } else {
@@ -176,10 +191,23 @@ mod tests {
         assert!((ndc_z(pf, -near) - 0.0).abs() < 1e-5);
         assert!((ndc_z(pf, -far) - 1.0).abs() < 1e-5);
         assert!((ndc_z(pr, -near) - 1.0).abs() < 1e-5);
-        assert!((ndc_z(pr, -far) - 0.0).abs() < 1e-5);
+        // INFINITE-far reverse: depth decays asymptotically toward 0 with
+        // distance — small and positive at the authored far, smaller further.
+        let at_far = ndc_z(pr, -far);
+        assert!(at_far > 0.0 && at_far < 0.01, "at_far = {at_far}");
+        assert!(ndc_z(pr, -far * 100.0) < at_far);
         // Midpoint ordering flips: closer = larger depth under reverse.
         assert!(ndc_z(pr, -1.0) > ndc_z(pr, -10.0));
         assert!(ndc_z(pf, -1.0) < ndc_z(pf, -10.0));
+    }
+
+    #[test]
+    fn finite_reverse_perspective_maps_far_to_exactly_zero() {
+        let r = DepthConvention { reverse_z: true };
+        let (near, far) = (0.5, 100.0);
+        let p = r.perspective_finite(1.0, 1.0, near, far);
+        assert!((ndc_z(p, -near) - 1.0).abs() < 1e-5);
+        assert!((ndc_z(p, -far) - 0.0).abs() < 1e-5);
     }
 
     #[test]

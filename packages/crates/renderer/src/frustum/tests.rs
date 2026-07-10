@@ -153,7 +153,11 @@ fn reverse_z_extraction_matches_forward_world_planes() {
     let (fov, aspect, near, far) = (60.0_f32.to_radians(), 16.0 / 9.0, 0.3, 250.0);
     let fwd = Frustum::from_view_projection(f.perspective(fov, aspect, near, far) * view, false);
     let rev = Frustum::from_view_projection(r.perspective(fov, aspect, near, far) * view, true);
-    for (i, (pf, pr)) in fwd.planes.iter().zip(rev.planes.iter()).enumerate() {
+    // The reverse projection is INFINITE-far: it has no far plane. Plane 5
+    // must be the explicit always-pass sentinel; compare only planes 0-4.
+    assert_eq!(rev.planes[5].normal, glam::Vec3::ZERO);
+    assert!(rev.planes[5].d > 0.0, "infinite far plane must never cull");
+    for (i, (pf, pr)) in fwd.planes.iter().zip(rev.planes.iter()).enumerate().take(5) {
         let n_dot = pf.normal.normalize().dot(pr.normal.normalize());
         assert!(
             n_dot > 0.9999,
