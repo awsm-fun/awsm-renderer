@@ -1335,3 +1335,45 @@ pub(crate) fn sweep_mesh(scene: &Scene, def: &SweepAlongCurveDef) -> Option<Mesh
     };
     Some(sweep_along_curve(&curve, &cs, &opts))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Axis 3 (006): data maps (normals/roughness) must survive the lossless
+    /// WebP bundle default BYTE-EXACT — a lossy re-encode of a normal map
+    /// corrupts shading in ways no golden catches early. Round-trips a
+    /// synthetic normal-map-like gradient (every channel exercised, including
+    /// alpha) through encode_webp_lossless and asserts pixel identity.
+    #[test]
+    fn lossless_webp_roundtrips_data_maps_byte_exact() {
+        let (w, h) = (64u32, 64u32);
+        let mut rgba = image::RgbaImage::new(w, h);
+        for y in 0..h {
+            for x in 0..w {
+                // A plausible tangent-space normal encoding + varying alpha:
+                // exactly the kind of non-photographic data lossy paths mangle.
+                let nx = (x * 4) as u8;
+                let ny = (y * 4) as u8;
+                let nz = 255 - ((x + y) as u8);
+                let a = 255 - (y as u8);
+                rgba.put_pixel(x, y, image::Rgba([nx, ny, nz, a]));
+            }
+        }
+        let mut png = Vec::new();
+        image::DynamicImage::ImageRgba8(rgba.clone())
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .expect("encode source png");
+
+        let webp = encode_webp_lossless(&png, awsm_renderer_glb_export::ImageMime::Png)
+            .expect("lossless webp encode");
+        let decoded = image::load_from_memory_with_format(&webp, image::ImageFormat::WebP)
+            .expect("decode webp")
+            .into_rgba8();
+        assert_eq!(
+            decoded.as_raw(),
+            rgba.as_raw(),
+            "lossless WebP must be pixel-identical for data maps"
+        );
+    }
+}

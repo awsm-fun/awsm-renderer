@@ -138,6 +138,25 @@ out), with per-texture `WebpLossy{quality}`/`Source` overrides.
   geometry; record the size/decode tradeoff, implement only if clearly a win.
 - Acceptance: bundle size deltas recorded per test scene; pixel-identical goldens.
 
+#### Axis 3 RESULT (2026-07-10)
+- **Bundle coverage: VERIFIED.** Across every test-scene bundle, all raster
+  textures ship as `.webp` (7/7; zero stray PNG/JPEG — the remaining files
+  are geometry `.glb`, cluster/mesh `.bin`, env `.ktx2`, and TOML/JSON/WGSL).
+  The `WebpLossless` default applies to every texture class in real bakes.
+- **Data-map fidelity: PINNED.** New native test
+  `lossless_webp_roundtrips_data_maps_byte_exact` (editor `export.rs`)
+  round-trips a synthetic normal-map gradient (all channels + alpha) through
+  `encode_webp_lossless` — pixel-identical. Lossy WebP is per-texture opt-in
+  only (`TextureExport::WebpLossy`), never silently applied.
+- **Project side-files: DECIDED — keep source bytes.** Saves persist the
+  imported texture's ORIGINAL encoded bytes content-hash-addressed; the
+  project is the authoring-fidelity store (re-encoding would change hashes
+  and destroy the `Source` export option's meaning). Bundles remain the
+  optimized distribution.
+- **Mesh quantization (stretch): DEFERRED** — geometry already ships as
+  compact glb + cluster bins; meshopt adds a decode dependency for unproven
+  wins at current scene scales. Revisit if bundle-size numbers demand it.
+
 ### Axis 4 — Prefabs: clone must never clone data
 Cloning a mesh must NOT clone geometry bytes; same for skins and morphs. Per-instance
 divergence lives in transforms, uniforms, and animation state — not buffers.
