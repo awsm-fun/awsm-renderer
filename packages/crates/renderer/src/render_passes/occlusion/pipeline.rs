@@ -23,7 +23,7 @@ impl OcclusionPipelines {
         bind_groups: &OcclusionBindGroups,
     ) -> Result<Self> {
         ctx.shaders
-            .ensure_keys(ctx.gpu, Self::shader_cache_keys())
+            .ensure_keys(ctx.gpu, Self::shader_cache_keys(ctx.features.reverse_z))
             .await?;
         let descs = Self::build_descriptors(ctx, bind_groups).await?;
         let pipeline_keys = ctx
@@ -39,8 +39,10 @@ impl OcclusionPipelines {
         Ok(Self::from_resolved(pipeline_keys))
     }
 
-    pub fn shader_cache_keys() -> Vec<ShaderCacheKey> {
-        vec![ShaderCacheKey::from(ShaderCacheKeyOcclusionCull)]
+    pub fn shader_cache_keys(reverse_z: bool) -> Vec<ShaderCacheKey> {
+        vec![ShaderCacheKey::from(ShaderCacheKeyOcclusionCull {
+            reverse_z,
+        })]
     }
 
     pub async fn build_descriptors(
@@ -54,7 +56,12 @@ impl OcclusionPipelines {
         )?;
         let shader_key = ctx
             .shaders
-            .get_key(ctx.gpu, ShaderCacheKeyOcclusionCull)
+            .get_key(
+                ctx.gpu,
+                ShaderCacheKeyOcclusionCull {
+                    reverse_z: ctx.features.reverse_z,
+                },
+            )
             .await?;
         Ok(OcclusionPrewarmDescriptors {
             pipeline_cache_keys: vec![ComputePipelineCacheKey::new(

@@ -11,13 +11,17 @@ use crate::{
 
 #[derive(Template, Debug, Default)]
 #[template(path = "occlusion_wgsl/cull.wgsl", whitespace = "minimize")]
-pub struct ShaderTemplateOcclusionCull;
+pub struct ShaderTemplateOcclusionCull {
+    pub reverse_z: bool,
+}
 
 impl TryFrom<&ShaderCacheKeyOcclusionCull> for ShaderTemplateOcclusionCull {
     type Error = AwsmShaderError;
 
-    fn try_from(_value: &ShaderCacheKeyOcclusionCull) -> Result<Self> {
-        Ok(Self)
+    fn try_from(value: &ShaderCacheKeyOcclusionCull) -> Result<Self> {
+        Ok(Self {
+            reverse_z: value.reverse_z,
+        })
     }
 }
 

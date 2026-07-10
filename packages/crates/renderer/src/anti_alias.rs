@@ -194,6 +194,7 @@ impl AwsmRenderer {
                     &mut self.shaders,
                     &hzb.bind_groups,
                     &self.anti_aliasing,
+                    self.features.reverse_z,
                 )
                 .await?,
             )

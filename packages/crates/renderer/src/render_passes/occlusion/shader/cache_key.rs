@@ -2,10 +2,14 @@
 
 use crate::{render_passes::shader_cache_key::ShaderCacheKeyRenderPass, shaders::ShaderCacheKey};
 
-/// Cache key for the occlusion-cull compute shader. Currently no
-/// per-frame variation; one shared pipeline.
+/// Cache key for the occlusion-cull compute shader.
 #[derive(Hash, Debug, Clone, PartialEq, Eq, Default)]
-pub struct ShaderCacheKeyOcclusionCull;
+pub struct ShaderCacheKeyOcclusionCull {
+    /// Depth convention (003): flips the four coupled sites in lockstep with
+    /// the HZB reduce op (init sentinel, nearest-corner reduce, footprint
+    /// reduce, in-front compare) plus the clipped-corner bypass sentinel.
+    pub reverse_z: bool,
+}
 
 impl From<ShaderCacheKeyOcclusionCull> for ShaderCacheKey {
     fn from(key: ShaderCacheKeyOcclusionCull) -> Self {

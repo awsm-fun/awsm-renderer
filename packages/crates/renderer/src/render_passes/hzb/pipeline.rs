@@ -48,7 +48,10 @@ impl HzbPipelines {
         bind_groups: &HzbBindGroups,
     ) -> Result<Self> {
         ctx.shaders
-            .ensure_keys(ctx.gpu, Self::shader_cache_keys(ctx.anti_aliasing))
+            .ensure_keys(
+                ctx.gpu,
+                Self::shader_cache_keys(ctx.anti_aliasing, ctx.features.reverse_z),
+            )
             .await?;
         let descs = Self::build_descriptors(ctx, bind_groups).await?;
         let pipeline_keys = ctx
@@ -67,7 +70,7 @@ impl HzbPipelines {
     /// Shader cache keys for the live AA config — emits the matching
     /// seed variant + the always-needed reduce shader. Previously
     /// emitted both seed variants unconditionally.
-    pub fn shader_cache_keys(anti_aliasing: &AntiAliasing) -> Vec<ShaderCacheKey> {
+    pub fn shader_cache_keys(anti_aliasing: &AntiAliasing, reverse_z: bool) -> Vec<ShaderCacheKey> {
         let seed_msaa = match anti_aliasing.msaa_sample_count {
             Some(4) => Some(4),
             _ => None,
@@ -75,8 +78,9 @@ impl HzbPipelines {
         vec![
             ShaderCacheKey::from(ShaderCacheKeyHzbSeed {
                 msaa_sample_count: seed_msaa,
+                reverse_z,
             }),
-            ShaderCacheKey::from(ShaderCacheKeyHzbReduce),
+            ShaderCacheKey::from(ShaderCacheKeyHzbReduce { reverse_z }),
         ]
     }
 
@@ -91,6 +95,7 @@ impl HzbPipelines {
             ctx.shaders,
             bind_groups,
             ctx.anti_aliasing,
+            ctx.features.reverse_z,
         )
         .await
     }
@@ -107,6 +112,7 @@ impl HzbPipelines {
         shaders: &mut crate::shaders::Shaders,
         bind_groups: &HzbBindGroups,
         anti_aliasing: &AntiAliasing,
+        reverse_z: bool,
     ) -> Result<HzbPrewarmDescriptors> {
         let (seed_msaa, seed_layout_key, seed_slot) = match anti_aliasing.msaa_sample_count {
             Some(4) => (
@@ -137,10 +143,13 @@ impl HzbPipelines {
                 gpu,
                 ShaderCacheKeyHzbSeed {
                     msaa_sample_count: seed_msaa,
+                    reverse_z,
                 },
             )
             .await?;
-        let reduce_shader = shaders.get_key(gpu, ShaderCacheKeyHzbReduce).await?;
+        let reduce_shader = shaders
+            .get_key(gpu, ShaderCacheKeyHzbReduce { reverse_z })
+            .await?;
 
         Ok(HzbPrewarmDescriptors {
             pipeline_cache_keys: vec![

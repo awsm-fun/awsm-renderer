@@ -528,8 +528,13 @@ impl RenderPasses {
             ctx.prep_config,
         ));
         if features.gpu_culling {
-            shader_cache_keys.extend(HzbPipelines::shader_cache_keys(ctx.anti_aliasing));
-            shader_cache_keys.extend(OcclusionPipelines::shader_cache_keys());
+            shader_cache_keys.extend(HzbPipelines::shader_cache_keys(
+                ctx.anti_aliasing,
+                ctx.features.reverse_z,
+            ));
+            shader_cache_keys.extend(OcclusionPipelines::shader_cache_keys(
+                ctx.features.reverse_z,
+            ));
             shader_cache_keys.extend(CompactionPipeline::shader_cache_keys(features));
         }
         // Builder-time prewarm — no dynamic materials can be registered

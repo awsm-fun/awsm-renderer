@@ -23,9 +23,17 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // of an edge pixel and lose the far samples behind it, so for
     // MSAA we explicitly max-reduce across all sample indices.
     var d = textureLoad(depth_tex, coords, 0);
+    {% if reverse_z %}
+    // Reverse-Z (003): farthest = SMALLEST depth, so the conservative
+    // per-pixel occluder bound is the min across samples.
+    d = min(d, textureLoad(depth_tex, coords, 1));
+    d = min(d, textureLoad(depth_tex, coords, 2));
+    d = min(d, textureLoad(depth_tex, coords, 3));
+    {% else %}
     d = max(d, textureLoad(depth_tex, coords, 1));
     d = max(d, textureLoad(depth_tex, coords, 2));
     d = max(d, textureLoad(depth_tex, coords, 3));
+    {% endif %}
     {% else %}
     let d = textureLoad(depth_tex, coords, 0);
     {% endif %}

@@ -64,8 +64,17 @@ auto_clip_planes.
       overlap scene renders with CORRECT depth ordering (front sphere occludes
       rear sphere occludes box; grid + axis lines correct; zero console
       errors) — occlusion culling did not mis-cull this scene pre-stage-3.
-- [ ] Stage 3: HZB + occlusion four coupled flips (seed/reduce min↔max, cull init
-      + compare) — flag-threaded WGSL template axis.
+- [x] Stage 3 (this commit): reverse_z axis on ShaderCacheKeyHzbSeed/HzbReduce/
+      OcclusionCull → templates → WGSL. FIVE coupled sites flipped in lockstep
+      (the doc's four + one it missed): seed MSAA sample-reduce max→min, mip
+      reduce max→min, cull depth_min init 1.0→0.0 + nearest-corner min→max,
+      footprint reduce max→min, in-front compare >→<, AND the clip.w<=0 bypass
+      sentinel 0.0→1.0 (a forward-0.0 sentinel under the flipped compare would
+      have force-CULLED every near-plane-clipped AABB). Browser A/B (wall + 20
+      occluded spheres, gpu_culling on): front-view culled render is BYTE-
+      IDENTICAL across conventions (26,506 B both); behind-view within 28 B;
+      culled spheres reappear byte-identically after orbiting back (no stuck
+      culls). Zero console errors both modes.
 - [ ] Stage 4: frustum extraction both crates + fix stale cull.wgsl:74 comment.
 - [ ] Stage 5: thread explicit near/far to froxels + cascade fit (MANDATORY —
       infinite-far breaks matrix recovery).

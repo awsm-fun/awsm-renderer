@@ -13,6 +13,7 @@ use crate::{
 #[template(path = "hzb_wgsl/seed.wgsl", whitespace = "minimize")]
 pub struct ShaderTemplateHzbSeed {
     pub multisampled_geometry: bool,
+    pub reverse_z: bool,
 }
 
 impl TryFrom<&ShaderCacheKeyHzbSeed> for ShaderTemplateHzbSeed {
@@ -21,6 +22,7 @@ impl TryFrom<&ShaderCacheKeyHzbSeed> for ShaderTemplateHzbSeed {
     fn try_from(value: &ShaderCacheKeyHzbSeed) -> Result<Self> {
         Ok(Self {
             multisampled_geometry: value.msaa_sample_count.is_some(),
+            reverse_z: value.reverse_z,
         })
     }
 }
@@ -35,16 +37,21 @@ impl ShaderTemplateHzbSeed {
     }
 }
 
-/// Reduce shader — max-reduces 2×2 of mip N-1 into mip N.
+/// Reduce shader — reduces 2×2 of mip N-1 into mip N, keeping the FARTHEST
+/// depth (max forward-Z, min reverse-Z).
 #[derive(Template, Debug, Default)]
 #[template(path = "hzb_wgsl/reduce.wgsl", whitespace = "minimize")]
-pub struct ShaderTemplateHzbReduce;
+pub struct ShaderTemplateHzbReduce {
+    pub reverse_z: bool,
+}
 
 impl TryFrom<&ShaderCacheKeyHzbReduce> for ShaderTemplateHzbReduce {
     type Error = AwsmShaderError;
 
-    fn try_from(_value: &ShaderCacheKeyHzbReduce) -> Result<Self> {
-        Ok(Self)
+    fn try_from(value: &ShaderCacheKeyHzbReduce) -> Result<Self> {
+        Ok(Self {
+            reverse_z: value.reverse_z,
+        })
     }
 }
 
