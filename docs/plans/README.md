@@ -14,7 +14,7 @@ final convention, instead of being invalidated and redone.
 |---|------|-----------|
 | 001 | [branch-ssr-cleanup](001-branch-ssr-cleanup.md) | Green CI + the confirmed mechanical SSR/bloom bugs + exposure gaps. Smoke-verify only — full SSR sign-off waits for 004 |
 | 002 | [agent-verify-and-editor-defaults](002-agent-verify-and-editor-defaults.md) | Clean screenshots (MCP view toggles; follow-agent/overlay off by default) + hidden-tab capture — the verification workflow 003+ depends on |
-| 003 | [reverse-z](003-reverse-z.md) | Flag-gated reverse-Z migration — LOCKED scope: infinite-far main camera + shadows migrated in the same pass, mobile keeps Depth24plus, synthetic z-fight repros as before/after, flag default ON at the end |
+| 003 | [reverse-z](003-reverse-z.md) | ✅ COMPLETE — infinite-far reverse-Z default ON (?noreversez rollback); shadows migrated in-pass; z-fight repro proven fixed (forward stripes → reverse clean) |
 | 004 | [ssr-verification](004-ssr-verification.md) | Explicit SSR verification matrix under the new convention + Hi-Z promote-or-delete decision |
 | 005 | [save-load-residuals](005-save-load-residuals.md) | VerifyRoundtrip harness + the last roundtrip gaps (captured-mesh edit, morph multi-track, procedural textures) |
 | 006 | [optimizations](006-optimizations.md) | THE sweep: permanent test scenes in `examples/test-scenes/` (authored on the reverse-Z convention) + 8 optimization axes + feature gaps (global shadows config, env 3-slot verify) |

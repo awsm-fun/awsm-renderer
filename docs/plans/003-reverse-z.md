@@ -142,10 +142,22 @@ auto_clip_planes.
       0, finite helper far → exactly 0, frustum plane-5 sentinel. Browser
       verify under ?reversez: near sphere (5 u) + walls at 500 u and 2000 u
       all render with correct occlusion, zero console errors.
-- [ ] Stage 9: relax auto_clip_planes ratio cap; synthetic z-fight repros A/B
-      (§9.A scenes); flag default ON (?noreversez rollback).
+- [x] Stage 9 (this commit): auto_clip_planes under reverse decouples near
+      from the far/5000 ratio (near = (dist·0.002).clamp(0.05, dist·0.5) —
+      float depth is near-uniform so the bounded ratio was a forward-Z-only
+      crutch; the 0.05 floor is about clipping, not precision). SYNTHETIC
+      Z-FIGHT PROOF (the reason this plan ran early): two coplanar 400×400
+      boxes offset 0.02, camera at 1800 u, near 1 / far 5000 — FORWARD-Z
+      z-fights badly (jagged red/yellow striping across the surface; PNG
+      91,942 B — high-frequency noise), REVERSE-Z renders ONE clean winner
+      (uniform yellow, zero striping; PNG 30,478 B). Editor default flipped:
+      reverse_z_flag() = !url_has_flag("noreversez") (?noreversez = forward
+      rollback/A-B for one release).
 
-**Status:** stages 1a+1b landed — the sections below are the implementation-ready design.
+**Status:** ✅ COMPLETE (2026-07-10) — all nine stages landed, browser-verified
+per-stage (A/B screenshots + byte-level PNG comparisons), reverse-Z is the
+editor DEFAULT (`?noreversez` = rollback). The sections below are the original
+design reference.
 **Scope:** core renderer (`packages/crates/renderer/`) + the shared cameras
 (`web-shared`, editor, model-tests). Reverse-Z is a **global depth convention**;
 it is all-or-nothing for the main camera path and cannot be scoped to just the

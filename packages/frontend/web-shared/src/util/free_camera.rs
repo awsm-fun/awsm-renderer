@@ -186,9 +186,9 @@ impl FreeCamera {
     pub fn set_projection_mode(&mut self, mode: ProjectionMode) {
         self.mode = mode;
         self.perspective
-            .refresh_clip_planes(&self.view, &self.aabb, self.margin);
+            .refresh_clip_planes(&self.view, &self.aabb, self.margin, self.reverse_z);
         self.orthographic
-            .refresh_clip_planes(&self.view, &self.aabb, self.margin);
+            .refresh_clip_planes(&self.view, &self.aabb, self.margin, self.reverse_z);
     }
 
     /// Snap the orbit to an explicit yaw/pitch (radians), preserving the current
@@ -206,9 +206,9 @@ impl FreeCamera {
     pub fn set_orbit(&mut self, yaw: f32, pitch: f32, radius: f32, look_at: Vec3) {
         self.view = CameraView::new(yaw, pitch, look_at, radius);
         self.perspective
-            .refresh_clip_planes(&self.view, &self.aabb, self.margin);
+            .refresh_clip_planes(&self.view, &self.aabb, self.margin, self.reverse_z);
         self.orthographic
-            .refresh_clip_planes(&self.view, &self.aabb, self.margin);
+            .refresh_clip_planes(&self.view, &self.aabb, self.margin, self.reverse_z);
     }
 
     /// Set the perspective vertical field-of-view (radians).
@@ -236,9 +236,9 @@ impl FreeCamera {
         self.view
             .set_radius((fit_distance * margin).max(bounding_radius * 1.05));
         self.perspective
-            .refresh_clip_planes(&self.view, &self.aabb, self.margin);
+            .refresh_clip_planes(&self.view, &self.aabb, self.margin, self.reverse_z);
         self.orthographic
-            .refresh_clip_planes(&self.view, &self.aabb, self.margin);
+            .refresh_clip_planes(&self.view, &self.aabb, self.margin, self.reverse_z);
     }
 
     /// Reset the orbit to the default framing (the `new_default_cube` pose) —
@@ -249,15 +249,15 @@ impl FreeCamera {
         self.margin = 1.1;
         self.view = CameraView::new_aabb(&self.aabb, self.margin);
         self.perspective
-            .refresh_clip_planes(&self.view, &self.aabb, self.margin);
+            .refresh_clip_planes(&self.view, &self.aabb, self.margin, self.reverse_z);
         self.orthographic
-            .refresh_clip_planes(&self.view, &self.aabb, self.margin);
+            .refresh_clip_planes(&self.view, &self.aabb, self.margin, self.reverse_z);
     }
 
     pub fn set_aspect(&mut self, aspect: f32) {
         self.perspective.on_resize(aspect);
         self.orthographic
-            .on_resize(&self.view, &self.aabb, self.margin, aspect);
+            .on_resize(&self.view, &self.aabb, self.margin, aspect, self.reverse_z);
     }
 
     pub fn on_pointer_down(&mut self) {
@@ -277,9 +277,14 @@ impl FreeCamera {
         // Keep both projections current — a mid-zoom mode-switch
         // shouldn't have to wait for the next wheel tick.
         self.perspective
-            .on_wheel(&self.view, &self.aabb, self.margin);
-        self.orthographic
-            .on_wheel(&self.view, &self.aabb, self.margin, delta as f32);
+            .on_wheel(&self.view, &self.aabb, self.margin, self.reverse_z);
+        self.orthographic.on_wheel(
+            &self.view,
+            &self.aabb,
+            self.margin,
+            delta as f32,
+            self.reverse_z,
+        );
     }
 }
 
@@ -421,28 +426,48 @@ impl CameraOrthographicProjection {
             near: 0.01,
             far: 100.0,
         };
-        this.on_resize(view, aabb, margin, aspect);
+        this.on_resize(view, aabb, margin, aspect, false);
         this
     }
 
-    pub fn on_wheel(&mut self, view: &CameraView, aabb: &Aabb, margin: f32, delta: f32) {
+    pub fn on_wheel(
+        &mut self,
+        view: &CameraView,
+        aabb: &Aabb,
+        margin: f32,
+        delta: f32,
+        reverse_z: bool,
+    ) {
         self.zoom(1.0 + delta * 0.001);
-        self.refresh_clip_planes(view, aabb, margin);
+        self.refresh_clip_planes(view, aabb, margin, reverse_z);
     }
 
-    pub fn refresh_clip_planes(&mut self, view: &CameraView, aabb: &Aabb, margin: f32) {
-        let (near, far) = auto_clip_planes(view, aabb, margin);
+    pub fn refresh_clip_planes(
+        &mut self,
+        view: &CameraView,
+        aabb: &Aabb,
+        margin: f32,
+        reverse_z: bool,
+    ) {
+        let (near, far) = auto_clip_planes(view, aabb, margin, reverse_z);
         self.near = near;
         self.far = far;
     }
 
-    pub fn on_resize(&mut self, view: &CameraView, aabb: &Aabb, margin: f32, aspect: f32) {
+    pub fn on_resize(
+        &mut self,
+        view: &CameraView,
+        aabb: &Aabb,
+        margin: f32,
+        aspect: f32,
+        reverse_z: bool,
+    ) {
         let cx = (self.left + self.right) * 0.5;
         let half_h = (self.top - self.bottom) * 0.5;
         let half_w = half_h * aspect;
         self.left = cx - half_w;
         self.right = cx + half_w;
-        self.refresh_clip_planes(view, aabb, margin);
+        self.refresh_clip_planes(view, aabb, margin, reverse_z);
     }
 
     pub fn projection_matrix(
@@ -489,7 +514,7 @@ impl CameraPerspectiveProjection {
             near: 0.01,
             far: 100.0,
         };
-        this.refresh_clip_planes(view, aabb, margin);
+        this.refresh_clip_planes(view, aabb, margin, false);
         this
     }
 
@@ -497,12 +522,18 @@ impl CameraPerspectiveProjection {
         self.aspect = new_aspect;
     }
 
-    pub fn on_wheel(&mut self, view: &CameraView, aabb: &Aabb, margin: f32) {
-        self.refresh_clip_planes(view, aabb, margin);
+    pub fn on_wheel(&mut self, view: &CameraView, aabb: &Aabb, margin: f32, reverse_z: bool) {
+        self.refresh_clip_planes(view, aabb, margin, reverse_z);
     }
 
-    pub fn refresh_clip_planes(&mut self, view: &CameraView, aabb: &Aabb, margin: f32) {
-        let (near, far) = auto_clip_planes(view, aabb, margin);
+    pub fn refresh_clip_planes(
+        &mut self,
+        view: &CameraView,
+        aabb: &Aabb,
+        margin: f32,
+        reverse_z: bool,
+    ) {
+        let (near, far) = auto_clip_planes(view, aabb, margin, reverse_z);
         self.near = near;
         self.far = far;
     }
@@ -533,12 +564,21 @@ impl CameraPerspectiveProjection {
 /// Shared by the perspective and orthographic projections (the ratio only
 /// matters for perspective's non-linear depth, but a robust, clip-free `far`
 /// helps both).
-fn auto_clip_planes(view: &CameraView, aabb: &Aabb, margin: f32) -> (f32, f32) {
+fn auto_clip_planes(view: &CameraView, aabb: &Aabb, margin: f32, reverse_z: bool) -> (f32, f32) {
     let radius = (aabb.size().length() * 0.5 * margin).max(1.0);
     let distance = view.get_position().distance(view.look_at);
     let far = ((distance + radius) * 2.0)
         .max(distance * 4.0)
         .max(radius * 4.0);
-    let near = (far / 5000.0).clamp(0.05, (distance * 0.5).max(0.05));
+    let near = if reverse_z {
+        // Reverse-Z (003 stage 9): float depth precision is near-uniform, so
+        // the bounded ~5000:1 far:near ratio that forward-Z needed to avoid
+        // z-fighting is unnecessary — near no longer scales with far. Keep a
+        // small floor (clipping, not precision) and stay proportional to the
+        // orbit distance so extreme close-ups don't clip.
+        (distance * 0.002).clamp(0.05, (distance * 0.5).max(0.05))
+    } else {
+        (far / 5000.0).clamp(0.05, (distance * 0.5).max(0.05))
+    };
     (near, far)
 }

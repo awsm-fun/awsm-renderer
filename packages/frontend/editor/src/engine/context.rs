@@ -204,10 +204,14 @@ struct AppContext {
     _drop_tracker: Arc<AppContextDropTracker>,
 }
 
-/// The staged reverse-Z rollout flag (`?reversez`) — one source for the main
-/// viewport + the material preview renderer so the two can't diverge.
+/// Reverse-Z is the DEFAULT depth convention (003 rollout complete: all nine
+/// stages landed + browser-verified; the synthetic coplanar-plane repro
+/// z-fights under forward and renders clean under reverse). `?noreversez`
+/// forces the legacy forward-Z convention — kept for one release as the A/B
+/// and rollback lever. One source for the main viewport + the material
+/// preview renderer so the two can't diverge.
 pub fn reverse_z_flag() -> bool {
-    url_has_flag("reversez")
+    !url_has_flag("noreversez")
 }
 
 fn editor_features() -> RendererFeatures {
@@ -242,10 +246,9 @@ fn editor_features() -> RendererFeatures {
         // a bounded VRAM budget in-editor. No-op (early-out) when no cluster mesh is
         // resident, so non-nanite scenes pay nothing per frame. `?nopaging` forces off.
         cluster_paging: !url_has_flag("nopaging"),
-        // Reverse-Z depth convention (docs/plans/003-reverse-z.md). Staged
-        // rollout: opt in with `?reversez` while the migration lands; the
-        // default flips ON at the end of plan 003 (with `?noreversez` as the
-        // A/B + rollback lever for one release).
+        // Reverse-Z depth convention (docs/plans/003-reverse-z.md) — ON by
+        // default since the 003 rollout completed; `?noreversez` = forward-Z
+        // rollback/A-B for one release.
         reverse_z: reverse_z_flag(),
         indirect_first_instance: FeatureToggle::Auto,
     }
