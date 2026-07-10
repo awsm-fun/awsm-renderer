@@ -397,8 +397,8 @@ heightmaps (`displace_from_texture { node, url, strength }`). See the
 - `export_player_bundle` — bake the project to a runtime bundle dir (`scene.toml`
   + `assets/`); files ride the `/bundle` side-channel, the tool returns
   `{ bundle_dir, files, total_bytes, url_base }`. Per-texture bundle encoding is
-  authored with the `set_texture_export` command (lossless WebP default; lossy +
-  quality per texture — `dispatch_command`). `load_player_bundle` — round-trip
+  authored with the dedicated `set_texture_export` tool (lossless WebP default;
+  lossy + quality per texture). `load_player_bundle` — round-trip
   self-test: bundle the current project in-memory, reset, reload through
   `populate_awsm_scene`.
 

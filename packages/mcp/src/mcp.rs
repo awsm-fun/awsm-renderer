@@ -32,10 +32,11 @@ use serde_json::Value;
 use awsm_renderer_editor_protocol::{
     CameraAxis, CompileError, CustomAlphaMode, EditorCommand, EditorMode, EditorQuery, InsertSpec,
     ProceduralKind, QueryResult, Request, Response, ShadowsPatch, SlotSpec, StepKind,
+    TextureExport,
 };
 use awsm_renderer_scene::animation::{
-    BuiltinParamKind, ClipLoop, Interp, LightParamKind, SamplerKind, TexSlot, TexTransformProp,
-    TrackTarget, TrackValue, TransformProp,
+    BuiltinParamKind, ClipDirection, ClipLoop, Interp, LightParamKind, SamplerKind, TexSlot,
+    TexTransformProp, TrackTarget, TrackValue, TransformProp,
 };
 use awsm_renderer_scene::{
     AssetId, EnvSlot, EnvironmentConfig, LightKind, MaterialShading, MeshLodConfig,
@@ -936,6 +937,18 @@ pub struct AddTextureParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct SetTextureExportParams {
+    /// Texture asset UUID (from get_snapshot's `textures`).
+    pub texture: String,
+    /// webp_lossless | webp_lossy | source | default (clears the per-texture
+    /// override back to the lossless-WebP default).
+    pub mode: String,
+    /// Lossy quality 0.0..=1.0 (higher = larger, closer to lossless). Required
+    /// when mode = webp_lossy; ignored otherwise.
+    pub quality: Option<f64>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct MaterialTextureParams {
     /// Mesh node UUID (must already have a custom material assigned).
     pub node: String,
@@ -1572,6 +1585,13 @@ pub struct ClipLoopParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ClipDirectionParams {
+    pub clip: String,
+    /// forward | reverse.
+    pub direction: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct CopyInstanceParams {
     /// Source mesh node UUID.
     pub from: String,
@@ -2163,11 +2183,18 @@ impl EditorMcp {
         let Some(mesh) = &p.mesh else {
             return self.insert(InsertSpec::Instancer, p.parent).await;
         };
-        // Insert + wire the mesh ref in ONE undo step (a Batch), echoing the
+        // Insert + wire the mesh ref in ONE undo step, echoing the
         // caller-minted node id back like the plain `insert` helper.
+        //
+        // Rides `Request::DispatchBatch` (same atomic single-undo semantics as
+        // the `dispatch_batch` tool) — NOT `Request::Dispatch(EditorCommand::
+        // Batch(..))`: `EditorCommand` is internally tagged (`tag = "cmd"`) and
+        // serde cannot serialize a tagged newtype variant holding a sequence,
+        // so a wire `Batch` frame is silently dropped by the ws writer and the
+        // call burns the full request timeout (see tests/wire.rs).
         let id = NodeId::new();
         let mesh = parse_asset(mesh)?;
-        let cmd = EditorCommand::Batch(vec![
+        let cmds = vec![
             EditorCommand::Insert {
                 id,
                 spec: InsertSpec::Instancer,
@@ -2177,8 +2204,8 @@ impl EditorMcp {
                 id,
                 patch: serde_json::json!({ "instancer": { "mesh": mesh } }),
             },
-        ]);
-        match self.req(Request::Dispatch(cmd)).await? {
+        ];
+        match self.req(Request::DispatchBatch(cmds)).await? {
             Response::Ok => Ok(text(id.to_string())),
             Response::Err(e) => Err(McpError::internal_error(e, None)),
             other => Err(unexpected(other)),
@@ -3579,6 +3606,52 @@ impl EditorMcp {
     }
 
     #[tool(
+        description = "Set a texture asset's PER-TEXTURE bundle-export encoding (mode: webp_lossless | webp_lossy | source | default). Authoring preference persisted in the project; takes effect on the NEXT bundle export (export_player_bundle), not on the live scene. webp_lossless is the pixel-identical DEFAULT every raster texture already gets (smaller than PNG); `default` clears the per-texture override back to it. webp_lossy re-encodes at `quality` (0.0..=1.0, required for this mode) for a smaller file at visible-quality cost — ONLY appropriate for color/albedo-like images. WARNING: lossy is NEVER safe for data maps (normal / metallic-roughness / occlusion) — it corrupts the encoded vectors/values (e.g. a visible fresnel sheen from tilted normals) and neither this tool nor the bake guards against it, so keep data maps lossless. `source` ships the original bytes verbatim (already-optimal formats). Undoable. NO query reads this back (get_snapshot's textures list omits it) — the persisted record is the asset entry in project.toml after save_project."
+    )]
+    async fn set_texture_export(
+        &self,
+        Parameters(p): Parameters<SetTextureExportParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let export = match p.mode.as_str() {
+            "default" => None,
+            "webp_lossless" => Some(TextureExport::WebpLossless),
+            "source" => Some(TextureExport::Source),
+            "webp_lossy" => {
+                let quality = p.quality.ok_or_else(|| {
+                    McpError::invalid_params(
+                        "mode \"webp_lossy\" requires `quality` (0.0..=1.0; higher = larger, \
+                         closer to lossless)",
+                        None,
+                    )
+                })?;
+                if !(0.0..=1.0).contains(&quality) {
+                    return Err(McpError::invalid_params(
+                        format!("quality {quality} out of range — expected 0.0..=1.0"),
+                        None,
+                    ));
+                }
+                Some(TextureExport::WebpLossy {
+                    quality: quality as f32,
+                })
+            }
+            other => {
+                return Err(McpError::invalid_params(
+                    format!(
+                        "unknown texture-export mode `{other}` — expected webp_lossless | \
+                         webp_lossy | source | default"
+                    ),
+                    None,
+                ))
+            }
+        };
+        self.dispatch(EditorCommand::SetTextureExport {
+            id: parse_asset(&p.texture)?,
+            export,
+        })
+        .await
+    }
+
+    #[tool(
         description = "Set a built-in material factor on a mesh node's inline material. param: base_color (value = 3 floats RGB, OR 4 floats RGBA where the 4th is the base-color ALPHA — pair with set_builtin_alpha_mode blend for glass) | emissive (3 floats) | metallic | roughness | normal_scale | occlusion_strength (1 float). For KHR extension PARAMS (clearcoat, sheen, transmission, ior, ...) use patch_kind on mesh.material.inline.extensions — e.g. {\"mesh\":{\"material\":{\"inline\":{\"extensions\":{\"clearcoat\":{\"factor\":1.0,\"roughness_factor\":0.0}}}}}}. Extension ENABLES are owned by the library material (update_builtin_material) — inline params only take effect when the material enables the extension; an inline-only extension is dropped."
     )]
     async fn set_builtin_param(
@@ -4494,6 +4567,21 @@ impl EditorMcp {
         .await
     }
 
+    #[tool(
+        description = "Set an animation clip's default play direction: forward | reverse. Sibling of set_clip_speed / set_clip_loop / set_clip_duration (the clip-property family). Reverse plays the clip's keyframes backwards from its duration — e.g. flip an add_spin_track rotation without re-authoring keys or using a negative speed. Undoable (restores the prior direction)."
+    )]
+    async fn set_clip_direction(
+        &self,
+        Parameters(p): Parameters<ClipDirectionParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let direction: ClipDirection = parse_enum(&p.direction, "clip direction")?;
+        self.dispatch(EditorCommand::SetClipDirection {
+            id: parse_asset(&p.clip)?,
+            direction,
+        })
+        .await
+    }
+
     #[tool(description = "Set the clip Animation mode is editing (or clear).")]
     async fn set_current_clip(
         &self,
@@ -4562,7 +4650,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Add a one-line SPIN: a rotation Transform track on `node` that turns `turns` full revolutions about local `axis` [x,y,z] over `duration` seconds, expanded to evenly-spaced quaternion keyframes (`keys_per_turn` per revolution, default 4; linear). Collapses the verbose hand-author-N-quarter-turn-quats workflow for wheels / rotors / fans. `turns` may be fractional (0.25 = a quarter turn) or negative (reverse). Plays/reverses further via set_clip_speed, or dispatch_command {\"cmd\":\"set_clip_direction\",\"id\":<clip>,\"direction\":\"forward|reverse\"} (no dedicated tool). Appends one track (its index = prior track count); undo removes it."
+        description = "Add a one-line SPIN: a rotation Transform track on `node` that turns `turns` full revolutions about local `axis` [x,y,z] over `duration` seconds, expanded to evenly-spaced quaternion keyframes (`keys_per_turn` per revolution, default 4; linear). Collapses the verbose hand-author-N-quarter-turn-quats workflow for wheels / rotors / fans. `turns` may be fractional (0.25 = a quarter turn) or negative (reverse). Plays/reverses further via set_clip_speed / set_clip_direction. Appends one track (its index = prior track count); undo removes it."
     )]
     async fn add_spin_track(
         &self,

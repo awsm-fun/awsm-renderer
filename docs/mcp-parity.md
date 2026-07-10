@@ -28,10 +28,11 @@ tool AND the capability arguably deserves one — those rows are marked ⚠.
 
 ## Summary (2026-07)
 
-- **EditorCommand**: 142 wire tags. 111 covered by dedicated tools/wrappers
+- **EditorCommand**: 142 wire tags. 113 covered by dedicated tools/wrappers
   (2 of those partial: `set_kind`, `set_environment` full-replace), 28 fine as
-  dispatch-only, 1 not exposable (`import_model_from_file`), **2 flagged gaps**
-  (⚠ `set_texture_export`, ⚠ `set_clip_direction`).
+  dispatch-only, 1 not exposable (`import_model_from_file`), **0 flagged gaps**
+  (the two 2026-07 flags — `set_texture_export`, `set_clip_direction` — now
+  have dedicated tools).
 - **EditorQuery**: 38 wire tags. 35 covered by dedicated tools, 3 fine as
   run_query-only (`canvas_pixels`, `sample_clip_timeseries`, `save_census`),
   0 flagged.
@@ -62,7 +63,7 @@ dedicated tool reaches it indirectly · **dispatch** = escape hatch only ·
 | `patch_kind` | `patch_kind` | tool | |
 | `set_particle_emitter` | `set_particle_emitter` | tool | Flat patch-style fields; gravity force field is `acceleration`. |
 | `set_instancer_transforms` | `set_instancer_transforms` | tool | Bulk transform list + optional `per_instance_colors`. |
-| `batch` | `dispatch_batch` | tool | The tool rides `Request::DispatchBatch` (same semantics: one atomic undo step); `insert_instancer{mesh}` also emits a `Batch`. |
+| `batch` | `dispatch_batch` | tool | The tool rides `Request::DispatchBatch` (same semantics: one atomic undo step); `insert_instancer{mesh}` rides it too. NOTE: a `batch` command must NEVER cross the wire inside `Request::Dispatch` — `EditorCommand` is internally tagged (`tag = "cmd"`) and serde can't serialize a tagged newtype variant holding a sequence, so the frame is silently dropped and the request times out (the original `insert_instancer{mesh}` timeout; pinned by `packages/mcp/tests/wire.rs`). `Batch` is the in-process undo grouping only. |
 
 ### Project / import / assets
 
@@ -82,7 +83,7 @@ dedicated tool reaches it indirectly · **dispatch** = escape hatch only ·
 | `add_texture_asset` | `add_texture_asset` | tool | |
 | `delete_asset` | `delete_asset` | tool | |
 | `restore_asset` | — | dispatch | Undo-inverse of `delete_asset` (carries the captured entry). Internal; fine as dispatch-only. |
-| ⚠ `set_texture_export` | — | dispatch | **Flagged gap.** Per-texture bundle-bake encoding (lossless/lossy WebP + quality) is a shipped, persisted editor feature the export workflow depends on; it has no read-back either (only `project.toml`). Deserves `set_texture_export` / read via asset entry. |
+| `set_texture_export` | `set_texture_export` | tool | Per-texture bundle-bake encoding: `webp_lossless` (pixel-identical default) \| `webp_lossy{quality}` \| `source` \| `default` (clears the override). Takes effect on the next `export_player_bundle`; the tool description warns lossy is never safe for data maps (normal / metallic-roughness / occlusion). Still NO read-back (get_snapshot's textures list omits it; persisted record = the asset entry in `project.toml`) — documented in the tool description. |
 | `purge_unused_assets` | `purge_unused` | tool | |
 | `set_asset_selection` | — | dispatch | Transient Content-Browser UI selection; irrelevant to agents. Fine as dispatch-only. |
 
@@ -185,7 +186,7 @@ dedicated tool reaches it indirectly · **dispatch** = escape hatch only ·
 | `set_clip_duration` | `set_clip_duration` | tool | |
 | `set_clip_loop` | `set_clip_loop` | tool | |
 | `set_clip_speed` | `set_clip_speed` | tool | |
-| ⚠ `set_clip_direction` | — | dispatch | **Flagged gap** (small): duration/speed/loop all have tools and `add_spin_track`'s own docs point at direction for reversing — the family is inconsistent without it. |
+| `set_clip_direction` | `set_clip_direction` | tool | `forward` \| `reverse`; completes the clip-property family (duration/speed/loop). `add_spin_track`'s description points here for reversing a spin. |
 | `set_clip_color` | — | dispatch | UI cosmetic (library swatch). Fine as dispatch-only. |
 | `add_track` | `add_track` | tool | Morph target dispatch shape: `{target:"morph", node, index}`. |
 | `add_spin_track` | `add_spin_track` | tool | |
