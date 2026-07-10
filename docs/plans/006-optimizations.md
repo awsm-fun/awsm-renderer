@@ -168,6 +168,25 @@ out), with per-texture `WebpLossy{quality}`/`Source` overrides.
   geometry; record the size/decode tradeoff, implement only if clearly a win.
 - Acceptance: bundle size deltas recorded per test scene; pixel-identical goldens.
 
+#### Axis 2 AUDIT (2026-07-10, scoping — implementation follows axis 4)
+- **Pipeline compile fan-out: ALREADY PARALLEL.** The scheduler pushes each
+  `createComputePipelineAsync` promise into `FuturesUnordered`
+  (pipeline_scheduler/launch.rs), `ensure_keys` awaits via `join_all`, and
+  boot submits pipeline groups as a batch (6 groups observed). No serial
+  staircase found.
+- **Bulk load: a single Replace-join `commit_load` already closes bulk
+  loads** (node_sync.rs:222). Interactive edits commit per USER OP — which
+  IS the transaction law's grain.
+- **Remaining §5b work (queued behind axis 4 — shared editor-bridge
+  files):** (a) node_sync has 17 commit_load sites — the per-node commits
+  fired during import/materialize paths outside the bulk join need
+  consolidation onto it; (b) the observability seam: `wait_render_settled`
+  returns before an async `load_project_from_url` populates — the load must
+  be one settle-visible transaction (drivers currently poll node counts);
+  (c) texture decode concurrency at load (restore_textures loops awaits
+  sequentially — decode via createImageBitmap can overlap).
+- Baseline to beat: kitchen-sink cold load ~306 ms.
+
 #### Axis 3 RESULT (2026-07-10)
 - **Bundle coverage: VERIFIED.** Across every test-scene bundle, all raster
   textures ship as `.webp` (7/7; zero stray PNG/JPEG — the remaining files
