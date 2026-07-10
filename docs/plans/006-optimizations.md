@@ -58,6 +58,25 @@ Wire a `task test-scenes` entry that serves them; goldens verified via the plan-
 clean-screenshot workflow. These scenes are AUTHORED under the reverse-Z convention shipped in 003 (becoming its permanent regression lock)
 and are the bundle inputs for plan 007 (player tests).
 
+## Phase 0 field notes (running, 2026-07-10)
+- **Froxel light culling was dead under reverse-Z** (every punctual light
+  culled; tile unproject anchored at NDC z=0 → w→0 NaN planes under
+  infinite-reverse). Fixed via template axis; `lights-many` is the lock.
+- **Editor decals had never projected** — three stacked bugs fixed (decal
+  classify HZB gate not reverse-Z migrated + broken firstLeadingBit mip
+  selection; bridge hardcoded texture_index 0; one-shot stale world
+  snapshot + half-size wireframe). `decals` scene is the lock. KNOWN GAP:
+  a PROCEDURAL texture in the decal slot still projects white (raster
+  works) — the pool flat-index resolution or decal-pass texture bind-group
+  refresh for freshly-created procedural arrays; fold into axis 1/3 work.
+- **Skinned prefab duplication is visually broken** (clones lose clip
+  binding — tracks target original armature ids — and render mangled bind
+  pose; fresh geometry per clone). `prefab-skinned-morph` golden captures
+  the broken baseline DELIBERATELY; axis 4 fixes then regenerates it.
+- Cross-checks that PASSED during authoring: 005 §3 morph masking verified
+  on-device (two tracks, weights [0.5,0.5]); SSR A/B via ssr_enabled;
+  froxel pools per-light after fix; alpha mask cutoff coverage differences.
+
 ## Phase 0.5 — Feature gaps that must work before "featureful" is true
 
 - **Global shadows config is not wired**: `scene.shadows` (renderer-wide ShadowsConfig)
