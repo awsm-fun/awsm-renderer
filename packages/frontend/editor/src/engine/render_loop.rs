@@ -119,6 +119,30 @@ pub fn frame_stats() -> (f64, f64) {
     FRAME_STATS.with(|s| s.get())
 }
 
+/// One on-demand frame for HIDDEN-tab capture (plan 002 Part B). Browsers
+/// pause rAF for hidden tabs, so every frame-bound request (`screenshot_scene`,
+/// settle barriers, thumbnails) used to hang until a human made the tab
+/// visible. Frame-bound requests arrive over the MCP WebSocket, whose message
+/// task is NOT rAF/timer-throttled — calling this inside that task renders one
+/// frame right now: animation time advances from the wall clock (so
+/// scrub-then-screenshot flows are exact), the frame renders into the
+/// swapchain, and `poll_scene_capture` fulfills pending captures. Uses the same
+/// `LAST_TS` clock as the rAF path so an eventual tab-show resumes seamlessly.
+/// Safe to call while the loop is live (the renderer `try_lock` just skips on
+/// contention), but callers should gate on `document.hidden` — a visible tab's
+/// rAF already renders, and an extra frame is pure waste.
+pub fn render_once_for_capture() {
+    let Some(ts) = now_ms() else { return };
+    let dt_ms = LAST_TS.with(|c| {
+        let prev = c.replace(Some(ts));
+        prev.map(|p| (ts - p).max(0.0)).unwrap_or(0.0)
+    });
+    tick_animation_clock(dt_ms);
+    render_one_frame(dt_ms);
+    let cpu_ms = now_ms().map(|end| (end - ts).max(0.0));
+    record_frame_stats(dt_ms, cpu_ms);
+}
+
 /// Advance the animation transport while playing. The editor owns the clock:
 /// when playing we advance the controller `playhead` with a direct local
 /// `set_neq` — the ruler binds to the `playhead` signal, so it follows without a

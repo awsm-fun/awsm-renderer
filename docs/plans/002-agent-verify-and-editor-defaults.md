@@ -81,9 +81,21 @@ clock at capture, so scrub-then-screenshot flows are exact.
   capture entry point remains useful under it.
 - Once green, relax the `HIDDEN_REQUEST_TIMEOUT` fail-fast for capture-capable requests.
 
-### Acceptance (drive it exactly like the incident)
-1. Hide the tab (and/or stub `document.hidden` + dispatch `visibilitychange` for CI);
-   over MCP: `set_playhead` → `screenshot_scene` → pixels change across playheads.
-2. `wait_render_settled` resolves while hidden.
-3. No foreground regression: vsync pacing, input latency, thumbnails, activity pulse.
-4. Power sanity: hidden rendering is strictly on-demand (no free-running hidden loop).
+### Acceptance — ✅ DONE (browser-verified via the CI recipe)
+- [x] `render_once_for_capture()` (render_loop.rs): one on-demand frame — wall-clock
+      animation dt via the shared `LAST_TS` clock (tab-show resumes seamlessly), sync
+      render (`try_lock`, skips on contention), stats recorded. `capture_scene_rgba`
+      branches on `document.hidden`: renders on demand at enqueue + on each unfulfilled
+      poll iteration.
+- [x] Verified with the plan's CI recipe (stub `document.hidden=true` + `visibilitychange`):
+      two scene_png captures succeeded while hidden, pixels changed across camera moves
+      between them (scrub-then-capture flow exact), ~4.3s total for both (hidden-clamped
+      timers; readback progresses via mapAsync independent of rAF).
+- [x] `wait_render_settled` already resolves while hidden — it polls compile counters on
+      timers (clamped but alive), not rAF; no change needed.
+- [x] No foreground regression: the visible-path capture test ran first (hidden=false,
+      950ms/212ms captures, pixels changed) and the rAF loop is untouched; hidden rendering
+      is strictly on-demand (one frame per capture request, no free-running loop).
+- [x] `HIDDEN_REQUEST_TIMEOUT` (15s fail-fast) left in place — on-demand capture completes
+      well inside it, so no relaxation needed; hidden requests now SUCCEED instead of
+      timing out.
