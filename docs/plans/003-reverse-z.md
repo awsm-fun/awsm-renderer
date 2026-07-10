@@ -97,8 +97,21 @@ auto_clip_planes.
       breaks-on-infinite-far algebra no longer exists to misuse. Browser A/B:
       3 colored point lights at different depths over floor+spheres — froxel
       lighting identical across conventions (PNG 326,786 vs 326,726 B, 0.02%).
-- [ ] Stage 6: depth-consumer sentinels (decal, SSCS, DoF load_depth, material
-      classify recheck, SSR trace + minz lockstep even though gated).
+- [x] Stage 6 (this commit): sentinel + reduce flips behind reverse_z template
+      axes threaded through SEVEN pass families (decal, ssr, ssr_minz,
+      material_prep, material_opaque, material_transparent, effects — the
+      three material passes share the SSCS include): decal sky skip
+      depth>=1.0→<=0.0; SSCS background reject scene_ndc_z>=1.0→<=0.0; DoF
+      load_depth MSAA nearest reduce min→max (its linearize_depth was already
+      reverse-aware); SSR trace sky bail flipped + ssr_minz seed/reduce
+      min→max (Hi-Z traversal compares audited: they run in LINEAR view space
+      via value-agnostic view_pos_from_depth — convention-independent, no flip
+      needed; sky tiles under infinite-far unproject to inf cell_z = still
+      correctly skipped). material_classify + opaque msaa.wgsl audited: all
+      depth compares go through view-space unprojection — no changes needed.
+      Browser A/B: SSR glossy-floor reflections identical across conventions
+      (157,022 vs 157,266 B, 0.16%); bloom+DoF verified working under reverse.
+      320 renderer tests green.
 - [ ] Stage 7: shadows lockstep migration (writers + receiver NDC + bounds +
       EVSM remap + compare + clear together).
 - [ ] Stage 8: infinite-far main perspective camera

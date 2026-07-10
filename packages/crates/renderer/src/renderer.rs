@@ -594,6 +594,7 @@ impl AwsmRenderer {
                     self.prep_config.sscs_enabled,
                     self.prep_config.sscs_step_count,
                     self.post_processing.ssr.enabled,
+                    self.features.reverse_z,
                 )
                 .await?;
         }
@@ -774,7 +775,11 @@ impl AwsmRenderer {
         self.shaders
             .ensure_keys(
                 &self.gpu,
-                MaterialPrepPipelines::shader_cache_keys(multisampled, &self.prep_config),
+                MaterialPrepPipelines::shader_cache_keys(
+                    multisampled,
+                    &self.prep_config,
+                    self.features.reverse_z,
+                ),
             )
             .await?;
         let mut ctx = crate::render_passes::RenderPassInitContext {
@@ -1148,6 +1153,7 @@ impl AwsmRenderer {
                 &self.textures,
                 &self.render_textures.formats,
                 self.features.depth().compare(),
+                self.features.reverse_z,
             )
             .await?;
 
@@ -2224,6 +2230,7 @@ impl AwsmRendererBuilder {
             render_passes::effects::pipeline::EffectsPipelines::shader_cache_keys_for(
                 &anti_aliasing,
                 &post_processing,
+                features.reverse_z,
             )?,
         );
         all_shader_keys.extend(
@@ -2331,7 +2338,13 @@ impl AwsmRendererBuilder {
 
         let effects_descs = render_passes_descs
             .effects_pipelines()
-            .build_descriptors(&anti_aliasing, &post_processing, &gpu, &mut shaders)
+            .build_descriptors(
+                &anti_aliasing,
+                &post_processing,
+                &gpu,
+                &mut shaders,
+                features.reverse_z,
+            )
             .await?;
         let display_descs = render_passes_descs
             .display_pipelines()
@@ -2890,6 +2903,8 @@ impl AwsmRenderer {
                     texture_pool_samplers_len: 1,
                     msaa_sample_count: None,
                     mipmaps: false,
+                    // Depth convention (003) — match the live feature set.
+                    reverse_z: self.features.reverse_z,
                     base: ShadingBase::Custom,
                     pbr_features: awsm_renderer_materials::pbr::PbrFeatures::default().bits(),
                     dispatch_hash: 0,
@@ -2925,6 +2940,8 @@ impl AwsmRenderer {
                     // WGSL validation (custom materials write the default 0
                     // descriptor when SSR is on).
                     write_ssr_descriptor: true,
+                    // Depth convention (003) — match the live feature set.
+                    reverse_z: self.features.reverse_z,
                     msaa_sample_count: None,
                     mipmaps: false,
                     max_shadow_casters: 4,

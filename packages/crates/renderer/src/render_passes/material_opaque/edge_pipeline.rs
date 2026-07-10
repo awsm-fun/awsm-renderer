@@ -268,6 +268,7 @@ impl MaterialEdgePipelines {
         sscs_enabled: bool,
         sscs_step_count: u32,
         write_ssr_descriptor: bool,
+        reverse_z: bool,
     ) -> Result<Option<MaterialEdgePipelineDescriptors>> {
         // No MSAA → no edges → no compile.
         if anti_aliasing.msaa_sample_count.is_none() {
@@ -387,6 +388,8 @@ impl MaterialEdgePipelines {
                     // share one compiled module; both source SSR from the same
                     // post_processing.ssr.enabled.
                     write_ssr_descriptor,
+                    // MUST match builder A (launch.rs) — same features source.
+                    reverse_z,
                     shader_id: entry.shader_id,
                     base: entry.base,
                     owns_skybox,
@@ -457,6 +460,7 @@ impl MaterialEdgePipelines {
         sscs_enabled: bool,
         sscs_step_count: u32,
         write_ssr_descriptor: bool,
+        reverse_z: bool,
     ) -> Result<()> {
         let Some(descs) = self.build_descriptors(
             gpu,
@@ -472,6 +476,7 @@ impl MaterialEdgePipelines {
             sscs_enabled,
             sscs_step_count,
             write_ssr_descriptor,
+            reverse_z,
         )?
         else {
             return Ok(());

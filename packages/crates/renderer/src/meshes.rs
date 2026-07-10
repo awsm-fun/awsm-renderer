@@ -431,6 +431,7 @@ impl AwsmRenderer {
                 &self.textures,
                 &self.render_textures.formats,
                 self.features.depth().compare(),
+                self.features.reverse_z,
                 writes_depth,
                 mat_base,
                 mat_pbr_features,

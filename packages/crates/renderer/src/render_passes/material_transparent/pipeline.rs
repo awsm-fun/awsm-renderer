@@ -104,6 +104,7 @@ impl MaterialTransparentPipelines {
         textures: &Textures,
         render_texture_formats: &RenderTextureFormats,
         depth_compare: CompareFunction,
+        reverse_z: bool,
         material_writes_depth: bool,
         material_base: crate::dynamic_materials::ShadingBase,
         material_pbr_features: u32,
@@ -138,6 +139,7 @@ impl MaterialTransparentPipelines {
                 textures,
                 render_texture_formats,
                 depth_compare,
+                reverse_z,
             )
             .await?;
         Ok(keys[0])
@@ -174,6 +176,7 @@ impl MaterialTransparentPipelines {
         material_bind_groups: &MaterialTransparentBindGroups,
         mesh_buffer_infos: &MeshBufferInfos,
         anti_aliasing: &AntiAliasing,
+        reverse_z: bool,
     ) -> Result<Vec<ShaderCacheKeyMaterialTransparent>>
     where
         I: IntoIterator<Item = &'a TransparentMeshPipelineRequest<'a>>,
@@ -189,6 +192,7 @@ impl MaterialTransparentPipelines {
                 texture_pool_samplers_len,
                 msaa_sample_count: anti_aliasing.msaa_sample_count,
                 mipmaps: anti_aliasing.mipmap,
+                reverse_z,
                 base: req.base,
                 pbr_features: req.pbr_features,
                 dispatch_hash: 0,
@@ -219,6 +223,7 @@ impl MaterialTransparentPipelines {
         anti_aliasing: &AntiAliasing,
         render_texture_formats: &RenderTextureFormats,
         depth_compare: CompareFunction,
+        reverse_z: bool,
     ) -> Result<Vec<RenderPipelineCacheKey>>
     where
         I: IntoIterator<Item = &'a TransparentMeshPipelineRequest<'a>>,
@@ -248,6 +253,7 @@ impl MaterialTransparentPipelines {
                 texture_pool_samplers_len,
                 msaa_sample_count: anti_aliasing.msaa_sample_count,
                 mipmaps: anti_aliasing.mipmap,
+                reverse_z,
                 base: req.base,
                 pbr_features: req.pbr_features,
                 dispatch_hash: 0,
@@ -317,6 +323,7 @@ impl MaterialTransparentPipelines {
         _textures: &Textures,
         render_texture_formats: &RenderTextureFormats,
         depth_compare: CompareFunction,
+        reverse_z: bool,
     ) -> Result<Vec<RenderPipelineKey>>
     where
         I: IntoIterator<Item = TransparentMeshPipelineRequest<'a>>,
@@ -341,6 +348,7 @@ impl MaterialTransparentPipelines {
                 texture_pool_samplers_len,
                 msaa_sample_count: anti_aliasing.msaa_sample_count,
                 mipmaps: anti_aliasing.mipmap,
+                reverse_z,
                 base: req.base,
                 pbr_features: req.pbr_features,
                 dispatch_hash: 0,

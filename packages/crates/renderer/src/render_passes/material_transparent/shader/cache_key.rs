@@ -34,6 +34,8 @@ pub struct ShaderCacheKeyMaterialTransparent {
     pub texture_pool_samplers_len: u32,
     pub msaa_sample_count: Option<u32>,
     pub mipmaps: bool,
+    /// Depth convention (003).
+    pub reverse_z: bool,
     /// Which built-in shading family this transparent material is — the
     /// fragment selects its body at COMPILE time (`{% if base == … %}`),
     /// not via a runtime `shader_id ==` branch. Each distinct

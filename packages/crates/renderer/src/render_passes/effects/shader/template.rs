@@ -46,6 +46,8 @@ pub struct ShaderTemplateEffectsCompute {
     /// glow is added over the composite)
     pub bloom: bool,
     pub dof: bool,
+    /// Depth convention (003) — read by the DoF include (`helpers/dof.wgsl`).
+    pub reverse_z: bool,
     pub debug: ShaderTemplateEffectsDebug,
 }
 
@@ -59,6 +61,7 @@ impl ShaderTemplateEffectsCompute {
             multisampled_geometry: cache_key.multisampled_geometry,
             bloom,
             dof: cache_key.dof,
+            reverse_z: cache_key.reverse_z,
             debug: ShaderTemplateEffectsDebug::new(),
         }
     }

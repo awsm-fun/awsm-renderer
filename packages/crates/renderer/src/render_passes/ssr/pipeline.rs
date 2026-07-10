@@ -28,7 +28,12 @@ impl SsrPipelines {
     /// still keys a distinct compiled pipeline so a resolution_scale change
     /// recompiles. `multisampled` matches the current AA (MSAA → multisampled
     /// depth/normal).
-    fn m1_key(multisampled: bool, half_res: bool, temporal: bool) -> ShaderCacheKeySsr {
+    fn m1_key(
+        multisampled: bool,
+        half_res: bool,
+        temporal: bool,
+        reverse_z: bool,
+    ) -> ShaderCacheKeySsr {
         ShaderCacheKeySsr {
             mode: SsrMode::Glossy,
             // M2c: production marches the min-Z pyramid (Hi-Z). `SsrTrace::PRODUCTION`
@@ -38,6 +43,7 @@ impl SsrPipelines {
             temporal,
             half_res,
             multisampled_geometry: multisampled,
+            reverse_z,
         }
     }
 
@@ -51,7 +57,12 @@ impl SsrPipelines {
         ctx.shaders
             .ensure_keys(
                 ctx.gpu,
-                Self::shader_cache_keys(ctx.anti_aliasing, half_res, temporal),
+                Self::shader_cache_keys(
+                    ctx.anti_aliasing,
+                    half_res,
+                    temporal,
+                    ctx.features.reverse_z,
+                ),
             )
             .await?;
 
@@ -63,7 +74,10 @@ impl SsrPipelines {
 
         let trace_shader = ctx
             .shaders
-            .get_key(ctx.gpu, Self::m1_key(multisampled, half_res, temporal))
+            .get_key(
+                ctx.gpu,
+                Self::m1_key(multisampled, half_res, temporal, ctx.features.reverse_z),
+            )
             .await?;
 
         let cache_keys = vec![ComputePipelineCacheKey::new(trace_shader, pipeline_layout)];
@@ -83,12 +97,14 @@ impl SsrPipelines {
         anti_aliasing: &crate::anti_alias::AntiAliasing,
         half_res: bool,
         temporal: bool,
+        reverse_z: bool,
     ) -> Vec<ShaderCacheKey> {
         let multisampled = anti_aliasing.msaa_sample_count.is_some();
         vec![ShaderCacheKey::from(Self::m1_key(
             multisampled,
             half_res,
             temporal,
+            reverse_z,
         ))]
     }
 }

@@ -28,8 +28,12 @@ impl SsrMinzPipelines {
         bind_groups: &SsrMinzBindGroups,
     ) -> Result<Self> {
         let seed_msaa = Self::seed_msaa(ctx.anti_aliasing);
+        let reverse_z = ctx.features.reverse_z;
         ctx.shaders
-            .ensure_keys(ctx.gpu, Self::shader_cache_keys(ctx.anti_aliasing))
+            .ensure_keys(
+                ctx.gpu,
+                Self::shader_cache_keys(ctx.anti_aliasing, reverse_z),
+            )
             .await?;
 
         let seed_pipeline_layout = ctx.pipeline_layouts.get_key(
@@ -49,12 +53,13 @@ impl SsrMinzPipelines {
                 ctx.gpu,
                 ShaderCacheKeySsrMinzSeed {
                     msaa_sample_count: seed_msaa,
+                    reverse_z,
                 },
             )
             .await?;
         let reduce_shader = ctx
             .shaders
-            .get_key(ctx.gpu, ShaderCacheKeySsrMinzReduce)
+            .get_key(ctx.gpu, ShaderCacheKeySsrMinzReduce { reverse_z })
             .await?;
 
         let cache_keys = vec![
@@ -83,12 +88,14 @@ impl SsrMinzPipelines {
 
     pub fn shader_cache_keys(
         anti_aliasing: &crate::anti_alias::AntiAliasing,
+        reverse_z: bool,
     ) -> Vec<ShaderCacheKey> {
         vec![
             ShaderCacheKey::from(ShaderCacheKeySsrMinzSeed {
                 msaa_sample_count: Self::seed_msaa(anti_aliasing),
+                reverse_z,
             }),
-            ShaderCacheKey::from(ShaderCacheKeySsrMinzReduce),
+            ShaderCacheKey::from(ShaderCacheKeySsrMinzReduce { reverse_z }),
         ]
     }
 }

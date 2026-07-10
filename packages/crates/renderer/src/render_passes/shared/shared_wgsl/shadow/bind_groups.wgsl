@@ -344,7 +344,12 @@ fn apply_sscs(world_pos: vec3<f32>, light_dir: vec3<f32>, max_darkening: f32) ->
             continue;
         }
         let scene_ndc_z = textureLoad(depth_tex, px, 0);
+        {% if reverse_z %}
+        // Reverse-Z (003): background carries the 0.0 clear value.
+        if scene_ndc_z <= 0.0 {
+        {% else %}
         if scene_ndc_z >= 1.0 {
+        {% endif %}
             // Background — no occluder to find here.
             continue;
         }

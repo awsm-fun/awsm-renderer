@@ -111,6 +111,7 @@ impl EffectsPipelines {
     pub fn shader_cache_keys_for(
         anti_aliasing: &AntiAliasing,
         post_processing: &PostProcessing,
+        reverse_z: bool,
     ) -> Result<Vec<ShaderCacheKey>> {
         let slot_inputs = Self::slot_inputs_for(post_processing);
         let multisampled_geometry = anti_aliasing.has_msaa_checked()?;
@@ -122,6 +123,7 @@ impl EffectsPipelines {
                     bloom_phase,
                     dof: post_processing.dof,
                     multisampled_geometry,
+                    reverse_z,
                 })
             })
             .collect())
@@ -149,8 +151,10 @@ impl EffectsPipelines {
         post_processing: &PostProcessing,
         gpu: &AwsmRendererWebGpu,
         shaders: &mut Shaders,
+        reverse_z: bool,
     ) -> Result<EffectsPipelinesDescriptors> {
-        let shader_cache_keys = Self::shader_cache_keys_for(anti_aliasing, post_processing)?;
+        let shader_cache_keys =
+            Self::shader_cache_keys_for(anti_aliasing, post_processing, reverse_z)?;
         let multisampled_geometry = anti_aliasing.has_msaa_checked()?;
         let layout_key = self.layout_key_for(multisampled_geometry);
 
@@ -205,15 +209,17 @@ impl EffectsPipelines {
         pipelines: &mut Pipelines,
         pipeline_layouts: &PipelineLayouts,
         _render_texture_formats: &RenderTextureFormats,
+        reverse_z: bool,
     ) -> Result<()> {
-        let shader_cache_keys = Self::shader_cache_keys_for(anti_aliasing, post_processing)?;
+        let shader_cache_keys =
+            Self::shader_cache_keys_for(anti_aliasing, post_processing, reverse_z)?;
         // Batch 1: 5 shader compiles in parallel.
         shaders
             .ensure_keys(gpu, shader_cache_keys.iter().cloned())
             .await?;
         // Resolve descriptors (sync cache hits) + batch the pipelines.
         let descs = self
-            .build_descriptors(anti_aliasing, post_processing, gpu, shaders)
+            .build_descriptors(anti_aliasing, post_processing, gpu, shaders, reverse_z)
             .await?;
         let resolved = pipelines
             .compute

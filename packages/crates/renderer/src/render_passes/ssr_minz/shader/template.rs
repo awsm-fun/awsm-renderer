@@ -16,6 +16,7 @@ use crate::{
 #[template(path = "ssr_minz_wgsl/seed.wgsl", whitespace = "minimize")]
 pub struct ShaderTemplateSsrMinzSeed {
     pub multisampled_geometry: bool,
+    pub reverse_z: bool,
 }
 
 impl TryFrom<&ShaderCacheKeySsrMinzSeed> for ShaderTemplateSsrMinzSeed {
@@ -24,6 +25,7 @@ impl TryFrom<&ShaderCacheKeySsrMinzSeed> for ShaderTemplateSsrMinzSeed {
     fn try_from(value: &ShaderCacheKeySsrMinzSeed) -> Result<Self> {
         Ok(Self {
             multisampled_geometry: value.msaa_sample_count.is_some(),
+            reverse_z: value.reverse_z,
         })
     }
 }
@@ -41,13 +43,17 @@ impl ShaderTemplateSsrMinzSeed {
 /// Reduce shader — min-reduces 2×2 of mip N-1 into mip N.
 #[derive(Template, Debug, Default)]
 #[template(path = "ssr_minz_wgsl/reduce.wgsl", whitespace = "minimize")]
-pub struct ShaderTemplateSsrMinzReduce;
+pub struct ShaderTemplateSsrMinzReduce {
+    pub reverse_z: bool,
+}
 
 impl TryFrom<&ShaderCacheKeySsrMinzReduce> for ShaderTemplateSsrMinzReduce {
     type Error = AwsmShaderError;
 
-    fn try_from(_value: &ShaderCacheKeySsrMinzReduce) -> Result<Self> {
-        Ok(Self)
+    fn try_from(value: &ShaderCacheKeySsrMinzReduce) -> Result<Self> {
+        Ok(Self {
+            reverse_z: value.reverse_z,
+        })
     }
 }
 

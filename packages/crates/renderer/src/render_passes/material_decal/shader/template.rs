@@ -30,6 +30,8 @@ pub struct ShaderTemplateMaterialDecalCompute {
     /// Stride for unpacking a decal's flat `texture_index` (A.4) — see
     /// [`crate::decals::decal_texture_index_stride`].
     pub texture_pool_layers_per_array: u32,
+    /// Depth convention (003).
+    pub reverse_z: bool,
 }
 
 impl TryFrom<&ShaderCacheKeyMaterialDecal> for ShaderTemplateMaterialDecal {
@@ -48,6 +50,7 @@ impl TryFrom<&ShaderCacheKeyMaterialDecal> for ShaderTemplateMaterialDecal {
                 texture_pool_arrays_len: value.texture_pool_arrays_len,
                 texture_pool_samplers_len: value.texture_pool_samplers_len,
                 texture_pool_layers_per_array: value.texture_pool_layers_per_array,
+                reverse_z: value.reverse_z,
             },
         })
     }

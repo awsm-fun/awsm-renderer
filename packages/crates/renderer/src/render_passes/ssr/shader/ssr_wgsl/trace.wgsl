@@ -115,7 +115,11 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     // Background / sky: nothing to reflect from. Reflection-only output → write
     // zero coverage so the additive composite leaves `composite` untouched.
+    {% if reverse_z %}
+    if (depth <= 0.0) {
+    {% else %}
     if (depth >= 1.0) {
+    {% endif %}
         textureStore(out_tex, coords, vec4<f32>(0.0, 0.0, 0.0, 0.0));
         return;
     }

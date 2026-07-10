@@ -27,9 +27,16 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // nearest sample is the closest potential reflection occluder, and
     // the ray march must not skip it.
     var d = textureLoad(depth_tex, coords, 0);
+    {% if reverse_z %}
+    // Reverse-Z (003): NEAREST = largest depth — max-reduce.
+    d = max(d, textureLoad(depth_tex, coords, 1));
+    d = max(d, textureLoad(depth_tex, coords, 2));
+    d = max(d, textureLoad(depth_tex, coords, 3));
+    {% else %}
     d = min(d, textureLoad(depth_tex, coords, 1));
     d = min(d, textureLoad(depth_tex, coords, 2));
     d = min(d, textureLoad(depth_tex, coords, 3));
+    {% endif %}
     {% else %}
     let d = textureLoad(depth_tex, coords, 0);
     {% endif %}

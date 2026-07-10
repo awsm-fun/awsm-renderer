@@ -493,6 +493,8 @@ impl crate::AwsmRenderer {
                     // M2a: SSR-on ⇒ this kernel writes the reflection descriptor.
                     // Flipping SSR re-keys → recompiles the live opaque modules.
                     write_ssr_descriptor: self.post_processing.ssr.enabled,
+                    // Depth convention (003).
+                    reverse_z: self.features.reverse_z,
                     shader_id,
                     base,
                     owns_skybox,
@@ -738,6 +740,7 @@ impl crate::AwsmRenderer {
                 self.prep_config.sscs_enabled,
                 self.prep_config.sscs_step_count,
                 self.post_processing.ssr.enabled,
+                self.features.reverse_z,
             )? {
             Some(d) => d,
             None => return Ok(()),

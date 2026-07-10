@@ -47,6 +47,8 @@ pub struct ShaderCacheKeyMaterialOpaque {
     /// the descriptor slot unconditionally — a valid layout-superset the SSR-off
     /// shader simply doesn't reference — so no layout rebuild is needed here.)
     pub write_ssr_descriptor: bool,
+    /// Depth convention (003).
+    pub reverse_z: bool,
     pub shader_id: MaterialShaderId,
     /// Which built-in shading family this bucket's template body comes
     /// from. Decoupled from `shader_id` so a per-feature-set PBR variant

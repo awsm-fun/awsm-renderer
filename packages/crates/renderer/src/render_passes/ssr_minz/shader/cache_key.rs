@@ -9,6 +9,8 @@ use crate::{render_passes::shader_cache_key::ShaderCacheKeyRenderPass, shaders::
 #[derive(Hash, Debug, Clone, PartialEq, Eq)]
 pub struct ShaderCacheKeySsrMinzSeed {
     pub msaa_sample_count: Option<u32>,
+    /// Depth convention (003).
+    pub reverse_z: bool,
 }
 
 impl From<ShaderCacheKeySsrMinzSeed> for ShaderCacheKey {
@@ -18,9 +20,12 @@ impl From<ShaderCacheKeySsrMinzSeed> for ShaderCacheKey {
 }
 
 /// Cache key for the min-Z reduce shader (mip N-1 → mip N).
-/// Format-only — no per-frame variation; one shared pipeline.
+/// No per-frame variation; one pipeline per depth convention.
 #[derive(Hash, Debug, Clone, PartialEq, Eq, Default)]
-pub struct ShaderCacheKeySsrMinzReduce;
+pub struct ShaderCacheKeySsrMinzReduce {
+    /// Depth convention (003).
+    pub reverse_z: bool,
+}
 
 impl From<ShaderCacheKeySsrMinzReduce> for ShaderCacheKey {
     fn from(key: ShaderCacheKeySsrMinzReduce) -> Self {

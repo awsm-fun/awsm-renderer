@@ -23,6 +23,8 @@ pub struct ShaderCacheKeyMaterialPrep {
     /// Global SSCS ray-march step count (`ShadowsConfig::sscs_step_count`, ≥1),
     /// baked as the `apply_sscs` loop bound (compile-time constant). Re-keys on change.
     pub sscs_step_count: u32,
+    /// Depth convention (003).
+    pub reverse_z: bool,
 }
 
 impl From<ShaderCacheKeyMaterialPrep> for ShaderCacheKey {

@@ -350,6 +350,7 @@ impl AwsmRenderer {
                 &self.render_passes.material_transparent.bind_groups,
                 &self.meshes.buffer_infos,
                 &self.anti_aliasing,
+                self.features.reverse_z,
             )?
             .into_iter()
             .map(crate::shaders::ShaderCacheKey::from),
@@ -408,6 +409,7 @@ impl AwsmRenderer {
                 &self.anti_aliasing,
                 &self.render_textures.formats,
                 self.features.depth().compare(),
+                self.features.reverse_z,
             )
             .await?;
 

@@ -221,6 +221,7 @@ impl AwsmRenderer {
                 &mut self.pipelines,
                 &self.pipeline_layouts,
                 &self.render_textures.formats,
+                self.features.reverse_z,
             )
             .await?;
 

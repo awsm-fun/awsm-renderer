@@ -42,6 +42,11 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let d01 = textureLoad(src_mip, c01, 0).r;
     let d11 = textureLoad(src_mip, c11, 0).r;
 
+    {% if reverse_z %}
+    // Reverse-Z (003): NEAREST = largest depth — max-reduce.
+    let m = max(max(d00, d10), max(d01, d11));
+    {% else %}
     let m = min(min(d00, d10), min(d01, d11));
+    {% endif %}
     textureStore(dst_mip, dst_coords, vec4<f32>(m, 0.0, 0.0, 0.0));
 }

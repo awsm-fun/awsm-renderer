@@ -22,6 +22,8 @@ pub struct ShaderCacheKeyEffects {
     pub multisampled_geometry: bool,
     pub bloom_phase: BloomPhase,
     pub dof: bool,
+    /// Depth convention (003).
+    pub reverse_z: bool,
 }
 
 impl From<ShaderCacheKeyEffects> for ShaderCacheKey {

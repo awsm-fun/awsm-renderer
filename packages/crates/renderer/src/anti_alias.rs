@@ -355,7 +355,11 @@ impl AwsmRenderer {
             self.shaders
                 .ensure_keys(
                     &self.gpu,
-                    MaterialPrepPipelines::shader_cache_keys(new_msaa_on, &self.prep_config),
+                    MaterialPrepPipelines::shader_cache_keys(
+                        new_msaa_on,
+                        &self.prep_config,
+                        self.features.reverse_z,
+                    ),
                 )
                 .await?;
 
@@ -458,6 +462,7 @@ impl AwsmRenderer {
                 &self.textures,
                 &self.render_textures.formats,
                 self.features.depth().compare(),
+                self.features.reverse_z,
             )
             .await?;
 
@@ -474,6 +479,7 @@ impl AwsmRenderer {
                 &mut self.pipelines,
                 &self.pipeline_layouts,
                 &self.render_textures.formats,
+                self.features.reverse_z,
             )
             .await?;
 

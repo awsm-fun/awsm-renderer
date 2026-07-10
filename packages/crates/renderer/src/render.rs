@@ -2070,6 +2070,7 @@ impl AwsmRenderer {
             bind_groups,
             &self.meshes.buffer_infos,
             &self.anti_aliasing,
+            self.features.reverse_z,
         )?;
         self.shaders.ensure_keys_sync_skip_validate(
             &self.gpu,
@@ -2095,6 +2096,7 @@ impl AwsmRenderer {
                 &self.anti_aliasing,
                 &self.render_textures.formats,
                 self.features.depth().compare(),
+                self.features.reverse_z,
             )
             .now_or_never()
         {

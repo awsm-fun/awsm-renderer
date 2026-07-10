@@ -71,6 +71,7 @@ fn first_party_key_prep(
 ) -> ShaderCacheKeyMaterialOpaque {
     ShaderCacheKeyMaterialOpaque {
         write_ssr_descriptor: false,
+        reverse_z: false,
         texture_pool_arrays_len: 1,
         texture_pool_samplers_len: 1,
         msaa_sample_count: msaa,
@@ -103,6 +104,7 @@ fn custom_key(
     });
     ShaderCacheKeyMaterialOpaque {
         write_ssr_descriptor: false,
+        reverse_z: false,
         texture_pool_arrays_len: 1,
         texture_pool_samplers_len: 1,
         msaa_sample_count: msaa,
@@ -158,6 +160,7 @@ fn sscs_enabled_shaders_validate() {
                 max_shadow_casters: 4,
                 sscs_enabled: true,
                 sscs_step_count: step_count,
+                reverse_z: false,
             })
             .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
             .into_source()
@@ -610,6 +613,7 @@ fn material_prep_shader_validates() {
             max_shadow_casters: 4,
             sscs_enabled: false,
             sscs_step_count: 16,
+            reverse_z: false,
         })
         .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
         .into_source()
@@ -692,6 +696,7 @@ fn custom_froxel_lights_accessors_validate() {
     for (msaa, mips) in CONFIGS {
         let key = ShaderCacheKeyMaterialOpaque {
             write_ssr_descriptor: false,
+            reverse_z: false,
             texture_pool_arrays_len: 1,
             texture_pool_samplers_len: 1,
             msaa_sample_count: msaa,
@@ -744,6 +749,7 @@ fn transparent_first_party_key(
         texture_pool_samplers_len: 1,
         msaa_sample_count: msaa,
         mipmaps: true,
+        reverse_z: false,
         base,
         pbr_features: awsm_renderer_materials::pbr::PbrFeatures::default().bits(),
         dispatch_hash: 0,
@@ -826,6 +832,7 @@ fn ssr_shaders_validate() {
                             temporal,
                             half_res,
                             multisampled_geometry,
+                            reverse_z: false,
                         };
                         let label = format!(
                             "ssr mode={mode:?} trace={trace:?} temporal={temporal} \
@@ -897,6 +904,7 @@ fn decal_shader_validates_with_templated_layer_stride() {
                 texture_pool_arrays_len: 1,
                 texture_pool_samplers_len: 1,
                 texture_pool_layers_per_array: stride,
+                reverse_z: false,
             };
             let label = format!("decal msaa={msaa:?} stride={stride}");
             let src = ShaderTemplateMaterialDecal::try_from(&key)

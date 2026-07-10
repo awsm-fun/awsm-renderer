@@ -526,6 +526,7 @@ impl RenderPasses {
         shader_cache_keys.extend(MaterialPrepPipelines::shader_cache_keys(
             multisampled_geometry,
             ctx.prep_config,
+            ctx.features.reverse_z,
         ));
         if features.gpu_culling {
             shader_cache_keys.extend(HzbPipelines::shader_cache_keys(

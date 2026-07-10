@@ -215,6 +215,11 @@ pub struct ShaderTemplateTransparentMaterialBindGroups {
     /// `sample_shadow_*`. Custom materials force it off. The shadow bind
     /// group + structs stay (ABI). Parity with the opaque path.
     pub needs_shadow_sampling: bool,
+    /// Depth convention (003) — read by the shared SSCS body in
+    /// `shared_wgsl/shadow/bind_groups.wgsl` (inert here: `sscs_available`
+    /// is always `false` on the transparent pass, but the shared template
+    /// references the field, so it must exist).
+    pub reverse_z: bool,
 }
 
 impl ShaderTemplateTransparentMaterialBindGroups {
@@ -235,6 +240,7 @@ impl ShaderTemplateTransparentMaterialBindGroups {
             sscs_available: false,
             sscs_step_count: 1,
             needs_shadow_sampling: inc.apply_lighting,
+            reverse_z: cache_key.reverse_z,
         }
     }
 }

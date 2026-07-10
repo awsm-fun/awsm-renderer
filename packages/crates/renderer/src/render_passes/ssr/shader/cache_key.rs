@@ -69,6 +69,8 @@ pub struct ShaderCacheKeySsr {
     /// multisampled, so the binding types + `textureLoad` change. (The HDR
     /// color source stays the resolved single-sample `transparent` target.)
     pub multisampled_geometry: bool,
+    /// Depth convention (003).
+    pub reverse_z: bool,
 }
 
 impl From<ShaderCacheKeySsr> for ShaderCacheKey {

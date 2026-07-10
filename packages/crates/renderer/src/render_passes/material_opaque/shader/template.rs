@@ -61,6 +61,9 @@ pub struct ShaderTemplateMaterialOpaqueBindGroups {
     /// group so the shared `texture_uv()` / `vertex_color()` / shadow
     /// helpers can `textureLoad` them (`cs_opaque` reads prep under any AA).
     pub prep_present: bool,
+    /// Depth convention (003) — read by the shared SSCS body in
+    /// `shared_wgsl/shadow/bind_groups.wgsl`.
+    pub reverse_z: bool,
 }
 
 /// Compute shader template for the opaque material pass.
@@ -429,6 +432,7 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
                 bucket_entries: bucket_entries.clone(),
                 pad_words_iter,
                 prep_present,
+                reverse_z: value.reverse_z,
             },
             compute: ShaderTemplateMaterialOpaqueCompute {
                 texture_pool_arrays_len,
@@ -707,6 +711,7 @@ mod empty_registry_tests {
     fn render_first_party_wgsl(shader_id: MaterialShaderId, msaa: Option<u32>) -> String {
         let key = ShaderCacheKeyMaterialOpaque {
             write_ssr_descriptor: false,
+            reverse_z: false,
             texture_pool_arrays_len: 1,
             texture_pool_samplers_len: 1,
             msaa_sample_count: msaa,
@@ -927,6 +932,7 @@ return TransparentShadingOutput(vec4<f32>(color, alpha));
             texture_pool_samplers_len: 1,
             msaa_sample_count: None,
             mipmaps: true,
+            reverse_z: false,
             base: crate::dynamic_materials::ShadingBase::Custom,
             pbr_features: awsm_renderer_materials::pbr::PbrFeatures::default().bits(),
             dispatch_hash: 0,
@@ -985,6 +991,7 @@ return TransparentShadingOutput(vec4<f32>(color, alpha));
             texture_pool_samplers_len: 1,
             msaa_sample_count: None,
             mipmaps: true,
+            reverse_z: false,
             base: crate::dynamic_materials::ShadingBase::Pbr,
             pbr_features: awsm_renderer_materials::pbr::PbrFeatures::default().bits(),
             dispatch_hash: 0,
@@ -1044,6 +1051,7 @@ mod size_regression {
         });
         let key = ShaderCacheKeyMaterialOpaque {
             write_ssr_descriptor: false,
+            reverse_z: false,
             texture_pool_arrays_len: 1,
             texture_pool_samplers_len: 1,
             msaa_sample_count: msaa,

@@ -96,6 +96,7 @@ impl MaterialDecalPipelines {
         // (array_index, layer_index). The scene-loader packs with the SAME value
         // via `decals::decal_texture_index_stride` — single source of truth.
         let texture_pool_layers_per_array = crate::decals::decal_texture_index_stride(ctx.gpu);
+        let reverse_z = ctx.features.reverse_z;
 
         Ok(vec![
             DecalShaderDesc {
@@ -104,6 +105,7 @@ impl MaterialDecalPipelines {
                     texture_pool_arrays_len: bind_groups.texture_pool_arrays_len,
                     texture_pool_samplers_len: bind_groups.texture_pool_samplers_len,
                     texture_pool_layers_per_array,
+                    reverse_z,
                 }),
                 layout_key: singlesampled_pipeline_layout_key,
                 is_msaa: false,
@@ -114,6 +116,7 @@ impl MaterialDecalPipelines {
                     texture_pool_arrays_len: bind_groups.texture_pool_arrays_len,
                     texture_pool_samplers_len: bind_groups.texture_pool_samplers_len,
                     texture_pool_layers_per_array,
+                    reverse_z,
                 }),
                 layout_key: multisampled_pipeline_layout_key,
                 is_msaa: true,

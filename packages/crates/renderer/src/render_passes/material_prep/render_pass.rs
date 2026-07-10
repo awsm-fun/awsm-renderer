@@ -93,6 +93,7 @@ impl MaterialPrepPipelines {
     pub fn shader_cache_keys(
         multisampled_geometry: bool,
         prep_config: &crate::render_passes::material_prep::PrepPassConfig,
+        reverse_z: bool,
     ) -> Vec<crate::shaders::ShaderCacheKey> {
         let msaa_sample_count = if multisampled_geometry { Some(4) } else { None };
         let mut keys: Vec<crate::shaders::ShaderCacheKey> = vec![ShaderCacheKeyMaterialPrep {
@@ -100,6 +101,7 @@ impl MaterialPrepPipelines {
             max_shadow_casters: prep_config.clamped_k(),
             sscs_enabled: prep_config.sscs_enabled,
             sscs_step_count: prep_config.sscs_step_count,
+            reverse_z,
         }
         .into()];
         if prep_config.denoise {
@@ -528,6 +530,7 @@ async fn main_cache_key(
                 max_shadow_casters: ctx.prep_config.clamped_k(),
                 sscs_enabled: ctx.prep_config.sscs_enabled,
                 sscs_step_count: ctx.prep_config.sscs_step_count,
+                reverse_z: ctx.features.reverse_z,
             },
         )
         .await?;
@@ -565,6 +568,7 @@ async fn edge_cache_key(
                 max_shadow_casters: ctx.prep_config.clamped_k(),
                 sscs_enabled: ctx.prep_config.sscs_enabled,
                 sscs_step_count: ctx.prep_config.sscs_step_count,
+                reverse_z: ctx.features.reverse_z,
             },
         )
         .await?;

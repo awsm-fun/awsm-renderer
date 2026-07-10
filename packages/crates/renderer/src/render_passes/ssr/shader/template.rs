@@ -27,6 +27,8 @@ pub struct ShaderTemplateSsr {
     pub half_res: bool,
     /// Multisampled depth + normal G-buffer bindings (MSAA).
     pub multisampled_geometry: bool,
+    /// Depth convention (003).
+    pub reverse_z: bool,
 }
 
 impl TryFrom<&ShaderCacheKeySsr> for ShaderTemplateSsr {
@@ -39,6 +41,7 @@ impl TryFrom<&ShaderCacheKeySsr> for ShaderTemplateSsr {
             temporal: value.temporal,
             half_res: value.half_res,
             multisampled_geometry: value.multisampled_geometry,
+            reverse_z: value.reverse_z,
         })
     }
 }

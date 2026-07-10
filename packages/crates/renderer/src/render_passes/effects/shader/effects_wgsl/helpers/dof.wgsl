@@ -59,11 +59,21 @@ fn calculate_coc(linear_depth: f32, camera: Camera) -> f32 {
 // Load depth, handling both multisampled and single-sampled textures
 fn load_depth(coords: vec2<i32>) -> f32 {
     {% if multisampled_geometry %}
+        {% if reverse_z %}
+        // Reverse-Z (003): nearest = LARGEST depth; start from the far
+        // extreme (0.0) and max-reduce.
+        var min_depth = 0.0;
+        for (var s = 0u; s < 4u; s = s + 1u) {
+            let d = textureLoad(depth_tex, coords, i32(s));
+            min_depth = max(min_depth, d);
+        }
+        {% else %}
         var min_depth = 1.0;
         for (var s = 0u; s < 4u; s = s + 1u) {
             let d = textureLoad(depth_tex, coords, i32(s));
             min_depth = min(min_depth, d);
         }
+        {% endif %}
         return min_depth;
     {% else %}
         return textureLoad(depth_tex, coords, 0);
