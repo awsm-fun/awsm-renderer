@@ -734,6 +734,20 @@ fn shade_sample(
     }
     {% endif %}
 
+    {% if write_ssr_descriptor %}
+    // M2a: MSAA EDGE pixels — the bucket that owns sample 0 stores the pixel's
+    // SSR reflection descriptor, mirroring the interior arm's / cs_opaque's
+    // sample-0 convention (and the SSR trace's sample-0 depth read). Exactly
+    // one shader_id owns a given sample, so the write is race-free. The
+    // descriptor texture is never cleared, so without this store edge pixels
+    // kept stale prior-frame reflectivity. Sky-at-sample-0 edge pixels get no
+    // store (the U32_MAX bail above) — the trace bails on depth >= 1.0 there
+    // before ever reading the descriptor.
+    if (sample_index == 0u) {
+        textureStore(reflection_descriptor_tex, coords, vec4<f32>(ssr_reflectivity, ssr_spread));
+    }
+    {% endif %}
+
     return vec4<f32>(color, base_alpha);
 }
 

@@ -402,8 +402,6 @@ pub struct RenderTextureViews {
     /// into the other, swapping by frame parity. 1×1 placeholders unless SSR is
     /// on AND temporal is on.
     pub ssr_history: [web_sys::GpuTextureView; 2],
-    /// Blits the `ssr` result over `transparent` (single-sample color blit).
-    pub ssr_to_transparent_blit_bind_group: web_sys::GpuBindGroup,
     /// M2a material-owned reflection descriptor — `material_opaque` writes it,
     /// the SSR pass reads it.
     pub reflection_descriptor: web_sys::GpuTextureView,
@@ -479,9 +477,6 @@ impl RenderTextureViews {
                 inner.ssr_history_views[1].clone(),
             ],
             reflection_descriptor: inner.reflection_descriptor_view.clone(),
-            ssr_to_transparent_blit_bind_group: inner
-                .ssr_to_transparent_blit_bind_group_no_anti_alias
-                .clone(),
             composite: inner.composite_view.clone(),
             views_recreated,
             curr_index,
@@ -582,9 +577,10 @@ pub struct RenderTexturesInner {
     pub bloom: web_sys::GpuTexture,
     pub bloom_view: web_sys::GpuTextureView,
 
-    /// SSR reflection target — the SSR compute pass storage-writes `base +
-    /// reflection` here, then it blits over `transparent`. Full-res HDR, same
-    /// storage+sample usage as bloom.
+    /// SSR reflection target — the SSR trace storage-writes reflection-only
+    /// premultiplied color here (half-res by default); `SsrComposite`
+    /// additively blends it onto `composite`. HDR, same storage+sample usage
+    /// as bloom.
     pub ssr: web_sys::GpuTexture,
     pub ssr_view: web_sys::GpuTextureView,
     /// M3 SSR temporal history pair — same dims + format as `ssr`. Ping-ponged
@@ -592,8 +588,6 @@ pub struct RenderTexturesInner {
     /// frame). 1×1 placeholders unless `ssr_enabled && ssr_temporal`.
     pub ssr_history: [web_sys::GpuTexture; 2],
     pub ssr_history_views: [web_sys::GpuTextureView; 2],
-    /// SSR result → transparent blit source (always single-sample).
-    pub ssr_to_transparent_blit_bind_group_no_anti_alias: web_sys::GpuBindGroup,
 
     /// M2a material-owned reflection descriptor (Rgba8unorm). `material_opaque`
     /// storage-writes it; the SSR pass texture-reads it. See
@@ -1268,13 +1262,6 @@ impl RenderTexturesInner {
                 None
             };
 
-        // SSR composite: same single-sample color blit pipeline, source = the
-        // SSR reflection target.
-        let ssr_to_transparent_blit_bind_group_no_anti_alias = blit_get_bind_group(
-            gpu,
-            transparent_to_composite_blit_pipeline_no_anti_alias,
-            &ssr_view,
-        );
         Ok(Self {
             visibility_data,
             visibility_data_view,
@@ -1335,7 +1322,6 @@ impl RenderTexturesInner {
             ssr_view,
             ssr_history,
             ssr_history_views,
-            ssr_to_transparent_blit_bind_group_no_anti_alias,
 
             reflection_descriptor,
             reflection_descriptor_view,
