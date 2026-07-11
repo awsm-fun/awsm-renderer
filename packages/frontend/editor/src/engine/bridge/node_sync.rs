@@ -754,20 +754,42 @@ async fn apply_kind(entry: Arc<RendererNode>, kind: NodeKind, declare_only: bool
         // The sole procedural-geometry path: read the baked stack from the mesh
         // cache + upload with the node's assigned material (magenta when None).
         // Primitives + sweeps are now `MeshDef` stacks behind this same arm.
-        NodeKind::Mesh { mesh, .. } => match super::mesh_cache::get_raw(mesh.0) {
-            Some(raw) => {
-                upload_simple_mesh(
-                    entry.clone(),
-                    raw,
-                    MeshMaterial::Assigned(selected_material),
-                    declare_only,
-                )
-                .await;
+        // GEOMETRY SHARING (axis 4, static): when another live node already
+        // materialized this exact mesh ASSET, duplicate its mesh over the
+        // shared resource instead of re-uploading — N duplicates (or a
+        // reloaded project full of them) keep ONE geometry upload. Vertex
+        // edits stay consistent: they re-bake the asset's cache and
+        // re-materialize every node using it, so shared-asset semantics are
+        // unchanged.
+        NodeKind::Mesh { mesh, .. } => {
+            if materialize_static_duplicate(
+                &entry,
+                mesh.0,
+                selected_material.as_ref(),
+                declare_only,
+            )
+            .await
+            {
+                // shared a donor's geometry — nothing to upload
+            } else {
+                match super::mesh_cache::get_raw(mesh.0) {
+                    Some(raw) => {
+                        upload_simple_mesh(
+                            entry.clone(),
+                            raw,
+                            MeshMaterial::Assigned(selected_material),
+                            declare_only,
+                        )
+                        .await;
+                    }
+                    None => {
+                        tracing::warn!(
+                            "NodeKind::Mesh {mesh:?}: not in the capture cache; renders empty"
+                        )
+                    }
+                }
             }
-            None => {
-                tracing::warn!("NodeKind::Mesh {mesh:?}: not in the capture cache; renders empty")
-            }
-        },
+        }
         // A skinned glTF import: the renderer's `populate_gltf` already built the
         // skinned mesh + skeleton; we keep that copy rendering (it deforms via the
         // joints) and just (re)assign this node's material/shadow to it. NOT the
@@ -1145,6 +1167,118 @@ fn resolve_skin_joint_transforms(
 /// of re-uploading (axis 4: clone must never clone data). Returns the donor's
 /// `MeshKey`; `None` when this node is the first of its geometry (the normal
 /// first-materialize) or no candidate is live/skinned right now.
+/// Find a live node whose materialized drawable can serve as the geometry
+/// donor for a `NodeKind::Mesh` referencing the same mesh ASSET — the static
+/// counterpart of [`find_skinned_geometry_donor`]. Only node-owned drawables
+/// (`model_meshes`) qualify; liveness is validated against the renderer, and
+/// instanced meshes are skipped (an instancer's drawable carries per-instance
+/// state a plain duplicate must not inherit).
+fn find_static_geometry_donor(
+    r: &awsm_renderer::AwsmRenderer,
+    node_id: NodeId,
+    mesh_asset: crate::engine::scene::AssetId,
+) -> Option<awsm_renderer::meshes::MeshKey> {
+    let b = bridge();
+    let nodes = b.nodes.lock().unwrap();
+    for entry in nodes.values() {
+        if entry.node_id == node_id {
+            continue;
+        }
+        let NodeKind::Mesh { mesh: other, .. } = entry.node.kind.get_cloned() else {
+            continue;
+        };
+        if other.0 != mesh_asset {
+            continue;
+        }
+        for mk in entry.model_meshes.lock().unwrap().iter() {
+            if let Ok(m) = r.meshes.get(*mk) {
+                if !m.instanced {
+                    return Some(*mk);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Materialize a `NodeKind::Mesh` by SHARING an existing node's geometry:
+/// duplicate the donor's mesh (refcounted resource — no re-upload) with this
+/// node's own material/shadow/visibility. Returns `false` (having created
+/// nothing) when there is no donor or the resolved material needs a pass
+/// representation the donor's geometry doesn't carry — the caller then takes
+/// the fresh `upload_simple_mesh` path.
+async fn materialize_static_duplicate(
+    entry: &Arc<RendererNode>,
+    mesh_asset: crate::engine::scene::AssetId,
+    material: Option<&awsm_renderer_editor_protocol::dynamic_material::MaterialInstance>,
+    declare_only: bool,
+) -> bool {
+    let visible = entry.node.visible.get();
+    let shadow_cfg = entry
+        .node
+        .kind
+        .get_cloned()
+        .mesh_shadow()
+        .copied()
+        .unwrap_or_default();
+    let shadow_flags = mesh_shadow_flags_from_config(&shadow_cfg);
+
+    let handle = renderer_handle();
+    let mut r = handle.lock().await;
+    let Some(donor_mk) = find_static_geometry_donor(&r, entry.node_id, mesh_asset) else {
+        return false;
+    };
+    // Same geometry ⇒ same vertex-colour classification as the donor.
+    let vertex_color_set = mesh_vertex_color_set(&r, donor_mk);
+    let mat_key = resolve_assigned_material(&mut r, material, vertex_color_set);
+    // The duplicate reuses the donor's uploaded representations — a material
+    // routed to a pass the donor's geometry has no representation for can't
+    // share; fall back to the fresh-upload path, which packs the right kind.
+    let donor_has_rep = if r.materials.is_transparency_pass(mat_key) {
+        r.meshes
+            .transparency_geometry_data_buffer_offset(donor_mk)
+            .is_ok()
+    } else {
+        r.meshes
+            .visibility_geometry_data_buffer_offset(donor_mk)
+            .is_ok()
+    };
+    if !donor_has_rep {
+        r.remove_material(mat_key);
+        return false;
+    }
+    let sub_tk = r
+        .transforms
+        .insert(Transform::IDENTITY, Some(entry.transform_key));
+    match r.duplicate_mesh_with_transform(donor_mk, sub_tk) {
+        Ok(mk) => {
+            let _ = r.set_mesh_material(mk, mat_key);
+            let _ = r.set_mesh_hidden(mk, !visible);
+            let _ = r.set_mesh_shadow_flags(mk, shadow_flags);
+            if !declare_only {
+                if let Err(e) = r
+                    .commit_load(crate::engine::activity::commit_phase_handler())
+                    .await
+                {
+                    tracing::warn!("commit_load (static duplicate): {e}");
+                }
+            }
+            drop(r);
+            entry.model_meshes.lock().unwrap().push(mk);
+            entry.model_transforms.lock().unwrap().push(sub_tk);
+            entry.material_keys.lock().unwrap().push(mat_key);
+            bridge().register_mesh(mk, entry.node_id);
+            true
+        }
+        Err(e) => {
+            r.transforms.remove(sub_tk);
+            r.remove_material(mat_key);
+            tracing::warn!("static duplicate: duplicate_mesh_with_transform failed: {e}");
+            false
+        }
+    }
+}
+
 fn find_skinned_geometry_donor(
     r: &awsm_renderer::AwsmRenderer,
     node_id: NodeId,
