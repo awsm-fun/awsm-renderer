@@ -18,6 +18,7 @@ use crate::render_passes::cluster_lod::{
     bind_group::{ClusterCompactionBindGroups, ClusterCutBindGroups},
     buffers::ClusterLodBuffers,
     pipeline::ClusterLodPipelines,
+    planner::{self, GroupGraph, PagingOp, PlannerCaps, PlannerScratch},
 };
 use crate::render_passes::RenderPassInitContext;
 
@@ -71,10 +72,11 @@ pub struct ClusterMeshState {
 /// against current residency — no GPU feedback/readback. This struct holds that
 /// persistent state plus pooled scratch (no per-frame heap allocation).
 ///
-/// **Step 20a (this slice):** holds the full pages + computes the per-frame
-/// desired cut + logs how it tracks the camera. No geometry streaming yet (that
-/// needs the exploded slot-write API, step 20b), so the drawn frontier — and thus
-/// the render — is unchanged this slice.
+/// The per-frame decision logic itself is the pure
+/// [`planner`](crate::render_passes::cluster_lod::planner) (unit-tested
+/// natively); this struct owns its inputs (residency bookkeeping + the
+/// init-time [`GroupGraph`]) and applies the planned ops through the GPU-write
+/// paths in [`ClusterLodRenderPass::stream_paging`].
 pub struct ClusterPaging {
     /// The full DAG's un-clamped cluster pages (`lod_error`/`parent_error` are the
     /// bake's real interval — NOT the resident frontier's clamped `0`/`MAX`). The
@@ -90,38 +92,41 @@ pub struct ClusterPaging {
     /// shows the cut tracking the camera without per-frame spam.
     last_desired_logged: usize,
 
-    // ── CPU geometry, to build a streamed slot's exploded bytes (consumed in 20b-iv) ──
+    // ── CPU geometry, to build a streamed slot's exploded bytes ──
     /// Original unique-vertex positions (`cm.positions`); a slot's exploded verts
     /// gather these by `indices[page.first_index + k]`.
-    #[allow(dead_code)] // read by the per-frame streamer (step 20b-iv)
     positions: Vec<[f32; 3]>,
     /// Original unique-vertex normals (`cm.normals`); empty ⇒ the streamer defaults.
-    #[allow(dead_code)] // read by the per-frame streamer (step 20b-iv)
     normals: Vec<[f32; 3]>,
     /// Original triangle index buffer (`cm.indices`) the pages' spans address.
-    #[allow(dead_code)] // read by the per-frame streamer (step 20b-iv)
     indices: Vec<u32>,
 
     // ── residency bookkeeping in FULL-DAG cluster space (the page-pool state) ──
     /// `resident[cluster_id]` = its page-pool slot, or `-1` (absent). Length =
     /// `pages.len()`.
-    #[allow(dead_code)] // mutated by the per-frame streamer (step 20b-iv)
     resident: Vec<i32>,
     /// `slot_cluster[slot]` = the full-DAG cluster currently in that slot, or `-1`
     /// (free). Length = `pool_slots`.
-    #[allow(dead_code)] // mutated by the per-frame streamer (step 20b-iv)
     slot_cluster: Vec<i32>,
     /// `slot_last_used[slot]` = the `frame` the slot was last in the desired cut
-    /// (LRU eviction key). Length = `pool_slots`.
-    #[allow(dead_code)] // mutated by the per-frame streamer (step 20b-iv)
+    /// (the planner's LRU / coldness key). Length = `pool_slots`.
     slot_last_used: Vec<u64>,
     /// Fixed page-pool capacity (slots) — the VRAM bound.
-    #[allow(dead_code)] // read by the per-frame streamer (step 20b-iv)
     pool_slots: usize,
 
-    // ── pooled per-frame scratch (no per-frame heap allocation in 20b-iv) ──
+    // ── the planner (20b-iv-b-2c) ──
+    /// DAG simplification-group graph, reconstructed once at init from the
+    /// pages' bit-exact shared group spheres (no bake-format change).
+    graph: GroupGraph,
+    /// Per-frame op caps + the rule-d cold horizon.
+    caps: PlannerCaps,
+    /// Pooled planner scratch (no per-frame allocation).
+    scratch: PlannerScratch,
+    /// The planned ops, refilled each frame (pooled).
+    ops: Vec<PagingOp>,
+
+    // ── pooled per-frame scratch (no per-frame heap allocation) ──
     /// One slot's exploded visibility bytes (`PAGE_VERTS*56`).
-    #[allow(dead_code)] // reused by the per-frame streamer (step 20b-iv)
     slot_bytes_scratch: Vec<u8>,
     /// One slot's triangle-order corner indices (`PAGE_VERTS`) + slot-relative
     /// source indices, reused per stream.
@@ -131,12 +136,6 @@ pub struct ClusterPaging {
     /// span), reused every stream so the buffer-write helpers don't allocate.
     page_bytes_scratch: Vec<u8>,
     src_bytes_scratch: Vec<u8>,
-    /// `desired_flag[cluster_id]` = is this cluster in the current frame's desired
-    /// cut. Pooled membership test for the eviction sweep (length = full DAG). Set
-    /// from `desired` at the top of `stream_paging`, cleared at the end — so it is
-    /// `false` everywhere between frames (no per-frame alloc, no per-frame clear of
-    /// the whole vector).
-    desired_flag: Vec<bool>,
     /// Exploded verts per page-pool slot (= `CLUSTER_PAGE_VERTS`); the slot byte math.
     page_verts: usize,
 }
@@ -175,6 +174,29 @@ impl ClusterPaging {
                 resident[cid as usize] = slot as i32;
             }
         }
+        // Reconstruct the DAG's simplification-group graph from the pages'
+        // bit-exact shared group spheres (once; the planner's rules c/d walk it
+        // every frame without allocating).
+        let graph = GroupGraph::build(&pages);
+        let gs = graph.stats();
+        tracing::info!(
+            "cluster paging: group graph — {} groups over {} clusters ({} roots, {} leaves, \
+             {} parentless groups) [20b-iv-b-2c]",
+            gs.groups,
+            pages_len,
+            gs.roots,
+            gs.leaves,
+            gs.parentless_groups,
+        );
+        if gs.unmatched_nonleaf > 0 {
+            // Would mean the bake stopped writing group spheres by copy — the
+            // affected clusters simply never retire per-group (rules c-down/d
+            // skip them); rendering stays correct.
+            tracing::warn!(
+                "cluster paging: {} non-leaf clusters matched no group (bit-exact key miss)",
+                gs.unmatched_nonleaf
+            );
+        }
         Self {
             pages,
             desired: Vec::new(),
@@ -187,12 +209,15 @@ impl ClusterPaging {
             slot_cluster,
             slot_last_used: vec![0u64; pool_slots],
             pool_slots,
+            graph,
+            caps: PlannerCaps::default(),
+            scratch: PlannerScratch::new(pages_len),
+            ops: Vec::new(),
             slot_bytes_scratch: Vec::new(),
             corner_scratch: Vec::new(),
             src_idx_scratch: Vec::new(),
             page_bytes_scratch: Vec::new(),
             src_bytes_scratch: Vec::new(),
-            desired_flag: vec![false; pages_len],
             page_verts,
         }
     }
@@ -275,18 +300,19 @@ impl ClusterLodRenderPass {
         }
     }
 
-    /// Per-frame Gap-B dynamic paging (CPU-driven; step 20b-iv-b-2b). No-op unless
+    /// Per-frame Gap-B dynamic paging (CPU-driven; step 20b-iv-b-2c). No-op unless
     /// paging is armed + a cluster render mesh + buffers exist.
     ///
-    /// Computes the camera-adaptive complete antichain (`select_cut_per_cluster` over
-    /// the full DAG), then STREAMS the desired clusters that aren't resident yet into
-    /// FREE page-pool slots — writing the slot's exploded visibility verts, its GPU
-    /// page (clamped always-draw), its slot-aligned source indices, and its residency
-    /// entry. Free-slots-only ⇒ it only ADDS coverage, never removes it ⇒ crack-free
-    /// (the coarser ancestor stays resident+drawn until its region is fully refined;
-    /// at most a transient z-fight overlap, never a hole). Bounded: refinement caps at
-    /// `pool_slots` (coarser where it doesn't fit). LRU eviction (to recycle slots that
-    /// leave the antichain) is the next layer (20b-iv-b-2c). All scratch is pooled.
+    /// Computes the camera-adaptive complete antichain (`select_cut_per_cluster`
+    /// over the full DAG), hands it to the pure [`planner`] (which streams
+    /// desired∧non-resident clusters into free slots, retires per-group-redundant
+    /// residents, and — under pool pressure — coarsens cold groups by write-over,
+    /// see the planner docs for the crack-free argument), then applies the planned
+    /// ops through the GPU-write paths: a `Load` writes the slot's exploded
+    /// visibility verts, its GPU page (clamped always-draw), its slot-aligned
+    /// source indices, and its residency entry; an `Evict` clears the residency
+    /// entry (the cut skips the slot). All scratch is pooled — zero steady-state
+    /// heap allocation.
     pub fn stream_paging(
         &mut self,
         gpu: &AwsmRendererWebGpu,
@@ -313,145 +339,111 @@ impl ClusterLodRenderPass {
                 &mut p.desired,
             );
 
+            // Plan this frame's ops (pure CPU — the residency bookkeeping is
+            // updated in place; `p.ops` receives the GPU work, in order).
+            let stats = planner::plan(
+                &p.desired,
+                p.frame,
+                &p.graph,
+                &mut p.resident,
+                &mut p.slot_cluster,
+                &mut p.slot_last_used,
+                &p.caps,
+                &mut p.scratch,
+                &mut p.ops,
+            );
+
+            // Apply the ops via the slot-write paths. All of a frame's writes land
+            // before the next submit, so the batch is atomic to the draw — the
+            // planner's cover invariant holds at every drawn frame.
             let data_buf = meshes.visibility_geometry_data_gpu_buffer();
             let data_off = meshes.visibility_geometry_data_buffer_offset(render_mesh)?;
             let pv = p.page_verts;
             const STRIDE: usize = 56; // visibility vertex bytes
-            const MAX_LOADS: usize = 96; // cap streams/frame so a camera jump doesn't hitch
-
-            // Mark this frame's desired cut for the membership test the eviction sweep
-            // (below) needs. Cleared again at the end of the frame so `desired_flag` is
-            // all-false between frames — no per-frame alloc, no full-vector clear.
-            for &c in &p.desired {
-                p.desired_flag[c as usize] = true;
-            }
-
-            let mut next_free = 0usize; // free-slot scan cursor (monotone within a frame)
-            let mut streamed = 0usize;
-            // True once every desired cluster is resident — only then is it crack-free to
-            // evict the resident-but-no-longer-desired slots (resident becomes EXACTLY the
-            // antichain `desired`). While loads are still pending we keep the coarser
-            // ancestors resident (transient overlap = z-fight, never holes).
-            let mut all_desired_resident = true;
-            let mut i = 0usize;
-            while i < p.desired.len() {
-                let cluster = p.desired[i] as usize;
-                i += 1;
-                if p.resident[cluster] >= 0 {
-                    p.slot_last_used[p.resident[cluster] as usize] = p.frame; // keep warm
-                    continue;
-                }
-                if streamed >= MAX_LOADS {
-                    all_desired_resident = false; // capped this frame ⇒ more to stream next
-                    continue;
-                }
-                // Find a FREE slot (stream-into-free-before-evict ⇒ crack-free).
-                while next_free < p.pool_slots && p.slot_cluster[next_free] >= 0 {
-                    next_free += 1;
-                }
-                if next_free >= p.pool_slots {
-                    all_desired_resident = false; // pool full — bounded partial refinement
-                    break;
-                }
-                let slot = next_free;
-                next_free += 1;
-
-                let page = p.pages[cluster];
-                let ic = (page.index_count as usize).min(pv);
-                let f = page.first_index as usize;
-                // Slot corner indices (triangle order), padded to a full slot.
-                p.corner_scratch.clear();
-                for k in 0..pv {
-                    let v = if k < ic {
-                        p.indices[f + k]
-                    } else if ic > 0 {
-                        p.indices[f]
-                    } else {
-                        0
-                    };
-                    p.corner_scratch.push(v);
-                }
-                crate::mesh_pack::pack_visibility_slot_bytes(
-                    &p.positions,
-                    &p.normals,
-                    &p.corner_scratch,
-                    slot,
-                    pv,
-                    awsm_renderer_core::pipeline::primitive::FrontFace::Ccw,
-                    &mut p.slot_bytes_scratch,
-                );
-                gpu.write_buffer(
-                    data_buf,
-                    Some(crate::renderer::cluster_slot_data_offset(
-                        data_off,
-                        slot,
-                        pv * STRIDE,
-                    )),
-                    p.slot_bytes_scratch.as_slice(),
-                    None,
-                    None,
-                )?;
-                // The slot's GPU page: clamp always-draw, slot-aligned source span.
-                let mut gp = page;
-                gp.lod_error = 0.0;
-                gp.parent_error = f32::MAX;
-                gp.first_index = (slot * pv) as u32;
-                gp.index_count = ic as u32;
-                buffers.write_page_entry(gpu, slot, &gp, &mut p.page_bytes_scratch)?;
-                p.src_idx_scratch.clear();
-                for k in 0..ic {
-                    p.src_idx_scratch.push((slot * pv + k) as u32);
-                }
-                buffers.write_source_indices_span(
-                    gpu,
-                    (slot * pv) as u32,
-                    &p.src_idx_scratch,
-                    &mut p.src_bytes_scratch,
-                )?;
-                // GPU resident is SLOT-indexed: mark this slot drawable (value = slot).
-                buffers.write_resident_entry(gpu, slot, slot as i32)?;
-                p.resident[cluster] = slot as i32;
-                p.slot_cluster[slot] = cluster as i32;
-                p.slot_last_used[slot] = p.frame;
-                streamed += 1;
-            }
-
-            // Eviction sweep — only when the whole desired cut is resident, so dropping
-            // the no-longer-desired slots leaves EXACTLY the crack-free antichain. This is
-            // what makes the draw FALL on zoom-out and recycles slots within the bounded
-            // pool. Capped per frame; pages stay always-draw so a free slot simply isn't
-            // selected by the cut (resident < 0).
-            let mut evicted = 0usize;
-            if all_desired_resident {
-                for slot in 0..p.pool_slots {
-                    if evicted >= MAX_LOADS {
-                        break;
+            for op in &p.ops {
+                match *op {
+                    PagingOp::Load { cluster, slot } => {
+                        let cluster = cluster as usize;
+                        let slot = slot as usize;
+                        let page = p.pages[cluster];
+                        let ic = (page.index_count as usize).min(pv);
+                        let f = page.first_index as usize;
+                        // Slot corner indices (triangle order), padded to a full slot.
+                        p.corner_scratch.clear();
+                        for k in 0..pv {
+                            let v = if k < ic {
+                                p.indices[f + k]
+                            } else if ic > 0 {
+                                p.indices[f]
+                            } else {
+                                0
+                            };
+                            p.corner_scratch.push(v);
+                        }
+                        crate::mesh_pack::pack_visibility_slot_bytes(
+                            &p.positions,
+                            &p.normals,
+                            &p.corner_scratch,
+                            slot,
+                            pv,
+                            awsm_renderer_core::pipeline::primitive::FrontFace::Ccw,
+                            &mut p.slot_bytes_scratch,
+                        );
+                        gpu.write_buffer(
+                            data_buf,
+                            Some(crate::renderer::cluster_slot_data_offset(
+                                data_off,
+                                slot,
+                                pv * STRIDE,
+                            )),
+                            p.slot_bytes_scratch.as_slice(),
+                            None,
+                            None,
+                        )?;
+                        // The slot's GPU page: clamp always-draw, slot-aligned source span.
+                        let mut gp = page;
+                        gp.lod_error = 0.0;
+                        gp.parent_error = f32::MAX;
+                        gp.first_index = (slot * pv) as u32;
+                        gp.index_count = ic as u32;
+                        buffers.write_page_entry(gpu, slot, &gp, &mut p.page_bytes_scratch)?;
+                        p.src_idx_scratch.clear();
+                        for k in 0..ic {
+                            p.src_idx_scratch.push((slot * pv + k) as u32);
+                        }
+                        buffers.write_source_indices_span(
+                            gpu,
+                            (slot * pv) as u32,
+                            &p.src_idx_scratch,
+                            &mut p.src_bytes_scratch,
+                        )?;
+                        // GPU resident is SLOT-indexed: mark this slot drawable
+                        // (value = slot). A write-over load (rule d) simply
+                        // re-marks the slot it replaces.
+                        buffers.write_resident_entry(gpu, slot, slot as i32)?;
                     }
-                    let c = p.slot_cluster[slot];
-                    if c >= 0 && !p.desired_flag[c as usize] {
-                        buffers.write_resident_entry(gpu, slot, -1)?;
-                        p.resident[c as usize] = -1;
-                        p.slot_cluster[slot] = -1;
-                        evicted += 1;
+                    PagingOp::Evict { slot } => {
+                        buffers.write_resident_entry(gpu, slot as usize, -1)?;
                     }
                 }
-            }
-
-            // Clear this frame's desired marks (keep `desired_flag` all-false between
-            // frames without a full-vector reset).
-            for &c in &p.desired {
-                p.desired_flag[c as usize] = false;
             }
 
             let desired = p.desired.len();
-            if streamed > 0 || evicted > 0 || desired != p.last_desired_logged {
+            if stats.streamed > 0
+                || stats.evicted > 0
+                || stats.coarsened > 0
+                || desired != p.last_desired_logged
+            {
                 p.last_desired_logged = desired;
                 tracing::info!(
                     "cluster paging (Gap B, frame {}): desired={desired} (full DAG={}, pool={}), \
-                 streamed {streamed}, evicted {evicted} [20b-iv-b-2b]",
+                 streamed {}, evicted {}, coarsened={} groups [20b-iv-b-2c]",
                     p.frame,
                     p.pages.len(),
                     p.pool_slots,
+                    stats.streamed,
+                    stats.evicted,
+                    stats.coarsened,
                 );
             }
         }

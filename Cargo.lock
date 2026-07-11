@@ -207,6 +207,7 @@ dependencies = [
  "anyhow",
  "askama",
  "awsm-renderer-core",
+ "awsm-renderer-lod-bake",
  "awsm-renderer-materials",
  "awsm-renderer-scene",
  "awsm-renderer-tangents",
