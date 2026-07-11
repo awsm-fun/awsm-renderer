@@ -134,6 +134,18 @@ const SCENES: &[SceneSpec] = &[
         extra: Extra::NaniteStreaming,
     },
     SceneSpec {
+        // The A2 open-boundary lock: a cluster mesh with genuine open rims +
+        // punched holes must render crack-free through the cut at every orbit
+        // radius (the native lock is lod-bake's
+        // open_mesh_cut_preserves_authored_boundaries_only; this exercises the
+        // on-device GPU cut + streaming residency over the same bundle).
+        name: "lod-nanite-open",
+        min_nodes: 2,
+        expect_meshes: true,
+        features: nanite_features,
+        extra: Extra::NaniteStreaming,
+    },
+    SceneSpec {
         name: "instancing-stress",
         min_nodes: 4,
         expect_meshes: true,
@@ -278,7 +290,9 @@ async fn run_scene(spec: &SceneSpec, origin: &str, report: &mut Report) {
     let extra_name = match spec.extra {
         Extra::None => None,
         Extra::Instancing => Some("instancing".to_string()),
-        Extra::NaniteStreaming => Some("nanite-streaming".to_string()),
+        // Scene-qualified: two nanite scenes (closed helmets + the A2 open
+        // sheet) run this extra, and report lines must stay unique.
+        Extra::NaniteStreaming => Some(format!("nanite-streaming:{}", spec.name)),
         Extra::LodTriDrop => Some("lod-tri-drop".to_string()),
     };
 

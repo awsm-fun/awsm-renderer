@@ -55,6 +55,7 @@ bundles, which are window-independent.
 | `decals` | decal projection | decal lands on geometry only, no skybox bleed |
 | `lod-classic` | discrete LOD chain switching (incl. skinned) | visible simplification at far orbit, none at near |
 | `lod-nanite` | cluster DAG cut, streaming budget, 2+ nanite meshes | watertight cut at every radius, stable under `?stream`/`?streambudget=N` |
+| `lod-nanite-open` | cluster cut on a GENUINELY OPEN mesh (outer rim + 2 punched holes; A2 input class) | exactly the two authored holes at every radius/budget — any extra gap = a torn cut (fixture: `gen-open-sheet.py`, deterministic) |
 | `instancing-stress` | N×1000s instanced meshes (axis-5 instancer NodeKind) | thousands of instances, ONE geometry upload, interactive frame rate |
 | `kitchen-sink` | everything at once | the smoke test; also the startup-census scene |
 
@@ -96,7 +97,10 @@ numbers recorded here and in `docs/plans/006-optimizations.md`.
 
 ## Scene status
 
-All 21 scenes are authored and versioned. `instancing-stress` landed with
+All 22 scenes are authored and versioned. `lod-nanite-open` (2026-07-11)
+locks the open-boundary cluster-cut class on-device; its source mesh is
+generated, not sampled (`gen-open-sheet.py`, deterministic — regenerate
+instead of editing the .glb). `instancing-stress` landed with
 axis 5 (the explicit instancer NodeKind): 3000 per-instance-colored boxes
 from ONE instancer node and ONE shared geometry at vsync.
 `prefab-skinned-morph` renders three shared-geometry walkers and additionally

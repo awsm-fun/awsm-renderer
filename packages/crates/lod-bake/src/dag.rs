@@ -563,6 +563,146 @@ mod tests {
         );
     }
 
+    /// Count the **boundary loops** of a welded triangle set: connected cycles
+    /// of edges used by exactly one non-degenerate triangle. An open sheet has
+    /// one loop per authored rim/hole; a cluster-cut crack in the interior adds
+    /// loop(s). Open chains (a boundary path that fails to close — a torn cut
+    /// whose crack meets the rim) are counted as loops too, so any tear moves
+    /// the number.
+    fn boundary_loop_count(tris: &[[u32; 3]], weld: &[u32]) -> usize {
+        use std::collections::HashMap;
+        let mut edges: HashMap<(u32, u32), u32> = HashMap::new();
+        for tri in tris {
+            let w = [
+                weld[tri[0] as usize],
+                weld[tri[1] as usize],
+                weld[tri[2] as usize],
+            ];
+            if w[0] == w[1] || w[1] == w[2] || w[0] == w[2] {
+                continue;
+            }
+            for (a, b) in [(w[0], w[1]), (w[1], w[2]), (w[2], w[0])] {
+                let key = if a < b { (a, b) } else { (b, a) };
+                *edges.entry(key).or_insert(0) += 1;
+            }
+        }
+        // Union-find over boundary-edge endpoints; each connected component of
+        // the boundary graph is one loop/chain.
+        let mut parent: HashMap<u32, u32> = HashMap::new();
+        fn find(parent: &mut HashMap<u32, u32>, x: u32) -> u32 {
+            let p = *parent.entry(x).or_insert(x);
+            if p == x {
+                x
+            } else {
+                let r = find(parent, p);
+                parent.insert(x, r);
+                r
+            }
+        }
+        let mut count = 0usize;
+        for (&(a, b), &c) in edges.iter() {
+            if c != 1 {
+                continue;
+            }
+            let (ra, rb) = (find(&mut parent, a), find(&mut parent, b));
+            if ra != rb {
+                parent.insert(ra, rb);
+            } else {
+                // Closing an existing component ⇒ one cycle completed. (Chains
+                // that never close are counted below.)
+                count += 1;
+            }
+        }
+        // Components that never closed into a cycle (torn open chains).
+        let mut roots: std::collections::HashSet<u32> = std::collections::HashSet::new();
+        let nodes: Vec<u32> = parent.keys().copied().collect();
+        for n in nodes {
+            roots.insert(find(&mut parent, n));
+        }
+        // cycles counted above already used their component; a component with
+        // no counted cycle is an open chain — count it as a boundary feature.
+        // (cycles == count; total components == roots.len(); every component
+        // has ≥1 boundary feature.)
+        count.max(roots.len())
+    }
+
+    /// A2 (north-star): a **genuinely open** mesh — a grid sheet with an
+    /// authored interior hole (a cape/leaf/card, the open-boundary input class)
+    /// — must not tear NEW holes at any LOD cut. The welded cut must always
+    /// show exactly the source's two boundary loops (outer rim + hole rim):
+    /// a crack between clusters, or a rim that erodes into separate chains,
+    /// changes the loop count.
+    #[test]
+    fn open_mesh_cut_preserves_authored_boundaries_only() {
+        // 48x48 grid (4608 tris → multi-level DAG) with a 8x8 quad hole
+        // punched from the interior (not touching the rim).
+        let n = 48usize;
+        let (pos, mut indices) = grid(n);
+        let hole = |x: usize, y: usize| (16..24).contains(&x) && (16..24).contains(&y);
+        let idx = |x: usize, y: usize| (y * (n + 1) + x) as u32;
+        let mut kept = Vec::with_capacity(indices.len());
+        for y in 0..n {
+            for x in 0..n {
+                if hole(x, y) {
+                    continue;
+                }
+                kept.extend_from_slice(&[idx(x, y), idx(x + 1, y), idx(x + 1, y + 1)]);
+                kept.extend_from_slice(&[idx(x, y), idx(x + 1, y + 1), idx(x, y + 1)]);
+            }
+        }
+        indices = kept;
+
+        let weld = weld_ids(&pos, 1e-3);
+        let src_tris: Vec<[u32; 3]> = indices
+            .chunks_exact(3)
+            .map(|c| [c[0], c[1], c[2]])
+            .collect();
+        assert_eq!(
+            boundary_loop_count(&src_tris, &weld),
+            2,
+            "source sheet must have exactly outer rim + hole rim"
+        );
+
+        let dag = build_cluster_dag(&pos, &indices, &DagOptions::default());
+
+        let mut breakpoints: Vec<f32> = vec![0.0];
+        for c in &dag.clusters {
+            breakpoints.push(c.lod_error);
+            if c.parent_error < ROOT_PARENT_ERROR {
+                breakpoints.push((c.lod_error + c.parent_error) * 0.5);
+            }
+        }
+        breakpoints.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        breakpoints.dedup();
+
+        for &t in &breakpoints {
+            let tris = cut_triangles(&dag, t);
+            assert!(!tris.is_empty(), "cut at threshold {t} selected nothing");
+            let loops = boundary_loop_count(&tris, &weld);
+            assert_eq!(
+                loops, 2,
+                "cluster cut at error threshold {t} shows {loops} boundary \
+                 loops (expected outer rim + hole rim) — the cut tore or \
+                 eroded an open-boundary mesh (A2)"
+            );
+        }
+
+        // Must still be a real reduction (not "crack-free by refusing to
+        // simplify").
+        let max_err = dag
+            .clusters
+            .iter()
+            .filter(|c| c.parent_error < ROOT_PARENT_ERROR)
+            .map(|c| c.lod_error)
+            .fold(0.0f32, f32::max);
+        let coarsest = cut_triangles(&dag, max_err).len();
+        let source = indices.len() / 3;
+        assert!(
+            coarsest < source * 3 / 4,
+            "coarsest cut {coarsest} is not a real reduction from {source}"
+        );
+    }
+
     /// A1, extended to a genus-1 surface: a non-watertight-by-index torus must
     /// also stay crack-free at every LOD level. Same invariant as the sphere test,
     /// different topology — guards against a fix that accidentally relied on
