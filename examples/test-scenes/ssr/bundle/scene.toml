@@ -56,24 +56,24 @@ dims = [
     0.699999988079071,
 ]
 
-[assets.00000000-0000-4000-8000-00000000000c]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-
-[assets.00000000-0000-4000-8000-00000000000c.source.mesh.primitive.box]
-dims = [
-    0.699999988079071,
-    3.200000047683716,
-    0.699999988079071,
-]
-
 [assets.00000000-0000-4000-8000-00000000000a]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
 
 [assets.00000000-0000-4000-8000-00000000000a.source.mesh.primitive.box]
+dims = [
+    0.699999988079071,
+    3.200000047683716,
+    0.699999988079071,
+]
+
+[assets.00000000-0000-4000-8000-00000000000c]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+
+[assets.00000000-0000-4000-8000-00000000000c.source.mesh.primitive.box]
 dims = [
     0.699999988079071,
     3.200000047683716,
@@ -105,7 +105,7 @@ segments_lat = 24
 layers = []
 
 [[nodes]]
-id = "645381d8-57c6-418f-a931-e8815180ae25"
+id = "39a88376-58e3-4f4f-bd23-47e7a6a84ff1"
 name = "Directional Light"
 locked = false
 visible = true

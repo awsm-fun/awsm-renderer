@@ -41,8 +41,8 @@ max_steps = 128
 spread_cutoff = 0.6000000238418579
 edge_fade = 0.10000000149011612
 resolution_scale = 1.0
-temporal = true
-temporal_weight = 0.9399999976158142
+temporal = false
+temporal_weight = 0.8999999761581421
 
 [assets.00000000-0000-4000-8000-000000000013]
 gltf_material_asset_ids = []
@@ -53,27 +53,6 @@ content_hash = ""
 radius = 0.800000011920929
 segments_long = 48
 segments_lat = 32
-
-[assets.00000000-0000-4000-8000-000000000010]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-
-[assets.00000000-0000-4000-8000-000000000010.source.mesh.primitive.sphere]
-radius = 0.800000011920929
-segments_long = 48
-segments_lat = 32
-
-[assets.00000000-0000-4000-8000-000000000012]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-
-[assets.00000000-0000-4000-8000-000000000012.source.mesh.primitive.torus]
-radius = 1.0
-thickness = 0.05999999865889549
-segments_major = 64
-segments_minor = 16
 
 [assets.00000000-0000-4000-8000-000000000001]
 gltf_material_asset_ids = []
@@ -98,11 +77,32 @@ dims = [
     1.0,
 ]
 
+[assets.00000000-0000-4000-8000-000000000010]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+
+[assets.00000000-0000-4000-8000-000000000010.source.mesh.primitive.sphere]
+radius = 0.800000011920929
+segments_long = 48
+segments_lat = 32
+
+[assets.00000000-0000-4000-8000-000000000012]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+
+[assets.00000000-0000-4000-8000-000000000012.source.mesh.primitive.torus]
+radius = 1.0
+thickness = 0.05999999865889549
+segments_major = 64
+segments_minor = 16
+
 [mixer]
 layers = []
 
 [[nodes]]
-id = "bb6d188b-0ef4-4e72-88c1-1bdb896e5189"
+id = "8cb3b9dc-eb4a-4ec9-b1b6-be3b89d14a45"
 name = "Directional Light"
 locked = false
 visible = true
