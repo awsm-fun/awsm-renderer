@@ -1258,12 +1258,13 @@ fn ssr_resolve_shader_validates() {
             // never the wide travel blur; glossy pixels widen with travel,
             // gated by spread (comment-pinned).
             assert!(
-                src.contains("let radius_scale = mix(")
+                src.contains("let radius_scale = max(")
                     && src.contains("0.6,")
                     && src.contains("1.0 + travel * 2.2,")
-                    && src.contains("smoothstep(0.0, SSR_SPREAD_GATE, spread),"),
-                "{label}: resolve radius must lerp from the mirror AA kernel (0.6) \
-                 to the travel blur by the spread gate"
+                    && src.contains("smoothstep(0.0, SSR_SPREAD_GATE, spread),")
+                    && src.contains("0.6 + travel * 3.0,"),
+                "{label}: resolve radius must lerp mirror-AA -> travel blur by spread, \
+                 with the alpha (travel|tangency) floor widening mirror pixels too"
             );
             // The gate constant is shared prose-tagged across shader files
             // (resolve / temporal / brdf_pbr) — grep "ssr-spread-gate".

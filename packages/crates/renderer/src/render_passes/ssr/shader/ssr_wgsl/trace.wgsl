@@ -198,7 +198,11 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // now: it slightly distorts exact contacts, but removing it risks
     // reintroducing self-hit stipple — drop it only after on-device
     // verification of the mirror scene shows contacts stay clean without it.
-    let p_biased = p + n * max(0.02, -p.z * 0.002);
+    // No normal-biased origin: the bias (2cm+) made contact-grazing rays
+    // start past the reflector's contact point and MISS — a visible gap
+    // between a touching object and its reflection. Self-intersection is
+    // guarded by the RELATIVE acceptance epsilon instead.
+    let p_biased = p;
     var ray_len = params.max_distance;
     if (refl.z > 0.0) {
         ray_len = min(ray_len, max((-0.05 - p_biased.z) / refl.z, 0.0));
@@ -243,6 +247,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var hit_uv = vec2<f32>(0.0, 0.0);
     var travel_fade = 1.0;
     var travel_frac = 0.0;
+    var tangency_t = 0.0;
     // Hit CONFIDENCE: 1 deep in a surface's acceptance window, fading to 0
     // at its boundary. Grazing-tangency pixels sit right at the window edge
     // and otherwise flip hit/miss per row (dashed silhouette caps on curved
@@ -387,6 +392,19 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         if (accept) {
             hit_conf = 1.0
                 - smoothstep(0.6, 1.0, penetration / max(params.thickness, 2.0 * step_advance));
+            let tpix = s0 + dir * s_prev;
+            let td = textureLoad(depth_tex, vec2<i32>(tpix), 0);
+            let tz = -view_pos_from_depth(tpix / fdims, td, cam).z;
+            let step_surf = abs(scene_z - tz);
+            // Reflection MAGNIFICATION at the hit: when the ray advances
+            // far less in depth per pixel than the surface it lands on
+            // changes (grazing rays into a curved contact), one depth texel
+            // of the reflected object spans MANY reflection pixels — the
+            // per-column hit/miss quantization stretches into visible
+            // vertical streaks. Record the uncertainty so the resolve
+            // widens its kernel exactly there (travel alone misses it:
+            // contact reflections have near-zero travel).
+            tangency_t = smoothstep(4.0, 24.0, step_surf / max(step_advance, 1e-4));
         }
         if (!accept) {
             // Fine miss: advance one texel and RE-ASCEND. Without the

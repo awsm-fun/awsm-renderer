@@ -168,15 +168,47 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         travel = max(travel, textureLoad(src_tex, t4, 0).a);
     }
     // wgsl_validation pins this exact spread-gated radius term.
-    let radius_scale = mix(
-        0.6,
-        1.0 + travel * 2.2,
-        smoothstep(0.0, SSR_SPREAD_GATE, spread),
+    // Mirror pixels keep the tight AA kernel EXCEPT where the trace flagged
+    // contact-magnification uncertainty (alpha carries max(travel,tangency)):
+    // those bands need fusing regardless of material sharpness — the streaks
+    // are quantization, not reflection detail.
+    let radius_scale = max(
+        mix(
+            0.6,
+            1.0 + travel * 2.2,
+            smoothstep(0.0, SSR_SPREAD_GATE, spread),
+        ),
+        0.6 + travel * 3.0,
     );
+
+    // CONTACT-STREAK detection (comb pattern): grazing rays into a curved
+    // CONTACT magnify depth-texel quantization into vertical column
+    // alternation (the surfaces are cotangent there, so no trace-side
+    // signal can see it — detect the pattern itself). A comb differs from
+    // a legitimate vertical EDGE: the center deviates from the MEAN of its
+    // left/right neighbours while those neighbours AGREE with each other.
+    // Measured at 2px and 4px scales to cover 1-4px-wide columns; the
+    // detected strength stretches the kernel HORIZONTALLY (across the
+    // columns — reflections magnify along the vertical travel axis).
+    var comb = 0.0;
+    for (var sc = 0; sc < 2; sc = sc + 1) {
+        let d = select(2, 4, sc == 1);
+        let cl = textureLoad(src_tex, clamp(coords - vec2<i32>(d, 0), vec2<i32>(0), out_max), 0).rgb;
+        let cr = textureLoad(src_tex, clamp(coords + vec2<i32>(d, 0), vec2<i32>(0), out_max), 0).rgb;
+        let mid = (cl + cr) * 0.5;
+        let dev = length(center.rgb - mid);
+        let agree = length(cl - cr);
+        comb = max(comb, dev - agree);
+    }
+    let streak = smoothstep(0.02, 0.12, comb);
+    let stretch_x = 1.0 + streak * 5.0;
 
     for (var i = 0; i < 8; i = i + 1) {
         let tap = clamp(
-            vec2<i32>(floor(vec2<f32>(coords) + vec2<f32>(0.5) + tap_offsets[i] * radius_scale)),
+            vec2<i32>(floor(
+                vec2<f32>(coords) + vec2<f32>(0.5)
+                    + tap_offsets[i] * radius_scale * vec2<f32>(stretch_x, 1.0)
+            )),
             vec2<i32>(0, 0),
             out_max,
         );

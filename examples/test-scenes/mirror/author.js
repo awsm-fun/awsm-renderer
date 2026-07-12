@@ -67,6 +67,12 @@ async () => {
     // THIN torus, high: the thin-geometry acceptance case (its reflection
     // must be a continuous ring, not dashes).
     { id: ID(0x12), v: ID(0x22), name: 'torus-thin', spec: { primitive: { torus: { radius: 1.0, thickness: 0.06, segments_major: 64, segments_minor: 16 } } }, pos: [2.6, 2.0, -1.0], emissive: [0.4, 2.2, 5] },
+    // TOUCHING sphere: the curved-CONTACT case — reflected rays run nearly
+    // parallel to the mirror at the contact, magnifying depth-texel
+    // quantization into vertical streaks unless the resolve widens there
+    // (the tangency channel). The reflection under the contact must be a
+    // smooth continuation, no streaks/teeth.
+    { id: ID(0x13), v: ID(0x23), name: 'sphere-touching', spec: { primitive: { sphere: { radius: 0.8, segments_long: 48, segments_lat: 32 } } }, pos: [-5.2, 0.8, -1.2], emissive: [4, 3.2, 1.2] },
   ];
   for (const p of probes) {
     await mk(p.id, p.spec, p.pos, matProbe, p.name, p.v);
