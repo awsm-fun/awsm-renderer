@@ -212,6 +212,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var hit = false;
     var hit_uv = vec2<f32>(0.0, 0.0);
     var travel_fade = 1.0;
+    var travel_frac = 0.0;
     var s_prev = 0.0;
     var s_cur = stride * (0.5 + jitter);
 
@@ -324,7 +325,8 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 }
             }
             hit_uv = (s0 + dir * hi) / fdims;
-            travel_fade = 1.0 - smoothstep(0.7, 1.0, hi / screen_len);
+            travel_frac = hi / screen_len;
+            travel_fade = 1.0 - smoothstep(0.7, 1.0, travel_frac);
             hit = true;
             break;
         }
@@ -377,7 +379,8 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
             // Travel fade: reflections that reach the march budget must not
             // STOP on a hard line — fade the last 30% of the ray so the
             // termination boundary is invisible.
-            travel_fade = 1.0 - smoothstep(0.7, 1.0, hi / screen_len);
+            travel_frac = hi / screen_len;
+            travel_fade = 1.0 - smoothstep(0.7, 1.0, travel_frac);
             hit = true;
             break;
         }
@@ -437,7 +440,13 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // and returned above). The additive composite blends rgb, so a miss is a
     // no-op either way, but downstream consumers (the joint-bilateral upsample,
     // any future coverage-aware denoise) can trust the channel.
-    let coverage = select(0.0, 1.0, hit);
+    // Alpha = coverage (0 on miss) x TRAVEL fraction of the march on a hit
+    // (never below 0.05 so a contact hit still reads as covered). The
+    // additive composite only consumes rgb; the spatial resolve reads this
+    // to scale its blur with reflection distance (contact-sharp,
+    // distance-soft — also what buries the serrated edges of mirror-sharp
+    // thin-tube reflections).
+    let coverage = select(0.0, max(travel_frac, 0.05), hit);
 
     // Reflection-ONLY, premultiplied. Full-res invariant: composite_old +
     // reflection == the old base + reflection overwrite, since composite_old

@@ -113,12 +113,33 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // rgb AND coverage accumulate with the same weights (premultiplied color +
     // filtered fractional coverage composites correctly through the additive
     // blend).
-    var sum = textureLoad(src_tex, coords, 0);
+    let center = textureLoad(src_tex, coords, 0);
+    var sum = center;
     var sum_w = 1.0;
+
+    // TRAVEL-SCALED radius: trace alpha carries coverage x travel fraction.
+    // Contact reflections (travel ~0) stay tight (1x = 2.5px disk); far
+    // reflections widen up to 3.2x (~8px). This is the glossy-with-distance
+    // falloff every production SSR has — and it is what buries the serrated
+    // edges a mirror-sharp reflection of thin bright tubes produces (the
+    // depth silhouette is aliased and grazing reflection stretch amplifies
+    // it; no amount of exact tracing removes that, only filtering does).
+    // Sample the local max travel so the widened kernel also covers the
+    // miss-side of a reflection boundary.
+    var travel = center.a;
+    for (var i = 0; i < 8; i = i + 1) {
+        let t4 = clamp(
+            vec2<i32>(floor(vec2<f32>(coords) + vec2<f32>(0.5) + tap_offsets[i] * 1.6)),
+            vec2<i32>(0, 0),
+            out_max,
+        );
+        travel = max(travel, textureLoad(src_tex, t4, 0).a);
+    }
+    let radius_scale = 1.0 + travel * 2.2;
 
     for (var i = 0; i < 8; i = i + 1) {
         let tap = clamp(
-            vec2<i32>(floor(vec2<f32>(coords) + vec2<f32>(0.5) + tap_offsets[i])),
+            vec2<i32>(floor(vec2<f32>(coords) + vec2<f32>(0.5) + tap_offsets[i] * radius_scale)),
             vec2<i32>(0, 0),
             out_max,
         );
