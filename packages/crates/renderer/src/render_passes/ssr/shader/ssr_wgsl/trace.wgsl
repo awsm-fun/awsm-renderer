@@ -29,7 +29,7 @@ struct SsrParams {
     spread_cutoff: f32,
     edge_fade: f32,
     temporal_weight: f32,
-    _pad: f32,
+    frame: f32,     // monotonic; temporal variant rotates the march jitter by it
 };
 
 // M1 probes everything with integer textureLoad (depth is non-filterable), so
@@ -140,12 +140,35 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     {% endif %}
 
     let steps = max(i32(params.max_steps), 1);
-    let step_len = params.max_distance / f32(steps);
+    // GEOMETRIC stride: near reflections (the visually dominant contacts —
+    // floor reflections of nearby geometry) march at centimetre precision so
+    // thin features (neon tubes, trims) are never skipped, while the stride
+    // grows ~6%/step to still reach `max_distance` with the same step count.
+    // A UNIFORM stride here was the "dashed reflection" artifact: at
+    // max_distance 100+ / 96 steps every stride was ~1 m, larger than the
+    // thin geometry being reflected, so hits landed intermittently.
+    let growth = 1.06;
+    let base_len = params.max_distance * (growth - 1.0) / (pow(growth, f32(steps)) - 1.0);
+
+    // Interleaved-gradient-noise jitter of the FIRST step, per pixel:
+    // decorrelates the stride phase between neighbouring pixels, turning
+    // coherent staircase banding into unstructured (and far less visible)
+    // noise. Deterministic per pixel — stable under a static camera.
+    let ign = fract(52.9829189 * fract(dot(vec2<f32>(coords), vec2<f32>(0.06711056, 0.00583715))));
+    {% if temporal %}
+    // Rotate by the golden ratio each frame: the history blend then averages
+    // the march phase over ~1/(1-temporal_weight) frames, converging the
+    // stipple on bright reflections to a smooth result.
+    let jitter = fract(ign + params.frame * 0.61803398875);
+    {% else %}
+    let jitter = ign;
+    {% endif %}
 
     var hit = false;
     var hit_uv = vec2<f32>(0.0, 0.0);
+    var step_len = base_len;
     var t_prev = 0.0;
-    var t = step_len;
+    var t = base_len * (0.5 + jitter);
 
     // Linear DDA march in view space. depth_tex is non-filterable, so
     // every scene-depth probe is an integer textureLoad.
@@ -161,7 +184,12 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // View looks down -Z: positive linear depth = -z.
         let ray_z = -pi.z;
         let scene_z = -scene_p.z;
-        if (ray_z > scene_z && (ray_z - scene_z) < params.thickness) {
+        // Thickness scales with the local stride: a fixed world thickness
+        // combined with growing steps either false-hits far away (too thick
+        // for fine strides) or tunnels through surfaces near the march tail
+        // (too thin for coarse strides). `params.thickness` acts as the floor.
+        let thickness = max(params.thickness, step_len * 1.5);
+        if (ray_z > scene_z && (ray_z - scene_z) < thickness) {
             // Binary refinement between the last miss and this hit.
             var lo = t_prev;
             var hi = t;
@@ -180,6 +208,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
             break;
         }
         t_prev = t;
+        step_len = step_len * growth;
         t = t + step_len;
     }
 

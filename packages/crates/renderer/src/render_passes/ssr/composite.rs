@@ -60,11 +60,18 @@ use crate::{
 /// depth-binding handling. The `textureLoad(..., 0)` call is identical for both
 /// (level 0 vs sample 0), so only the declaration line is swapped. Depth is read
 /// via `textureLoad` at integer coords exactly like `trace.wgsl` (non-filterable).
-pub(crate) fn shader_source(multisampled: bool) -> String {
+pub(crate) fn shader_source(multisampled: bool, reverse_z: bool) -> String {
     let depth_decl = if multisampled {
         "@group(0) @binding(2) var depth_tex: texture_depth_multisampled_2d;"
     } else {
         "@group(0) @binding(2) var depth_tex: texture_depth_2d;"
+    };
+    // Sky test matches the trace's convention: reverse-Z clears to 0 at the
+    // far plane, forward-Z to 1.
+    let sky_test = if reverse_z {
+        "center_depth <= 0.0"
+    } else {
+        "center_depth >= 1.0"
     };
     format!(
         r#"
@@ -127,7 +134,7 @@ fn frag_main(in: VsOut) -> @location(0) vec4<f32> {{
     // Full-res destination depth → center view-Z. Sky (depth>=1) has nothing to
     // reflect; the trace wrote 0 there, so keep the additive no-op.
     let center_depth = textureLoad(depth_tex, vec2<i32>(in.uv * full_dims), 0);
-    if (center_depth >= 1.0) {{
+    if ({sky_test}) {{
         return vec4<f32>(0.0, 0.0, 0.0, 0.0);
     }}
     let z_center = linear_z(in.uv, center_depth, inv_proj);
@@ -201,7 +208,7 @@ impl SsrComposite {
         let multisampled = ctx.anti_aliasing.msaa_sample_count.is_some();
         let shader_module = gpu.compile_shader(
             &ShaderModuleDescriptor::new(
-                &shader_source(multisampled),
+                &shader_source(multisampled, ctx.features.reverse_z),
                 Some("SSR Composite shader"),
             )
             .into(),

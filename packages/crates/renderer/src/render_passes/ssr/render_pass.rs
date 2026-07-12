@@ -30,6 +30,12 @@ pub struct SsrParams {
     pub gpu_buffer: web_sys::GpuBuffer,
     raw_data: [u8; Self::BYTE_SIZE],
     uploader: MappedUploader,
+    /// Monotonic write counter, packed into the last uniform slot. The
+    /// temporal trace variant rotates its ray-march jitter by this so the
+    /// per-pixel noise VARIES frame to frame and the history accumulation
+    /// averages it out (a static jitter pattern would survive any amount of
+    /// temporal blending).
+    frame: u32,
 }
 
 impl SsrParams {
@@ -48,6 +54,7 @@ impl SsrParams {
             gpu_buffer,
             raw_data: [0; Self::BYTE_SIZE],
             uploader: MappedUploader::new("SsrParams"),
+            frame: 0,
         };
         params.pack(1.0, 100.0, 1.0, 96.0, 0.6, 0.1, 0.9);
         Ok(params)
@@ -71,7 +78,8 @@ impl SsrParams {
         self.raw_data[16..20].copy_from_slice(&spread_cutoff.to_ne_bytes());
         self.raw_data[20..24].copy_from_slice(&edge_fade.to_ne_bytes());
         self.raw_data[24..28].copy_from_slice(&temporal_weight.to_ne_bytes());
-        // [28..32] = padding, left zero.
+        // [28..32] = frame counter (as f32) for temporal jitter rotation.
+        self.raw_data[28..32].copy_from_slice(&(self.frame as f32).to_ne_bytes());
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -86,6 +94,7 @@ impl SsrParams {
         edge_fade: f32,
         temporal_weight: f32,
     ) -> Result<()> {
+        self.frame = self.frame.wrapping_add(1);
         self.pack(
             intensity,
             max_distance,

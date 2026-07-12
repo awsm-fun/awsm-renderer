@@ -239,9 +239,12 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            grid: Mutable::new(true),
+            // Grid + light gizmos default OFF (David, 2026-07-12): they
+            // pollute screenshots/agent verification and lit scenes read
+            // better without them; toggle on per session when needed.
+            grid: Mutable::new(false),
             gizmo: Mutable::new(true),
-            light_gizmos: Mutable::new(true),
+            light_gizmos: Mutable::new(false),
             skeleton_viz: Mutable::new(true),
             auto_key: Mutable::new(true),
             msaa: Mutable::new(true),

@@ -963,9 +963,24 @@ fn ssr_composite_shader_validates() {
     // variants must parse + validate and carry the fragment entry point.
     use crate::render_passes::ssr::composite::shader_source;
     for multisampled in [false, true] {
+        for reverse_z in [false, true] {
+            let label = format!("ssr composite multisampled={multisampled} reverse_z={reverse_z}");
+            let src = shader_source(multisampled, reverse_z);
+            naga_validate(&src, &label);
+            // The sky early-out must match the depth convention: reverse-Z
+            // clears to 0 at the far plane, forward-Z to 1.
+            let expect = if reverse_z {
+                "center_depth <= 0.0"
+            } else {
+                "center_depth >= 1.0"
+            };
+            assert!(
+                src.contains(expect),
+                "{label}: composite sky test must be `{expect}`"
+            );
+        }
         let label = format!("ssr composite multisampled={multisampled}");
-        let src = shader_source(multisampled);
-        naga_validate(&src, &label);
+        let src = shader_source(multisampled, true);
         assert!(
             src.contains("fn frag_main("),
             "{label}: composite module missing `fn frag_main` entry point"
