@@ -394,11 +394,14 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // slides the acceptance bands by up to one cell's depth advance.
         // Cycled per frame (mirror_phase) this is the supersampling axis
         // that actually dithers the magnified hit/miss ROW bands, and the
-        // temporal accumulator converges them to true coverage. Mirror
-        // pixels only — glossy keeps its entry-point evaluation (its own
-        // per-pixel IGN jitter already decorrelates it). Without a temporal
-        // pass the phase pins to 0.5: mid-cell, still fully deterministic.
-        let eval_phase = select(0.0, mirror_phase, spread < MIRROR_SPREAD_EPS);
+        // temporal accumulator converges them to true coverage. GLOSSY
+        // pixels take glossy_jitter here — per-pixel IGN (+ golden-ratio
+        // frame rotation under temporal): in the Hi-Z path this is the ONLY
+        // place the glossy jitter can act (the crossings are geometric), so
+        // without it the "stochastic" glossy trace is actually deterministic
+        // and its estimator error freezes into static blotch no amount of
+        // temporal accumulation can touch.
+        let eval_phase = select(glossy_jitter, mirror_phase, spread < MIRROR_SPREAD_EPS);
         let s_eval = mix(s_cur, min(s_next, screen_len), eval_phase);
         let s_prev_eval = mix(s_prev, s_cur, eval_phase);
         let k = k0 + dk * s_eval;
@@ -625,7 +628,16 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // spread 0 → single tap (perfect mirror); rougher → wider, softer blur.
         // A golden-angle spiral spreads the 8 taps evenly. (A future refinement is
         // a prefiltered color mip pyramid + stochastic sampling + temporal reuse.)
-        let blur_radius = spread * f32(full_dims.y) * 0.045;
+        // Cone radius GROWS WITH TRAVEL (wgsl_validation pins this): a rough
+        // reflection is a cone footprint, so its blur ∝ distance travelled —
+        // contact reflections sharpen exactly like contact shadows do. A
+        // travel-independent radius blurred the contact zone with far-field
+        // width, smearing the magnified contact structure into visible arc
+        // banding. Full cone by ~12% of screen height of travel; small floor
+        // keeps the estimator from collapsing to one noisy tap.
+        let screen_travel = length(hit_uv * fdims - vec2<f32>(fcoords));
+        let cone = clamp(screen_travel / (0.12 * f32(full_dims.y)), 0.08, 1.0);
+        let blur_radius = spread * f32(full_dims.y) * 0.045 * cone;
         if (blur_radius < 0.75) {
             // SHARP path (mirror + near-mirror): bilinear reconstruction at
             // the refined sub-texel hit (wgsl_validation pins this). Nearest
@@ -648,9 +660,16 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
             hit_color = mix(mix(h00, h10, hfrac.x), mix(h01, h11, hfrac.x), hfrac.y);
         } else {
             var acc = vec3<f32>(0.0);
+            // Rotate the whole disk per PIXEL (and per frame when temporal
+            // accumulates — glossy_jitter carries both) — a fixed spiral
+            // gives neighbouring pixels the SAME sparse 8-tap pattern, so
+            // their estimator errors correlate into static blotch that no
+            // downstream average can remove; rotation decorrelates them and
+            // the resolve's 9-tap + temporal then see independent estimates.
+            let disk_rot = glossy_jitter * 6.28318530718;
             for (var s = 0; s < 8; s = s + 1) {
                 let fs = f32(s);
-                let ang = fs * 2.3999632; // golden angle (radians)
+                let ang = fs * 2.3999632 + disk_rot; // golden angle (radians)
                 let rad = blur_radius * sqrt((fs + 0.5) / 8.0);
                 let off = vec2<f32>(cos(ang), sin(ang)) * rad;
                 let sc = clamp(

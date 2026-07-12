@@ -1064,7 +1064,7 @@ fn ssr_shaders_validate() {
                                 src.contains(
                                     "let s_eval = mix(s_cur, min(s_next, screen_len), eval_phase);"
                                 ) && src.contains(
-                                    "select(0.0, mirror_phase, spread < MIRROR_SPREAD_EPS)"
+                                    "select(glossy_jitter, mirror_phase, spread < MIRROR_SPREAD_EPS)"
                                 ),
                                 "{label}: Hi-Z trace must phase its ray-depth \
                                  evaluation point within the cell for mirror \
@@ -1082,6 +1082,18 @@ fn ssr_shaders_validate() {
                              pipeline always compiles Glossy, mirror is its \
                              runtime spread~0 branch)"
                         );
+                        // Travel-scaled glossy cone (comment-pinned in
+                        // trace.wgsl): rough-reflection blur must grow with
+                        // travel like a cone footprint — contact reflections
+                        // sharpen like contact shadows.
+                        if mode == SsrMode::Glossy {
+                            assert!(
+                                src.contains("let cone = clamp(screen_travel / (0.12 * f32(full_dims.y)), 0.08, 1.0);")
+                                    && src.contains("* cone;"),
+                                "{label}: glossy trace must scale its disk-blur \
+                                 radius with screen-space travel (cone growth)"
+                            );
+                        }
                         // Mirror-on-mirror fallback (comment-pinned in
                         // trace.wgsl): a hit on a reflective surface samples
                         // a pre-composite color missing its own reflection —
