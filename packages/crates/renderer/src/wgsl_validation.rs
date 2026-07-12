@@ -297,6 +297,70 @@ fn first_party_opaque_shaders_validate() {
 }
 
 #[test]
+fn ssr_ibl_suppression_gated_on_descriptor_axis() {
+    // Mirror-correctness (SSR feature B): when the opaque module writes the
+    // SSR reflection descriptor (`write_ssr_descriptor` — true exactly when
+    // SSR is enabled), the shared `brdf_pbr.wgsl` must suppress the IBL
+    // SPECULAR term for low-spread surfaces (SSR supplies the reflection —
+    // trace hit or skybox env fallback — so adding prefiltered-env specular
+    // would double-count the environment). When the axis is OFF, the module
+    // must not reference the suppression at all (SSR-off builds stay
+    // byte-identical). The `ssr-spread-gate` tag marks every copy of the
+    // shared 0.15 constant (resolve / temporal / brdf_pbr).
+    const SUPPRESSION_TERM: &str =
+        "let ssr_ibl_keep = 1.0 - ssr_mask_factor * (1.0 - smoothstep(0.0, SSR_SPREAD_GATE, ssr_spread));";
+    for (msaa, mips) in CONFIGS {
+        // ON: PBR opaque with the descriptor axis set.
+        let mut key = first_party_key(MaterialShaderId::PBR, ShadingBase::Pbr, false, msaa, mips);
+        key.write_ssr_descriptor = true;
+        let label = format!("opaque/pbr ssr-descriptor msaa={msaa:?} mips={mips}");
+        let src = render(&key, &label);
+        naga_validate(&src, &label);
+        assert!(
+            src.contains("ssr-spread-gate"),
+            "{label}: write_ssr_descriptor module must carry the `ssr-spread-gate` \
+             IBL-specular suppression"
+        );
+        assert!(
+            src.contains(SUPPRESSION_TERM),
+            "{label}: write_ssr_descriptor module must compute the exact suppression term \
+             `{SUPPRESSION_TERM}`"
+        );
+        assert!(
+            src.contains("* ssr_ibl_keep"),
+            "{label}: the IBL specular term must be scaled by `ssr_ibl_keep`"
+        );
+        // The descriptor store must be present too (the axis' original job).
+        assert!(
+            src.contains("textureStore(reflection_descriptor_tex"),
+            "{label}: write_ssr_descriptor module must store the reflection descriptor"
+        );
+
+        // OFF: the identical key without the axis must not reference any of it.
+        let off_key = first_party_key(MaterialShaderId::PBR, ShadingBase::Pbr, false, msaa, mips);
+        let off_label = format!("opaque/pbr no-ssr msaa={msaa:?} mips={mips}");
+        let off = render(&off_key, &off_label);
+        assert!(
+            !off.contains("ssr-spread-gate") && !off.contains("ssr_ibl_keep"),
+            "{off_label}: SSR-off module must NOT reference the IBL suppression \
+             (byte-identical SSR-off builds)"
+        );
+    }
+
+    // Transparent surfaces never write the descriptor — their brdf include
+    // must never carry the suppression, SSR on or off.
+    let tkey = transparent_first_party_key(ShadingBase::Pbr, None);
+    let tsrc = ShaderTemplateMaterialTransparent::try_from(&tkey)
+        .expect("transparent template builds")
+        .into_source()
+        .expect("transparent renders");
+    assert!(
+        !tsrc.contains("ssr-spread-gate") && !tsrc.contains("ssr_ibl_keep"),
+        "transparent/pbr must NOT compile the SSR IBL suppression (no descriptor writes)"
+    );
+}
+
+#[test]
 fn toon_shader_is_banded_and_gated() {
     // §19 regression guard: `first_party_opaque_shaders_validate` proves Toon
     // COMPILES, but not that it still cel-SHADES. A refactor could drop the
@@ -952,6 +1016,76 @@ fn ssr_shaders_validate() {
                             "{label}: trace must not reference history_prev \
                              (temporal accumulation moved to temporal.wgsl)"
                         );
+                        // Deterministic mirror (comment-pinned in trace.wgsl):
+                        // mirror pixels (spread < eps) take the FIXED 0.5
+                        // march phase — no per-pixel IGN, no params.frame —
+                        // so a perfect mirror never sparkles or serrates.
+                        assert!(
+                            src.contains("select(glossy_jitter, 0.5, spread < MIRROR_SPREAD_EPS)"),
+                            "{label}: trace must select the deterministic 0.5 \
+                             phase for mirror pixels (spread < MIRROR_SPREAD_EPS)"
+                        );
+                        // Contact-first probe (comment-pinned): the march's
+                        // first sample sits at ~1 px, never mid-stride, so
+                        // contact geometry cannot be skipped.
+                        assert!(
+                            src.contains("var s_cur = 1.0;"),
+                            "{label}: trace march must start its first probe at ~1 px"
+                        );
+                        // SURFACE-CONTINUITY acceptance (comment-pinned):
+                        // thin geometry accepts under the absolute thickness
+                        // floor; generous grazing acceptance additionally
+                        // requires the SURFACE continuous across the step —
+                        // without it the steepness bound bleeds curved
+                        // silhouettes outward ("hair crowns").
+                        assert!(
+                            src.contains("penetration < params.thickness"),
+                            "{label}: trace must keep the absolute thin-geometry floor"
+                        );
+                        assert!(
+                            src.contains("surf_step < max(params.thickness, 2.0 * step_advance)"),
+                            "{label}: trace must gate grazing acceptance on surface continuity"
+                        );
+                        // The old absolute front bias (+0.01) killed exact
+                        // contacts; only the tiny RELATIVE epsilon remains.
+                        assert!(
+                            !src.contains("scene_z + 0.01") && src.contains("1e-4 * scene_z"),
+                            "{label}: trace must use the relative self-intersection \
+                             epsilon, not the absolute +0.01 contact-killing bias"
+                        );
+                        // 8-iteration binary refine (the refined texel is
+                        // what hit_uv — and thus the color fetch — uses).
+                        assert!(
+                            src.contains("for (var b = 0; b < 8; b = b + 1)"),
+                            "{label}: trace binary refine must run 8 iterations"
+                        );
+                        // ENVIRONMENT FALLBACK (comment-pinned in trace.wgsl):
+                        // every variant binds the skybox cubemap + sampler and
+                        // samples it on a MISS along the world reflected
+                        // direction — off-screen reflections return the
+                        // environment, never black.
+                        assert!(
+                            src.contains("var skybox_tex: texture_cube<f32>")
+                                && src.contains("var skybox_sampler: sampler"),
+                            "{label}: trace must bind the skybox cubemap + filtering sampler \
+                             (miss-path env fallback)"
+                        );
+                        assert!(
+                            src.contains("textureSampleLevel(skybox_tex"),
+                            "{label}: trace must sample the skybox on a miss \
+                             (`textureSampleLevel(skybox_tex`)"
+                        );
+                        // Edge/travel fades AND hit confidence must mix INTO
+                        // the env fallback, not into black; confidence turns
+                        // grazing-tangency hit/miss flips into a smooth
+                        // transition (comment-pinned in trace.wgsl).
+                        assert!(
+                            src.contains(
+                                "mix(env_reflection, hit_reflection, fade * travel_fade * hit_conf)"
+                            ),
+                            "{label}: trace must blend hits toward the env fallback by \
+                             fade * travel_fade * hit_conf"
+                        );
                         // The multisampled variant must bind the MSAA depth type.
                         if multisampled_geometry {
                             assert!(
@@ -1020,6 +1154,26 @@ fn ssr_temporal_shader_validates() {
             assert!(
                 src.contains("prev_view_proj"),
                 "{label}: temporal must reproject via cam.prev_view_proj"
+            );
+            // Spread-gated blend (comment-pinned in the wgsl): mirror pixels
+            // (spread → 0) are deterministic per frame, so history can only
+            // smear them — the blend weight must ramp in with spread and the
+            // descriptor binding must be present to read it.
+            assert!(
+                src.contains("var reflection_descriptor_tex"),
+                "{label}: temporal must bind the reflection descriptor (spread source)"
+            );
+            assert!(
+                src.contains("params.temporal_weight * smoothstep(0.0, SSR_SPREAD_GATE, spread)"),
+                "{label}: temporal blend must be spread-gated \
+                 (mirror pixels take the current frame only)"
+            );
+            // The gate constant is shared prose-tagged across shader files
+            // (resolve / temporal / brdf_pbr) — grep "ssr-spread-gate".
+            assert!(
+                src.contains("ssr-spread-gate"),
+                "{label}: temporal must define its SSR_SPREAD_GATE with the \
+                 `ssr-spread-gate` sync tag"
             );
             // The multisampled variant must bind the MSAA depth type; the
             // single-sample variant must not.
@@ -1090,6 +1244,33 @@ fn ssr_resolve_shader_validates() {
                 src.contains("sum / sum_w"),
                 "{label}: resolve must divide the accumulated rgb+coverage by \
                  the shared weight sum (`sum / sum_w`)"
+            );
+            // Mirror passthrough (comment-pinned in the wgsl): the resolve
+            // reads the reflection descriptor's spread; mirror pixels
+            // (spread < eps) write the CENTER tap unfiltered — a perfect
+            // mirror must be pixel-exact through this pass.
+            assert!(
+                src.contains("var reflection_descriptor_tex"),
+                "{label}: resolve must bind the reflection descriptor (spread source)"
+            );
+            // Mirror pixels get a TIGHT (~1px, scale 0.6) antialiasing
+            // kernel — never a passthrough (tangency rows quantize) and
+            // never the wide travel blur; glossy pixels widen with travel,
+            // gated by spread (comment-pinned).
+            assert!(
+                src.contains("let radius_scale = mix(")
+                    && src.contains("0.6,")
+                    && src.contains("1.0 + travel * 2.2,")
+                    && src.contains("smoothstep(0.0, SSR_SPREAD_GATE, spread),"),
+                "{label}: resolve radius must lerp from the mirror AA kernel (0.6) \
+                 to the travel blur by the spread gate"
+            );
+            // The gate constant is shared prose-tagged across shader files
+            // (resolve / temporal / brdf_pbr) — grep "ssr-spread-gate".
+            assert!(
+                src.contains("ssr-spread-gate"),
+                "{label}: resolve must define its SSR_SPREAD_GATE with the \
+                 `ssr-spread-gate` sync tag"
             );
             // The multisampled variant must bind the MSAA depth type; the
             // single-sample variant must not.

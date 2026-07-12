@@ -14,6 +14,16 @@
 //!   (0 = opt out), A = spread. Always single-sample (written full-res by
 //!   `material_opaque` at sample 0)
 //! - 7 HZB pyramid (Hi-Z trace variant only) — ALWAYS entry 7 when present
+//! - 8/9 (with HZB) or 7/8 (without): skybox cubemap + filtering sampler —
+//!   the env fallback the trace samples on a MISS (same skybox the material
+//!   pass binds; the default black cubemap when none is set). Nested binding
+//!   index, mirrored by trace.wgsl's `{% if hzb %}` declarations.
+//!
+//! Spatial-resolve compute bind group:
+//! - 0 camera uniform, 1 raw trace output (`ssr`), 2 depth
+//! - 3 `ssr_resolved` storage write
+//! - 4 `reflection_descriptor` (full-res; `.a` = spread — mirror pixels
+//!   pass through the resolve unfiltered, glossy radius scales with spread)
 //!
 //! Temporal compute bind groups (frame-parity ping-pong pair over the history
 //! textures — only when `ssr.temporal`):
@@ -23,6 +33,8 @@
 //! - 5 linear sampler for that fetch
 //! - 6 `ssr_final` storage write (the composite's source when temporal is on)
 //! - 7 this-frame history storage write
+//! - 8 `reflection_descriptor` (full-res; `.a` = spread — gates the history
+//!   blend to 0 on mirror pixels, which are deterministic per-frame)
 //!
 //! Rebuilt on resize / texture-view recreate via [`SsrBindGroups::recreate`],
 //! dispatched from `bind_groups.rs` (`FunctionToCall::Ssr`).
@@ -203,6 +215,20 @@ impl SsrBindGroups {
                 BindGroupResource::TextureView(Cow::Borrowed(hzb_view)),
             ));
         }
+        // 8/9 (with HZB) or 7/8 (without) — skybox cubemap + filtering sampler
+        // for the trace's miss-path environment fallback. Same source the
+        // material pass binds (`ctx.environment.skybox`); the
+        // `EnvironmentSkyboxCreate` event fans out to `FunctionToCall::Ssr` so
+        // a skybox swap rebinds this group.
+        let skybox_binding = if self.hzb { 8 } else { 7 };
+        entries.push(BindGroupEntry::new(
+            skybox_binding,
+            BindGroupResource::TextureView(Cow::Borrowed(&ctx.environment.skybox.texture_view)),
+        ));
+        entries.push(BindGroupEntry::new(
+            skybox_binding + 1,
+            BindGroupResource::Sampler(&ctx.environment.skybox.sampler),
+        ));
         let descriptor = BindGroupDescriptor::new(layout, Some("SSR Trace"), entries);
         self.trace_bind_group = Some(ctx.gpu.create_bind_group(&descriptor.into()));
 
@@ -227,6 +253,14 @@ impl SsrBindGroups {
                 3,
                 BindGroupResource::TextureView(Cow::Borrowed(
                     &ctx.render_texture_views.ssr_resolved,
+                )),
+            ),
+            // 4 — reflection descriptor (full-res, `.a` = spread): mirror
+            // pixels bypass the blur; glossy radius scales with spread.
+            BindGroupEntry::new(
+                4,
+                BindGroupResource::TextureView(Cow::Borrowed(
+                    &ctx.render_texture_views.reflection_descriptor,
                 )),
             ),
         ];
@@ -289,6 +323,14 @@ impl SsrBindGroups {
                     BindGroupEntry::new(
                         7,
                         BindGroupResource::TextureView(Cow::Borrowed(&history[curr])),
+                    ),
+                    // 8 — reflection descriptor (full-res, `.a` = spread):
+                    // gates the history blend to 0 on mirror pixels.
+                    BindGroupEntry::new(
+                        8,
+                        BindGroupResource::TextureView(Cow::Borrowed(
+                            &ctx.render_texture_views.reflection_descriptor,
+                        )),
                     ),
                 ];
                 let descriptor =
@@ -358,7 +400,7 @@ fn create_layout(
     ];
 
     // 7 — Hi-Z trace variant: the HZB pyramid (rg32float, .g = closest bound),
-    // sampled across mips via textureLoad. Always the last (7th) entry — the
+    // sampled across mips via textureLoad. Always entry 7 when present — the
     // temporal history bindings moved to the temporal pass's own layout, so
     // nothing shifts this index anymore.
     if hzb {
@@ -368,6 +410,16 @@ fn create_layout(
                 .with_sample_type(TextureSampleType::UnfilterableFloat),
         )));
     }
+
+    // 8/9 (with HZB) or 7/8 (without) — skybox cubemap (filterable float,
+    // matching the material pass's skybox entry) + filtering sampler: the
+    // trace's miss-path environment fallback.
+    entries.push(compute_only(BindGroupLayoutResource::Texture(
+        TextureBindingLayout::new().with_view_dimension(TextureViewDimension::Cube),
+    )));
+    entries.push(compute_only(BindGroupLayoutResource::Sampler(
+        SamplerBindingLayout::new().with_binding_type(SamplerBindingType::Filtering),
+    )));
 
     Ok(ctx
         .bind_group_layouts
@@ -411,6 +463,16 @@ fn create_resolve_layout(
             StorageTextureBindingLayout::new(TextureFormat::Rgba16float)
                 .with_view_dimension(TextureViewDimension::N2d)
                 .with_access(StorageTextureAccess::WriteOnly),
+        )),
+        // 4 — material-owned reflection descriptor (single-sample, full-res;
+        // `.a` = spread). Mirror pixels (spread < eps) pass through the
+        // resolve unfiltered; the travel-scaled blur radius ramps in with
+        // spread. Read via textureLoad like the trace's binding 6.
+        compute_only(BindGroupLayoutResource::Texture(
+            TextureBindingLayout::new()
+                .with_view_dimension(TextureViewDimension::N2d)
+                .with_sample_type(TextureSampleType::UnfilterableFloat)
+                .with_multisampled(false),
         )),
     ];
     Ok(ctx
@@ -480,6 +542,15 @@ fn create_temporal_layout(
             StorageTextureBindingLayout::new(TextureFormat::Rgba16float)
                 .with_view_dimension(TextureViewDimension::N2d)
                 .with_access(StorageTextureAccess::WriteOnly),
+        )),
+        // 8 — material-owned reflection descriptor (single-sample, full-res;
+        // `.a` = spread). Gates the history blend to 0 on mirror pixels —
+        // their trace is deterministic, so history could only smear them.
+        compute_only(BindGroupLayoutResource::Texture(
+            TextureBindingLayout::new()
+                .with_view_dimension(TextureViewDimension::N2d)
+                .with_sample_type(TextureSampleType::UnfilterableFloat)
+                .with_multisampled(false),
         )),
     ];
     Ok(ctx

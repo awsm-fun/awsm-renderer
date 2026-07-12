@@ -49,6 +49,7 @@ bundles, which are window-independent.
 | `pbr-extensions` | transmission, diffuse transmission, clearcoat, sheen, iridescence, dispersion, anisotropy, volume, specular, ior, emissive_strength | one probe object per extension, each visually distinct from plain PBR |
 | `env-ibl` | 3-slot environment (skybox/specular/irradiance), KTX2, built-in default | slots independently swapped; reflections track the specular slot |
 | `ssr` | SSR on glossy floor (black glossy dielectric probe), half-res + MSAA edges | continuous reflections of emissive columns, clean silhouettes |
+| `mirror` | perfect-mirror SSR (spread 0: deterministic trace, resolve/temporal bypass, full-res, bloom off) | reflection pixel-identical in shape to geometry, no serration/noise/dashes |
 | `bloom-post` | bloom knobs, tonemappers (aces vs khronos_neutral_pbr), exposure, DoF | halo scales with intensity; tonemapper switch visibly re-grades |
 | `lights-many` | froxel culling under many point/spot lights | dozens of local lights, correct falloff, interactive frame rate |
 | `particles` | particle emitter (existing instancing path) | emitter animates; instance colors apply |
@@ -97,7 +98,8 @@ numbers recorded here and in `docs/plans/006-optimizations.md`.
 
 ## Scene status
 
-All 22 scenes are authored and versioned. `lod-nanite-open` (2026-07-11)
+All 23 scenes are authored and versioned (`mirror`, 2026-07-12, is the
+perfect-mirror SSR acceptance scene). `lod-nanite-open` (2026-07-11)
 locks the open-boundary cluster-cut class on-device; its source mesh is
 generated, not sampled (`gen-open-sheet.py`, deterministic — regenerate
 instead of editing the .glb). `instancing-stress` landed with

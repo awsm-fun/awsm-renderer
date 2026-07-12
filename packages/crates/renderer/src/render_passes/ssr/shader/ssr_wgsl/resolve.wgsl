@@ -1,7 +1,12 @@
 // SSR spatial resolve — the edge-aware denoise between trace and composite.
 //
-// The stochastic trace jitters its march phase per pixel (and rotates it per
-// frame under temporal), so its raw output carries per-pixel noise and
+// MIRROR pixels (descriptor spread < MIRROR_SPREAD_EPS) BYPASS this filter
+// entirely: their trace is deterministic (no jitter), so the center value is
+// already exact and any filtering could only blur it. Everything below
+// concerns the GLOSSY path.
+//
+// The stochastic glossy trace jitters its march phase per pixel (and rotates
+// it per frame under temporal), so its raw output carries per-pixel noise and
 // dithered hit/miss edges. Compositing that directly reads as fuzzy
 // "caterpillar" edges on reflected detail and sparkle on glossy surfaces at
 // grazing angles. This pass runs at the SSR target's own resolution (half- or
@@ -25,6 +30,18 @@
 // CameraRaw + camera_from_raw (inv_proj for view-space depth linearization).
 {% include "shared_wgsl/camera.wgsl" %}
 
+// Spread below this is a PERFECT MIRROR: the trace was deterministic, so the
+// pixel passes through THIS filter untouched (pixel-exact reflections). Keep
+// in sync with trace.wgsl's MIRROR_SPREAD_EPS.
+const MIRROR_SPREAD_EPS: f32 = 0.01;
+
+// ssr-spread-gate: the spread at which SSR's "near-mirror" treatment fully
+// ramps out — here it scales the travel-widened blur radius in. Keep in sync
+// with the same-named constant in ssr_wgsl/temporal.wgsl (history-blend ramp)
+// and shared_wgsl/lighting/brdf_pbr.wgsl (IBL-specular suppression ramp) —
+// grep "ssr-spread-gate".
+const SSR_SPREAD_GATE: f32 = 0.15;
+
 @group(0) @binding(0) var<uniform> camera_raw: CameraRaw;
 // The raw SSR trace output (rgba16float, premultiplied rgb + coverage alpha).
 @group(0) @binding(1) var src_tex: texture_2d<f32>;
@@ -37,6 +54,11 @@
 {% endif %}
 // Same-size resolved output; the composite reads THIS instead of the raw trace.
 @group(0) @binding(3) var out_tex: texture_storage_2d<rgba16float, write>;
+// Material-owned reflection descriptor (single-sample, FULL-res; same texture
+// the trace reads at binding 6). Only `.a` (spread, 0 mirror … 1 diffuse) is
+// read here: mirror pixels bypass the blur entirely and the travel-scaled
+// radius ramps in with spread, so sharpness is material-driven.
+@group(0) @binding(4) var reflection_descriptor_tex: texture_2d<f32>;
 
 // Reconstruct VIEW-space position from a hardware depth sample at `uv`
 // (NDC y flipped vs UV). Same convention as trace.wgsl's view_pos_from_depth.
@@ -66,7 +88,8 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let full_dims = vec2<f32>(textureDimensions(depth_tex));
 
     let cam = camera_from_raw(camera_raw);
-    let center_depth = textureLoad(depth_tex, vec2<i32>(uv * full_dims), 0);
+    let fcoords = vec2<i32>(uv * full_dims);
+    let center_depth = textureLoad(depth_tex, fcoords, 0);
 
     // Sky: the trace wrote zero coverage here and there is no surface to
     // edge-compare against — write 0 and keep the additive composite a no-op.
@@ -114,18 +137,27 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // filtered fractional coverage composites correctly through the additive
     // blend).
     let center = textureLoad(src_tex, coords, 0);
+
+    // MIRROR = TIGHT KERNEL, not passthrough (wgsl_validation pins this):
+    // the deterministic mirror trace still quantizes at the depth buffer's
+    // texel grid — grazing-tangency regions (a curved silhouette's apex in
+    // the reflection) alternate whole hit/miss rows that no acceptance logic
+    // can resolve (the information is sub-texel). A ~1px kernel is the
+    // reflection's ANTIALIASING — the same remedy rasterization applies to
+    // geometry edges — and preserves mirror sharpness (max tap offset ~1.3px
+    // at scale 0.6). Glossy pixels widen from there with travel, as before.
+    let spread = textureLoad(reflection_descriptor_tex, fcoords, 0).a;
+
     var sum = center;
     var sum_w = 1.0;
 
-    // TRAVEL-SCALED radius: trace alpha carries coverage x travel fraction.
-    // Contact reflections (travel ~0) stay tight (1x = 2.5px disk); far
-    // reflections widen up to 3.2x (~8px). This is the glossy-with-distance
-    // falloff every production SSR has — and it is what buries the serrated
-    // edges a mirror-sharp reflection of thin bright tubes produces (the
-    // depth silhouette is aliased and grazing reflection stretch amplifies
-    // it; no amount of exact tracing removes that, only filtering does).
-    // Sample the local max travel so the widened kernel also covers the
-    // miss-side of a reflection boundary.
+    // TRAVEL x SPREAD-SCALED radius: trace alpha carries coverage x travel
+    // fraction. Contact reflections (travel ~0) stay tight (1x = 2.5px disk);
+    // far reflections widen up to 3.2x (~8px) — but ONLY as the material's
+    // spread ramps in (smoothstep over [0, SSR_SPREAD_GATE]): this is the
+    // glossy-with-distance falloff every production SSR has, and it must
+    // never soften a near-mirror surface. Sample the local max travel so the
+    // widened kernel also covers the miss-side of a reflection boundary.
     var travel = center.a;
     for (var i = 0; i < 8; i = i + 1) {
         let t4 = clamp(
@@ -135,7 +167,12 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         );
         travel = max(travel, textureLoad(src_tex, t4, 0).a);
     }
-    let radius_scale = 1.0 + travel * 2.2;
+    // wgsl_validation pins this exact spread-gated radius term.
+    let radius_scale = mix(
+        0.6,
+        1.0 + travel * 2.2,
+        smoothstep(0.0, SSR_SPREAD_GATE, spread),
+    );
 
     for (var i = 0; i < 8; i = i + 1) {
         let tap = clamp(

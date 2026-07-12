@@ -22,6 +22,14 @@
 // CameraRaw + camera_from_raw (inv_proj / inv_view / prev_view_proj).
 {% include "shared_wgsl/camera.wgsl" %}
 
+// ssr-spread-gate: the spread at which SSR's "near-mirror" treatment fully
+// ramps out — here it ramps the history blend in (mirror pixels take the
+// current frame only). Keep in sync with the same-named constant in
+// ssr_wgsl/resolve.wgsl (travel-blur ramp) and
+// shared_wgsl/lighting/brdf_pbr.wgsl (IBL-specular suppression ramp) —
+// grep "ssr-spread-gate".
+const SSR_SPREAD_GATE: f32 = 0.15;
+
 // Same 32-byte live-tuning uniform the trace binds; only `temporal_weight`
 // is read here. Layout must match `struct SsrParams` in `ssr_wgsl/trace.wgsl`.
 struct SsrParams {
@@ -54,6 +62,11 @@ struct SsrParams {
 @group(0) @binding(6) var out_tex: texture_storage_2d<rgba16float, write>;
 // This frame's history slot (next frame's reprojection source).
 @group(0) @binding(7) var history_curr_tex: texture_storage_2d<rgba16float, write>;
+// Material-owned reflection descriptor (single-sample, FULL-res; same texture
+// the trace reads at binding 6). Only `.a` (spread) is read: MIRROR pixels
+// (spread ~0) trace deterministically, so history adds nothing and can only
+// smear — the blend weight is gated to 0 for them (current-frame only).
+@group(0) @binding(8) var reflection_descriptor_tex: texture_2d<f32>;
 
 // Reconstruct VIEW-space position from a hardware depth sample at `uv`
 // (NDC y flipped vs UV). Same convention as trace.wgsl's view_pos_from_depth.
@@ -128,7 +141,18 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
             // pins this line): stale history is pulled to the current
             // neighborhood's AABB, so camera-motion trails die in 1-2 frames.
             let hist_clamped = clamp(hist, nb_min, nb_max);
-            out_color = mix(current, hist_clamped, params.temporal_weight);
+            // SPREAD-GATED blend (wgsl_validation pins this term): mirror
+            // pixels (spread → 0) are deterministic in the trace and exact
+            // out of the resolve — history accumulation adds nothing for
+            // them and can only smear under motion, so they take the current
+            // frame only. Glossy pixels keep the clamped accumulation that
+            // converges their jittered march.
+            let spread = textureLoad(reflection_descriptor_tex, fcoords, 0).a;
+            out_color = mix(
+                current,
+                hist_clamped,
+                params.temporal_weight * smoothstep(0.0, SSR_SPREAD_GATE, spread),
+            );
         }
     }
 
