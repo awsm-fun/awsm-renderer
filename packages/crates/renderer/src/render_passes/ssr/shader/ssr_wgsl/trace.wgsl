@@ -164,17 +164,22 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     // Cap the view-space ray: `max_distance`, and never through the camera
     // plane (a ray toward the camera clips so 1/w stays finite).
+    // Normal-biased origin: nudge the start off the surface (scaled with
+    // distance so the bias stays ~subpixel) — jittered first steps otherwise
+    // self-intersect the reflector's own contact region and stipple the
+    // reflection boundary.
+    let p_biased = p + n * max(0.02, -p.z * 0.002);
     var ray_len = params.max_distance;
     if (refl.z > 0.0) {
-        ray_len = min(ray_len, max((-0.05 - p.z) / refl.z, 0.0));
+        ray_len = min(ray_len, max((-0.05 - p_biased.z) / refl.z, 0.0));
     }
-    let p_end = p + refl * ray_len;
+    let p_end = p_biased + refl * ray_len;
 
     // Homogeneous endpoints; view-Z over w interpolates LINEARLY in screen
     // space (perspective-correct), so one lerp per step recovers exact ray
     // depth at each pixel.
     let fdims = vec2<f32>(full_dims);
-    let h0 = cam.proj * vec4<f32>(p, 1.0);
+    let h0 = cam.proj * vec4<f32>(p_biased, 1.0);
     let h1 = cam.proj * vec4<f32>(p_end, 1.0);
     let k0 = 1.0 / max(h0.w, 1e-6);
     let k1 = 1.0 / max(h1.w, 1e-6);
@@ -186,7 +191,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         (h1.x * k1 * 0.5 + 0.5) * fdims.x,
         (1.0 - (h1.y * k1 * 0.5 + 0.5)) * fdims.y,
     );
-    let qz0 = p.z * k0;
+    let qz0 = p_biased.z * k0;
     let qz1 = p_end.z * k1;
 
     let delta = s1 - s0;
@@ -291,7 +296,18 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let ray_z = -((qz0 + dqz * s_cur) / k);
         let scene_z = -view_pos_from_depth(pix / fdims, sdepth, cam).z;
         let thickness = max(params.thickness, scene_z * 0.02);
-        if (ray_z > scene_z + 0.01 && (ray_z - scene_z) < thickness) {
+        if (!(ray_z > scene_z + 0.01 && (ray_z - scene_z) < thickness)) {
+            // Fine miss: advance one texel and RE-ASCEND. Without the
+            // ascent the march stays at mip 0 forever after its first
+            // descent and exhausts the iteration budget within ~steps
+            // pixels — long reflections truncated on ray-direction-
+            // dependent boundaries (the "non-round reflection" report).
+            s_prev = s_cur;
+            s_cur = s_next;
+            mip = min(mip + 1, max_mip);
+            continue;
+        }
+        {
             var lo = s_prev;
             var hi = s_cur;
             for (var b = 0; b < 5; b = b + 1) {
@@ -312,8 +328,6 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
             hit = true;
             break;
         }
-        s_prev = s_cur;
-        s_cur = s_next;
     }
 {% else %}
     for (var i = 0; i < steps; i = i + 1) {
