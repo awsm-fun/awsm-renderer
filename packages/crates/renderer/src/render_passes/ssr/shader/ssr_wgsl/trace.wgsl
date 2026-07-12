@@ -139,77 +139,125 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // reflection above.)
     {% endif %}
 
-    let steps = max(i32(params.max_steps), 1);
-    // GEOMETRIC stride: near reflections (the visually dominant contacts —
-    // floor reflections of nearby geometry) march at centimetre precision so
-    // thin features (neon tubes, trims) are never skipped, while the stride
-    // grows ~6%/step to still reach `max_distance` with the same step count.
-    // A UNIFORM stride here was the "dashed reflection" artifact: at
-    // max_distance 100+ / 96 steps every stride was ~1 m, larger than the
-    // thin geometry being reflected, so hits landed intermittently.
-    let growth = 1.06;
-    let base_len = params.max_distance * (growth - 1.0) / (pow(growth, f32(steps)) - 1.0);
+    // ─── SCREEN-SPACE DDA march (McGuire & Mara style) ────────────────────
+    //
+    // The ray is marched in SCREEN PIXELS with perspective-correct depth
+    // interpolation, not in view-space world units. This is the load-bearing
+    // property: the stride can never exceed the ray's screen footprint, so a
+    // thin reflector (a neon tube two pixels wide) is sampled by every march
+    // that crosses it, near or far. The previous view-space marches (uniform,
+    // then geometric) both under-sampled the far field — world strides grow
+    // unboundedly in screen terms — which tore reflections into dashes and,
+    // once jittered, into per-pixel sawtooth patches.
 
-    // Interleaved-gradient-noise jitter of the FIRST step, per pixel:
-    // decorrelates the stride phase between neighbouring pixels, turning
-    // coherent staircase banding into unstructured (and far less visible)
-    // noise. Deterministic per pixel — stable under a static camera.
+    // Interleaved-gradient-noise jitter of the stride PHASE, per pixel:
+    // decorrelates neighbouring pixels so residual coarse-stride banding
+    // (only long rays stride > 1 px) turns into fine noise.
     let ign = fract(52.9829189 * fract(dot(vec2<f32>(coords), vec2<f32>(0.06711056, 0.00583715))));
     {% if temporal %}
-    // Rotate by the golden ratio each frame: the history blend then averages
-    // the march phase over ~1/(1-temporal_weight) frames, converging the
-    // stipple on bright reflections to a smooth result.
+    // Rotate by the golden ratio each frame: the history blend averages the
+    // march phase over ~1/(1-temporal_weight) frames and converges the noise.
     let jitter = fract(ign + params.frame * 0.61803398875);
     {% else %}
     let jitter = ign;
     {% endif %}
 
+    // Cap the view-space ray: `max_distance`, and never through the camera
+    // plane (a ray toward the camera clips so 1/w stays finite).
+    var ray_len = params.max_distance;
+    if (refl.z > 0.0) {
+        ray_len = min(ray_len, max((-0.05 - p.z) / refl.z, 0.0));
+    }
+    let p_end = p + refl * ray_len;
+
+    // Homogeneous endpoints; view-Z over w interpolates LINEARLY in screen
+    // space (perspective-correct), so one lerp per step recovers exact ray
+    // depth at each pixel.
+    let fdims = vec2<f32>(full_dims);
+    let h0 = cam.proj * vec4<f32>(p, 1.0);
+    let h1 = cam.proj * vec4<f32>(p_end, 1.0);
+    let k0 = 1.0 / max(h0.w, 1e-6);
+    let k1 = 1.0 / max(h1.w, 1e-6);
+    let s0 = vec2<f32>(
+        (h0.x * k0 * 0.5 + 0.5) * fdims.x,
+        (1.0 - (h0.y * k0 * 0.5 + 0.5)) * fdims.y,
+    );
+    let s1 = vec2<f32>(
+        (h1.x * k1 * 0.5 + 0.5) * fdims.x,
+        (1.0 - (h1.y * k1 * 0.5 + 0.5)) * fdims.y,
+    );
+    let qz0 = p.z * k0;
+    let qz1 = p_end.z * k1;
+
+    let delta = s1 - s0;
+    // Degenerate segment (ray ~along the view axis projects inside one
+    // pixel): nothing new to sample along it — clamp so math stays finite;
+    // the loop then exits on the first out-of-segment step.
+    let screen_len = max(length(delta), 1e-3);
+    let dir = delta / screen_len;
+    let dk = (k1 - k0) / screen_len;
+    let dqz = (qz1 - qz0) / screen_len;
+
+    let steps = max(i32(params.max_steps), 1);
+    // Stride covers the whole segment within the step budget, but never
+    // finer than 1 px (sub-pixel probes are duplicates). Long rays stride
+    // coarser; the jitter + binary refine recover the precision.
+    let stride = max(screen_len / f32(steps), 1.0);
+
     var hit = false;
     var hit_uv = vec2<f32>(0.0, 0.0);
-    var step_len = base_len;
-    var t_prev = 0.0;
-    var t = base_len * (0.5 + jitter);
+    var s_prev = 0.0;
+    var s_cur = stride * (0.5 + jitter);
 
-    // Linear DDA march in view space. depth_tex is non-filterable, so
-    // every scene-depth probe is an integer textureLoad.
     for (var i = 0; i < steps; i = i + 1) {
-        let pi = p + refl * t;
-        let proj = view_to_uv(pi, cam);
-        if (proj.z < 0.0 || proj.x < 0.0 || proj.x > 1.0 || proj.y < 0.0 || proj.y > 1.0) {
+        if (s_cur >= screen_len) {
             break;
         }
-        let scoords = vec2<i32>(proj.xy * vec2<f32>(full_dims));
-        let sdepth = textureLoad(depth_tex, scoords, 0);
-        let scene_p = view_pos_from_depth(proj.xy, sdepth, cam);
-        // View looks down -Z: positive linear depth = -z.
-        let ray_z = -pi.z;
-        let scene_z = -scene_p.z;
-        // Thickness scales with the local stride: a fixed world thickness
-        // combined with growing steps either false-hits far away (too thick
-        // for fine strides) or tunnels through surfaces near the march tail
-        // (too thin for coarse strides). `params.thickness` acts as the floor.
-        let thickness = max(params.thickness, step_len * 1.5);
-        if (ray_z > scene_z && (ray_z - scene_z) < thickness) {
-            // Binary refinement between the last miss and this hit.
-            var lo = t_prev;
-            var hi = t;
+        let pix = s0 + dir * s_cur;
+        if (pix.x < 0.0 || pix.x >= fdims.x || pix.y < 0.0 || pix.y >= fdims.y) {
+            break;
+        }
+        let sdepth = textureLoad(depth_tex, vec2<i32>(pix), 0);
+        // Sky never occludes (and reverse-Z sky depth=0 would reconstruct to
+        // a non-finite view position — skip it before the math).
+        {% if reverse_z %}
+        if (sdepth <= 0.0) {
+        {% else %}
+        if (sdepth >= 1.0) {
+        {% endif %}
+            s_prev = s_cur;
+            s_cur = s_cur + stride;
+            continue;
+        }
+        let k = k0 + dk * s_cur;
+        let ray_z = -((qz0 + dqz * s_cur) / k);
+        let scene_z = -view_pos_from_depth(pix / fdims, sdepth, cam).z;
+        // Thickness: the base tolerance, widened proportionally with depth
+        // (2%) so grazing far-field surfaces don't tunnel between texels.
+        let thickness = max(params.thickness, scene_z * 0.02);
+        if (ray_z > scene_z + 0.01 && (ray_z - scene_z) < thickness) {
+            // Binary refinement over the last screen-space interval.
+            var lo = s_prev;
+            var hi = s_cur;
             for (var b = 0; b < 5; b = b + 1) {
                 let mid = 0.5 * (lo + hi);
-                let pm = p + refl * mid;
-                let pj = view_to_uv(pm, cam);
-                let mc = vec2<i32>(pj.xy * vec2<f32>(full_dims));
-                let md = textureLoad(depth_tex, mc, 0);
-                let mz = -view_pos_from_depth(pj.xy, md, cam).z;
-                if (-pm.z > mz) { hi = mid; } else { lo = mid; }
+                let mpix = s0 + dir * mid;
+                let md = textureLoad(depth_tex, vec2<i32>(mpix), 0);
+                let mk = k0 + dk * mid;
+                let mray_z = -((qz0 + dqz * mid) / mk);
+                let mscene_z = -view_pos_from_depth(mpix / fdims, md, cam).z;
+                if (mray_z > mscene_z) {
+                    hi = mid;
+                } else {
+                    lo = mid;
+                }
             }
-            let pf = p + refl * hi;
-            hit_uv = view_to_uv(pf, cam).xy;
+            hit_uv = (s0 + dir * hi) / fdims;
             hit = true;
             break;
         }
-        t_prev = t;
-        step_len = step_len * growth;
-        t = t + step_len;
+        s_prev = s_cur;
+        s_cur = s_cur + stride;
     }
 
     var reflection = vec3<f32>(0.0, 0.0, 0.0);
