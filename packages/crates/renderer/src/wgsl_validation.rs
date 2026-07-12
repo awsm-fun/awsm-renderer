@@ -1113,19 +1113,26 @@ fn ssr_shaders_validate() {
                             src.contains("var s_cur = 1.0;"),
                             "{label}: trace march must start its first probe at ~1 px"
                         );
-                        // SURFACE-CONTINUITY acceptance (comment-pinned):
-                        // thin geometry accepts under the absolute thickness
-                        // floor; generous grazing acceptance additionally
-                        // requires the SURFACE continuous across the step —
-                        // without it the steepness bound bleeds curved
-                        // silhouettes outward ("hair crowns").
+                        // CROSSING acceptance + post-refine validation
+                        // (comment-pinned): a hit is a SIGN CHANGE of
+                        // (ray_z - scene_z) across the step (in FRONT at the
+                        // previous sample, BEHIND now); the binary refine
+                        // converges to the root and the refined penetration
+                        // is validated against ONE absolute leak threshold —
+                        // angle-robust by construction (the old clause pair
+                        // dissolved curved reflections into stipple at steep
+                        // cameras).
                         assert!(
-                            src.contains("penetration < params.thickness"),
-                            "{label}: trace must keep the absolute thin-geometry floor"
+                            src.contains("front_prev = ray_z_prev < pscene_z * (1.0 + 1e-4);"),
+                            "{label}: trace must detect crossings by the \
+                             front-at-previous-sample sign test"
                         );
                         assert!(
-                            src.contains("surf_step < max(params.thickness, 2.0 * step_advance)"),
-                            "{label}: trace must gate grazing acceptance on surface continuity"
+                            src.contains("let pen_r = rray_z - rscene_z;")
+                                && src.contains("let max_pen = params.thickness + 1e-3 * rscene_z;")
+                                && src.contains("hit_conf = 1.0 - smoothstep(0.5, 1.0, max(pen_r, 0.0) / max_pen);"),
+                            "{label}: trace must validate the REFINED penetration \
+                             against the leak threshold and derive confidence from it"
                         );
                         // The old absolute front bias (+0.01) killed exact
                         // contacts; only the tiny RELATIVE epsilon remains.

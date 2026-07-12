@@ -111,9 +111,9 @@ fn view_pos_from_depth(uv: vec2<f32>, depth: f32, cam: Camera) -> vec3<f32> {
 // apex. The depth buffer describes a continuous surface; sample it as one and
 // intersections become continuous too — deterministically, with no need for
 // stochastic supersampling. Fabricated fg/bg blends at interior depth
-// DISCONTINUITIES are rejected downstream by the surface-continuity
-// acceptance (an interpolated cliff fails the step bound exactly like a raw
-// silhouette jump).
+// DISCONTINUITIES are rejected by the guard below and by the post-refine
+// penetration validation (a refined discontinuity keeps gap-sized
+// penetration and fails the thickness bound).
 fn scene_depth_at(pix: vec2<f32>, fdims: vec2<f32>) -> f32 {
     let p = pix - vec2<f32>(0.5);
     let base = floor(p);
@@ -135,9 +135,8 @@ fn scene_depth_at(pix: vec2<f32>, fdims: vec2<f32>) -> f32 {
     {% endif %}
     // DISCONTINUITY guard: when the 2x2 straddles a silhouette (large
     // relative raw-depth span), interpolating would fabricate a phantom
-    // mid-air surface that the absolute-thickness acceptance clause (which
-    // deliberately has no continuity check — thin geometry) would then hit:
-    // isolated speck false-hits floating around every reflected silhouette.
+    // mid-air surface producing isolated speck false-hits floating around
+    // every reflected silhouette.
     // Fall back to the point sample there — exactly the old behavior at
     // discontinuities, continuous everywhere it is meaningful. The 2% bound
     // passes grazing floors (per-texel raw delta well under 1%) and rejects
@@ -306,12 +305,10 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var hit_uv = vec2<f32>(0.0, 0.0);
     var travel_fade = 1.0;
     var travel_frac = 0.0;
-    var tangency_t = 0.0;
-    // Hit CONFIDENCE: 1 deep in a surface's acceptance window, fading to 0
-    // at its boundary. Grazing-tangency pixels sit right at the window edge
-    // and otherwise flip hit/miss per row (dashed silhouette caps on curved
-    // reflections); blending by confidence turns that into a smooth
-    // transition into the environment — what a real mirror shows.
+    // Hit CONFIDENCE: ~1 at a clean refined surface crossing (penetration
+    // near zero), fading to 0 as the refined penetration approaches the
+    // leak threshold; blending by confidence turns marginal hits into a
+    // smooth transition into the environment fallback.
     var hit_conf = 1.0;
     var s_prev = 0.0;
     // First probe at ~1 px UNCONDITIONALLY (first-probe-overshoot fix,
@@ -422,68 +419,38 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // s and across neighbouring receiver pixels.
         let epix = s0 + dir * s_eval;
         let scene_z = -view_pos_from_depth(epix / fdims, scene_depth_at(epix, fdims), cam).z;
-        // ADAPTIVE acceptance (wgsl_validation pins this term). A fixed
-        // thickness makes thin geometry a rejection lottery: the crossing
-        // texel's penetration depends on subpixel phase, so a thin tube's
-        // reflection dissolves into per-pixel hit/miss sawtooth. Instead,
-        // bound the accepted penetration by the per-step ray depth advance
-        // (x2): a legitimate crossing detected between two probes cannot
-        // have penetrated deeper than the ray descended across that step,
-        // and steep/grazing rays get proportionally wider acceptance. The
-        // old absolute `+ 0.01` front bias killed exact contacts; a tiny
-        // RELATIVE epsilon guards self-intersection instead.
-        let step_advance = abs(ray_z - ray_z_prev);
         let penetration = ray_z - scene_z;
-        // SURFACE-CONTINUITY acceptance (wgsl_validation pins this). Two
-        // ways to accept a crossing:
-        //  1. penetration under the absolute `params.thickness` floor —
-        //     catches thin geometry (a 1px tube's crossing texel), no
-        //     surface question asked;
-        //  2. penetration under the ray-steepness bound (2x per-step depth
-        //     advance) AND the SURFACE ITSELF continuous across the step
-        //     (|scene_z here - scene_z at the previous texel| within the
-        //     same bound) — grazing rays on a face accept generously, but a
-        //     silhouette (surface jumps to background between texels) never
-        //     does. Without the continuity term the steepness bound bleeds
-        //     curved silhouettes outward per-pixel ("hair crowns"); the ray
-        //     instead continues past the silhouette and reflects the true
-        //     background, which is the correct mirror image.
-        var accept = penetration > 1e-4 * scene_z && penetration < params.thickness;
-        if (!accept && penetration > 1e-4 * scene_z && penetration < 2.0 * step_advance) {
-            let ppix = s0 + dir * s_prev_eval;
-            let pd = textureLoad(depth_tex, vec2<i32>(ppix), 0);
-            {% if reverse_z %}
-            let prev_sky = pd <= 0.0;
-            {% else %}
-            let prev_sky = pd >= 1.0;
-            {% endif %}
-            if (!prev_sky) {
-                let pscene_z = -view_pos_from_depth(ppix / fdims, scene_depth_at(ppix, fdims), cam).z;
-                let surf_step = abs(scene_z - pscene_z);
-                accept = surf_step < max(params.thickness, 2.0 * step_advance);
-            }
+        // CROSSING acceptance + post-refine validation (wgsl_validation pins
+        // this — the angle-robust model). A hit is a SIGN CHANGE of
+        // (ray_z - scene_z) across the step: in FRONT at the previous
+        // sample, BEHIND now. With bilinear scene depth that difference is
+        // CONTINUOUS, so the binary refine converges to an actual ROOT: at a
+        // true surface crossing the refined penetration collapses toward
+        // zero at ANY ray/surface steepness — the old absolute-thickness +
+        // step-relative clause pair was angle-fragile (steep cameras
+        // dissolved curved reflections into hit/miss stipple, and every
+        // scene had to hand-tune ssr_thickness against it). A ray passing
+        // BEHIND a thin/foreground object instead refines onto the depth
+        // DISCONTINUITY and keeps a penetration ~ the whole gap, so one
+        // absolute thickness bound rejects the leak-through and the march
+        // CONTINUES past the occluder — thickness is now a leak threshold,
+        // not a per-scene quality crutch.
+        let ppix = s0 + dir * s_prev_eval;
+        let pd = textureLoad(depth_tex, vec2<i32>(ppix), 0);
+        {% if reverse_z %}
+        let prev_sky = pd <= 0.0;
+        {% else %}
+        let prev_sky = pd >= 1.0;
+        {% endif %}
+        var front_prev = true;
+        if (!prev_sky) {
+            let pscene_z = -view_pos_from_depth(ppix / fdims, scene_depth_at(ppix, fdims), cam).z;
+            front_prev = ray_z_prev < pscene_z * (1.0 + 1e-4);
         }
-        if (accept) {
-            hit_conf = 1.0
-                - smoothstep(0.6, 1.0, penetration / max(params.thickness, 2.0 * step_advance));
-            let tpix = s0 + dir * s_prev_eval;
-            let td = textureLoad(depth_tex, vec2<i32>(tpix), 0);
-            let tz = -view_pos_from_depth(tpix / fdims, scene_depth_at(tpix, fdims), cam).z;
-            let step_surf = abs(scene_z - tz);
-            // Reflection MAGNIFICATION at the hit: when the ray advances
-            // far less in depth per pixel than the surface it lands on
-            // changes (grazing rays into a curved contact), one depth texel
-            // of the reflected object spans MANY reflection pixels — the
-            // per-column hit/miss quantization stretches into visible
-            // vertical streaks. Record the uncertainty so the resolve
-            // widens its kernel exactly there (travel alone misses it:
-            // contact reflections have near-zero travel).
-            tangency_t = smoothstep(4.0, 24.0, step_surf / max(step_advance, 1e-4));
-        }
-        if (!accept) {
-            // Fine miss: advance one texel and RE-ASCEND. Without the
-            // ascent the march stays at mip 0 forever after its first
-            // descent and exhausts the iteration budget within ~steps
+        if (!front_prev || penetration <= 1e-4 * scene_z) {
+            // No crossing in this cell: advance one texel and RE-ASCEND.
+            // Without the ascent the march stays at mip 0 forever after its
+            // first descent and exhausts the iteration budget within ~steps
             // pixels — long reflections truncated on ray-direction-
             // dependent boundaries (the "non-round reflection" report).
             s_prev = s_cur;
@@ -492,8 +459,9 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
             continue;
         }
         {
-            var lo = s_prev;
-            var hi = s_cur;
+            // Binary refine over the sign-change interval, then VALIDATE.
+            var lo = s_prev_eval;
+            var hi = s_eval;
             for (var b = 0; b < 8; b = b + 1) {
                 let mid = 0.5 * (lo + hi);
                 let mpix = s0 + dir * mid;
@@ -506,7 +474,21 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
                     lo = mid;
                 }
             }
-            hit_uv = (s0 + dir * hi) / fdims;
+            let rpix = s0 + dir * hi;
+            let rray_z = -((qz0 + dqz * hi) / (k0 + dk * hi));
+            let rscene_z = -view_pos_from_depth(rpix / fdims, scene_depth_at(rpix, fdims), cam).z;
+            let pen_r = rray_z - rscene_z;
+            let max_pen = params.thickness + 1e-3 * rscene_z;
+            if (pen_r >= max_pen) {
+                // Refined onto a depth DISCONTINUITY, not a root: the ray
+                // passed BEHIND a foreground object. March on past it.
+                s_prev = s_cur;
+                s_cur = s_next;
+                mip = min(mip + 1, max_mip);
+                continue;
+            }
+            hit_conf = 1.0 - smoothstep(0.5, 1.0, max(pen_r, 0.0) / max_pen);
+            hit_uv = rpix / fdims;
             travel_frac = hi / screen_len;
             travel_fade = 1.0 - smoothstep(0.7, 1.0, travel_frac);
             hit = true;
@@ -542,38 +524,23 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let ray_z_prev = -((qz0 + dqz * s_prev) / (k0 + dk * s_prev));
         // Bilinear scene depth (see scene_depth_at): continuous intersections.
         let scene_z = -view_pos_from_depth(pix / fdims, scene_depth_at(pix, fdims), cam).z;
-        // ADAPTIVE acceptance (wgsl_validation pins this term). A fixed
-        // thickness makes thin geometry a rejection lottery: the crossing
-        // texel's penetration depends on subpixel phase, so a thin tube's
-        // reflection dissolves into per-pixel hit/miss sawtooth. Instead,
-        // bound the accepted penetration by the per-step ray depth advance
-        // (x2): a legitimate crossing detected between two probes cannot
-        // have penetrated deeper than the ray descended across that step,
-        // and steep/grazing rays get proportionally wider acceptance. The
-        // old absolute `+ 0.01` front bias killed exact contacts; a tiny
-        // RELATIVE epsilon guards self-intersection instead.
-        let step_advance = abs(ray_z - ray_z_prev);
         let penetration = ray_z - scene_z;
-        // SURFACE-CONTINUITY acceptance — same rationale as the Hi-Z arm.
-        var accept = penetration > 1e-4 * scene_z && penetration < params.thickness;
-        if (!accept && penetration > 1e-4 * scene_z && penetration < 2.0 * step_advance) {
-            let ppix = s0 + dir * s_prev;
-            let pd = textureLoad(depth_tex, vec2<i32>(ppix), 0);
-            {% if reverse_z %}
-            let prev_sky = pd <= 0.0;
-            {% else %}
-            let prev_sky = pd >= 1.0;
-            {% endif %}
-            if (!prev_sky) {
-                let pscene_z = -view_pos_from_depth(ppix / fdims, scene_depth_at(ppix, fdims), cam).z;
-                let surf_step = abs(scene_z - pscene_z);
-                accept = surf_step < max(params.thickness, 2.0 * step_advance);
-            }
+        // CROSSING acceptance + post-refine validation — same rationale as
+        // the Hi-Z arm (see the comment there).
+        let ppix = s0 + dir * s_prev;
+        let pd = textureLoad(depth_tex, vec2<i32>(ppix), 0);
+        {% if reverse_z %}
+        let prev_sky = pd <= 0.0;
+        {% else %}
+        let prev_sky = pd >= 1.0;
+        {% endif %}
+        var front_prev = true;
+        if (!prev_sky) {
+            let pscene_z = -view_pos_from_depth(ppix / fdims, scene_depth_at(ppix, fdims), cam).z;
+            front_prev = ray_z_prev < pscene_z * (1.0 + 1e-4);
         }
-        if (accept) {
-            hit_conf = 1.0
-                - smoothstep(0.6, 1.0, penetration / max(params.thickness, 2.0 * step_advance));
-            // Binary refinement over the last screen-space interval.
+        if (front_prev && penetration > 1e-4 * scene_z) {
+            // Binary refine over the sign-change interval, then VALIDATE.
             var lo = s_prev;
             var hi = s_cur;
             for (var b = 0; b < 8; b = b + 1) {
@@ -588,14 +555,23 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
                     lo = mid;
                 }
             }
-            hit_uv = (s0 + dir * hi) / fdims;
-            // Travel fade: reflections that reach the march budget must not
-            // STOP on a hard line — fade the last 30% of the ray so the
-            // termination boundary is invisible.
-            travel_frac = hi / screen_len;
-            travel_fade = 1.0 - smoothstep(0.7, 1.0, travel_frac);
-            hit = true;
-            break;
+            let rpix = s0 + dir * hi;
+            let rray_z = -((qz0 + dqz * hi) / (k0 + dk * hi));
+            let rscene_z = -view_pos_from_depth(rpix / fdims, scene_depth_at(rpix, fdims), cam).z;
+            let pen_r = rray_z - rscene_z;
+            let max_pen = params.thickness + 1e-3 * rscene_z;
+            if (pen_r < max_pen) {
+                hit_conf = 1.0 - smoothstep(0.5, 1.0, max(pen_r, 0.0) / max_pen);
+                hit_uv = rpix / fdims;
+                // Travel fade: reflections that reach the march budget must
+                // not STOP on a hard line — fade the last 30% of the ray so
+                // the termination boundary is invisible.
+                travel_frac = hi / screen_len;
+                travel_fade = 1.0 - smoothstep(0.7, 1.0, travel_frac);
+                hit = true;
+                break;
+            }
+            // Refined onto a discontinuity (pass-behind): march on past it.
         }
         s_prev = s_cur;
         // Phased advance: probe 0 sat at 1 px (contact-first); probe i (>= 1)
