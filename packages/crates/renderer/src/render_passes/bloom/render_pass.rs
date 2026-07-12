@@ -1,14 +1,18 @@
 //! Bloom build render pass execution.
 //!
-//! One compute pass, three step kinds (COD/Jimenez mip-pyramid bloom):
+//! One compute pass, four step kinds (COD/Jimenez mip-pyramid bloom):
 //! 1. **Prefilter** — composite (full-res) → pyramid mip 0, half-res, with a
 //!    soft-knee threshold. Dispatched at mip-0 dims / 8.
 //! 2. **Downsample** — pyramid mip N-1 → mip N for `N = 1..mip_count`, each a
 //!    plain 13-tap Jimenez step. Dispatched at each destination mip dims / 8.
-//! 3. **Combine** — mip-sum upsample of the whole pyramid into the full-res
-//!    `bloom` target (this IS the wide glow). Dispatched at viewport dims / 8.
+//! 3. **Upsample** — progressive 9-tap tent accumulation, coarsest → finest:
+//!    `up[N-1] = down[N-1] + scatter · tent9(mip N)` into the ping-pong up
+//!    pyramid. Dispatched at each destination mip dims / 8 (all tiny).
+//! 4. **Combine** — one tent tap of the accumulated up-pyramid mip 0 into the
+//!    full-res `bloom` target (this IS the wide glow), normalized by the
+//!    total scatter weight. Dispatched at viewport dims / 8.
 //!
-//! All three coalesce into a single `begin_compute_pass`, mirroring the HZB
+//! All four coalesce into a single `begin_compute_pass`, mirroring the HZB
 //! build; WebGPU inserts the storage-write→sample barriers between dispatches.
 
 use awsm_renderer_core::{
@@ -136,7 +140,10 @@ impl BloomRenderPass {
     /// Builds the bloom pyramid + wide glow for the current frame:
     /// 1. Prefilter composite → pyramid mip 0.
     /// 2. Downsample mip 0 → 1, 1 → 2, …, mip_count-2 → mip_count-1.
-    /// 3. Combine the whole pyramid into the full-res bloom target.
+    /// 3. Upsample (tent-accumulate) mip_count-1 → mip_count-2, …, 1 → 0 into
+    ///    the ping-pong up pyramid.
+    /// 4. Combine the accumulated up-pyramid mip 0 into the full-res bloom
+    ///    target.
     ///
     /// `view_width` / `view_height` size the final combine dispatch (full-res).
     pub fn render(&self, ctx: &RenderContext, view_width: u32, view_height: u32) -> Result<()> {
@@ -158,7 +165,19 @@ impl BloomRenderPass {
             compute_pass.dispatch_workgroups(dst_w.div_ceil(8), Some(dst_h.div_ceil(8)), Some(1));
         }
 
-        // Combine — mip-sum upsample into the full-res bloom target.
+        // Upsample — progressive tent accumulation, coarsest → finest:
+        // up[d] = down[d] + scatter · tent9(source at d+1) for
+        // d = mip_count-2 .. 0. ~5 extra dispatches over tiny mips; skipped
+        // entirely when the pyramid has a single level.
+        compute_pass.set_pipeline(ctx.pipelines.compute.get(self.pipelines.upsample)?);
+        for d in (0..self.texture.mip_count.saturating_sub(1) as usize).rev() {
+            compute_pass.set_bind_group(0, self.bind_groups.upsample_at(d)?, None)?;
+            let (dst_w, dst_h) = self.texture.mip_dims(d as u32);
+            compute_pass.dispatch_workgroups(dst_w.div_ceil(8), Some(dst_h.div_ceil(8)), Some(1));
+        }
+
+        // Combine — tent tap of the accumulated up-pyramid mip 0 into the
+        // full-res bloom target.
         compute_pass.set_pipeline(ctx.pipelines.compute.get(self.pipelines.combine)?);
         compute_pass.set_bind_group(0, self.bind_groups.combine()?, None)?;
         let full_w = view_width.max(1);

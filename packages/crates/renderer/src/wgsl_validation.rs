@@ -1106,19 +1106,39 @@ fn decal_classify_shader_validates_for_both_depth_conventions() {
     }
 }
 
-/// Axis 1 (docs/plans/006): bloom went content/config-lazy — its 3 compute
+/// Axis 1 (docs/plans/006): bloom went content/config-lazy — its 4 compute
 /// shaders no longer compile at boot (only when `post_processing.bloom` turns
 /// on), so on-device boot validation no longer covers them. Keep them
-/// natively validated here: both downsample variants (prefilter on/off) and
+/// natively validated here: every pyramid step (prefilter / downsample /
+/// tent upsample, all routed through the `BloomDownsample` cache key) and
 /// the combine must parse + validate and carry the compute entry point.
 #[test]
 fn bloom_shaders_validate() {
-    use crate::render_passes::bloom::shader::template::{
-        ShaderTemplateBloomCombine, ShaderTemplateBloomDownsample,
+    use crate::render_passes::bloom::shader::{
+        cache_key::{BloomPyramidStep, ShaderCacheKeyBloomDownsample},
+        template::{ShaderTemplateBloomCombine, ShaderTemplateBloomDownsample},
     };
-    for prefilter in [false, true] {
-        let label = format!("bloom downsample prefilter={prefilter}");
-        let src = ShaderTemplateBloomDownsample { prefilter }
+
+    // The 9-tap tent kernel in upsample.wgsl + combine.wgsl uses weights
+    // (1 2 1 / 2 4 2 / 1 2 1) with a `(1.0 / 16.0)` normalization — pin that
+    // the taps sum to exactly the divisor so the filter stays
+    // energy-preserving if the kernel is ever edited (edit both together).
+    const TENT9_WEIGHTS: [f32; 9] = [1.0, 2.0, 1.0, 2.0, 4.0, 2.0, 1.0, 2.0, 1.0];
+    const TENT9_DIVISOR: f32 = 16.0;
+    assert_eq!(
+        TENT9_WEIGHTS.iter().sum::<f32>(),
+        TENT9_DIVISOR,
+        "tent9 kernel weights must sum to the shader's normalization divisor"
+    );
+
+    for step in [
+        BloomPyramidStep::Prefilter,
+        BloomPyramidStep::Downsample,
+        BloomPyramidStep::Upsample,
+    ] {
+        let label = format!("bloom pyramid step={step:?}");
+        let src = ShaderTemplateBloomDownsample::try_from(&ShaderCacheKeyBloomDownsample { step })
+            .unwrap_or_else(|e| panic!("{label}: template dispatch failed: {e:?}"))
             .into_source()
             .unwrap_or_else(|e| panic!("{label}: render failed: {e:?}"));
         naga_validate(&src, &label);
@@ -1126,7 +1146,18 @@ fn bloom_shaders_validate() {
             src.contains("fn cs_main("),
             "{label}: bloom module missing `fn cs_main` entry point"
         );
+        if matches!(step, BloomPyramidStep::Upsample) {
+            assert!(
+                src.contains("(1.0 / 16.0)"),
+                "{label}: tent9 normalization (1/16, matching TENT9_DIVISOR) missing"
+            );
+            assert!(
+                src.contains("textureLoad(src_prev"),
+                "{label}: upsample must accumulate onto the down-pyramid base"
+            );
+        }
     }
+
     let src = ShaderTemplateBloomCombine
         .into_source()
         .expect("bloom combine: render failed");
@@ -1134,6 +1165,14 @@ fn bloom_shaders_validate() {
     assert!(
         src.contains("fn cs_main("),
         "bloom combine: module missing `fn cs_main` entry point"
+    );
+    assert!(
+        src.contains("(1.0 / 16.0)"),
+        "bloom combine: tent9 normalization (1/16, matching TENT9_DIVISOR) missing"
+    );
+    assert!(
+        src.contains("textureNumLevels(pyramid)"),
+        "bloom combine: scatter-weight normalization must span every pyramid level"
     );
 }
 
