@@ -1366,8 +1366,9 @@ fn ssr_resolve_shader_validates() {
             assert!(
                 src.contains("var amt_x = 0.0;")
                     && src.contains("var amt_y = 0.0;")
-                    && src.contains("- length(center.rgb - (xm2 + xp2) * 0.5)")
-                    && src.contains("- length(center.rgb - (ym2 + yp2) * 0.5)")
+                    && src.contains("- length(center.rgb - (xm2 + xp2) * 0.5)) * comb_norm")
+                    && src.contains("- length(center.rgb - (ym2 + yp2) * 0.5)) * comb_norm")
+                    && src.contains("let comb_norm = 1.0 / (length(center.rgb) + 0.05);")
                     && src.contains("1.0 + amt_x * 3.0")
                     && src.contains("1.0 + amt_y * 3.0")
                     && src.contains("tap_offsets[i] * radius_scale * stretch"),
