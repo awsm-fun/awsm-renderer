@@ -235,10 +235,11 @@ impl RenderTextures {
             None => false,
         };
 
-        // M3 SSR temporal: the half-res history pair (`ssr_history`) is only
-        // allocated full-size when SSR is on AND temporal is on, else 1×1
-        // placeholders. Toggling it rebuilds inner + recreates the SSR bind
-        // groups exactly like the `ssr_half_res` flip above.
+        // SSR temporal: the accumulation output (`ssr_final`) + history pair
+        // (`ssr_history`) are only allocated full-size when SSR is on AND
+        // temporal is on, else 1×1 placeholders. Toggling it rebuilds inner +
+        // recreates the SSR bind groups exactly like the `ssr_half_res` flip
+        // above.
         let ssr_temporal_changed = match self.inner.as_ref() {
             Some(inner) => inner.ssr_temporal != ssr_temporal,
             None => false,
@@ -399,12 +400,19 @@ pub struct RenderTextureViews {
     pub ssr: web_sys::GpuTextureView,
     /// SSR spatial-resolve output (same dims/format as `ssr`). The resolve
     /// compute reads `ssr` + depth and storage-writes the denoised reflection
-    /// here; the composite upsample reads THIS instead of the raw trace.
+    /// here; the composite upsample reads THIS instead of the raw trace —
+    /// unless temporal is on, in which case the temporal pass reads this and
+    /// the composite reads `ssr_final`.
     pub ssr_resolved: web_sys::GpuTextureView,
-    /// M3 SSR temporal history pair (same dims as `ssr`). The trace reads the
-    /// previous frame's accumulated reflection from one and writes this frame's
-    /// into the other, swapping by frame parity. 1×1 placeholders unless SSR is
-    /// on AND temporal is on.
+    /// SSR temporal-accumulation output (same dims/format as `ssr`). The
+    /// temporal pass reads `ssr_resolved` + history, storage-writes the
+    /// accumulated reflection here, and the composite reads THIS when temporal
+    /// is on. 1×1 placeholder unless SSR is on AND temporal is on.
+    pub ssr_final: web_sys::GpuTextureView,
+    /// SSR temporal history pair (same dims as `ssr`). The temporal pass reads
+    /// the previous frame's accumulated reflection from one and writes this
+    /// frame's into the other, swapping by frame parity. 1×1 placeholders
+    /// unless SSR is on AND temporal is on.
     pub ssr_history: [web_sys::GpuTextureView; 2],
     /// M2a material-owned reflection descriptor — `material_opaque` writes it,
     /// the SSR pass reads it.
@@ -477,6 +485,7 @@ impl RenderTextureViews {
             bloom: inner.bloom_view.clone(),
             ssr: inner.ssr_view.clone(),
             ssr_resolved: inner.ssr_resolved_view.clone(),
+            ssr_final: inner.ssr_final_view.clone(),
             ssr_history: [
                 inner.ssr_history_views[0].clone(),
                 inner.ssr_history_views[1].clone(),
@@ -593,7 +602,13 @@ pub struct RenderTexturesInner {
     /// composite). Follows the same lazy sizing: 1×1 placeholder when SSR off.
     pub ssr_resolved: web_sys::GpuTexture,
     pub ssr_resolved_view: web_sys::GpuTextureView,
-    /// M3 SSR temporal history pair — same dims + format as `ssr`. Ping-ponged
+    /// SSR temporal-accumulation output — same dims + format + usage as `ssr`
+    /// (storage-write from the temporal compute + texture read by the
+    /// composite). 1×1 placeholder unless `ssr_enabled && ssr_temporal` (the
+    /// temporal-off composite reads `ssr_resolved` directly).
+    pub ssr_final: web_sys::GpuTexture,
+    pub ssr_final_view: web_sys::GpuTextureView,
+    /// SSR temporal history pair — same dims + format as `ssr`. Ping-ponged
     /// by frame parity: one is read (previous frame), the other written (this
     /// frame). 1×1 placeholders unless `ssr_enabled && ssr_temporal`.
     pub ssr_history: [web_sys::GpuTexture; 2],
@@ -616,9 +631,9 @@ pub struct RenderTexturesInner {
     /// `reflection_descriptor` stays full-res regardless. `views()` rebuilds
     /// inner when this flips.
     pub ssr_half_res: bool,
-    /// M3: whether the `ssr_history` pair is allocated at the `ssr` dims (SSR on
-    /// AND temporal on) vs. 1×1 placeholders. `views()` rebuilds inner when this
-    /// flips.
+    /// Whether the temporal targets (`ssr_final` + the `ssr_history` pair) are
+    /// allocated at the `ssr` dims (SSR on AND temporal on) vs. 1×1
+    /// placeholders. `views()` rebuilds inner when this flips.
     pub ssr_temporal: bool,
 }
 
@@ -931,16 +946,31 @@ impl RenderTexturesInner {
             )
             .map_err(AwsmRenderTextureError::CreateTexture)?;
 
-        // M3 SSR temporal history pair — same dims + format (RGBA16F) + usage as
-        // the `ssr` target above (storage-write from the trace + texture/sampled
-        // read of the previous frame). Full-size only when SSR is on AND temporal
-        // is on; otherwise 1×1 placeholders (the temporal-off trace binds none of
-        // them, but the render-texture struct always carries a valid resource).
+        // SSR temporal targets — same dims + format (RGBA16F) + usage as the
+        // `ssr` target above. `ssr_final` is the temporal pass's accumulated
+        // output (the composite's source when temporal is on); the history
+        // pair is storage-written by the temporal pass + sampled (filtered)
+        // as the previous frame. Full-size only when SSR is on AND temporal is
+        // on; otherwise 1×1 placeholders (the temporal-off pipeline binds none
+        // of them, but the render-texture struct always carries valid resources).
         let (hist_w, hist_h) = if ssr_enabled && ssr_temporal {
             (ssr_w, ssr_h)
         } else {
             (1u32, 1u32)
         };
+        let ssr_final = gpu
+            .create_texture(
+                &TextureDescriptor::new(
+                    render_texture_formats.color,
+                    Extent3d::new(hist_w, Some(hist_h), Some(1)),
+                    TextureUsage::new()
+                        .with_storage_binding()
+                        .with_texture_binding(),
+                )
+                .with_label("SSR Final")
+                .into(),
+            )
+            .map_err(AwsmRenderTextureError::CreateTexture)?;
         let make_history = |label: &'static str| -> Result<web_sys::GpuTexture> {
             gpu.create_texture(
                 &TextureDescriptor::new(
@@ -1255,6 +1285,10 @@ impl RenderTexturesInner {
             AwsmRenderTextureError::CreateTextureView(format!("ssr_resolved: {e:?}"))
         })?;
 
+        let ssr_final_view = ssr_final
+            .create_view()
+            .map_err(|e| AwsmRenderTextureError::CreateTextureView(format!("ssr_final: {e:?}")))?;
+
         let ssr_history_views = [
             ssr_history[0].create_view().map_err(|e| {
                 AwsmRenderTextureError::CreateTextureView(format!("ssr_history[0]: {e:?}"))
@@ -1354,6 +1388,8 @@ impl RenderTexturesInner {
             ssr_view,
             ssr_resolved,
             ssr_resolved_view,
+            ssr_final,
+            ssr_final_view,
             ssr_history,
             ssr_history_views,
 
@@ -1408,6 +1444,7 @@ impl RenderTexturesInner {
         self.bloom.destroy();
         self.ssr.destroy();
         self.ssr_resolved.destroy();
+        self.ssr_final.destroy();
         self.ssr_history[0].destroy();
         self.ssr_history[1].destroy();
         self.reflection_descriptor.destroy();

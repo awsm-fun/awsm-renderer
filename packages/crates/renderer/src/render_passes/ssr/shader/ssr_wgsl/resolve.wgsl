@@ -17,9 +17,10 @@
 // smoothed coverage — the dithered hit/miss boundary becomes a soft edge that
 // composites correctly through the existing additive blend.
 //
-// Ordering: the trace-internal temporal history accumulates PRE-resolve; this
-// pass then smooths the converged result every frame (history never sees the
-// blur, so the filter cannot feedback-widen).
+// Ordering: trace → THIS → temporal accumulation (`ssr_wgsl/temporal.wgsl`,
+// when enabled) → composite. The temporal pass consumes this pass's output,
+// so its 3×3 neighborhood clamp operates on the denoised signal rather than
+// the raw stochastic trace.
 
 // CameraRaw + camera_from_raw (inv_proj for view-space depth linearization).
 {% include "shared_wgsl/camera.wgsl" %}

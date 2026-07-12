@@ -908,11 +908,14 @@ fn custom_transparent_shaders_validate() {
 #[test]
 fn ssr_shaders_validate() {
     // SSR trace shader must naga-validate for EVERY permutation
-    // (mode × trace-strategy × temporal × half_res × msaa × reverse_z) —
-    // proving the §5a zero-cost templating emits valid WGSL for each variant,
-    // and that the shared `camera.wgsl` / `math.wgsl` includes resolve. Also
-    // asserts the compute entry point exists (the dispatch selects it by
-    // name). `SsrTrace::HiZ` additionally must reference the pyramid binding.
+    // (mode × trace-strategy × half_res × msaa × reverse_z) — proving the §5a
+    // zero-cost templating emits valid WGSL for each variant, and that the
+    // shared `camera.wgsl` / `math.wgsl` includes resolve. Also asserts the
+    // compute entry point exists (the dispatch selects it by name).
+    // `SsrTrace::HiZ` additionally must reference the pyramid binding.
+    // Temporal is NOT a trace axis anymore: history accumulation moved to the
+    // dedicated temporal pass (see `ssr_temporal_shader_validates`), so the
+    // trace must carry NO history bindings in any variant.
     use crate::render_passes::ssr::shader::cache_key::{
         ShaderCacheKeySsr, ShaderCacheKeySsrTrace, SsrMode, SsrTrace,
     };
@@ -920,55 +923,127 @@ fn ssr_shaders_validate() {
     for mode in [SsrMode::Mirror, SsrMode::Glossy] {
         for trace in [SsrTrace::LinearDda, SsrTrace::HiZ] {
             for reverse_z in [false, true] {
-                for temporal in [false, true] {
-                    for half_res in [false, true] {
-                        for multisampled_geometry in [false, true] {
-                            let key = ShaderCacheKeySsr::Trace(ShaderCacheKeySsrTrace {
-                                mode,
-                                trace,
-                                temporal,
-                                half_res,
-                                multisampled_geometry,
-                                reverse_z,
-                            });
-                            let label = format!(
-                                "ssr mode={mode:?} trace={trace:?} temporal={temporal} \
+                for half_res in [false, true] {
+                    for multisampled_geometry in [false, true] {
+                        let key = ShaderCacheKeySsr::Trace(ShaderCacheKeySsrTrace {
+                            mode,
+                            trace,
+                            half_res,
+                            multisampled_geometry,
+                            reverse_z,
+                        });
+                        let label = format!(
+                            "ssr mode={mode:?} trace={trace:?} \
                          half_res={half_res} msaa={multisampled_geometry} reverse_z={reverse_z}"
-                            );
-                            let src = ShaderTemplateSsr::try_from(&key)
-                                .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
-                                .into_source()
-                                .unwrap_or_else(|e| panic!("{label}: render failed: {e:?}"));
-                            naga_validate(&src, &label);
-                            assert!(
-                                src.contains("fn cs_main("),
-                                "{label}: SSR module missing `fn cs_main` entry point"
-                            );
-                            // The multisampled variant must bind the MSAA depth type.
-                            if multisampled_geometry {
-                                assert!(
-                                    src.contains("texture_depth_multisampled_2d"),
-                                    "{label}: MSAA SSR must bind texture_depth_multisampled_2d"
-                                );
-                            }
-                            // Hi-Z variant must bind + traverse the pyramid; linear
-                            // must not reference it at all.
-                            if trace == SsrTrace::HiZ {
-                                assert!(
-                            src.contains("var hzb_tex")
-                                && src.contains("textureLoad(hzb_tex, cell, mip).g"),
-                            "{label}: Hi-Z SSR must bind hzb_tex and read the closest channel"
                         );
-                            } else {
-                                assert!(
-                                    !src.contains("hzb_tex"),
-                                    "{label}: linear SSR must not reference hzb_tex"
-                                );
-                            }
+                        let src = ShaderTemplateSsr::try_from(&key)
+                            .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
+                            .into_source()
+                            .unwrap_or_else(|e| panic!("{label}: render failed: {e:?}"));
+                        naga_validate(&src, &label);
+                        assert!(
+                            src.contains("fn cs_main("),
+                            "{label}: SSR module missing `fn cs_main` entry point"
+                        );
+                        // Temporal accumulation lives in the dedicated pass:
+                        // the trace must never reference history.
+                        assert!(
+                            !src.contains("history_prev"),
+                            "{label}: trace must not reference history_prev \
+                             (temporal accumulation moved to temporal.wgsl)"
+                        );
+                        // The multisampled variant must bind the MSAA depth type.
+                        if multisampled_geometry {
+                            assert!(
+                                src.contains("texture_depth_multisampled_2d"),
+                                "{label}: MSAA SSR must bind texture_depth_multisampled_2d"
+                            );
+                        }
+                        // Hi-Z variant must bind + traverse the pyramid; linear
+                        // must not reference it at all.
+                        if trace == SsrTrace::HiZ {
+                            assert!(
+                                src.contains("var hzb_tex")
+                                    && src.contains("textureLoad(hzb_tex, cell, mip).g"),
+                                "{label}: Hi-Z SSR must bind hzb_tex and read the closest channel"
+                            );
+                        } else {
+                            assert!(
+                                !src.contains("hzb_tex"),
+                                "{label}: linear SSR must not reference hzb_tex"
+                            );
                         }
                     }
                 }
             }
+        }
+    }
+}
+
+#[test]
+fn ssr_temporal_shader_validates() {
+    // The SSR temporal accumulation (history reproject + neighborhood clamp
+    // AFTER the spatial resolve) must naga-validate for every permutation
+    // (msaa × reverse_z). Beyond validity, pin the anti-ghosting core: the
+    // history sample must be CLAMPED to the 3×3 neighborhood AABB before the
+    // blend (comment-pinned in temporal.wgsl — this is what kills
+    // camera-motion trails in 1-2 frames), and the reprojection must go
+    // through the previous frame's view-projection.
+    use crate::render_passes::ssr::shader::cache_key::{
+        ShaderCacheKeySsr, ShaderCacheKeySsrTemporal,
+    };
+    use crate::render_passes::ssr::shader::template::ShaderTemplateSsr;
+    for multisampled_geometry in [false, true] {
+        for reverse_z in [false, true] {
+            let key = ShaderCacheKeySsr::Temporal(ShaderCacheKeySsrTemporal {
+                multisampled_geometry,
+                reverse_z,
+            });
+            let label = format!("ssr temporal msaa={multisampled_geometry} reverse_z={reverse_z}");
+            let src = ShaderTemplateSsr::try_from(&key)
+                .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
+                .into_source()
+                .unwrap_or_else(|e| panic!("{label}: render failed: {e:?}"));
+            naga_validate(&src, &label);
+            assert!(
+                src.contains("fn cs_main("),
+                "{label}: temporal module missing `fn cs_main` entry point"
+            );
+            // The neighborhood clamp — the anti-ghosting core (comment-pinned
+            // in the wgsl): history pulled to the current 3×3 AABB.
+            assert!(
+                src.contains("clamp(hist, nb_min, nb_max)"),
+                "{label}: temporal must clamp history to the neighborhood AABB \
+                 (`clamp(hist, nb_min, nb_max)`)"
+            );
+            // Depth reprojection through the previous frame's view-projection.
+            assert!(
+                src.contains("prev_view_proj"),
+                "{label}: temporal must reproject via cam.prev_view_proj"
+            );
+            // The multisampled variant must bind the MSAA depth type; the
+            // single-sample variant must not.
+            if multisampled_geometry {
+                assert!(
+                    src.contains("texture_depth_multisampled_2d"),
+                    "{label}: MSAA temporal must bind texture_depth_multisampled_2d"
+                );
+            } else {
+                assert!(
+                    src.contains("var depth_tex: texture_depth_2d"),
+                    "{label}: non-MSAA temporal must bind texture_depth_2d"
+                );
+            }
+            // Sky early-out matches the depth convention (reverse-Z far = 0).
+            let expect = if reverse_z {
+                "depth <= 0.0"
+            } else {
+                "depth >= 1.0"
+            };
+            assert!(
+                src.contains(expect),
+                "{label}: temporal sky test must be `{expect}`"
+            );
         }
     }
 }

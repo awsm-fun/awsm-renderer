@@ -1,18 +1,24 @@
 //! SSR pass compute pipelines.
 //!
 //! Self-contained (like bloom): compiles its own shaders + pipelines rather
-//! than joining the cross-renderer pool. Two stages: the trace (always the
-//! Hi-Z traversal when the HZB exists, else linear-DDA; glossy / temporal / half-res
-//! axes each key a distinct cache key → distinct compiled shader, §5a) and the
-//! spatial resolve (the 9-tap edge-aware denoise between trace and composite —
-//! its only axes are the MSAA depth-binding type + reverse-Z).
+//! than joining the cross-renderer pool. Three stages: the trace (always the
+//! Hi-Z traversal when the HZB exists, else linear-DDA; glossy / half-res axes
+//! each key a distinct cache key → distinct compiled shader, §5a), the spatial
+//! resolve (the 9-tap edge-aware denoise between trace and composite — its
+//! only axes are the MSAA depth-binding type + reverse-Z), and the temporal
+//! accumulation (history reproject + neighborhood clamp after the resolve —
+//! same axes as the resolve, compiled ONLY when `ssr.temporal`; the toggle
+//! reconstructs the whole SSR pass, same as `resolution_scale`).
 
 use crate::error::Result;
 use crate::pipeline_layouts::PipelineLayoutCacheKey;
 use crate::pipelines::compute_pipeline::{ComputePipelineCacheKey, ComputePipelineKey};
 use crate::render_passes::ssr::{
     bind_group::SsrBindGroups,
-    shader::cache_key::{ShaderCacheKeySsrResolve, ShaderCacheKeySsrTrace, SsrMode, SsrTrace},
+    shader::cache_key::{
+        ShaderCacheKeySsrResolve, ShaderCacheKeySsrTemporal, ShaderCacheKeySsrTrace, SsrMode,
+        SsrTrace,
+    },
 };
 use crate::render_passes::RenderPassInitContext;
 use crate::shaders::ShaderCacheKey;
@@ -21,20 +27,24 @@ pub struct SsrPipelines {
     pub trace: ComputePipelineKey,
     /// Spatial resolve — dispatched right after the trace, same grid.
     pub resolve: ComputePipelineKey,
+    /// Temporal accumulation — dispatched right after the resolve, same grid.
+    /// `None` unless `post_processing.ssr.temporal` at construction (the
+    /// toggle reconstructs the SSR pass, so this never flips in place).
+    pub temporal: Option<ComputePipelineKey>,
 }
 
 impl SsrPipelines {
     /// The M2b variant: glossy reflection (spread-driven blur — spread 0 is a
-    /// sharp mirror via a runtime branch), linear DDA, no temporal. `half_res`
+    /// sharp mirror via a runtime branch), linear DDA. `half_res`
     /// (resolution_scale < 1.0) selects the half-res trace variant; the shader
     /// body is identical (it reads its output dims at runtime), but the axis
     /// still keys a distinct compiled pipeline so a resolution_scale change
     /// recompiles. `multisampled` matches the current AA (MSAA → multisampled
-    /// depth/normal).
+    /// depth/normal). Temporal is NOT an axis here anymore — the trace's
+    /// per-frame jitter rotation is a runtime uniform gate.
     fn m1_key(
         multisampled: bool,
         half_res: bool,
-        temporal: bool,
         reverse_z: bool,
         hzb: bool,
     ) -> ShaderCacheKeySsrTrace {
@@ -48,7 +58,6 @@ impl SsrPipelines {
             } else {
                 SsrTrace::LinearDda
             },
-            temporal,
             half_res,
             multisampled_geometry: multisampled,
             reverse_z,
@@ -60,6 +69,15 @@ impl SsrPipelines {
     /// depth-binding type (MSAA) + depth convention are axes.
     fn resolve_key(multisampled: bool, reverse_z: bool) -> ShaderCacheKeySsrResolve {
         ShaderCacheKeySsrResolve {
+            multisampled_geometry: multisampled,
+            reverse_z,
+        }
+    }
+
+    /// The temporal-accumulation variant: same axes as the resolve (it also
+    /// runs at the SSR target's own resolution and reads the full-res depth).
+    fn temporal_key(multisampled: bool, reverse_z: bool) -> ShaderCacheKeySsrTemporal {
+        ShaderCacheKeySsrTemporal {
             multisampled_geometry: multisampled,
             reverse_z,
         }
@@ -103,7 +121,6 @@ impl SsrPipelines {
                 Self::m1_key(
                     multisampled,
                     half_res,
-                    temporal,
                     ctx.features.reverse_z,
                     ctx.features.gpu_culling,
                 ),
@@ -117,10 +134,35 @@ impl SsrPipelines {
             )
             .await?;
 
-        let cache_keys = vec![
+        let mut cache_keys = vec![
             ComputePipelineCacheKey::new(trace_shader, trace_layout),
             ComputePipelineCacheKey::new(resolve_shader, resolve_layout),
         ];
+
+        // Temporal pipeline — same lazy semantics as the old temporal trace
+        // variant: only built when the temporal axis is on (the toggle
+        // reconstructs the whole SSR pass via `set_post_processing`).
+        if temporal {
+            let temporal_layout_key = bind_groups
+                .temporal_layout_key
+                .expect("SSR temporal layout missing despite ssr.temporal on");
+            let temporal_layout = ctx.pipeline_layouts.get_key(
+                ctx.gpu,
+                ctx.bind_group_layouts,
+                PipelineLayoutCacheKey::new(vec![temporal_layout_key]),
+            )?;
+            let temporal_shader = ctx
+                .shaders
+                .get_key(
+                    ctx.gpu,
+                    Self::temporal_key(multisampled, ctx.features.reverse_z),
+                )
+                .await?;
+            cache_keys.push(ComputePipelineCacheKey::new(
+                temporal_shader,
+                temporal_layout,
+            ));
+        }
 
         let pipeline_keys = ctx
             .pipelines
@@ -131,6 +173,7 @@ impl SsrPipelines {
         Ok(Self {
             trace: pipeline_keys[0],
             resolve: pipeline_keys[1],
+            temporal: temporal.then(|| pipeline_keys[2]),
         })
     }
 
@@ -142,15 +185,16 @@ impl SsrPipelines {
         hzb: bool,
     ) -> Vec<ShaderCacheKey> {
         let multisampled = anti_aliasing.msaa_sample_count.is_some();
-        vec![
-            ShaderCacheKey::from(Self::m1_key(
-                multisampled,
-                half_res,
-                temporal,
-                reverse_z,
-                hzb,
-            )),
+        let mut keys = vec![
+            ShaderCacheKey::from(Self::m1_key(multisampled, half_res, reverse_z, hzb)),
             ShaderCacheKey::from(Self::resolve_key(multisampled, reverse_z)),
-        ]
+        ];
+        if temporal {
+            keys.push(ShaderCacheKey::from(Self::temporal_key(
+                multisampled,
+                reverse_z,
+            )));
+        }
+        keys
     }
 }

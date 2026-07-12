@@ -30,8 +30,9 @@ pub struct SsrParams {
     pub gpu_buffer: web_sys::GpuBuffer,
     raw_data: [u8; Self::BYTE_SIZE],
     uploader: MappedUploader,
-    /// Monotonic write counter, packed into the last uniform slot. The
-    /// temporal trace variant rotates its ray-march jitter by this so the
+    /// Monotonic write counter, packed into the last uniform slot. When
+    /// temporal accumulation is on (`temporal_weight > 0`, a RUNTIME gate in
+    /// the trace shader) the trace rotates its ray-march jitter by this so the
     /// per-pixel noise VARIES frame to frame and the history accumulation
     /// averages it out (a static jitter pattern would survive any amount of
     /// temporal blending).
@@ -137,10 +138,12 @@ impl SsrRenderPass {
     }
 
     /// Trace reflections into the `ssr` target, spatially resolve (edge-aware
-    /// 9-tap denoise) into `ssr_resolved`, then additively composite that over
-    /// `composite`. `view_width` / `view_height` are the full-res viewport
-    /// dims; when `half_res` the `ssr` target is half-res so the trace + resolve
-    /// dispatch over the halved dimensions (¼ the rays).
+    /// 9-tap denoise) into `ssr_resolved`, temporally accumulate (history
+    /// reproject + neighborhood clamp) into `ssr_final` when temporal is on,
+    /// then additively composite the result over `composite`. `view_width` /
+    /// `view_height` are the full-res viewport dims; when `half_res` the `ssr`
+    /// target is half-res so all three dispatches cover the halved dimensions
+    /// (¼ the rays).
     pub fn render(
         &self,
         ctx: &RenderContext,
@@ -150,19 +153,12 @@ impl SsrRenderPass {
     ) -> Result<()> {
         {
             let compute_pass = ctx.command_encoder.begin_compute_pass(Some(
-                &ComputePassDescriptor::new(Some("SSR Trace + Resolve")).into(),
+                &ComputePassDescriptor::new(Some("SSR Trace + Resolve + Temporal")).into(),
             ));
             compute_pass.set_pipeline(ctx.pipelines.compute.get(self.pipelines.trace)?);
-            // M3 temporal: select the frame-parity bind group (write current
-            // history / read previous). `ping_pong()` is reachable via the
-            // shared `RenderTextures` on the RenderContext — mirrors how the
-            // effects pass threads its ping-pong selector. Non-temporal ignores
-            // the arg (single slot-0 group).
-            compute_pass.set_bind_group(
-                0,
-                self.bind_groups.trace(ctx.render_textures.ping_pong())?,
-                None,
-            )?;
+            // Single non-parity trace group — the history ping-pong moved to
+            // the temporal pass below.
+            compute_pass.set_bind_group(0, self.bind_groups.trace()?, None)?;
             // Trace dims match the `ssr` target: halved when half-res, matching
             // the `((w+1)/2, (h+1)/2)` target sizing in `RenderTexturesInner`.
             let (w, h) = if half_res {
@@ -183,13 +179,32 @@ impl SsrRenderPass {
             compute_pass.set_pipeline(ctx.pipelines.compute.get(self.pipelines.resolve)?);
             compute_pass.set_bind_group(0, self.bind_groups.resolve()?, None)?;
             compute_pass.dispatch_workgroups(w.div_ceil(8), Some(h.div_ceil(8)), Some(1));
+
+            // Temporal accumulation — history reproject + neighborhood clamp
+            // over the RESOLVED reflection, writing `ssr_final` (the
+            // composite's source) + this frame's history. Frame-parity bind
+            // group selects which history texture is read vs written —
+            // `ping_pong()` is reachable via the shared `RenderTextures` on
+            // the RenderContext, mirroring the effects pass's selector. Same
+            // compute-pass scope: dispatch ordering makes the resolve's
+            // storage writes visible here.
+            if let Some(temporal) = self.pipelines.temporal {
+                compute_pass.set_pipeline(ctx.pipelines.compute.get(temporal)?);
+                compute_pass.set_bind_group(
+                    0,
+                    self.bind_groups.temporal(ctx.render_textures.ping_pong())?,
+                    None,
+                )?;
+                compute_pass.dispatch_workgroups(w.div_ceil(8), Some(h.div_ceil(8)), Some(1));
+            }
             compute_pass.end();
         }
 
-        // Composite: ADDITIVELY blend the reflection-only `ssr_resolved`
-        // target onto `composite` (single-sample resolved HDR) via a
-        // fullscreen triangle. Non-reflective pixels wrote 0 so they are
-        // untouched; a half-res target edge-aware-upsamples in the shader.
+        // Composite: ADDITIVELY blend the reflection-only accumulated target
+        // (`ssr_final` when temporal is on, else `ssr_resolved`) onto
+        // `composite` (single-sample resolved HDR) via a fullscreen triangle.
+        // Non-reflective pixels wrote 0 so they are untouched; a half-res
+        // target edge-aware-upsamples in the shader.
         self.composite.render(ctx)?;
         Ok(())
     }

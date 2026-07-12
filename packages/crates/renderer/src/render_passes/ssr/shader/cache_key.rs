@@ -35,22 +35,25 @@ pub enum SsrTrace {
 }
 
 /// Cache key for the SSR pass shaders — one variant per compute stage. The
-/// trace and the spatial resolve are distinct WGSL modules with distinct
-/// permutation axes, but they share the one `ShaderCacheKey::Ssr` slot in the
-/// cross-renderer cache.
+/// trace, the spatial resolve, and the temporal accumulation are distinct
+/// WGSL modules with distinct permutation axes, but they share the one
+/// `ShaderCacheKey::Ssr` slot in the cross-renderer cache.
 #[derive(Hash, Debug, Clone, PartialEq, Eq)]
 pub enum ShaderCacheKeySsr {
     Trace(ShaderCacheKeySsrTrace),
     Resolve(ShaderCacheKeySsrResolve),
+    Temporal(ShaderCacheKeySsrTemporal),
 }
 
-/// Cache key for the SSR trace shader (`ssr_wgsl/trace.wgsl`).
+/// Cache key for the SSR trace shader (`ssr_wgsl/trace.wgsl`). Temporal
+/// accumulation is NOT a trace axis: the history reproject + neighborhood
+/// clamp live in the dedicated temporal pass (`ShaderCacheKeySsrTemporal`),
+/// and the trace's per-frame jitter rotation is a RUNTIME gate on
+/// `params.temporal_weight` (a uniform read, never a recompile).
 #[derive(Hash, Debug, Clone, PartialEq, Eq)]
 pub struct ShaderCacheKeySsrTrace {
     pub mode: SsrMode,
     pub trace: SsrTrace,
-    /// Temporal reproject + neighbourhood-clamp code exists only when true.
-    pub temporal: bool,
     /// Half-res trace → the guided-upsample variant.
     pub half_res: bool,
     /// Under MSAA the depth + `normal_tangent` G-buffer targets are
@@ -74,6 +77,21 @@ pub struct ShaderCacheKeySsrResolve {
     pub reverse_z: bool,
 }
 
+/// Cache key for the SSR temporal-accumulation shader
+/// (`ssr_wgsl/temporal.wgsl`) — the history reproject + neighborhood-clamp
+/// pass that runs AFTER the spatial resolve. Compiled only when
+/// `post_processing.ssr.temporal`. Runs at the SSR target's own resolution
+/// (it reads its output dims at runtime), so its only axes are the
+/// depth-binding type + depth convention — same as the resolve.
+#[derive(Hash, Debug, Clone, PartialEq, Eq)]
+pub struct ShaderCacheKeySsrTemporal {
+    /// Under MSAA the full-res depth target is multisampled, so the depth
+    /// binding's WGSL type changes — mirroring the trace's depth handling.
+    pub multisampled_geometry: bool,
+    /// Depth convention (003) — selects the sky early-out test.
+    pub reverse_z: bool,
+}
+
 impl From<ShaderCacheKeySsr> for ShaderCacheKey {
     fn from(key: ShaderCacheKeySsr) -> Self {
         ShaderCacheKey::RenderPass(ShaderCacheKeyRenderPass::Ssr(key))
@@ -89,5 +107,11 @@ impl From<ShaderCacheKeySsrTrace> for ShaderCacheKey {
 impl From<ShaderCacheKeySsrResolve> for ShaderCacheKey {
     fn from(key: ShaderCacheKeySsrResolve) -> Self {
         ShaderCacheKeySsr::Resolve(key).into()
+    }
+}
+
+impl From<ShaderCacheKeySsrTemporal> for ShaderCacheKey {
+    fn from(key: ShaderCacheKeySsrTemporal) -> Self {
+        ShaderCacheKeySsr::Temporal(key).into()
     }
 }

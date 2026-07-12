@@ -10,10 +10,13 @@
 // target — no read-modify-write hazard, and zero-coverage pixels are left
 // untouched.
 //
-// The glossy / temporal / half_res template blocks are the structural
-// permutation axes (§5a): each compiles ONLY into the variant that needs it, so
-// Mirror carries none of the glossy/denoise code, non-temporal none of the
-// reproject code, etc.
+// The glossy / half_res template blocks are the structural permutation axes
+// (§5a): each compiles ONLY into the variant that needs it, so Mirror carries
+// none of the glossy/denoise code, etc. Temporal accumulation is NOT a trace
+// axis anymore: history reprojection + neighborhood clamping live in the
+// dedicated temporal pass (`ssr_wgsl/temporal.wgsl`) that runs AFTER the
+// spatial resolve. The only temporal-aware piece left here is the RUNTIME
+// per-frame jitter rotation, gated on `params.temporal_weight > 0.0`.
 
 // CameraRaw + camera_from_raw (view / proj / inv_proj for reconstruction).
 {% include "shared_wgsl/camera.wgsl" %}
@@ -29,7 +32,7 @@ struct SsrParams {
     spread_cutoff: f32,
     edge_fade: f32,
     temporal_weight: f32,
-    frame: f32,     // monotonic; temporal variant rotates the march jitter by it
+    frame: f32,     // monotonic; rotates the march jitter when temporal_weight > 0
 };
 
 // M1 probes everything with integer textureLoad (depth is non-filterable), so
@@ -52,24 +55,12 @@ struct SsrParams {
 // reflectivity color (ssr_mask * ssr_tint; 0 = surface opts out), A = ssr_spread
 // (0 mirror … 1 diffuse). Written by `material_opaque`.
 @group(0) @binding(6) var reflection_descriptor_tex: texture_2d<f32>;
-{% if temporal %}
-// M3 temporal reprojection: previous-frame accumulated reflection (filtered
-// via the linear sampler at the reprojected UV) + this-frame history write.
-// These bindings + the linear sampler exist ONLY on the temporal variant — the
-// non-temporal trace probes everything with integer textureLoad and binds none.
-@group(0) @binding(7) var history_prev_tex: texture_2d<f32>;
-@group(0) @binding(8) var history_sampler: sampler;
-@group(0) @binding(9) var history_curr_tex: texture_storage_2d<rgba16float, write>;
-{% endif %}
 {% if hzb %}
 // Hi-Z pyramid (dual-extreme HZB): `.g` = the CLOSEST depth per tile, the
-// conservative reflector bound the traversal tests spans against. Binding
-// index shifts with `temporal` to stay consecutive with the layout.
-{% if temporal %}
-@group(0) @binding(10) var hzb_tex: texture_2d<f32>;
-{% else %}
+// conservative reflector bound the traversal tests spans against. Always the
+// last (7th) entry — the temporal history bindings moved to the dedicated
+// temporal pass, so the trace layout is fixed.
 @group(0) @binding(7) var hzb_tex: texture_2d<f32>;
-{% endif %}
 {% endif %}
 
 // Reconstruct VIEW-space position from a hardware depth sample at `uv`
@@ -164,13 +155,12 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // decorrelates neighbouring pixels so residual coarse-stride banding
     // (only long rays stride > 1 px) turns into fine noise.
     let ign = fract(52.9829189 * fract(dot(vec2<f32>(coords), vec2<f32>(0.06711056, 0.00583715))));
-    {% if temporal %}
-    // Rotate by the golden ratio each frame: the history blend averages the
+    // When the temporal pass accumulates (temporal_weight > 0), rotate the
+    // phase by the golden ratio each frame: the history blend averages the
     // march phase over ~1/(1-temporal_weight) frames and converges the noise.
-    let jitter = fract(ign + params.frame * 0.61803398875);
-    {% else %}
-    let jitter = ign;
-    {% endif %}
+    // RUNTIME gate (uniform read), not a template axis — a static pattern
+    // suits the non-temporal path and the select costs nothing.
+    let jitter = select(ign, fract(ign + params.frame * 0.61803398875), params.temporal_weight > 0.0);
 
     // Cap the view-space ray: `max_distance`, and never through the camera
     // plane (a ray toward the camera clips so 1/w stays finite).
@@ -425,29 +415,6 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         reflection = hit_color * fresnel * fade * travel_fade * params.intensity;
     }
 
-    {% if temporal %}
-    // M3 temporal reprojection — SINGLE-PASS depth reproject + on-screen reject.
-    // Reconstruct this pixel's WORLD position from view-space `p`, project it
-    // with the PREVIOUS frame's view-projection to find where the surface was
-    // last frame, and (if that reprojected UV lands on-screen) blend the
-    // filtered history reflection in by `params.temporal_weight`. The on-screen
-    // test is the disocclusion reject: newly-revealed pixels reproject
-    // off-screen and keep this frame's fresh trace.
-    //
-    // OUT OF SCOPE for M3: a full spatial neighbourhood-AABB colour clamp (which
-    // suppresses ghosting on moving reflectors) needs a second resolve pass —
-    // this is deliberately the single-pass depth-reproject + reject deliverable.
-    let world_pos = (cam.inv_view * vec4<f32>(p, 1.0)).xyz;
-    let prev_clip = cam.prev_view_proj * vec4<f32>(world_pos, 1.0);
-    if (prev_clip.w > 0.0) {
-        let prev_ndc = prev_clip.xyz / prev_clip.w;
-        let prev_uv = vec2<f32>(prev_ndc.x * 0.5 + 0.5, 1.0 - (prev_ndc.y * 0.5 + 0.5));
-        if (prev_uv.x >= 0.0 && prev_uv.x <= 1.0 && prev_uv.y >= 0.0 && prev_uv.y <= 1.0) {
-            let hist = textureSampleLevel(history_prev_tex, history_sampler, prev_uv, 0.0);
-            reflection = mix(reflection, hist.rgb, params.temporal_weight);
-        }
-    }
-    {% endif %}
     {% if half_res %}
     // Half-res trace: the guided upsample runs in the composite step.
     {% endif %}
@@ -457,11 +424,6 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // no-op either way, but downstream consumers (the joint-bilateral upsample,
     // any future coverage-aware denoise) can trust the channel.
     let coverage = select(0.0, 1.0, hit);
-
-    {% if temporal %}
-    // Persist the blended result so next frame's reprojection reads it.
-    textureStore(history_curr_tex, coords, vec4<f32>(reflection, coverage));
-    {% endif %}
 
     // Reflection-ONLY, premultiplied. Full-res invariant: composite_old +
     // reflection == the old base + reflection overwrite, since composite_old

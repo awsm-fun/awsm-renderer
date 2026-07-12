@@ -193,6 +193,12 @@ pub struct SsrComposite {
     bind_group_layout: web_sys::GpuBindGroupLayout,
     pipeline: web_sys::GpuRenderPipeline,
     bind_group: Option<web_sys::GpuBindGroup>,
+    /// Whether temporal accumulation is on — selects the reflection source
+    /// this pass reads: `ssr_final` (the temporal pass's accumulated output)
+    /// when true, `ssr_resolved` (straight from the spatial resolve) when
+    /// false. Captured at `new()`; a temporal toggle reconstructs the whole
+    /// SSR pass (`set_post_processing`), so this never flips in place.
+    temporal: bool,
     /// Pre-built render-pass descriptor targeting the current `composite`
     /// view. Rebuilt in [`Self::recreate`] (texture identity changes there and
     /// only there) so the per-frame `render()` allocates nothing.
@@ -287,6 +293,7 @@ impl SsrComposite {
             bind_group_layout,
             pipeline,
             bind_group: None,
+            temporal: ctx.post_processing.ssr.temporal,
             pass_descriptor: None,
         })
     }
@@ -297,27 +304,28 @@ impl SsrComposite {
             .ok_or_else(|| AwsmBindGroupError::NotFound("SSR Composite".to_string()))
     }
 
-    /// Rebuilds the composite bind group against the live camera /
-    /// `ssr_resolved` / depth views. Dispatched on `TextureViewRecreate`
-    /// alongside the SSR trace + resolve bind groups. Camera + depth mirror the
+    /// Rebuilds the composite bind group against the live camera / reflection
+    /// source / depth views. Dispatched on `TextureViewRecreate` alongside the
+    /// SSR trace + resolve + temporal bind groups. Camera + depth mirror the
     /// SSR trace's bindings so the joint-bilateral upsample linearizes against
     /// the same buffers.
     pub fn recreate(&mut self, ctx: &BindGroupRecreateContext<'_>) -> Result<()> {
+        // The reflection source: with temporal accumulation on, the temporal
+        // pass's `ssr_final`; otherwise the spatial resolve's `ssr_resolved`
+        // (the temporal pass doesn't run and `ssr_final` stays a 1×1
+        // placeholder). Same size/format either way, so only the bound
+        // resource changes — the shader is untouched.
+        let source = if self.temporal {
+            &ctx.render_texture_views.ssr_final
+        } else {
+            &ctx.render_texture_views.ssr_resolved
+        };
         let entries = vec![
             BindGroupEntry::new(
                 0,
                 BindGroupResource::Buffer(BufferBinding::new(&ctx.camera.gpu_buffer)),
             ),
-            BindGroupEntry::new(
-                1,
-                // The SPATIALLY RESOLVED reflection (not the raw trace): the
-                // 9-tap edge-aware denoise writes `ssr_resolved` between trace
-                // and this composite. Same size/format as `ssr`, so only the
-                // bound resource changes — the shader is untouched.
-                BindGroupResource::TextureView(Cow::Borrowed(
-                    &ctx.render_texture_views.ssr_resolved,
-                )),
-            ),
+            BindGroupEntry::new(1, BindGroupResource::TextureView(Cow::Borrowed(source))),
             BindGroupEntry::new(
                 2,
                 BindGroupResource::TextureView(Cow::Borrowed(&ctx.render_texture_views.depth)),
