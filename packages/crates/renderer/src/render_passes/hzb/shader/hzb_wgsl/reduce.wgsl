@@ -1,11 +1,12 @@
-// HZB reduce — max-reduce a 2×2 block of mip N-1 into a single texel
-// of mip N. One dispatch per mip transition (`N = 1..mip_count - 1`).
+// HZB reduce — extreme-reduce a 2×2 block of mip N-1 into a single
+// texel of mip N. One dispatch per mip transition (`N = 1..mip_count-1`).
 //
-// Stores the **maximum** depth per tile so consumers can run the
-// canonical occlusion test: a candidate is occluded if its closest
-// (smallest) screen-space depth is greater than the HZB lookup at its
-// footprint mip — i.e. it's definitely behind everything in that
-// region. Matches WebGPU's `[0, 1]` depth convention (1 = far).
+// DUAL-CHANNEL: `.r` = the FURTHEST depth per tile (the conservative
+// occluder bound occlusion culling + decal classify test against);
+// `.g` = the CLOSEST depth per tile (the conservative reflector bound
+// the Hi-Z SSR traversal tests against — "can this whole span possibly
+// contain a surface in front of the ray?"). Which raw-value extreme is
+// "furthest"/"closest" flips with the reverse-Z convention below.
 //
 // Non-power-of-2 textures: at odd mip-N-1 dimensions the 2×2 sample
 // would read past the edge by one texel on the last column / row.
@@ -15,7 +16,7 @@
 // depth, so the occlusion test stays correct).
 
 @group(0) @binding(0) var src_mip: texture_2d<f32>;
-@group(0) @binding(1) var dst_mip: texture_storage_2d<r32float, write>;
+@group(0) @binding(1) var dst_mip: texture_storage_2d<rg32float, write>;
 
 @compute @workgroup_size(8, 8, 1)
 fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -34,16 +35,19 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let c01 = vec2<i32>(min(base.x, src_max_x), min(base.y + 1, src_max_y));
     let c11 = vec2<i32>(min(base.x + 1, src_max_x), min(base.y + 1, src_max_y));
 
-    let d00 = textureLoad(src_mip, c00, 0).r;
-    let d10 = textureLoad(src_mip, c10, 0).r;
-    let d01 = textureLoad(src_mip, c01, 0).r;
-    let d11 = textureLoad(src_mip, c11, 0).r;
+    let d00 = textureLoad(src_mip, c00, 0).rg;
+    let d10 = textureLoad(src_mip, c10, 0).rg;
+    let d01 = textureLoad(src_mip, c01, 0).rg;
+    let d11 = textureLoad(src_mip, c11, 0).rg;
 
     {% if reverse_z %}
-    // Reverse-Z (003): farthest (the conservative occluder bound) = MIN.
-    let m = min(min(d00, d10), min(d01, d11));
+    // Reverse-Z (003): farthest (occluder bound) = MIN of .r;
+    // closest (reflector bound) = MAX of .g.
+    let furthest = min(min(d00.x, d10.x), min(d01.x, d11.x));
+    let closest = max(max(d00.y, d10.y), max(d01.y, d11.y));
     {% else %}
-    let m = max(max(d00, d10), max(d01, d11));
+    let furthest = max(max(d00.x, d10.x), max(d01.x, d11.x));
+    let closest = min(min(d00.y, d10.y), min(d01.y, d11.y));
     {% endif %}
-    textureStore(dst_mip, dst_coords, vec4<f32>(m, 0.0, 0.0, 0.0));
+    textureStore(dst_mip, dst_coords, vec4<f32>(furthest, closest, 0.0, 0.0));
 }

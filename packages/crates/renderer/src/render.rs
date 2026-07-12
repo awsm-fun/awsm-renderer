@@ -902,6 +902,7 @@ impl AwsmRenderer {
         let frame_opts_stats = crate::optimization_policy::FrameOptimizationStats {
             features_gpu_culling: self.features.gpu_culling,
             features_decals: self.features.decals,
+            ssr_enabled: self.post_processing.ssr.enabled && self.render_passes.ssr.is_some(),
             opaque_count: renderables.opaque.len() as u32,
             non_instanced_with_aabb_count: opaque_snapshots.len() as u32,
             decals_count: self.decals.as_ref().map(|d| d.len() as u32).unwrap_or(0),

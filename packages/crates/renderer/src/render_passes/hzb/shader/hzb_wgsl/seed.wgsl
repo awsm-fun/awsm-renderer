@@ -6,7 +6,7 @@
 {% else %}
 @group(0) @binding(0) var depth_tex: texture_depth_2d;
 {% endif %}
-@group(0) @binding(1) var hzb_mip0: texture_storage_2d<r32float, write>;
+@group(0) @binding(1) var hzb_mip0: texture_storage_2d<rg32float, write>;
 
 @compute @workgroup_size(8, 8, 1)
 fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -22,20 +22,23 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // → false occlusion. Sample 0 alone can pick the *near* sample
     // of an edge pixel and lose the far samples behind it, so for
     // MSAA we explicitly max-reduce across all sample indices.
-    var d = textureLoad(depth_tex, coords, 0);
+    let s0 = textureLoad(depth_tex, coords, 0);
+    let s1 = textureLoad(depth_tex, coords, 1);
+    let s2 = textureLoad(depth_tex, coords, 2);
+    let s3 = textureLoad(depth_tex, coords, 3);
     {% if reverse_z %}
-    // Reverse-Z (003): farthest = SMALLEST depth, so the conservative
-    // per-pixel occluder bound is the min across samples.
-    d = min(d, textureLoad(depth_tex, coords, 1));
-    d = min(d, textureLoad(depth_tex, coords, 2));
-    d = min(d, textureLoad(depth_tex, coords, 3));
+    // Reverse-Z (003): farthest = MIN across samples (occluder bound, .r);
+    // closest = MAX across samples (reflector bound, .g).
+    let furthest = min(min(s0, s1), min(s2, s3));
+    let closest = max(max(s0, s1), max(s2, s3));
     {% else %}
-    d = max(d, textureLoad(depth_tex, coords, 1));
-    d = max(d, textureLoad(depth_tex, coords, 2));
-    d = max(d, textureLoad(depth_tex, coords, 3));
+    let furthest = max(max(s0, s1), max(s2, s3));
+    let closest = min(min(s0, s1), min(s2, s3));
     {% endif %}
     {% else %}
     let d = textureLoad(depth_tex, coords, 0);
+    let furthest = d;
+    let closest = d;
     {% endif %}
-    textureStore(hzb_mip0, coords, vec4<f32>(d, 0.0, 0.0, 0.0));
+    textureStore(hzb_mip0, coords, vec4<f32>(furthest, closest, 0.0, 0.0));
 }
