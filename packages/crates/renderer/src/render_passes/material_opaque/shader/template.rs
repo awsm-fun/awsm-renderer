@@ -263,6 +263,11 @@ pub struct ShaderTemplateMaterialOpaqueSkyboxPrimary {
     pub inc: crate::dynamic_materials::ShaderIncludeFlags,
     pub owns_skybox: bool,
     pub pbr_features: awsm_renderer_materials::pbr::PbrFeatures,
+    /// The skybox writer never writes the reflection descriptor itself, but
+    /// the shared `brdf_pbr.wgsl` include gates the SSR IBL-specular
+    /// suppression (`ssr-spread-gate`) on this field, so it must exist for
+    /// askama. Carried from the compute template (matches the cache key).
+    pub write_ssr_descriptor: bool,
     pub dynamic_struct_decl: String,
     pub dynamic_loader_decl: String,
     pub dynamic_wgsl_fragment: String,
@@ -327,6 +332,7 @@ impl From<ShaderTemplateMaterialOpaqueCompute> for ShaderTemplateMaterialOpaqueS
             inc: c.inc,
             owns_skybox: c.owns_skybox,
             pbr_features: c.pbr_features,
+            write_ssr_descriptor: c.write_ssr_descriptor,
             dynamic_struct_decl: c.dynamic_struct_decl,
             dynamic_loader_decl: c.dynamic_loader_decl,
             dynamic_wgsl_fragment: c.dynamic_wgsl_fragment,
@@ -1278,15 +1284,22 @@ mod brdf_gate_tests {
     #[template(path = "shared_wgsl/lighting/brdf.wgsl")]
     struct BrdfGateTest {
         pbr_features: PbrFeatures,
+        /// Referenced by `brdf_pbr.wgsl`'s SSR IBL-specular suppression gate
+        /// (`ssr-spread-gate`); rendered `false` here — these tests exercise
+        /// the PBR feature gating, not the SSR axis.
+        write_ssr_descriptor: bool,
     }
 
     /// Rendered brdf with `//` line comments removed (so marker tokens
     /// that appear in comments outside the gates don't pollute matches)
     /// and all whitespace stripped (spacing-robust token matching).
     fn render_nows(pbr_features: PbrFeatures) -> String {
-        let raw = BrdfGateTest { pbr_features }
-            .render()
-            .expect("brdf.wgsl renders");
+        let raw = BrdfGateTest {
+            pbr_features,
+            write_ssr_descriptor: false,
+        }
+        .render()
+        .expect("brdf.wgsl renders");
         raw.lines()
             .map(|l| match l.find("//") {
                 Some(i) => &l[..i],

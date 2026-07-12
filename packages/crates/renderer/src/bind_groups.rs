@@ -371,6 +371,10 @@ impl BindGroups {
                 BindGroupCreate::EnvironmentSkyboxCreate => {
                     functions_to_call.insert(FunctionToCall::OpaqueMain);
                     functions_to_call.insert(FunctionToCall::TransparentLights);
+                    // The SSR trace binds the skybox cubemap + sampler as its
+                    // miss-path environment fallback; a skybox swap must
+                    // rebind the trace group or it samples a stale view.
+                    functions_to_call.insert(FunctionToCall::Ssr);
                 }
                 BindGroupCreate::MaterialMorphTargetWeightsResize => {
                     functions_to_call.insert(FunctionToCall::OpaqueMain);

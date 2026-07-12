@@ -45,70 +45,6 @@ resolution_scale = 0.5
 temporal = false
 temporal_weight = 0.8999999761581421
 
-[assets.00000000-0000-4000-8000-00000000000d]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-
-[assets.00000000-0000-4000-8000-00000000000d.source.mesh]
-label = "Sphere"
-editable = true
-
-[assets.00000000-0000-4000-8000-00000000000d.source.mesh.source.primitive.sphere]
-radius = 0.800000011920929
-segments_long = 32
-segments_lat = 24
-
-[assets.00000000-0000-4000-8000-00000000000d.source.mesh.stack]
-modifiers = []
-
-[assets.00000000-0000-4000-8000-00000000000d.source.mesh.stack.base.primitive.sphere]
-radius = 0.800000011920929
-segments_long = 32
-segments_lat = 24
-
-[assets.00000000-0000-4000-8000-00000000000d.source.mesh.overrides.positions]
-
-[assets.00000000-0000-4000-8000-00000000000d.source.mesh.overrides.colors]
-
-[assets.00000000-0000-4000-8000-00000000000d.source.mesh.overrides.normals]
-
-[assets.00000000-0000-4000-8000-00000000000d.source.mesh.overrides.uvs]
-
-[assets.00000000-0000-4000-8000-00000000000b]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-
-[assets.00000000-0000-4000-8000-00000000000b.source.mesh]
-label = "Box"
-editable = true
-
-[assets.00000000-0000-4000-8000-00000000000b.source.mesh.source.primitive.box]
-dims = [
-    0.699999988079071,
-    3.200000047683716,
-    0.699999988079071,
-]
-
-[assets.00000000-0000-4000-8000-00000000000b.source.mesh.stack]
-modifiers = []
-
-[assets.00000000-0000-4000-8000-00000000000b.source.mesh.stack.base.primitive.box]
-dims = [
-    0.699999988079071,
-    3.200000047683716,
-    0.699999988079071,
-]
-
-[assets.00000000-0000-4000-8000-00000000000b.source.mesh.overrides.positions]
-
-[assets.00000000-0000-4000-8000-00000000000b.source.mesh.overrides.colors]
-
-[assets.00000000-0000-4000-8000-00000000000b.source.mesh.overrides.normals]
-
-[assets.00000000-0000-4000-8000-00000000000b.source.mesh.overrides.uvs]
-
 [assets.00000000-0000-4000-8000-00000000000a]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
@@ -208,6 +144,70 @@ segments_z = 1
 [assets.00000000-0000-4000-8000-000000000001.source.mesh.overrides.normals]
 
 [assets.00000000-0000-4000-8000-000000000001.source.mesh.overrides.uvs]
+
+[assets.00000000-0000-4000-8000-00000000000b]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+
+[assets.00000000-0000-4000-8000-00000000000b.source.mesh]
+label = "Box"
+editable = true
+
+[assets.00000000-0000-4000-8000-00000000000b.source.mesh.source.primitive.box]
+dims = [
+    0.699999988079071,
+    3.200000047683716,
+    0.699999988079071,
+]
+
+[assets.00000000-0000-4000-8000-00000000000b.source.mesh.stack]
+modifiers = []
+
+[assets.00000000-0000-4000-8000-00000000000b.source.mesh.stack.base.primitive.box]
+dims = [
+    0.699999988079071,
+    3.200000047683716,
+    0.699999988079071,
+]
+
+[assets.00000000-0000-4000-8000-00000000000b.source.mesh.overrides.positions]
+
+[assets.00000000-0000-4000-8000-00000000000b.source.mesh.overrides.colors]
+
+[assets.00000000-0000-4000-8000-00000000000b.source.mesh.overrides.normals]
+
+[assets.00000000-0000-4000-8000-00000000000b.source.mesh.overrides.uvs]
+
+[assets.00000000-0000-4000-8000-00000000000d]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+
+[assets.00000000-0000-4000-8000-00000000000d.source.mesh]
+label = "Sphere"
+editable = true
+
+[assets.00000000-0000-4000-8000-00000000000d.source.mesh.source.primitive.sphere]
+radius = 0.800000011920929
+segments_long = 32
+segments_lat = 24
+
+[assets.00000000-0000-4000-8000-00000000000d.source.mesh.stack]
+modifiers = []
+
+[assets.00000000-0000-4000-8000-00000000000d.source.mesh.stack.base.primitive.sphere]
+radius = 0.800000011920929
+segments_long = 32
+segments_lat = 24
+
+[assets.00000000-0000-4000-8000-00000000000d.source.mesh.overrides.positions]
+
+[assets.00000000-0000-4000-8000-00000000000d.source.mesh.overrides.colors]
+
+[assets.00000000-0000-4000-8000-00000000000d.source.mesh.overrides.normals]
+
+[assets.00000000-0000-4000-8000-00000000000d.source.mesh.overrides.uvs]
 
 [[editor_materials]]
 id = "00000000-0000-4000-8000-000000000002"
@@ -381,7 +381,7 @@ shading = "pbr"
 layers = []
 
 [[nodes]]
-id = "e85455f9-beb0-439f-a698-2ad11abbc37e"
+id = "645381d8-57c6-418f-a931-e8815180ae25"
 name = "Directional Light"
 locked = false
 visible = true

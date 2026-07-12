@@ -4,6 +4,17 @@
 // (which MUST be included before this file). NEVER reachable by a Custom material —
 // emitted only for the PBR base. See the taxonomy in awsm-materials::shader_includes.
 // -------------------------------------------------------------
+{% if write_ssr_descriptor %}
+// ssr-spread-gate: spread at-or-above this keeps FULL IBL specular; below it
+// SSR owns the reflection (trace hit OR skybox env fallback on miss) and the
+// IBL specular is suppressed in proportion to the reflectivity handed to SSR,
+// so environment reflections aren't counted twice. Keep in sync with the
+// same-named constant in ssr_wgsl/resolve.wgsl (travel-blur ramp) and
+// ssr_wgsl/temporal.wgsl (history-blend ramp) — grep "ssr-spread-gate".
+// Compiled ONLY when the material writes the SSR descriptor
+// (write_ssr_descriptor), so SSR-off builds are byte-identical.
+const SSR_SPREAD_GATE: f32 = 0.15;
+{% endif %}
 // Direct Lighting BRDF (Cook-Torrance)
 // With clearcoat and sheen extensions
 // -------------------------------------------------------------
@@ -304,8 +315,26 @@ fn brdf_ibl_with_transmission(
     {% endif %}
     let prefiltered = samplePrefilteredEnv(R, ibl_roughness, ibl_filtered_env_tex, ibl_filtered_env_sampler, ibl_info);
     let brdf_lut = sampleBRDFLUT(n_dot_v, roughness, brdf_lut_tex, brdf_lut_sampler);
+    {% if write_ssr_descriptor %}
+    // ssr-spread-gate (wgsl_validation pins this term): SSR is on and this
+    // surface writes the reflection descriptor, so for low-spread (near-
+    // mirror) pixels SSR supplies the reflection — scene geometry on a hit,
+    // the skybox env fallback on a miss. Adding the prefiltered-env IBL
+    // specular on top would double-count the environment (washed-out mirror
+    // images), so scale it down by the reflectivity actually handed to SSR.
+    // `ssr_f0`/`ssr_spread` mirror `ssr_pbr_descriptor` in compute.wgsl (the
+    // exact values the descriptor stores): F0 = mix(0.04, base, metallic),
+    // spread = raw GGX roughness (NOT the 0.04-floored `roughness` above —
+    // a mirror's spread is exactly 0). Mirrors (spread 0, mask→1) fully
+    // suppress; by spread ≥ SSR_SPREAD_GATE the IBL specular is fully back
+    // (matching the resolve/temporal ramps); diffuse IBL is untouched.
+    let ssr_f0 = mix(vec3<f32>(0.04), base_color, metallic);
+    let ssr_mask_factor = max(ssr_f0.r, max(ssr_f0.g, ssr_f0.b));
+    let ssr_spread = saturate(color.metallic_roughness.y);
+    let ssr_ibl_keep = 1.0 - ssr_mask_factor * (1.0 - smoothstep(0.0, SSR_SPREAD_GATE, ssr_spread));
+    {% endif %}
     // Apply occlusion to specular with reduced strength to avoid over-darkening reflections
-    let specular = prefiltered * (F0 * brdf_lut.x + vec3<f32>(f90) * brdf_lut.y) * mix(1.0, color.occlusion, 0.5);
+    let specular = prefiltered * (F0 * brdf_lut.x + vec3<f32>(f90) * brdf_lut.y) * mix(1.0, color.occlusion, 0.5){% if write_ssr_descriptor %} * ssr_ibl_keep{% endif %};
 
     // Sheen contribution for IBL (approximate) — compile-time gated; the
     // else keeps the unscaled base (sheen-absent scaling == 1).

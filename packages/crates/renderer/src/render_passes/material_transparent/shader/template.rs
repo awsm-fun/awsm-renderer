@@ -96,6 +96,11 @@ pub struct ShaderTemplateTransparentMaterialIncludes {
     /// Auto-generated `material_data_load` accessor for the hook (same non-Custom
     /// gating as the struct decl). Empty unless `has_custom_vertex`.
     pub dynamic_vertex_loader_decl: String,
+    /// Always `false` on the transparent pass: transparent surfaces never
+    /// write the SSR reflection descriptor, so their IBL specular must stay
+    /// untouched. The field exists because the shared `brdf_pbr.wgsl` gates
+    /// the SSR IBL-specular suppression (`ssr-spread-gate`) on it.
+    pub write_ssr_descriptor: bool,
 }
 impl ShaderTemplateTransparentMaterialIncludes {
     /// Creates include template data from the cache key.
@@ -166,6 +171,9 @@ impl ShaderTemplateTransparentMaterialIncludes {
                 .as_ref()
                 .map(|d| d.loader_decl.clone())
                 .unwrap_or_default(),
+            // Transparent never writes the SSR descriptor — SSR is an opaque
+            // feature; keep the IBL specular suppression compiled out.
+            write_ssr_descriptor: false,
         }
     }
 
