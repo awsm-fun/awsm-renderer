@@ -39,31 +39,22 @@ max_distance = 100.0
 thickness = 1.0
 max_steps = 96
 spread_cutoff = 0.6000000238418579
-edge_fade = 0.10000000149011612
+edge_fade = 0.03999999910593033
 resolution_scale = 0.5
 temporal = false
 temporal_weight = 0.8999999761581421
 
-[assets.00000000-0000-4000-8000-00000000000d]
+[assets.00000000-0000-4000-8000-00000000000b]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
 
-[assets.00000000-0000-4000-8000-00000000000d.source.mesh.primitive.sphere]
-radius = 0.800000011920929
-segments_long = 32
-segments_lat = 24
-
-[assets.00000000-0000-4000-8000-000000000001]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-
-[assets.00000000-0000-4000-8000-000000000001.source.mesh.primitive.plane]
-width = 20.0
-depth = 20.0
-segments_x = 1
-segments_z = 1
+[assets.00000000-0000-4000-8000-00000000000b.source.mesh.primitive.box]
+dims = [
+    0.699999988079071,
+    3.200000047683716,
+    0.699999988079071,
+]
 
 [assets.00000000-0000-4000-8000-00000000000a]
 gltf_material_asset_ids = []
@@ -89,23 +80,32 @@ dims = [
     0.699999988079071,
 ]
 
-[assets.00000000-0000-4000-8000-00000000000b]
+[assets.00000000-0000-4000-8000-00000000000d]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
 
-[assets.00000000-0000-4000-8000-00000000000b.source.mesh.primitive.box]
-dims = [
-    0.699999988079071,
-    3.200000047683716,
-    0.699999988079071,
-]
+[assets.00000000-0000-4000-8000-00000000000d.source.mesh.primitive.sphere]
+radius = 0.800000011920929
+segments_long = 32
+segments_lat = 24
+
+[assets.00000000-0000-4000-8000-000000000001]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+
+[assets.00000000-0000-4000-8000-000000000001.source.mesh.primitive.plane]
+width = 20.0
+depth = 20.0
+segments_x = 1
+segments_z = 1
 
 [mixer]
 layers = []
 
 [[nodes]]
-id = "2c46d898-25a9-4114-ac91-5c110a1e2441"
+id = "3f92c5e8-c852-4390-9ef9-74e3b56d7c40"
 name = "Directional Light"
 locked = false
 visible = true

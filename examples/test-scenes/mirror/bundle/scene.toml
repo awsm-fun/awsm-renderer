@@ -39,10 +39,31 @@ max_distance = 120.0
 thickness = 0.004999999888241291
 max_steps = 128
 spread_cutoff = 0.6000000238418579
-edge_fade = 0.10000000149011612
+edge_fade = 0.03999999910593033
 resolution_scale = 1.0
 temporal = false
 temporal_weight = 0.8999999761581421
+
+[assets.00000000-0000-4000-8000-000000000001]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+
+[assets.00000000-0000-4000-8000-000000000001.source.mesh.primitive.plane]
+width = 400.0
+depth = 400.0
+segments_x = 1
+segments_z = 1
+
+[assets.00000000-0000-4000-8000-000000000013]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+
+[assets.00000000-0000-4000-8000-000000000013.source.mesh.primitive.sphere]
+radius = 0.800000011920929
+segments_long = 48
+segments_lat = 32
 
 [assets.00000000-0000-4000-8000-000000000010]
 gltf_material_asset_ids = []
@@ -53,6 +74,17 @@ content_hash = ""
 radius = 0.800000011920929
 segments_long = 48
 segments_lat = 32
+
+[assets.00000000-0000-4000-8000-000000000012]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+
+[assets.00000000-0000-4000-8000-000000000012.source.mesh.primitive.torus]
+radius = 1.0
+thickness = 0.05999999865889549
+segments_major = 64
+segments_minor = 16
 
 [assets.00000000-0000-4000-8000-000000000011]
 gltf_material_asset_ids = []
@@ -66,43 +98,11 @@ dims = [
     1.0,
 ]
 
-[assets.00000000-0000-4000-8000-000000000013]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-
-[assets.00000000-0000-4000-8000-000000000013.source.mesh.primitive.sphere]
-radius = 0.800000011920929
-segments_long = 48
-segments_lat = 32
-
-[assets.00000000-0000-4000-8000-000000000001]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-
-[assets.00000000-0000-4000-8000-000000000001.source.mesh.primitive.plane]
-width = 400.0
-depth = 400.0
-segments_x = 1
-segments_z = 1
-
-[assets.00000000-0000-4000-8000-000000000012]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-
-[assets.00000000-0000-4000-8000-000000000012.source.mesh.primitive.torus]
-radius = 1.0
-thickness = 0.05999999865889549
-segments_major = 64
-segments_minor = 16
-
 [mixer]
 layers = []
 
 [[nodes]]
-id = "03ad3656-b6da-4f6a-9414-b5a6aef335cb"
+id = "bf1b9e77-433f-406c-92e2-c19d3817f00d"
 name = "Directional Light"
 locked = false
 visible = true
