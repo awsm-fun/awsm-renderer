@@ -37,45 +37,13 @@ bloom_scatter = 1.0
 enabled = true
 intensity = 1.0
 max_distance = 120.0
-thickness = 0.029999999329447746
+thickness = 0.004999999888241291
 max_steps = 128
 spread_cutoff = 0.6000000238418579
 edge_fade = 0.10000000149011612
 resolution_scale = 1.0
-temporal = false
-temporal_weight = 0.8999999761581421
-
-[assets.00000000-0000-4000-8000-000000000001]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-
-[assets.00000000-0000-4000-8000-000000000001.source.mesh]
-label = "Plane"
-editable = true
-
-[assets.00000000-0000-4000-8000-000000000001.source.mesh.source.primitive.plane]
-width = 400.0
-depth = 400.0
-segments_x = 1
-segments_z = 1
-
-[assets.00000000-0000-4000-8000-000000000001.source.mesh.stack]
-modifiers = []
-
-[assets.00000000-0000-4000-8000-000000000001.source.mesh.stack.base.primitive.plane]
-width = 400.0
-depth = 400.0
-segments_x = 1
-segments_z = 1
-
-[assets.00000000-0000-4000-8000-000000000001.source.mesh.overrides.positions]
-
-[assets.00000000-0000-4000-8000-000000000001.source.mesh.overrides.colors]
-
-[assets.00000000-0000-4000-8000-000000000001.source.mesh.overrides.normals]
-
-[assets.00000000-0000-4000-8000-000000000001.source.mesh.overrides.uvs]
+temporal = true
+temporal_weight = 0.9399999976158142
 
 [assets.00000000-0000-4000-8000-000000000010]
 gltf_material_asset_ids = []
@@ -106,6 +74,36 @@ segments_lat = 32
 [assets.00000000-0000-4000-8000-000000000010.source.mesh.overrides.normals]
 
 [assets.00000000-0000-4000-8000-000000000010.source.mesh.overrides.uvs]
+
+[assets.00000000-0000-4000-8000-000000000013]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+
+[assets.00000000-0000-4000-8000-000000000013.source.mesh]
+label = "Sphere"
+editable = true
+
+[assets.00000000-0000-4000-8000-000000000013.source.mesh.source.primitive.sphere]
+radius = 0.800000011920929
+segments_long = 48
+segments_lat = 32
+
+[assets.00000000-0000-4000-8000-000000000013.source.mesh.stack]
+modifiers = []
+
+[assets.00000000-0000-4000-8000-000000000013.source.mesh.stack.base.primitive.sphere]
+radius = 0.800000011920929
+segments_long = 48
+segments_lat = 32
+
+[assets.00000000-0000-4000-8000-000000000013.source.mesh.overrides.positions]
+
+[assets.00000000-0000-4000-8000-000000000013.source.mesh.overrides.colors]
+
+[assets.00000000-0000-4000-8000-000000000013.source.mesh.overrides.normals]
+
+[assets.00000000-0000-4000-8000-000000000013.source.mesh.overrides.uvs]
 
 [assets.00000000-0000-4000-8000-000000000012]
 gltf_material_asset_ids = []
@@ -138,6 +136,38 @@ segments_minor = 16
 [assets.00000000-0000-4000-8000-000000000012.source.mesh.overrides.normals]
 
 [assets.00000000-0000-4000-8000-000000000012.source.mesh.overrides.uvs]
+
+[assets.00000000-0000-4000-8000-000000000001]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+
+[assets.00000000-0000-4000-8000-000000000001.source.mesh]
+label = "Plane"
+editable = true
+
+[assets.00000000-0000-4000-8000-000000000001.source.mesh.source.primitive.plane]
+width = 400.0
+depth = 400.0
+segments_x = 1
+segments_z = 1
+
+[assets.00000000-0000-4000-8000-000000000001.source.mesh.stack]
+modifiers = []
+
+[assets.00000000-0000-4000-8000-000000000001.source.mesh.stack.base.primitive.plane]
+width = 400.0
+depth = 400.0
+segments_x = 1
+segments_z = 1
+
+[assets.00000000-0000-4000-8000-000000000001.source.mesh.overrides.positions]
+
+[assets.00000000-0000-4000-8000-000000000001.source.mesh.overrides.colors]
+
+[assets.00000000-0000-4000-8000-000000000001.source.mesh.overrides.normals]
+
+[assets.00000000-0000-4000-8000-000000000001.source.mesh.overrides.uvs]
 
 [assets.00000000-0000-4000-8000-000000000011]
 gltf_material_asset_ids = []
@@ -289,7 +319,7 @@ shading = "pbr"
 layers = []
 
 [[nodes]]
-id = "0349901f-dfa7-4a7d-b0ac-e3aeb0868b96"
+id = "bb6d188b-0ef4-4e72-88c1-1bdb896e5189"
 name = "Directional Light"
 locked = false
 visible = true
@@ -611,6 +641,80 @@ emissive = [
     0.4000000059604645,
     2.200000047683716,
     5.0,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions]
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = true
+receive = true
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "00000000-0000-4000-8000-000000000013"
+name = "sphere-touching"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    -5.199999809265137,
+    0.800000011920929,
+    -1.2000000476837158,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-000000000013"
+selected_variant = "00000000-0000-4000-8000-000000000023"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-000000000023"
+name = "sphere-touching"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000003"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = ""
+base_color = [
+    0.019999999552965164,
+    0.019999999552965164,
+    0.019999999552965164,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.699999988079071
+emissive = [
+    4.0,
+    3.200000047683716,
+    1.2000000476837158,
 ]
 normal_scale = 1.0
 occlusion_strength = 1.0
