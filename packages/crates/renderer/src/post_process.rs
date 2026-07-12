@@ -67,7 +67,12 @@ impl Default for Ssr {
             thickness: 1.0,
             max_steps: 96,
             spread_cutoff: 0.6,
-            edge_fade: 0.1,
+            // 0.04 (was 0.1): the fade margin is a DEAD BAND where reflections
+            // dissolve into the env fallback — at 0.1 that's ~10% of EVERY
+            // screen border (a quarter of the width across both sides),
+            // which reads as "graphics missing in the periphery" while
+            // orbiting. 4% still hides the hard ray-exit seam.
+            edge_fade: 0.04,
             resolution_scale: 0.5,
             temporal: false,
             temporal_weight: 0.9,

@@ -51,7 +51,7 @@ async () => {
   await d({ cmd: 'set_builtin_param', node: ID(13), param: 'base_color', value: [0.9, 0.75, 0.4, 1] });
   await d({ cmd: 'set_builtin_param', node: ID(13), param: 'metallic', value: [1.0] });
   await d({ cmd: 'set_builtin_param', node: ID(13), param: 'roughness', value: [0.35] });
-  await d({ cmd: 'set_post_process', ssr_enabled: true, ssr_intensity: 1.0, ssr_max_distance: 100.0, ssr_thickness: 1.0, ssr_max_steps: 96, ssr_spread_cutoff: 0.6, ssr_edge_fade: 0.1, ssr_resolution_scale: 0.5, ssr_temporal: false });
+  await d({ cmd: 'set_post_process', ssr_enabled: true, ssr_intensity: 1.0, ssr_max_distance: 100.0, ssr_thickness: 1.0, ssr_max_steps: 96, ssr_spread_cutoff: 0.6, ssr_edge_fade: 0.04, ssr_resolution_scale: 0.5, ssr_temporal: false });
   await d({ cmd: 'set_camera_orbit', yaw: 0.15, pitch: 0.35, radius: 14, look_at: [0.5, 0.9, -2] });
   await d({ cmd: 'set_view_options', grid: false, gizmos: false, light_gizmos: false });
   await q({ query: 'wait_render_settled' });

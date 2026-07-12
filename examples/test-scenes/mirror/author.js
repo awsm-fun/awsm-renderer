@@ -87,7 +87,7 @@ async () => {
   // rays accept on objects' antialiased RIM texels (source-buffer
   // contamination), hanging dark "eyelash" strokes off every reflected
   // silhouette; the adaptive step-advance acceptance supplies the rest.
-  await d({ cmd: 'set_post_process', bloom: false, ssr_enabled: true, ssr_intensity: 1.0, ssr_max_distance: 120.0, ssr_thickness: 0.005, ssr_max_steps: 128, ssr_spread_cutoff: 0.6, ssr_edge_fade: 0.1, ssr_resolution_scale: 1.0, ssr_temporal: false });
+  await d({ cmd: 'set_post_process', bloom: false, ssr_enabled: true, ssr_intensity: 1.0, ssr_max_distance: 120.0, ssr_thickness: 0.005, ssr_max_steps: 128, ssr_spread_cutoff: 0.6, ssr_edge_fade: 0.04, ssr_resolution_scale: 1.0, ssr_temporal: false });
   // Low + grazing camera: Fresnel at grazing pushes the metallic mirror to
   // full reflectance, so the reflections dominate the frame.
   await d({ cmd: 'set_camera_orbit', yaw: 0.1, pitch: 0.12, radius: 12, look_at: [0, 1.0, -1.2] });
