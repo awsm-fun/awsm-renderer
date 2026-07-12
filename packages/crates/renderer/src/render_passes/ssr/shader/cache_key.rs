@@ -24,17 +24,29 @@ pub enum SsrMode {
 /// scenes.
 #[derive(Hash, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SsrTrace {
+    /// Per-pixel screen-space DDA — the fallback when no HZB exists
+    /// (`features.gpu_culling` off, which is what allocates the pyramid).
     LinearDda,
+    /// Hi-Z traversal over the HZB's closest-depth channel (.g): long rays
+    /// skip whole empty cells at coarse mips instead of probing every texel,
+    /// bounding iteration count logarithmically. Requires the dual-extreme
+    /// HZB (built whenever SSR is enabled — see `optimization_policy`).
+    HiZ,
 }
 
-impl SsrTrace {
-    /// The trace strategy compiled into the PRODUCTION SSR pipeline.
-    pub const PRODUCTION: SsrTrace = SsrTrace::LinearDda;
-}
-
-/// Cache key for the SSR trace shader.
+/// Cache key for the SSR pass shaders — one variant per compute stage. The
+/// trace and the spatial resolve are distinct WGSL modules with distinct
+/// permutation axes, but they share the one `ShaderCacheKey::Ssr` slot in the
+/// cross-renderer cache.
 #[derive(Hash, Debug, Clone, PartialEq, Eq)]
-pub struct ShaderCacheKeySsr {
+pub enum ShaderCacheKeySsr {
+    Trace(ShaderCacheKeySsrTrace),
+    Resolve(ShaderCacheKeySsrResolve),
+}
+
+/// Cache key for the SSR trace shader (`ssr_wgsl/trace.wgsl`).
+#[derive(Hash, Debug, Clone, PartialEq, Eq)]
+pub struct ShaderCacheKeySsrTrace {
     pub mode: SsrMode,
     pub trace: SsrTrace,
     /// Temporal reproject + neighbourhood-clamp code exists only when true.
@@ -49,8 +61,33 @@ pub struct ShaderCacheKeySsr {
     pub reverse_z: bool,
 }
 
+/// Cache key for the SSR spatial resolve shader (`ssr_wgsl/resolve.wgsl`) —
+/// the edge-aware denoise between trace and composite. Runs at the SSR
+/// target's own resolution regardless of `half_res` (it reads its output dims
+/// at runtime), so its only axes are the depth-binding type + depth convention.
+#[derive(Hash, Debug, Clone, PartialEq, Eq)]
+pub struct ShaderCacheKeySsrResolve {
+    /// Under MSAA the full-res depth target is multisampled, so the depth
+    /// binding's WGSL type changes — mirroring the trace's depth handling.
+    pub multisampled_geometry: bool,
+    /// Depth convention (003) — selects the sky early-out test.
+    pub reverse_z: bool,
+}
+
 impl From<ShaderCacheKeySsr> for ShaderCacheKey {
     fn from(key: ShaderCacheKeySsr) -> Self {
         ShaderCacheKey::RenderPass(ShaderCacheKeyRenderPass::Ssr(key))
+    }
+}
+
+impl From<ShaderCacheKeySsrTrace> for ShaderCacheKey {
+    fn from(key: ShaderCacheKeySsrTrace) -> Self {
+        ShaderCacheKeySsr::Trace(key).into()
+    }
+}
+
+impl From<ShaderCacheKeySsrResolve> for ShaderCacheKey {
+    fn from(key: ShaderCacheKeySsrResolve) -> Self {
+        ShaderCacheKeySsr::Resolve(key).into()
     }
 }

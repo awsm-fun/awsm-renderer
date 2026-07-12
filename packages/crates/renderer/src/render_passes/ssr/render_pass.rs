@@ -136,10 +136,11 @@ impl SsrRenderPass {
         })
     }
 
-    /// Trace reflections into the `ssr` target, then additively composite that
-    /// over `composite`. `view_width` / `view_height` are the full-res viewport
-    /// dims; when `half_res` the `ssr` target is half-res so the trace dispatches
-    /// over the halved dimensions (¼ the rays).
+    /// Trace reflections into the `ssr` target, spatially resolve (edge-aware
+    /// 9-tap denoise) into `ssr_resolved`, then additively composite that over
+    /// `composite`. `view_width` / `view_height` are the full-res viewport
+    /// dims; when `half_res` the `ssr` target is half-res so the trace + resolve
+    /// dispatch over the halved dimensions (¼ the rays).
     pub fn render(
         &self,
         ctx: &RenderContext,
@@ -148,9 +149,9 @@ impl SsrRenderPass {
         half_res: bool,
     ) -> Result<()> {
         {
-            let compute_pass = ctx
-                .command_encoder
-                .begin_compute_pass(Some(&ComputePassDescriptor::new(Some("SSR Trace")).into()));
+            let compute_pass = ctx.command_encoder.begin_compute_pass(Some(
+                &ComputePassDescriptor::new(Some("SSR Trace + Resolve")).into(),
+            ));
             compute_pass.set_pipeline(ctx.pipelines.compute.get(self.pipelines.trace)?);
             // M3 temporal: select the frame-parity bind group (write current
             // history / read previous). `ping_pong()` is reachable via the
@@ -172,13 +173,23 @@ impl SsrRenderPass {
             let w = w.max(1);
             let h = h.max(1);
             compute_pass.dispatch_workgroups(w.div_ceil(8), Some(h.div_ceil(8)), Some(1));
+
+            // Spatial resolve — the edge-aware denoise between trace and
+            // composite: reads the raw trace output + depth, writes the
+            // smoothed reflection (rgb AND coverage) into `ssr_resolved` at
+            // the same resolution / grid. Same compute-pass scope: WebGPU
+            // usage scopes are per-dispatch in compute passes and dispatch
+            // ordering makes the trace's storage writes visible here.
+            compute_pass.set_pipeline(ctx.pipelines.compute.get(self.pipelines.resolve)?);
+            compute_pass.set_bind_group(0, self.bind_groups.resolve()?, None)?;
+            compute_pass.dispatch_workgroups(w.div_ceil(8), Some(h.div_ceil(8)), Some(1));
             compute_pass.end();
         }
 
-        // Composite: ADDITIVELY blend the reflection-only `ssr` target onto
-        // `composite` (single-sample resolved HDR) via a fullscreen triangle +
-        // linear sampler. Non-reflective pixels wrote 0 so they are untouched;
-        // a half-res `ssr` target bilinearly upsamples for free.
+        // Composite: ADDITIVELY blend the reflection-only `ssr_resolved`
+        // target onto `composite` (single-sample resolved HDR) via a
+        // fullscreen triangle. Non-reflective pixels wrote 0 so they are
+        // untouched; a half-res target edge-aware-upsamples in the shader.
         self.composite.render(ctx)?;
         Ok(())
     }

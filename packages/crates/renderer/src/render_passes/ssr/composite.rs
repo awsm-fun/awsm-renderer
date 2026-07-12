@@ -297,10 +297,11 @@ impl SsrComposite {
             .ok_or_else(|| AwsmBindGroupError::NotFound("SSR Composite".to_string()))
     }
 
-    /// Rebuilds the composite bind group against the live camera / `ssr` /
-    /// depth views. Dispatched on `TextureViewRecreate` alongside the SSR trace
-    /// bind group. Camera + depth mirror the SSR trace's bindings so the
-    /// joint-bilateral upsample linearizes against the same buffers.
+    /// Rebuilds the composite bind group against the live camera /
+    /// `ssr_resolved` / depth views. Dispatched on `TextureViewRecreate`
+    /// alongside the SSR trace + resolve bind groups. Camera + depth mirror the
+    /// SSR trace's bindings so the joint-bilateral upsample linearizes against
+    /// the same buffers.
     pub fn recreate(&mut self, ctx: &BindGroupRecreateContext<'_>) -> Result<()> {
         let entries = vec![
             BindGroupEntry::new(
@@ -309,7 +310,13 @@ impl SsrComposite {
             ),
             BindGroupEntry::new(
                 1,
-                BindGroupResource::TextureView(Cow::Borrowed(&ctx.render_texture_views.ssr)),
+                // The SPATIALLY RESOLVED reflection (not the raw trace): the
+                // 9-tap edge-aware denoise writes `ssr_resolved` between trace
+                // and this composite. Same size/format as `ssr`, so only the
+                // bound resource changes — the shader is untouched.
+                BindGroupResource::TextureView(Cow::Borrowed(
+                    &ctx.render_texture_views.ssr_resolved,
+                )),
             ),
             BindGroupEntry::new(
                 2,

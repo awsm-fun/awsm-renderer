@@ -907,49 +907,138 @@ fn custom_transparent_shaders_validate() {
 
 #[test]
 fn ssr_shaders_validate() {
-    // SSR trace shader must naga-validate for
-    // EVERY permutation (mode × temporal × half_res × msaa) — proving the §5a
-    // zero-cost templating emits valid WGSL for each variant, and that the
-    // shared `camera.wgsl` / `math.wgsl` includes resolve. Also asserts the
-    // compute entry point exists (the dispatch selects it by name). The trace
-    // is always the linear-DDA march (`SsrTrace::PRODUCTION` — the Hi-Z
-    // accelerator was deleted).
-    use crate::render_passes::ssr::shader::cache_key::{ShaderCacheKeySsr, SsrMode, SsrTrace};
+    // SSR trace shader must naga-validate for EVERY permutation
+    // (mode × trace-strategy × temporal × half_res × msaa × reverse_z) —
+    // proving the §5a zero-cost templating emits valid WGSL for each variant,
+    // and that the shared `camera.wgsl` / `math.wgsl` includes resolve. Also
+    // asserts the compute entry point exists (the dispatch selects it by
+    // name). `SsrTrace::HiZ` additionally must reference the pyramid binding.
+    use crate::render_passes::ssr::shader::cache_key::{
+        ShaderCacheKeySsr, ShaderCacheKeySsrTrace, SsrMode, SsrTrace,
+    };
     use crate::render_passes::ssr::shader::template::ShaderTemplateSsr;
     for mode in [SsrMode::Mirror, SsrMode::Glossy] {
-        for temporal in [false, true] {
-            for half_res in [false, true] {
-                for multisampled_geometry in [false, true] {
-                    let key = ShaderCacheKeySsr {
-                        mode,
-                        trace: SsrTrace::PRODUCTION,
-                        temporal,
-                        half_res,
-                        multisampled_geometry,
-                        reverse_z: false,
-                    };
-                    let label = format!(
-                        "ssr mode={mode:?} temporal={temporal} \
-                         half_res={half_res} msaa={multisampled_geometry}"
-                    );
-                    let src = ShaderTemplateSsr::try_from(&key)
-                        .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
-                        .into_source()
-                        .unwrap_or_else(|e| panic!("{label}: render failed: {e:?}"));
-                    naga_validate(&src, &label);
-                    assert!(
-                        src.contains("fn cs_main("),
-                        "{label}: SSR module missing `fn cs_main` entry point"
-                    );
-                    // The multisampled variant must bind the MSAA depth type.
-                    if multisampled_geometry {
-                        assert!(
-                            src.contains("texture_depth_multisampled_2d"),
-                            "{label}: MSAA SSR must bind texture_depth_multisampled_2d"
+        for trace in [SsrTrace::LinearDda, SsrTrace::HiZ] {
+            for reverse_z in [false, true] {
+                for temporal in [false, true] {
+                    for half_res in [false, true] {
+                        for multisampled_geometry in [false, true] {
+                            let key = ShaderCacheKeySsr::Trace(ShaderCacheKeySsrTrace {
+                                mode,
+                                trace,
+                                temporal,
+                                half_res,
+                                multisampled_geometry,
+                                reverse_z,
+                            });
+                            let label = format!(
+                                "ssr mode={mode:?} trace={trace:?} temporal={temporal} \
+                         half_res={half_res} msaa={multisampled_geometry} reverse_z={reverse_z}"
+                            );
+                            let src = ShaderTemplateSsr::try_from(&key)
+                                .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
+                                .into_source()
+                                .unwrap_or_else(|e| panic!("{label}: render failed: {e:?}"));
+                            naga_validate(&src, &label);
+                            assert!(
+                                src.contains("fn cs_main("),
+                                "{label}: SSR module missing `fn cs_main` entry point"
+                            );
+                            // The multisampled variant must bind the MSAA depth type.
+                            if multisampled_geometry {
+                                assert!(
+                                    src.contains("texture_depth_multisampled_2d"),
+                                    "{label}: MSAA SSR must bind texture_depth_multisampled_2d"
+                                );
+                            }
+                            // Hi-Z variant must bind + traverse the pyramid; linear
+                            // must not reference it at all.
+                            if trace == SsrTrace::HiZ {
+                                assert!(
+                            src.contains("var hzb_tex")
+                                && src.contains("textureLoad(hzb_tex, cell, mip).g"),
+                            "{label}: Hi-Z SSR must bind hzb_tex and read the closest channel"
                         );
+                            } else {
+                                assert!(
+                                    !src.contains("hzb_tex"),
+                                    "{label}: linear SSR must not reference hzb_tex"
+                                );
+                            }
+                        }
                     }
                 }
             }
+        }
+    }
+}
+
+#[test]
+fn ssr_resolve_shader_validates() {
+    // The SSR spatial resolve (the edge-aware denoise between trace and
+    // composite) must naga-validate for every permutation (msaa × reverse_z).
+    // Beyond validity, pin the filter's load-bearing structure: the
+    // depth-similarity edge weight (same exp(-|Δz|/sigma) form the composite
+    // upsample uses) and the coverage-weighted divide (rgb AND coverage share
+    // one weight sum so premultiplied color + fractional coverage stay
+    // consistent through the additive blend). Both lines carry comments in
+    // resolve.wgsl noting this test pins them.
+    use crate::render_passes::ssr::shader::cache_key::{
+        ShaderCacheKeySsr, ShaderCacheKeySsrResolve,
+    };
+    use crate::render_passes::ssr::shader::template::ShaderTemplateSsr;
+    for multisampled_geometry in [false, true] {
+        for reverse_z in [false, true] {
+            let key = ShaderCacheKeySsr::Resolve(ShaderCacheKeySsrResolve {
+                multisampled_geometry,
+                reverse_z,
+            });
+            let label = format!("ssr resolve msaa={multisampled_geometry} reverse_z={reverse_z}");
+            let src = ShaderTemplateSsr::try_from(&key)
+                .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
+                .into_source()
+                .unwrap_or_else(|e| panic!("{label}: render failed: {e:?}"));
+            naga_validate(&src, &label);
+            assert!(
+                src.contains("fn cs_main("),
+                "{label}: resolve module missing `fn cs_main` entry point"
+            );
+            // Depth-similarity edge-stopping term (comment-pinned in the wgsl).
+            assert!(
+                src.contains("exp(-abs(z_tap - z_center) / sigma)"),
+                "{label}: resolve must weight taps by the depth-similarity term \
+                 `exp(-abs(z_tap - z_center) / sigma)`"
+            );
+            // Coverage-weighted divide: rgb + coverage divided by the same
+            // weight sum (comment-pinned in the wgsl).
+            assert!(
+                src.contains("sum / sum_w"),
+                "{label}: resolve must divide the accumulated rgb+coverage by \
+                 the shared weight sum (`sum / sum_w`)"
+            );
+            // The multisampled variant must bind the MSAA depth type; the
+            // single-sample variant must not.
+            if multisampled_geometry {
+                assert!(
+                    src.contains("texture_depth_multisampled_2d"),
+                    "{label}: MSAA resolve must bind texture_depth_multisampled_2d"
+                );
+            } else {
+                assert!(
+                    src.contains("var depth_tex: texture_depth_2d"),
+                    "{label}: non-MSAA resolve must bind texture_depth_2d"
+                );
+            }
+            // Sky early-out matches the depth convention (reverse-Z far = 0).
+            let expect = if reverse_z {
+                "center_depth <= 0.0"
+            } else {
+                "center_depth >= 1.0"
+            };
+            assert!(
+                src.contains(expect),
+                "{label}: resolve sky test must be `{expect}`"
+            );
         }
     }
 }

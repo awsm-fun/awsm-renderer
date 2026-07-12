@@ -784,7 +784,7 @@ impl RenderPasses {
         // first enable). Its reflection target lives in RenderTextures; the pass
         // just needs its bind group recreated once the views exist (via
         // bind_groups.rs). The trace is the linear-DDA march
-        // (`SsrTrace::PRODUCTION`).
+        // (`SsrTrace::HiZ` under the gpu_culling capability, else `LinearDda`).
         let ssr = if ctx.post_processing.ssr.enabled {
             Some(SsrRenderPass::new(ctx).await?)
         } else {

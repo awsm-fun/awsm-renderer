@@ -397,6 +397,10 @@ pub struct RenderTextureViews {
 
     /// SSR reflection target — the SSR pass storage-writes its result here.
     pub ssr: web_sys::GpuTextureView,
+    /// SSR spatial-resolve output (same dims/format as `ssr`). The resolve
+    /// compute reads `ssr` + depth and storage-writes the denoised reflection
+    /// here; the composite upsample reads THIS instead of the raw trace.
+    pub ssr_resolved: web_sys::GpuTextureView,
     /// M3 SSR temporal history pair (same dims as `ssr`). The trace reads the
     /// previous frame's accumulated reflection from one and writes this frame's
     /// into the other, swapping by frame parity. 1×1 placeholders unless SSR is
@@ -472,6 +476,7 @@ impl RenderTextureViews {
             effects: inner.effects_view.clone(),
             bloom: inner.bloom_view.clone(),
             ssr: inner.ssr_view.clone(),
+            ssr_resolved: inner.ssr_resolved_view.clone(),
             ssr_history: [
                 inner.ssr_history_views[0].clone(),
                 inner.ssr_history_views[1].clone(),
@@ -583,6 +588,11 @@ pub struct RenderTexturesInner {
     /// as bloom.
     pub ssr: web_sys::GpuTexture,
     pub ssr_view: web_sys::GpuTextureView,
+    /// SSR spatial-resolve output — same dims + format + usage as `ssr`
+    /// (storage-write from the resolve compute + texture read by the
+    /// composite). Follows the same lazy sizing: 1×1 placeholder when SSR off.
+    pub ssr_resolved: web_sys::GpuTexture,
+    pub ssr_resolved_view: web_sys::GpuTextureView,
     /// M3 SSR temporal history pair — same dims + format as `ssr`. Ping-ponged
     /// by frame parity: one is read (previous frame), the other written (this
     /// frame). 1×1 placeholders unless `ssr_enabled && ssr_temporal`.
@@ -899,6 +909,24 @@ impl RenderTexturesInner {
                         .with_texture_binding(),
                 )
                 .with_label("SSR")
+                .into(),
+            )
+            .map_err(AwsmRenderTextureError::CreateTexture)?;
+
+        // SSR spatial-resolve output — same dims + format + usage as the `ssr`
+        // trace target (including the SSR-off 1×1 placeholder). The resolve
+        // compute storage-writes the denoised reflection here; the composite
+        // upsample texture-reads it.
+        let ssr_resolved = gpu
+            .create_texture(
+                &TextureDescriptor::new(
+                    render_texture_formats.color,
+                    Extent3d::new(ssr_w, Some(ssr_h), Some(1)),
+                    TextureUsage::new()
+                        .with_storage_binding()
+                        .with_texture_binding(),
+                )
+                .with_label("SSR Resolved")
                 .into(),
             )
             .map_err(AwsmRenderTextureError::CreateTexture)?;
@@ -1223,6 +1251,10 @@ impl RenderTexturesInner {
             .create_view()
             .map_err(|e| AwsmRenderTextureError::CreateTextureView(format!("ssr: {e:?}")))?;
 
+        let ssr_resolved_view = ssr_resolved.create_view().map_err(|e| {
+            AwsmRenderTextureError::CreateTextureView(format!("ssr_resolved: {e:?}"))
+        })?;
+
         let ssr_history_views = [
             ssr_history[0].create_view().map_err(|e| {
                 AwsmRenderTextureError::CreateTextureView(format!("ssr_history[0]: {e:?}"))
@@ -1320,6 +1352,8 @@ impl RenderTexturesInner {
 
             ssr,
             ssr_view,
+            ssr_resolved,
+            ssr_resolved_view,
             ssr_history,
             ssr_history_views,
 
@@ -1373,6 +1407,7 @@ impl RenderTexturesInner {
         self.effects.destroy();
         self.bloom.destroy();
         self.ssr.destroy();
+        self.ssr_resolved.destroy();
         self.ssr_history[0].destroy();
         self.ssr_history[1].destroy();
         self.reflection_descriptor.destroy();

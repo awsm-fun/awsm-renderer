@@ -36,10 +36,17 @@ use crate::render_passes::RenderPassInitContext;
 
 pub struct SsrBindGroups {
     pub layout_key: BindGroupLayoutKey,
+    /// Spatial-resolve layout — the 9-tap edge-aware denoise between trace and
+    /// composite: camera + raw trace output (sampled) + full-res depth +
+    /// `ssr_resolved` storage write.
+    pub resolve_layout_key: BindGroupLayoutKey,
     /// M3: whether the temporal variant is compiled — decides layout shape
     /// (entries 7/8/9), whether the linear `sampler` exists, and whether one or
     /// two parity bind groups are built. Derived from `ssr.temporal` at `new()`.
     temporal: bool,
+    /// Hi-Z trace variant (gpu_culling capability) — the trace bind group
+    /// carries the HZB pyramid as its last entry.
+    hzb: bool,
     /// Linear, clamp-to-edge sampler for the reprojected history fetch (binding
     /// 8). `None` unless temporal — the non-temporal path binds no sampler
     /// (everything is integer `textureLoad`), so it allocates nothing new.
@@ -50,6 +57,10 @@ pub struct SsrBindGroups {
     /// history[1]); slot 1 = the reverse. The render pass selects by
     /// `ping_pong()` (see [`Self::trace`]).
     trace_bind_groups: [Option<web_sys::GpuBindGroup>; 2],
+    /// Spatial-resolve bind group. `None` until the first `recreate`. Parity-
+    /// independent (it reads the `ssr` trace target, not the history pair), so
+    /// a single group suffices for both temporal and non-temporal variants.
+    resolve_bind_group: Option<web_sys::GpuBindGroup>,
 }
 
 impl SsrBindGroups {
@@ -57,7 +68,8 @@ impl SsrBindGroups {
         // Under MSAA the depth + normal G-buffer targets are multisampled.
         let multisampled = ctx.anti_aliasing.msaa_sample_count.is_some();
         let temporal = ctx.post_processing.ssr.temporal;
-        let layout_key = create_layout(ctx, multisampled, temporal)?;
+        let layout_key = create_layout(ctx, multisampled, temporal, ctx.features.gpu_culling)?;
+        let resolve_layout_key = create_resolve_layout(ctx, multisampled)?;
         // The temporal reprojected history fetch (binding 7) is a genuinely
         // filtered sample — unlike every other SSR input, which is integer
         // `textureLoad`. Create its linear sampler only for the temporal variant.
@@ -81,9 +93,12 @@ impl SsrBindGroups {
         };
         Ok(Self {
             layout_key,
+            resolve_layout_key,
+            hzb: ctx.features.gpu_culling,
             temporal,
             sampler,
             trace_bind_groups: [None, None],
+            resolve_bind_group: None,
         })
     }
 
@@ -99,6 +114,13 @@ impl SsrBindGroups {
         self.trace_bind_groups[idx]
             .as_ref()
             .ok_or_else(|| AwsmBindGroupError::NotFound("SSR Trace".to_string()))
+    }
+
+    /// The spatial-resolve bind group (parity-independent, single group).
+    pub fn resolve(&self) -> std::result::Result<&web_sys::GpuBindGroup, AwsmBindGroupError> {
+        self.resolve_bind_group
+            .as_ref()
+            .ok_or_else(|| AwsmBindGroupError::NotFound("SSR Resolve".to_string()))
     }
 
     pub fn recreate(
@@ -174,14 +196,66 @@ impl SsrBindGroups {
                     9,
                     BindGroupResource::TextureView(Cow::Borrowed(&history[curr])),
                 ));
+                // 10 — HZB pyramid (Hi-Z trace variant only).
+                if self.hzb {
+                    let hzb_view = ctx
+                        .hzb_full_view
+                        .as_ref()
+                        .expect("HZB view missing despite gpu_culling feature on");
+                    entries.push(BindGroupEntry::new(
+                        10,
+                        BindGroupResource::TextureView(Cow::Borrowed(hzb_view)),
+                    ));
+                }
                 let descriptor = BindGroupDescriptor::new(layout, Some("SSR Trace"), entries);
                 groups[curr] = Some(ctx.gpu.create_bind_group(&descriptor.into()));
             }
             self.trace_bind_groups = groups;
         } else {
-            let descriptor = BindGroupDescriptor::new(layout, Some("SSR Trace"), base_entries());
+            let mut entries = base_entries();
+            // 7 — HZB pyramid (Hi-Z trace variant only; binding index shifts
+            // with `temporal` exactly like the layout + shader template).
+            if self.hzb {
+                let hzb_view = ctx
+                    .hzb_full_view
+                    .as_ref()
+                    .expect("HZB view missing despite gpu_culling feature on");
+                entries.push(BindGroupEntry::new(
+                    7,
+                    BindGroupResource::TextureView(Cow::Borrowed(hzb_view)),
+                ));
+            }
+            let descriptor = BindGroupDescriptor::new(layout, Some("SSR Trace"), entries);
             self.trace_bind_groups = [Some(ctx.gpu.create_bind_group(&descriptor.into())), None];
         }
+
+        // Spatial resolve: camera + raw trace output (sampled) + full-res
+        // depth + `ssr_resolved` storage write. Rebuilt alongside the trace
+        // groups on every recreate (same TextureViewRecreate lifecycle).
+        let resolve_layout = ctx.bind_group_layouts.get(self.resolve_layout_key)?;
+        let resolve_entries = vec![
+            BindGroupEntry::new(
+                0,
+                BindGroupResource::Buffer(BufferBinding::new(&ctx.camera.gpu_buffer)),
+            ),
+            BindGroupEntry::new(
+                1,
+                BindGroupResource::TextureView(Cow::Borrowed(&ctx.render_texture_views.ssr)),
+            ),
+            BindGroupEntry::new(
+                2,
+                BindGroupResource::TextureView(Cow::Borrowed(&ctx.render_texture_views.depth)),
+            ),
+            BindGroupEntry::new(
+                3,
+                BindGroupResource::TextureView(Cow::Borrowed(
+                    &ctx.render_texture_views.ssr_resolved,
+                )),
+            ),
+        ];
+        let resolve_descriptor =
+            BindGroupDescriptor::new(resolve_layout, Some("SSR Resolve"), resolve_entries);
+        self.resolve_bind_group = Some(ctx.gpu.create_bind_group(&resolve_descriptor.into()));
         Ok(())
     }
 }
@@ -190,6 +264,7 @@ fn create_layout(
     ctx: &mut RenderPassInitContext<'_>,
     multisampled: bool,
     temporal: bool,
+    hzb: bool,
 ) -> Result<BindGroupLayoutKey> {
     let compute_only = |resource: BindGroupLayoutResource| BindGroupLayoutCacheKeyEntry {
         resource,
@@ -265,6 +340,61 @@ fn create_layout(
         )));
     }
 
+    // Hi-Z trace variant: the HZB pyramid (rg32float, .g = closest bound),
+    // sampled across mips via textureLoad — appended LAST so binding indices
+    // shift with `temporal` exactly as the shader template's nested-if does.
+    if hzb {
+        entries.push(compute_only(BindGroupLayoutResource::Texture(
+            TextureBindingLayout::new()
+                .with_view_dimension(TextureViewDimension::N2d)
+                .with_sample_type(TextureSampleType::UnfilterableFloat),
+        )));
+    }
+
+    Ok(ctx
+        .bind_group_layouts
+        .get_key(ctx.gpu, BindGroupLayoutCacheKey { entries })?)
+}
+
+/// Layout for the spatial-resolve compute (the edge-aware denoise between
+/// trace and composite). Every input is integer `textureLoad` — no sampler.
+fn create_resolve_layout(
+    ctx: &mut RenderPassInitContext<'_>,
+    multisampled: bool,
+) -> Result<BindGroupLayoutKey> {
+    let compute_only = |resource: BindGroupLayoutResource| BindGroupLayoutCacheKeyEntry {
+        resource,
+        visibility_vertex: false,
+        visibility_fragment: false,
+        visibility_compute: true,
+    };
+    let entries = vec![
+        // 0 — camera uniform (CameraRaw) for depth → view-Z linearization.
+        compute_only(BindGroupLayoutResource::Buffer(
+            BufferBindingLayout::new().with_binding_type(BufferBindingType::Uniform),
+        )),
+        // 1 — raw SSR trace output (rgba16float, single-sample, textureLoad).
+        compute_only(BindGroupLayoutResource::Texture(
+            TextureBindingLayout::new()
+                .with_view_dimension(TextureViewDimension::N2d)
+                .with_sample_type(TextureSampleType::UnfilterableFloat)
+                .with_multisampled(false),
+        )),
+        // 2 — full-res depth (non-filterable; multisampled under MSAA,
+        // mirroring the trace's depth binding).
+        compute_only(BindGroupLayoutResource::Texture(
+            TextureBindingLayout::new()
+                .with_view_dimension(TextureViewDimension::N2d)
+                .with_sample_type(TextureSampleType::Depth)
+                .with_multisampled(multisampled),
+        )),
+        // 3 — resolved reflection target (storage write).
+        compute_only(BindGroupLayoutResource::StorageTexture(
+            StorageTextureBindingLayout::new(TextureFormat::Rgba16float)
+                .with_view_dimension(TextureViewDimension::N2d)
+                .with_access(StorageTextureAccess::WriteOnly),
+        )),
+    ];
     Ok(ctx
         .bind_group_layouts
         .get_key(ctx.gpu, BindGroupLayoutCacheKey { entries })?)

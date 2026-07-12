@@ -61,6 +61,16 @@ struct SsrParams {
 @group(0) @binding(8) var history_sampler: sampler;
 @group(0) @binding(9) var history_curr_tex: texture_storage_2d<rgba16float, write>;
 {% endif %}
+{% if hzb %}
+// Hi-Z pyramid (dual-extreme HZB): `.g` = the CLOSEST depth per tile, the
+// conservative reflector bound the traversal tests spans against. Binding
+// index shifts with `temporal` to stay consecutive with the layout.
+{% if temporal %}
+@group(0) @binding(10) var hzb_tex: texture_2d<f32>;
+{% else %}
+@group(0) @binding(7) var hzb_tex: texture_2d<f32>;
+{% endif %}
+{% endif %}
 
 // Reconstruct VIEW-space position from a hardware depth sample at `uv`
 // (forward-Z [0,1]). NDC y is flipped relative to UV.
@@ -206,9 +216,116 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     var hit = false;
     var hit_uv = vec2<f32>(0.0, 0.0);
+    var travel_fade = 1.0;
     var s_prev = 0.0;
     var s_cur = stride * (0.5 + jitter);
 
+{% if hzb %}
+    // ─── Hi-Z traversal ────────────────────────────────────────────────────
+    // Raw NDC depth ALSO interpolates linearly in screen space (z_clip/w),
+    // so the coarse tests compare interpolated raw ray depth directly
+    // against the pyramid's raw bounds — no per-cell linearization.
+    let rz0 = h0.z * k0;
+    let rz1 = h1.z * k1;
+    let drz = (rz1 - rz0) / screen_len;
+
+    let max_mip = i32(textureNumLevels(hzb_tex)) - 1;
+    var mip = 1;
+    // The iteration budget is the SAME `max_steps` knob: each iteration
+    // either advances at least one cell or descends one mip, and empty
+    // regions are skipped at coarse mips, so the budget goes much further
+    // than the linear march's.
+    for (var i = 0; i < steps; i = i + 1) {
+        if (s_cur >= screen_len) {
+            break;
+        }
+        let pix = s0 + dir * s_cur;
+        if (pix.x < 0.0 || pix.x >= fdims.x || pix.y < 0.0 || pix.y >= fdims.y) {
+            break;
+        }
+        let cell_size = f32(1 << u32(mip));
+        let cell = vec2<i32>(pix / cell_size);
+        // Distance (along the ray, in pixels) to exit the current cell.
+        var t_exit = screen_len;
+        if (abs(dir.x) > 1e-6) {
+            let bx = select(f32(cell.x) * cell_size, f32(cell.x + 1) * cell_size, dir.x > 0.0);
+            t_exit = min(t_exit, (bx - s0.x) / dir.x);
+        }
+        if (abs(dir.y) > 1e-6) {
+            let by = select(f32(cell.y) * cell_size, f32(cell.y + 1) * cell_size, dir.y > 0.0);
+            t_exit = min(t_exit, (by - s0.y) / dir.y);
+        }
+        // Nudge past the boundary so the next iteration lands in the
+        // neighbouring cell (never re-tests this one).
+        let s_next = max(t_exit + 0.01, s_cur + 0.01);
+
+        // Conservative span test against the cell's CLOSEST surface.
+        let closest = textureLoad(hzb_tex, cell, mip).g;
+        let rz_a = rz0 + drz * s_cur;
+        let rz_b = rz0 + drz * min(s_next, screen_len);
+        {% if reverse_z %}
+        // Reverse-Z raw: closer = LARGER. A sky cell has closest == 0, which
+        // no ray raw-depth (> 0) dips under — coarse sky skips are free.
+        let possible = min(rz_a, rz_b) <= closest;
+        {% else %}
+        let possible = max(rz_a, rz_b) >= closest;
+        {% endif %}
+
+        if (!possible) {
+            // Whole span provably in front of everything in the cell: skip
+            // it and coarsen (the ray just crossed a cell boundary, so the
+            // parent cell is fresh territory).
+            s_prev = s_cur;
+            s_cur = s_next;
+            mip = min(mip + 1, max_mip);
+            continue;
+        }
+        if (mip > 0) {
+            // Possible hit somewhere in this cell — refine WITHOUT advancing.
+            mip = mip - 1;
+            continue;
+        }
+
+        // mip 0: exact per-texel test (same as the linear march).
+        let sdepth = textureLoad(depth_tex, vec2<i32>(pix), 0);
+        {% if reverse_z %}
+        if (sdepth <= 0.0) {
+        {% else %}
+        if (sdepth >= 1.0) {
+        {% endif %}
+            s_prev = s_cur;
+            s_cur = s_next;
+            continue;
+        }
+        let k = k0 + dk * s_cur;
+        let ray_z = -((qz0 + dqz * s_cur) / k);
+        let scene_z = -view_pos_from_depth(pix / fdims, sdepth, cam).z;
+        let thickness = max(params.thickness, scene_z * 0.02);
+        if (ray_z > scene_z + 0.01 && (ray_z - scene_z) < thickness) {
+            var lo = s_prev;
+            var hi = s_cur;
+            for (var b = 0; b < 5; b = b + 1) {
+                let mid = 0.5 * (lo + hi);
+                let mpix = s0 + dir * mid;
+                let md = textureLoad(depth_tex, vec2<i32>(mpix), 0);
+                let mk = k0 + dk * mid;
+                let mray_z = -((qz0 + dqz * mid) / mk);
+                let mscene_z = -view_pos_from_depth(mpix / fdims, md, cam).z;
+                if (mray_z > mscene_z) {
+                    hi = mid;
+                } else {
+                    lo = mid;
+                }
+            }
+            hit_uv = (s0 + dir * hi) / fdims;
+            travel_fade = 1.0 - smoothstep(0.7, 1.0, hi / screen_len);
+            hit = true;
+            break;
+        }
+        s_prev = s_cur;
+        s_cur = s_next;
+    }
+{% else %}
     for (var i = 0; i < steps; i = i + 1) {
         if (s_cur >= screen_len) {
             break;
@@ -253,12 +370,17 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
                 }
             }
             hit_uv = (s0 + dir * hi) / fdims;
+            // Travel fade: reflections that reach the march budget must not
+            // STOP on a hard line — fade the last 30% of the ray so the
+            // termination boundary is invisible.
+            travel_fade = 1.0 - smoothstep(0.7, 1.0, hi / screen_len);
             hit = true;
             break;
         }
         s_prev = s_cur;
         s_cur = s_cur + stride;
     }
+{% endif %}
 
     var reflection = vec3<f32>(0.0, 0.0, 0.0);
     if (hit) {
@@ -300,7 +422,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // Fade toward the screen borders of the hit to hide the SS seam.
         let edge = min(min(hit_uv.x, 1.0 - hit_uv.x), min(hit_uv.y, 1.0 - hit_uv.y));
         let fade = smoothstep(0.0, max(params.edge_fade, 1e-4), edge);
-        reflection = hit_color * fresnel * fade * params.intensity;
+        reflection = hit_color * fresnel * fade * travel_fade * params.intensity;
     }
 
     {% if temporal %}
