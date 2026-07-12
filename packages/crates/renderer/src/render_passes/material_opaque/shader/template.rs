@@ -1158,8 +1158,14 @@ mod size_regression {
     // sample-all-select body lives in the transparent fragment. A permanent,
     // intended ~0.3 KB addition so dynamic-material helpers compile in BOTH
     // contexts. Measured 88.4 KB empty / 127.0 KB all; ALL ceiling bumped.
-    const CEIL_EMPTY_MSAA4_MIPS: usize = 90_000;
-    const CEIL_ALL_MSAA4_MIPS: usize = 130_000;
+    // **Per-sample SSR descriptor resolve (MSAA fix):** shade_sample returns
+    // a struct carrying each sample's reflection descriptor and the edge arm
+    // accumulates it into the widened (8-word) accumulator slots — a
+    // permanent ~2 KB addition so final_blend can resolve a coverage-correct
+    // per-pixel descriptor (single-sample descriptors made SSR visibly undo
+    // MSAA along silhouettes). Measured 91.1 KB empty; both ceilings bumped.
+    const CEIL_EMPTY_MSAA4_MIPS: usize = 94_000;
+    const CEIL_ALL_MSAA4_MIPS: usize = 134_000;
 
     #[test]
     fn custom_shader_sizes_within_ceiling() {

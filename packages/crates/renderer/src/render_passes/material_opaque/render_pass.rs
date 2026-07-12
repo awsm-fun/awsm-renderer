@@ -255,6 +255,12 @@ impl MaterialOpaqueRenderPass {
                 2,
                 BindGroupResource::TextureView(Cow::Borrowed(&ctx.render_texture_views.opaque)),
             ),
+            BindGroupEntry::new(
+                3,
+                BindGroupResource::TextureView(Cow::Borrowed(
+                    &ctx.render_texture_views.reflection_descriptor,
+                )),
+            ),
         ];
         let descriptor_final = BindGroupDescriptor::new(
             ctx.bind_group_layouts

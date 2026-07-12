@@ -40,6 +40,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     var color_sum = vec3<f32>(0.0);
     var total_count: f32 = 0.0;
+    {% if write_ssr_descriptor %}
+    var desc_rgb_sum = vec3<f32>(0.0);
+    var desc_spread_wsum: f32 = 0.0;
+    {% endif %}
 
     for (var slot = 0u; slot < 4u; slot++) {
         // Skip slots that have no shader_id assigned this frame. Their
@@ -56,7 +60,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             continue;
         }
         {% endif %}
-        let accum_word_index = edge_layout.accumulator_base + (edge_pixel_id * 4u + slot) * 4u;
+        // 8 words per slot: 0..4 = Karis color sum + weight, 4..8 = SSR
+        // descriptor sums (see ACCUMULATOR_SLOT_BYTES in edge_buffers.rs).
+        let accum_word_index = edge_layout.accumulator_base + (edge_pixel_id * 4u + slot) * 8u;
         let r = bitcast<f32>(edge_data[accum_word_index + 0u]);
         let g = bitcast<f32>(edge_data[accum_word_index + 1u]);
         let b = bitcast<f32>(edge_data[accum_word_index + 2u]);
@@ -65,6 +71,14 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             color_sum += vec3<f32>(r, g, b);
             total_count += count;
         }
+        {% if write_ssr_descriptor %}
+        desc_rgb_sum += vec3<f32>(
+            bitcast<f32>(edge_data[accum_word_index + 4u]),
+            bitcast<f32>(edge_data[accum_word_index + 5u]),
+            bitcast<f32>(edge_data[accum_word_index + 6u]),
+        );
+        desc_spread_wsum += bitcast<f32>(edge_data[accum_word_index + 7u]);
+        {% endif %}
     }
 
     if (total_count <= 0.0) {
@@ -80,4 +94,17 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let final_alpha: f32 = 1.0;
 
     textureStore(opaque_tex, coords, vec4<f32>(final_color, final_alpha));
+
+    {% if write_ssr_descriptor %}
+    // Per-pixel SSR descriptor resolve (wgsl_validation pins this): raw
+    // per-sample average over the 4 MSAA samples — samples owned by no slot
+    // (sky) contribute zero, which is exactly their reflectivity. Spread is
+    // reflectivity-weighted (each sample's spread entered the sum scaled by
+    // its own max-component reflectivity), so a strong mirror's spread
+    // dominates a weak dielectric's at mixed edges.
+    let desc_rgb = desc_rgb_sum / 4.0;
+    let desc_w = max(max(desc_rgb_sum.r, desc_rgb_sum.g), desc_rgb_sum.b);
+    let desc_spread = select(0.0, desc_spread_wsum / max(desc_w, 1e-5), desc_w > 1e-5);
+    textureStore(reflection_descriptor_tex, coords, vec4<f32>(desc_rgb, desc_spread));
+    {% endif %}
 }

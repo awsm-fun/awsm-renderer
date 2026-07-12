@@ -412,6 +412,7 @@ impl MaterialEdgePipelines {
         shader_cache_keys.push(ShaderCacheKey::from(ShaderCacheKeyMaterialFinalBlend {
             bucket_entries: bucket_entries.to_vec(),
             color_format: color_wgsl_format.to_string(),
+            write_ssr_descriptor,
         }));
         slots.push(EdgePipelineSlot::FinalBlend);
         pipeline_layout_keys.push(final_blend_layout_key);

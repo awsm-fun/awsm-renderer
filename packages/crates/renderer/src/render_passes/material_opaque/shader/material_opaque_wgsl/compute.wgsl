@@ -519,11 +519,23 @@ fn ssr_pbr_descriptor(base_rgb: vec3<f32>, metallic: f32, roughness: f32) -> vec
 // See https://github.com/dakom/awsm-renderer/pull/99 § Pass structure step 4.
 // ════════════════════════════════════════════════════════════════════
 
+// Per-sample shade output: the shaded color+alpha, plus this sample's SSR
+// reflection descriptor (reflectivity rgb + spread; zero when the
+// write_ssr_descriptor axis is off, on bails, and for non-reflective
+// materials). The caller accumulates the descriptor per-sample so
+// final_blend can resolve a COVERAGE-correct per-pixel descriptor — a
+// single-sample descriptor makes the SSR composite add all-or-nothing
+// reflection along silhouettes, visibly undoing MSAA.
+struct ShadeSampleOut {
+    color: vec4<f32>,
+    ssr_desc: vec4<f32>,
+};
+
 // Shade a single MSAA sample for this shader_id and return
-// (color, alpha). Reads visibility/barycentric/normal textures at the
-// given (coords, sample_index). Returns a sentinel zero on samples
-// that don't belong to this shader_id (the caller's mask gate filters
-// these out upstream, but we keep the bail for robustness).
+// (color+alpha, ssr descriptor). Reads visibility/barycentric/normal
+// textures at the given (coords, sample_index). Returns a sentinel zero on
+// samples that don't belong to this shader_id (the caller's mask gate
+// filters these out upstream, but we keep the bail for robustness).
 fn shade_sample(
     coords: vec2<i32>,
     sample_index: u32,
@@ -533,7 +545,7 @@ fn shade_sample(
     {% if inc.light_access %}
     lights_info: LightsInfo,
     {% endif %}
-) -> vec4<f32> {
+) -> ShadeSampleOut {
     let textures = msaa_load_sample_textures(coords, sample_index);
     let tri_id = join32(textures.vis_data.x, textures.vis_data.y);
     let mat_meta_off = join32(textures.vis_data.z, textures.vis_data.w);
@@ -541,11 +553,11 @@ fn shade_sample(
     // Skybox / no geometry — caller's mask should never put us here
     // for a non-skybox shader_id, but bail safely.
     if (tri_id == U32_MAX) {
-        return vec4<f32>(0.0);
+        return ShadeSampleOut(vec4<f32>(0.0), vec4<f32>(0.0));
     }
     let sample_mesh_meta = material_mesh_metas[mat_meta_off / META_SIZE_IN_BYTES];
     if (sample_mesh_meta.is_hud == 1u) {
-        return vec4<f32>(0.0);
+        return ShadeSampleOut(vec4<f32>(0.0), vec4<f32>(0.0));
     }
 
     let bary_xy = vec2<f32>(f32(textures.bary.x), f32(textures.bary.y)) / 65535.0;
@@ -583,7 +595,7 @@ fn shade_sample(
     // pipeline.
     let sample_shader_id = material_load_shader_id(sample_mat_offset);
     // Guard on the numeric (registry-allocated) id regardless of `base`.
-    if (sample_shader_id != {{ shader_id.as_u32() }}u) { return vec4<f32>(0.0); }
+    if (sample_shader_id != {{ shader_id.as_u32() }}u) { return ShadeSampleOut(vec4<f32>(0.0), vec4<f32>(0.0)); }
 
     var color: vec3<f32>;
     var base_alpha: f32;
@@ -790,22 +802,14 @@ fn shade_sample(
     {% endif %}
 
     {% if write_ssr_descriptor %}
-    // M2a: MSAA EDGE pixels — the bucket that owns sample 0 stores the pixel's
-    // SSR reflection descriptor, mirroring the interior arm's / cs_opaque's
-    // sample-0 convention (and the SSR trace's sample-0 depth read). Exactly
-    // one shader_id owns a given sample, so the write is race-free. The
-    // descriptor texture is never cleared, so without this store edge pixels
-    // kept stale prior-frame reflectivity. Sky-at-sample-0 edge pixels get no
-    // store (the U32_MAX bail above) — the trace bails on depth >= 1.0 there
-    // before ever reading the descriptor.
-    if (sample_index == 0u) {
-        // Coverage-scaled like the interior arms (see ssr_descriptor_coverage).
-        let ssr_cov = ssr_descriptor_coverage(coords, mat_meta_off);
-        textureStore(reflection_descriptor_tex, coords, vec4<f32>(ssr_reflectivity * ssr_cov, ssr_spread));
-    }
+    // M2a: this sample's SSR descriptor rides back to the edge arm, which
+    // accumulates it into the slot's descriptor words; final_blend resolves
+    // the pixel's coverage-correct descriptor from all samples (edge pixels'
+    // primary-pass sample-0 store gets overwritten there).
+    return ShadeSampleOut(vec4<f32>(color, base_alpha), vec4<f32>(ssr_reflectivity, ssr_spread));
+    {% else %}
+    return ShadeSampleOut(vec4<f32>(color, base_alpha), vec4<f32>(0.0));
     {% endif %}
-
-    return vec4<f32>(color, base_alpha);
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -1201,6 +1205,8 @@ fn cs_shade(
     var alpha_sum: f32 = 0.0;
     var sample_count: u32 = 0u;
     var weight_sum: f32 = 0.0;
+    var desc_rgb_sum = vec3<f32>(0.0);
+    var desc_spread_wsum: f32 = 0.0;
 
     for (var s = 0u; s < 4u; s++) {
         // Per-sample ownership: the same shader_id gate `shade_sample`
@@ -1231,13 +1237,19 @@ fn cs_shade(
             {% if prep_present %}
             g_prep_ctx.edge_shadow_xy = prep_edge_shadow_xy(edge_pixel_id, s);
             {% endif %}
-            let shaded = shade_sample(coords, s, edge_camera, edge_screen_dims, edge_screen_dims_f32{% if inc.light_access %}, lights_info{% endif %});
+            let ss = shade_sample(coords, s, edge_camera, edge_screen_dims, edge_screen_dims_f32{% if inc.light_access %}, lights_info{% endif %});
+            let shaded = ss.color;
             // Karis (tonemap-weighted) resolve; rationale in final_blend.wgsl.
             let karis_w = 1.0 / (1.0 + max(shaded.r, max(shaded.g, shaded.b)));
             color_sum += shaded.rgb * karis_w;
             alpha_sum += shaded.a;
             sample_count += 1u;
             weight_sum += karis_w;
+            // SSR descriptor accumulation — RAW sums (final_blend divides by
+            // the 4 MSAA samples); spread weighted by its own reflectivity.
+            desc_rgb_sum += ss.ssr_desc.rgb;
+            desc_spread_wsum += ss.ssr_desc.a
+                * max(ss.ssr_desc.r, max(ss.ssr_desc.g, ss.ssr_desc.b));
         }
     }
 
@@ -1247,11 +1259,17 @@ fn cs_shade(
 
     // Accumulate into accumulator[edge_pixel_id × 4 + slot_index] (IDENTICAL
     // to cs_edge — same format the unchanged final_blend resolves).
-    let accum_word_index = edge_layout.accumulator_base + (edge_pixel_id * 4u + slot_index) * 4u;
+    // 8 words per slot: 0..4 = Karis color sum + weight, 4..8 = SSR
+    // descriptor sums (see ACCUMULATOR_SLOT_BYTES in edge_buffers.rs).
+    let accum_word_index = edge_layout.accumulator_base + (edge_pixel_id * 4u + slot_index) * 8u;
     edge_data[accum_word_index + 0u] = bitcast<u32>(color_sum.x);
     edge_data[accum_word_index + 1u] = bitcast<u32>(color_sum.y);
     edge_data[accum_word_index + 2u] = bitcast<u32>(color_sum.z);
     // Karis WEIGHT sum, not the raw sample count.
     edge_data[accum_word_index + 3u] = bitcast<u32>(weight_sum);
+    edge_data[accum_word_index + 4u] = bitcast<u32>(desc_rgb_sum.x);
+    edge_data[accum_word_index + 5u] = bitcast<u32>(desc_rgb_sum.y);
+    edge_data[accum_word_index + 6u] = bitcast<u32>(desc_rgb_sum.z);
+    edge_data[accum_word_index + 7u] = bitcast<u32>(desc_spread_wsum);
 }
 {% endif %}

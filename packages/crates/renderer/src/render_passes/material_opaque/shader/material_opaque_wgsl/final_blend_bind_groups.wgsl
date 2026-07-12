@@ -24,3 +24,12 @@ struct EdgeBufferLayoutRO {
 //
 // Format templated to match the runtime render-texture format ({{ color_format }}).
 @group(0) @binding(2) var opaque_tex: texture_storage_2d<{{ color_format }}, write>;
+
+{% if write_ssr_descriptor %}
+// SSR reflection descriptor — final_blend resolves the per-pixel descriptor
+// from the per-sample sums the edge arms accumulate (slot words 4..8) and
+// overwrites the primary pass's sample-0 value at edge pixels. Without this
+// the descriptor is all-or-nothing along silhouettes over reflective
+// surfaces and the SSR composite visibly undoes MSAA.
+@group(0) @binding(3) var reflection_descriptor_tex: texture_storage_2d<rgba8unorm, write>;
+{% endif %}

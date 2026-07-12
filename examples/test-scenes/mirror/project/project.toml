@@ -45,6 +45,36 @@ resolution_scale = 1.0
 temporal = false
 temporal_weight = 0.8999999761581421
 
+[assets.00000000-0000-4000-8000-000000000010]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+
+[assets.00000000-0000-4000-8000-000000000010.source.mesh]
+label = "Sphere"
+editable = true
+
+[assets.00000000-0000-4000-8000-000000000010.source.mesh.source.primitive.sphere]
+radius = 0.800000011920929
+segments_long = 48
+segments_lat = 32
+
+[assets.00000000-0000-4000-8000-000000000010.source.mesh.stack]
+modifiers = []
+
+[assets.00000000-0000-4000-8000-000000000010.source.mesh.stack.base.primitive.sphere]
+radius = 0.800000011920929
+segments_long = 48
+segments_lat = 32
+
+[assets.00000000-0000-4000-8000-000000000010.source.mesh.overrides.positions]
+
+[assets.00000000-0000-4000-8000-000000000010.source.mesh.overrides.colors]
+
+[assets.00000000-0000-4000-8000-000000000010.source.mesh.overrides.normals]
+
+[assets.00000000-0000-4000-8000-000000000010.source.mesh.overrides.uvs]
+
 [assets.00000000-0000-4000-8000-000000000001]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
@@ -77,37 +107,35 @@ segments_z = 1
 
 [assets.00000000-0000-4000-8000-000000000001.source.mesh.overrides.uvs]
 
-[assets.00000000-0000-4000-8000-000000000012]
+[assets.00000000-0000-4000-8000-000000000013]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
 
-[assets.00000000-0000-4000-8000-000000000012.source.mesh]
-label = "Torus"
+[assets.00000000-0000-4000-8000-000000000013.source.mesh]
+label = "Sphere"
 editable = true
 
-[assets.00000000-0000-4000-8000-000000000012.source.mesh.source.primitive.torus]
-radius = 1.0
-thickness = 0.05999999865889549
-segments_major = 64
-segments_minor = 16
+[assets.00000000-0000-4000-8000-000000000013.source.mesh.source.primitive.sphere]
+radius = 0.800000011920929
+segments_long = 48
+segments_lat = 32
 
-[assets.00000000-0000-4000-8000-000000000012.source.mesh.stack]
+[assets.00000000-0000-4000-8000-000000000013.source.mesh.stack]
 modifiers = []
 
-[assets.00000000-0000-4000-8000-000000000012.source.mesh.stack.base.primitive.torus]
-radius = 1.0
-thickness = 0.05999999865889549
-segments_major = 64
-segments_minor = 16
+[assets.00000000-0000-4000-8000-000000000013.source.mesh.stack.base.primitive.sphere]
+radius = 0.800000011920929
+segments_long = 48
+segments_lat = 32
 
-[assets.00000000-0000-4000-8000-000000000012.source.mesh.overrides.positions]
+[assets.00000000-0000-4000-8000-000000000013.source.mesh.overrides.positions]
 
-[assets.00000000-0000-4000-8000-000000000012.source.mesh.overrides.colors]
+[assets.00000000-0000-4000-8000-000000000013.source.mesh.overrides.colors]
 
-[assets.00000000-0000-4000-8000-000000000012.source.mesh.overrides.normals]
+[assets.00000000-0000-4000-8000-000000000013.source.mesh.overrides.normals]
 
-[assets.00000000-0000-4000-8000-000000000012.source.mesh.overrides.uvs]
+[assets.00000000-0000-4000-8000-000000000013.source.mesh.overrides.uvs]
 
 [assets.00000000-0000-4000-8000-000000000011]
 gltf_material_asset_ids = []
@@ -143,65 +171,37 @@ dims = [
 
 [assets.00000000-0000-4000-8000-000000000011.source.mesh.overrides.uvs]
 
-[assets.00000000-0000-4000-8000-000000000010]
+[assets.00000000-0000-4000-8000-000000000012]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
 
-[assets.00000000-0000-4000-8000-000000000010.source.mesh]
-label = "Sphere"
+[assets.00000000-0000-4000-8000-000000000012.source.mesh]
+label = "Torus"
 editable = true
 
-[assets.00000000-0000-4000-8000-000000000010.source.mesh.source.primitive.sphere]
-radius = 0.800000011920929
-segments_long = 48
-segments_lat = 32
+[assets.00000000-0000-4000-8000-000000000012.source.mesh.source.primitive.torus]
+radius = 1.0
+thickness = 0.05999999865889549
+segments_major = 64
+segments_minor = 16
 
-[assets.00000000-0000-4000-8000-000000000010.source.mesh.stack]
+[assets.00000000-0000-4000-8000-000000000012.source.mesh.stack]
 modifiers = []
 
-[assets.00000000-0000-4000-8000-000000000010.source.mesh.stack.base.primitive.sphere]
-radius = 0.800000011920929
-segments_long = 48
-segments_lat = 32
+[assets.00000000-0000-4000-8000-000000000012.source.mesh.stack.base.primitive.torus]
+radius = 1.0
+thickness = 0.05999999865889549
+segments_major = 64
+segments_minor = 16
 
-[assets.00000000-0000-4000-8000-000000000010.source.mesh.overrides.positions]
+[assets.00000000-0000-4000-8000-000000000012.source.mesh.overrides.positions]
 
-[assets.00000000-0000-4000-8000-000000000010.source.mesh.overrides.colors]
+[assets.00000000-0000-4000-8000-000000000012.source.mesh.overrides.colors]
 
-[assets.00000000-0000-4000-8000-000000000010.source.mesh.overrides.normals]
+[assets.00000000-0000-4000-8000-000000000012.source.mesh.overrides.normals]
 
-[assets.00000000-0000-4000-8000-000000000010.source.mesh.overrides.uvs]
-
-[assets.00000000-0000-4000-8000-000000000013]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-
-[assets.00000000-0000-4000-8000-000000000013.source.mesh]
-label = "Sphere"
-editable = true
-
-[assets.00000000-0000-4000-8000-000000000013.source.mesh.source.primitive.sphere]
-radius = 0.800000011920929
-segments_long = 48
-segments_lat = 32
-
-[assets.00000000-0000-4000-8000-000000000013.source.mesh.stack]
-modifiers = []
-
-[assets.00000000-0000-4000-8000-000000000013.source.mesh.stack.base.primitive.sphere]
-radius = 0.800000011920929
-segments_long = 48
-segments_lat = 32
-
-[assets.00000000-0000-4000-8000-000000000013.source.mesh.overrides.positions]
-
-[assets.00000000-0000-4000-8000-000000000013.source.mesh.overrides.colors]
-
-[assets.00000000-0000-4000-8000-000000000013.source.mesh.overrides.normals]
-
-[assets.00000000-0000-4000-8000-000000000013.source.mesh.overrides.uvs]
+[assets.00000000-0000-4000-8000-000000000012.source.mesh.overrides.uvs]
 
 [[editor_materials]]
 id = "00000000-0000-4000-8000-000000000002"
@@ -319,7 +319,7 @@ shading = "pbr"
 layers = []
 
 [[nodes]]
-id = "8cb3b9dc-eb4a-4ec9-b1b6-be3b89d14a45"
+id = "99caff01-4e75-4a86-adac-a552cfadf9d8"
 name = "Directional Light"
 locked = false
 visible = true

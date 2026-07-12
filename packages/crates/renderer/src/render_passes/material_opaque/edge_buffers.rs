@@ -177,8 +177,15 @@ pub fn unpack_xy(packed: u32) -> (u32, u32) {
 /// MSAA sample), so 4 slots per edge is exact.
 pub const ACCUMULATOR_SLOTS_PER_EDGE: u32 = 4;
 
-/// Bytes per accumulator slot (`vec4<f32>`).
-pub const ACCUMULATOR_SLOT_BYTES: u32 = 16;
+/// Bytes per accumulator slot — TWO `vec4<f32>`s: words 0..4 hold the
+/// Karis-weighted color sum + weight sum (the original slot), words 4..8
+/// hold the SSR-descriptor accumulation (reflectivity-rgb sum +
+/// reflectivity-weighted spread sum) that final_blend resolves into the
+/// per-pixel reflection descriptor (per-sample MSAA coverage — see
+/// `ssr_descriptor_coverage` rationale in compute.wgsl). The descriptor
+/// words are written only when `write_ssr_descriptor` is on; the region is
+/// allocated unconditionally to keep the layout static.
+pub const ACCUMULATOR_SLOT_BYTES: u32 = 32;
 
 // ─────────────────────────────────────────────────────────────────
 // args_buffer layout (Indirect | CopyDst).

@@ -980,6 +980,49 @@ fn custom_transparent_shaders_validate() {
 }
 
 #[test]
+fn material_final_blend_shader_validates() {
+    // The MSAA final_blend compositor must naga-validate for both values of
+    // the write_ssr_descriptor axis — ON additionally resolves the per-pixel
+    // SSR reflection descriptor from the edge arms' per-sample sums
+    // (comment-pinned in final_blend.wgsl / compute.wgsl: a single-sample
+    // descriptor makes the SSR composite add all-or-nothing reflection along
+    // silhouettes, visibly undoing MSAA).
+    use crate::render_passes::material_opaque::shader::edge_cache_key::ShaderCacheKeyMaterialFinalBlend;
+    use crate::render_passes::material_opaque::shader::edge_template::ShaderTemplateMaterialFinalBlend;
+    for write_ssr_descriptor in [false, true] {
+        let key = ShaderCacheKeyMaterialFinalBlend {
+            bucket_entries: crate::dynamic_materials::first_party_bucket_entries(),
+            color_format: "rgba16float".to_string(),
+            write_ssr_descriptor,
+        };
+        let label = format!("final_blend ssr={write_ssr_descriptor}");
+        let src = ShaderTemplateMaterialFinalBlend::try_from(&key)
+            .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
+            .into_source()
+            .unwrap_or_else(|e| panic!("{label}: render failed: {e:?}"));
+        naga_validate(&src, &label);
+        // 8-word slot stride (see ACCUMULATOR_SLOT_BYTES) in every variant.
+        assert!(
+            src.contains("(edge_pixel_id * 4u + slot) * 8u"),
+            "{label}: final_blend must read the 8-word accumulator stride"
+        );
+        if write_ssr_descriptor {
+            assert!(
+                src.contains("let desc_rgb = desc_rgb_sum / 4.0;")
+                    && src.contains("textureStore(reflection_descriptor_tex, coords,"),
+                "{label}: SSR final_blend must resolve + store the per-pixel \
+                 reflection descriptor"
+            );
+        } else {
+            assert!(
+                !src.contains("reflection_descriptor_tex"),
+                "{label}: SSR-off final_blend must not reference the descriptor"
+            );
+        }
+    }
+}
+
+#[test]
 fn ssr_shaders_validate() {
     // SSR trace shader must naga-validate for EVERY permutation
     // (mode × trace-strategy × half_res × msaa × reverse_z) — proving the §5a

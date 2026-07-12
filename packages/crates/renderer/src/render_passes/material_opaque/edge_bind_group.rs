@@ -175,6 +175,23 @@ fn build_final_blend_layout(ctx: &mut RenderPassInitContext<'_>) -> Result<BindG
             visibility_fragment: false,
             visibility_compute: true,
         },
+        // 3: reflection_descriptor — storage texture (write). Bound
+        // unconditionally (a 1x1 placeholder exists when SSR is off); the
+        // shader only declares/writes it under the `write_ssr_descriptor`
+        // axis. final_blend resolves the per-pixel descriptor from the
+        // per-sample sums the edge arms accumulate (an un-resolved
+        // single-sample descriptor makes SSR add all-or-nothing reflection
+        // along silhouettes, visibly undoing MSAA).
+        BindGroupLayoutCacheKeyEntry {
+            resource: BindGroupLayoutResource::StorageTexture(
+                StorageTextureBindingLayout::new(ctx.render_texture_formats.reflection_descriptor)
+                    .with_view_dimension(TextureViewDimension::N2d)
+                    .with_access(StorageTextureAccess::WriteOnly),
+            ),
+            visibility_vertex: false,
+            visibility_fragment: false,
+            visibility_compute: true,
+        },
     ];
     let _ = TextureSampleType::UnfilterableFloat; // suppress unused-import warning
     Ok(ctx
