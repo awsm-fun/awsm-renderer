@@ -330,10 +330,20 @@ fn ssr_ibl_suppression_gated_on_descriptor_axis() {
             src.contains("* ssr_ibl_keep"),
             "{label}: the IBL specular term must be scaled by `ssr_ibl_keep`"
         );
-        // The descriptor store must be present too (the axis' original job).
+        // The descriptor store must be present too (the axis' original job) —
+        // and its reflectivity must be scaled by the writing material's MSAA
+        // sample coverage (comment-pinned in compute.wgsl): an un-scaled
+        // single-sample descriptor makes the SSR composite add all-or-nothing
+        // reflection along silhouettes, visibly undoing MSAA.
         assert!(
             src.contains("textureStore(reflection_descriptor_tex"),
             "{label}: write_ssr_descriptor module must store the reflection descriptor"
+        );
+        assert!(
+            src.contains("fn ssr_descriptor_coverage(coords: vec2<i32>, mat_offset: u32) -> f32 {")
+                && src.contains("vec4<f32>(ssr_reflectivity * ssr_cov, ssr_spread)"),
+            "{label}: descriptor reflectivity must be scaled by the material's \
+             MSAA sample coverage (ssr_descriptor_coverage)"
         );
 
         // OFF: the identical key without the axis must not reference any of it.
@@ -1016,59 +1026,44 @@ fn ssr_shaders_validate() {
                             "{label}: trace must not reference history_prev \
                              (temporal accumulation moved to temporal.wgsl)"
                         );
-                        // Spatially-deterministic mirror (comment-pinned in
-                        // trace.wgsl): mirror pixels never take per-pixel IGN
-                        // (a stochastic mirror sparkles/serrates); their march
-                        // phase is UNIFORM per frame — pinned 0.5 without a
-                        // temporal pass, cycling a low-discrepancy sub-texel
-                        // sequence when the accumulator will average it
-                        // (temporal supersampling of sub-texel silhouettes).
+                        // Deterministic mirror (comment-pinned in trace.wgsl):
+                        // mirror pixels take the FIXED 0.5 march phase — no
+                        // per-pixel IGN, no per-frame dither. Bilinear scene
+                        // depth makes the intersection continuous, so a
+                        // perfect mirror needs no stochastic supersampling.
+                        assert!(
+                            src.contains("select(glossy_jitter, 0.5, spread < MIRROR_SPREAD_EPS)"),
+                            "{label}: trace must select the deterministic 0.5 \
+                             phase for mirror pixels (spread < MIRROR_SPREAD_EPS)"
+                        );
+                        // Bilinear scene depth (comment-pinned in trace.wgsl):
+                        // THE fundamental fix for the quantization family —
+                        // hit tests interpolate the 2x2 raw-depth neighborhood
+                        // (sky-guarded) so intersections are continuous.
                         assert!(
                             src.contains(
-                                "select(glossy_jitter, mirror_phase, spread < MIRROR_SPREAD_EPS)"
+                                "fn scene_depth_at(pix: vec2<f32>, fdims: vec2<f32>) -> f32 {"
+                            ) && src.contains(
+                                "return mix(mix(d00, d10, f.x), mix(d01, d11, f.x), f.y);"
                             ),
-                            "{label}: trace must select the uniform mirror_phase \
-                             for mirror pixels (spread < MIRROR_SPREAD_EPS)"
+                            "{label}: trace must sample scene depth bilinearly \
+                             (sky-guarded scene_depth_at) in its hit tests"
                         );
-                        assert!(
-                            src.contains("let mirror_n = f32(u32(params.frame) & 15u);")
-                                && src.contains("fract(0.5 + mirror_n * 0.7548776662)")
-                                && src.contains("fract(0.5 + mirror_n * 0.5698402909) - 0.5")
-                                && src.contains("params.temporal_weight > 0.0,"),
-                            "{label}: the mirror dither must cycle the 16-frame \
-                             R2 (plastic-constant) pair — decorrelated lateral + \
-                             depth-phase axes — ONLY when temporal accumulation \
-                             is live (temporal_weight > 0)"
-                        );
-                        // Mirror temporal supersampling (comment-pinned in
-                        // trace.wgsl): the Hi-Z DDA samples at cell-boundary
-                        // crossings, which no march phase can dither — the
-                        // per-frame sub-texel dither is a LATERAL shift of
-                        // the screen-space ray line (perpendicular to dir),
-                        // spatially uniform and world-space-neutral.
-                        assert!(
-                            src.contains(
-                                "let s0 = s0_center + vec2<f32>(-dir.y, dir.x) * mirror_lateral;"
-                            ),
-                            "{label}: trace must apply the lateral sub-texel \
-                             ray-line shift for mirror temporal supersampling"
-                        );
-                        // Depth-phase dither (comment-pinned in trace.wgsl):
-                        // Hi-Z cell crossings are geometric, so the mirror's
-                        // per-frame dither of the hit/miss ROW bands comes
-                        // from phasing the ray-depth EVALUATION point within
-                        // each cell (mirror pixels only; 0.5 mid-cell when
-                        // deterministic).
+                        // Glossy depth-phase (comment-pinned): in the Hi-Z
+                        // path the per-pixel IGN jitter can only act through
+                        // the in-cell evaluation phase (crossings are
+                        // geometric); mirror pixels evaluate mid-cell (0.5),
+                        // deterministically.
                         if trace == SsrTrace::HiZ {
                             assert!(
                                 src.contains(
                                     "let s_eval = mix(s_cur, min(s_next, screen_len), eval_phase);"
                                 ) && src.contains(
-                                    "select(glossy_jitter, mirror_phase, spread < MIRROR_SPREAD_EPS)"
+                                    "let eval_phase = select(glossy_jitter, 0.5, spread < MIRROR_SPREAD_EPS);"
                                 ),
                                 "{label}: Hi-Z trace must phase its ray-depth \
-                                 evaluation point within the cell for mirror \
-                                 pixels (depth-phase dither)"
+                                 evaluation point within the cell (glossy IGN; \
+                                 mirror mid-cell deterministic)"
                             );
                         }
                         // Bilinear hit-color reconstruction for the mirror
@@ -1100,9 +1095,16 @@ fn ssr_shaders_validate() {
                         // substitute the environment in proportion to the
                         // hit surface's reflectivity (descriptor at the hit).
                         assert!(
-                            src.contains("hit_color = mix(hit_color, env, hit_reflectivity);"),
+                            src.contains("let hit_missing = hit_reflectivity")
+                                && src.contains(
+                                    "* (1.0 - smoothstep(0.0, SSR_SPREAD_GATE, hit_desc.a));"
+                                )
+                                && src.contains("hit_color = mix(hit_color, env, hit_missing);"),
                             "{label}: trace must env-substitute hits on \
-                             reflective surfaces (mirror-on-mirror fallback)"
+                             reflective surfaces ONLY where the pre-composite \
+                             lacks energy (near-mirror spreads under the \
+                             ssr-spread-gate ramp) — reflectivity-only \
+                             substitution erases rough metals' reflections"
                         );
                         // Contact-first probe (comment-pinned): the march's
                         // first sample sits at ~1 px, never mid-stride, so
@@ -1252,17 +1254,15 @@ fn ssr_temporal_shader_validates() {
                 "{label}: temporal blend must be spread-UNGATED \
                  (mirror pixels accumulate their per-frame phase cycle)"
             );
-            // Reprojection-gated clamp (comment-pinned in the wgsl): a
-            // static camera reprojects onto itself, so the history is the
-            // same surface point and the clamp must relax — otherwise
-            // super-neighborhood-wide quantization stripes reset the
-            // accumulated mean every frame and the supersampling never
-            // converges. The clamp ramps fully in by half a texel of motion.
+            // Unconditional clamp (comment-pinned in the wgsl): ghosting
+            // dies in 1-2 frames whatever moved. The trace is deterministic
+            // for mirrors (bilinear depth), so nothing needs a relaxed clamp
+            // to converge.
             assert!(
-                src.contains("let clamp_t = smoothstep(0.05, 0.5, reproj_px);")
-                    && src.contains("mix(hist, hist_clamped, clamp_t)"),
-                "{label}: temporal must gate the neighborhood clamp on the \
-                 reprojection delta (static camera -> trust history)"
+                src.contains("let hist_clamped = clamp(hist, nb_min, nb_max);")
+                    && !src.contains("reproj_px"),
+                "{label}: temporal must clamp history unconditionally \
+                 (no reprojection gating)"
             );
             // The multisampled variant must bind the MSAA depth type; the
             // single-sample variant must not.
@@ -1366,9 +1366,8 @@ fn ssr_resolve_shader_validates() {
             assert!(
                 src.contains("var amt_x = 0.0;")
                     && src.contains("var amt_y = 0.0;")
-                    && src.contains("- length(center.rgb - (xm2 + xp2) * 0.5)) * comb_norm")
-                    && src.contains("- length(center.rgb - (ym2 + yp2) * 0.5)) * comb_norm")
-                    && src.contains("let comb_norm = 1.0 / (length(center.rgb) + 0.05);")
+                    && src.contains("- length(center.rgb - (xm2 + xp2) * 0.5)")
+                    && src.contains("- length(center.rgb - (ym2 + yp2) * 0.5)")
                     && src.contains("1.0 + amt_x * 3.0")
                     && src.contains("1.0 + amt_y * 3.0")
                     && src.contains("tap_offsets[i] * radius_scale * stretch"),

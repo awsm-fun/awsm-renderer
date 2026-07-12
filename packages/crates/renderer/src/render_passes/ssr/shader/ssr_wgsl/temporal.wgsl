@@ -137,35 +137,18 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
             // Neighborhood clamp — the anti-ghosting core (wgsl_validation
             // pins this line): stale history is pulled to the current
             // neighborhood's AABB, so camera-motion trails die in 1-2 frames.
+            // UNCONDITIONAL neighborhood clamp (wgsl_validation pins this):
+            // stale history is always pulled to the current neighborhood's
+            // gamut, so ghosting dies in 1-2 frames whatever moved — camera,
+            // object, or authoring edit. Mirror pixels are deterministic in
+            // the trace (bilinear scene depth, fixed phase), so they neither
+            // need nor fight the clamp; glossy pixels' per-pixel jitter is
+            // sub-neighborhood by construction and converges within the
+            // AABB.
             let hist_clamped = clamp(hist, nb_min, nb_max);
-            // REPROJECTION-GATED clamp (wgsl_validation pins this): the
-            // trace's per-frame supersampling dither (mirror lateral shift,
-            // glossy phase rotation) produces quantization stripes WIDER
-            // than the 3x3 neighborhood at strong magnification — when a
-            // whole neighborhood sits on one phase, the AABB collapses to
-            // that phase and clamping would reset the accumulated mean every
-            // frame: convergence becomes impossible exactly where the
-            // supersampling matters most. But when the reprojection lands
-            // where the pixel already is (static camera), the history IS the
-            // same surface point under the same view — the only frame-to-
-            // frame difference is the deliberate dither, so the unclamped
-            // history is trustworthy. Ramp the clamp in with reprojected
-            // MOTION (fully in by half a texel), where stale-history
-            // ghosting is the real risk. Known cost: reflections of objects
-            // that move under a STATIC camera trail ~1/(1-weight) frames —
-            // the standard SSR-temporal trade.
-            let reproj_px = length((prev_uv - uv) * vec2<f32>(out_dims));
-            let clamp_t = smoothstep(0.05, 0.5, reproj_px);
-            let hist_used = mix(hist, hist_clamped, clamp_t);
-            // UNIFORM blend weight (wgsl_validation pins this term): MIRROR
-            // pixels accumulate exactly like glossy ones — the trace cycles
-            // its dither per frame (temporal supersampling of sub-texel
-            // silhouettes), so the history blend is what converges magnified
-            // quantization stripes into true coverage. A spread gate here
-            // would silently discard that information.
             out_color = mix(
                 current,
-                hist_used,
+                hist_clamped,
                 params.temporal_weight,
             );
         }

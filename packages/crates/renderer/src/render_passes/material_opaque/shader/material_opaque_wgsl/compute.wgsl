@@ -439,8 +439,11 @@ fn cs_opaque(
     // Write to output texture for non-edge pixel
     textureStore(opaque_tex, coords, vec4<f32>(color, base_alpha));
     {% if write_ssr_descriptor %}
-    // M2a: material-owned SSR reflection descriptor, once per pixel at sample 0.
-    textureStore(reflection_descriptor_tex, coords, vec4<f32>(ssr_reflectivity, ssr_spread));
+    // M2a: material-owned SSR reflection descriptor, once per pixel at
+    // sample 0 — reflectivity scaled by the material's MSAA sample coverage
+    // (see ssr_descriptor_coverage).
+    let ssr_cov = ssr_descriptor_coverage(coords, material_meta_offset);
+    textureStore(reflection_descriptor_tex, coords, vec4<f32>(ssr_reflectivity * ssr_cov, ssr_spread));
     {% endif %}
 }
 {% endif %}
@@ -455,6 +458,37 @@ fn get_triangle_indices(attribute_indices_offset: u32, triangle_index: u32) -> v
 }
 
 {% if write_ssr_descriptor %}
+// Fraction of this pixel's MSAA samples covered by the SAME material as the
+// sample whose evaluated descriptor is stored (sample 0 by convention). The
+// COLOR target gets a proper per-sample edge resolve, but the descriptor is
+// single-sample: storing it un-scaled makes the SSR composite add
+// all-or-nothing reflection along silhouettes over reflective surfaces —
+// alternating bright/dark serration that visibly undoes MSAA (wgsl_validation
+// pins this helper). Scaling reflectivity by the writing material's actual
+// sample coverage makes the added reflection energy track the same coverage
+// the resolved color already encodes: SSR can never add more reflection than
+// the reflective surface's share of the pixel.
+fn ssr_descriptor_coverage(coords: vec2<i32>, mat_offset: u32) -> f32 {
+    {% if multisampled_geometry %}
+    var covered = 0u;
+    for (var s = 0u; s < {{ msaa_sample_count }}u; s++) {
+        var vis_s: vec4<u32>;
+        switch(s) {
+            case 0u: { vis_s = textureLoad(visibility_data_tex, coords, 0); }
+            case 1u: { vis_s = textureLoad(visibility_data_tex, coords, 1); }
+            case 2u: { vis_s = textureLoad(visibility_data_tex, coords, 2); }
+            case 3u, default: { vis_s = textureLoad(visibility_data_tex, coords, 3); }
+        }
+        if (join32(vis_s.z, vis_s.w) == mat_offset) {
+            covered += 1u;
+        }
+    }
+    return f32(covered) / f32({{ msaa_sample_count }}u);
+    {% else %}
+    return 1.0;
+    {% endif %}
+}
+
 // M2a/M2b: the PBR SSR reflection descriptor — RGB = specular reflectance F0
 // (dielectrics ~0.04 grey, ramping to white at grazing via Schlick in the SSR
 // pass; metals = base color, strong + tinted), A = GGX roughness mapped to
@@ -765,7 +799,9 @@ fn shade_sample(
     // store (the U32_MAX bail above) — the trace bails on depth >= 1.0 there
     // before ever reading the descriptor.
     if (sample_index == 0u) {
-        textureStore(reflection_descriptor_tex, coords, vec4<f32>(ssr_reflectivity, ssr_spread));
+        // Coverage-scaled like the interior arms (see ssr_descriptor_coverage).
+        let ssr_cov = ssr_descriptor_coverage(coords, mat_meta_off);
+        textureStore(reflection_descriptor_tex, coords, vec4<f32>(ssr_reflectivity * ssr_cov, ssr_spread));
     }
     {% endif %}
 
@@ -1108,8 +1144,9 @@ fn cs_shade(
         textureStore(opaque_tex, coords, vec4<f32>(color, base_alpha));
         {% if write_ssr_descriptor %}
         // M2a: material-owned SSR reflection descriptor (cs_shade interior arm,
-        // MSAA sample 0). Mirrors the cs_opaque store.
-        textureStore(reflection_descriptor_tex, coords, vec4<f32>(ssr_reflectivity, ssr_spread));
+        // MSAA sample 0). Mirrors the cs_opaque store, coverage-scaled.
+        let ssr_cov = ssr_descriptor_coverage(coords, material_meta_offset);
+        textureStore(reflection_descriptor_tex, coords, vec4<f32>(ssr_reflectivity * ssr_cov, ssr_spread));
         {% endif %}
         return;
     }

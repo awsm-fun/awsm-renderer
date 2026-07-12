@@ -33,6 +33,14 @@
 // Keep in sync with resolve.wgsl's MIRROR_SPREAD_EPS.
 const MIRROR_SPREAD_EPS: f32 = 0.01;
 
+// ssr-spread-gate: the spread at which SSR's "near-mirror" treatment fully
+// ramps out — here it scales the mirror-on-mirror env substitution (a hit
+// surface's pre-composite color is missing energy only where brdf_pbr
+// suppressed its IBL specular, i.e. under this same ramp). Keep in sync with
+// the same-named constant in ssr_wgsl/resolve.wgsl and
+// shared_wgsl/lighting/brdf_pbr.wgsl — grep "ssr-spread-gate".
+const SSR_SPREAD_GATE: f32 = 0.15;
+
 // Live tuning uniforms — NOT permutation axes (§5a). 32 bytes / 8×f32.
 struct SsrParams {
     intensity: f32,
@@ -89,6 +97,55 @@ fn view_pos_from_depth(uv: vec2<f32>, depth: f32, cam: Camera) -> vec3<f32> {
     let ndc = vec3<f32>(uv.x * 2.0 - 1.0, (1.0 - uv.y) * 2.0 - 1.0, depth);
     let v = cam.inv_proj * vec4<f32>(ndc, 1.0);
     return v.xyz / v.w;
+}
+
+// Scene depth at a CONTINUOUS pixel position — bilinear over the 2x2 raw-depth
+// neighborhood, falling back to the nearest point sample when any corner is
+// sky (interpolating against the far plane would fabricate mid-air surfaces
+// at silhouettes-vs-sky). THE fundamental fix for the quantization artifact
+// family (wgsl_validation pins this): raw hardware depth is z_ndc, which
+// interpolates EXACTLY linearly in screen space for planar surfaces, so
+// point-sampling it makes every hit test binary at texel granularity —
+// magnification then blows that staircase up into the dashed / striped /
+// serrated reflections seen at every grazing contact and curved-silhouette
+// apex. The depth buffer describes a continuous surface; sample it as one and
+// intersections become continuous too — deterministically, with no need for
+// stochastic supersampling. Fabricated fg/bg blends at interior depth
+// DISCONTINUITIES are rejected downstream by the surface-continuity
+// acceptance (an interpolated cliff fails the step bound exactly like a raw
+// silhouette jump).
+fn scene_depth_at(pix: vec2<f32>, fdims: vec2<f32>) -> f32 {
+    let p = pix - vec2<f32>(0.5);
+    let base = floor(p);
+    let f = p - base;
+    let maxc = vec2<i32>(fdims) - vec2<i32>(1, 1);
+    let zero = vec2<i32>(0, 0);
+    let d00 = textureLoad(depth_tex, clamp(vec2<i32>(base), zero, maxc), 0);
+    let d10 = textureLoad(depth_tex, clamp(vec2<i32>(base) + vec2<i32>(1, 0), zero, maxc), 0);
+    let d01 = textureLoad(depth_tex, clamp(vec2<i32>(base) + vec2<i32>(0, 1), zero, maxc), 0);
+    let d11 = textureLoad(depth_tex, clamp(vec2<i32>(base) + vec2<i32>(1, 1), zero, maxc), 0);
+    {% if reverse_z %}
+    let d_min = min(min(d00, d10), min(d01, d11));
+    let d_max = max(max(d00, d10), max(d01, d11));
+    let any_sky = d_min <= 0.0;
+    {% else %}
+    let d_min = min(min(d00, d10), min(d01, d11));
+    let d_max = max(max(d00, d10), max(d01, d11));
+    let any_sky = d_max >= 1.0;
+    {% endif %}
+    // DISCONTINUITY guard: when the 2x2 straddles a silhouette (large
+    // relative raw-depth span), interpolating would fabricate a phantom
+    // mid-air surface that the absolute-thickness acceptance clause (which
+    // deliberately has no continuity check — thin geometry) would then hit:
+    // isolated speck false-hits floating around every reflected silhouette.
+    // Fall back to the point sample there — exactly the old behavior at
+    // discontinuities, continuous everywhere it is meaningful. The 2% bound
+    // passes grazing floors (per-texel raw delta well under 1%) and rejects
+    // fg/bg jumps (tens of percent).
+    if (any_sky || (d_max - d_min) > 0.02 * d_max) {
+        return textureLoad(depth_tex, vec2<i32>(pix), 0);
+    }
+    return mix(mix(d00, d10, f.x), mix(d01, d11, f.x), f.y);
 }
 
 // Project a view-space position to screen UV ([0,1], y-down). Returns w<=0 in
@@ -182,32 +239,14 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // RUNTIME gate (uniform read), not a template axis — a static pattern
     // suits the non-temporal path and the select costs nothing.
     let glossy_jitter = select(ign, fract(ign + params.frame * 0.61803398875), params.temporal_weight > 0.0);
-    // MIRROR rays are SPATIALLY deterministic (wgsl_validation pins this
-    // select): no per-pixel IGN — a stochastic mirror turns every contact
-    // line into a per-pixel hit/miss lottery, the serrated "teeth" where a
-    // reflection meets its reflector. But the march phase DOES cycle a
-    // low-discrepancy sub-texel sequence per FRAME when the temporal pass
-    // will average it (same runtime gate as the glossy rotation): a mirror
-    // reflection is a magnified image of the pixel-quantized depth buffer,
-    // so a grazing curved silhouette (a sphere apex in the reflection)
-    // alternates whole hit/miss rows that no single frame can resolve — the
-    // information is sub-texel. Cycling the phase dithers WHERE the samples
-    // land within each stride and the accumulator converges the duty cycle
-    // to true coverage: temporal supersampling, exactly TAA's remedy for
-    // geometry edges. With temporal off the phase pins to 0.5 (centered,
-    // fully deterministic) — a moving pattern with nothing to accumulate it
-    // would shimmer.
-    // R2 low-discrepancy pair (plastic constant): the lateral shift and the
-    // depth-evaluation phase are two INDEPENDENT supersampling axes — keying
-    // both to one sequence would sample a diagonal line of the 2D phase
-    // space instead of covering it. 16-frame cycle.
-    let mirror_n = f32(u32(params.frame) & 15u);
-    let mirror_phase = select(
-        0.5,
-        fract(0.5 + mirror_n * 0.7548776662),
-        params.temporal_weight > 0.0,
-    );
-    let jitter = select(glossy_jitter, mirror_phase, spread < MIRROR_SPREAD_EPS);
+    // MIRROR rays are fully DETERMINISTIC (wgsl_validation pins this
+    // select): no per-pixel IGN, no per-frame dither. A stochastic mirror
+    // turns every contact line into a per-pixel hit/miss lottery — and with
+    // BILINEAR scene depth (see scene_depth_at) the intersection is already
+    // continuous, so there is no texel-grid quantization left that would
+    // need temporal supersampling. The fixed 0.5 phase centers each probe
+    // in its stride.
+    let jitter = select(glossy_jitter, 0.5, spread < MIRROR_SPREAD_EPS);
 
     // Cap the view-space ray: `max_distance`, and never through the camera
     // plane (a ray toward the camera clips so 1/w stays finite).
@@ -253,28 +292,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // the loop then exits on the first out-of-segment step.
     let screen_len = max(length(delta), 1e-3);
     let dir = delta / screen_len;
-    // MIRROR TEMPORAL SUPERSAMPLING (wgsl_validation pins this): shift the
-    // screen-space ray line LATERALLY (perpendicular to `dir`) by a sub-pixel
-    // offset cycling an 8-frame golden-ratio sequence. A mirror reflection is
-    // a magnified image of the pixel-quantized depth buffer, and the Hi-Z
-    // DDA's samples land at cell-boundary crossings — geometric, so a march
-    // PHASE never dithers them. Sliding the line sideways <= half a texel
-    // changes which depth texels it crosses, so grazing curved silhouettes
-    // (apex/contact rows the trace cannot resolve in one frame — the
-    // information is sub-texel) alternate per FRAME, and the temporal
-    // accumulator converges the duty cycle to true coverage: TAA's remedy,
-    // applied to the reflection. Purely a sampling shift — the world-space
-    // ray, its depth parameterization and its origin are untouched (an
-    // origin jitter would re-open the contact-gap wound the bias removal
-    // closed). Spatially uniform (no per-pixel term), so mirror determinism
-    // within a frame is preserved; pinned to 0 when no temporal pass will
-    // average it.
-    let mirror_lateral = select(
-        0.0,
-        fract(0.5 + mirror_n * 0.5698402909) - 0.5,
-        params.temporal_weight > 0.0 && spread < MIRROR_SPREAD_EPS,
-    );
-    let s0 = s0_center + vec2<f32>(-dir.y, dir.x) * mirror_lateral;
+    let s0 = s0_center;
     let dk = (k1 - k0) / screen_len;
     let dqz = (qz1 - qz0) / screen_len;
 
@@ -385,29 +403,25 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
             s_cur = s_next;
             continue;
         }
-        // DEPTH-PHASE dither (wgsl_validation pins this): evaluate the ray's
-        // depth at a phased position WITHIN the cell (entry -> exit) instead
-        // of at the entry. The cell CROSSINGS are geometric — no jitter can
-        // move them — and the lateral line shift cannot dither a
-        // horizontally-flat silhouette apex; but `penetration = ray_z(s) -
-        // scene_z` is continuous in s, so phasing the evaluation point
-        // slides the acceptance bands by up to one cell's depth advance.
-        // Cycled per frame (mirror_phase) this is the supersampling axis
-        // that actually dithers the magnified hit/miss ROW bands, and the
-        // temporal accumulator converges them to true coverage. GLOSSY
-        // pixels take glossy_jitter here — per-pixel IGN (+ golden-ratio
-        // frame rotation under temporal): in the Hi-Z path this is the ONLY
-        // place the glossy jitter can act (the crossings are geometric), so
-        // without it the "stochastic" glossy trace is actually deterministic
-        // and its estimator error freezes into static blotch no amount of
-        // temporal accumulation can touch.
-        let eval_phase = select(glossy_jitter, mirror_phase, spread < MIRROR_SPREAD_EPS);
+        // Evaluation phase WITHIN the cell (entry -> exit). MIRROR pixels
+        // evaluate mid-cell, deterministically — with bilinear scene depth
+        // the penetration test is continuous, so no dither is needed. GLOSSY
+        // pixels take glossy_jitter — per-pixel IGN (+ golden-ratio frame
+        // rotation under temporal): in the Hi-Z path this is the only place
+        // the glossy jitter can act (the cell crossings are geometric), so
+        // without it the "stochastic" glossy trace would be deterministic
+        // and its estimator error would freeze into static blotch.
+        let eval_phase = select(glossy_jitter, 0.5, spread < MIRROR_SPREAD_EPS);
         let s_eval = mix(s_cur, min(s_next, screen_len), eval_phase);
         let s_prev_eval = mix(s_prev, s_cur, eval_phase);
         let k = k0 + dk * s_eval;
         let ray_z = -((qz0 + dqz * s_eval) / k);
         let ray_z_prev = -((qz0 + dqz * s_prev_eval) / (k0 + dk * s_prev_eval));
-        let scene_z = -view_pos_from_depth(pix / fdims, sdepth, cam).z;
+        // Ray and scene evaluated at the SAME continuous position (bilinear
+        // depth — see scene_depth_at): penetration(s) is then continuous in
+        // s and across neighbouring receiver pixels.
+        let epix = s0 + dir * s_eval;
+        let scene_z = -view_pos_from_depth(epix / fdims, scene_depth_at(epix, fdims), cam).z;
         // ADAPTIVE acceptance (wgsl_validation pins this term). A fixed
         // thickness makes thin geometry a rejection lottery: the crossing
         // texel's penetration depends on subpixel phase, so a thin tube's
@@ -436,7 +450,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         //     background, which is the correct mirror image.
         var accept = penetration > 1e-4 * scene_z && penetration < params.thickness;
         if (!accept && penetration > 1e-4 * scene_z && penetration < 2.0 * step_advance) {
-            let ppix = s0 + dir * s_prev;
+            let ppix = s0 + dir * s_prev_eval;
             let pd = textureLoad(depth_tex, vec2<i32>(ppix), 0);
             {% if reverse_z %}
             let prev_sky = pd <= 0.0;
@@ -444,7 +458,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let prev_sky = pd >= 1.0;
             {% endif %}
             if (!prev_sky) {
-                let pscene_z = -view_pos_from_depth(ppix / fdims, pd, cam).z;
+                let pscene_z = -view_pos_from_depth(ppix / fdims, scene_depth_at(ppix, fdims), cam).z;
                 let surf_step = abs(scene_z - pscene_z);
                 accept = surf_step < max(params.thickness, 2.0 * step_advance);
             }
@@ -452,9 +466,9 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         if (accept) {
             hit_conf = 1.0
                 - smoothstep(0.6, 1.0, penetration / max(params.thickness, 2.0 * step_advance));
-            let tpix = s0 + dir * s_prev;
+            let tpix = s0 + dir * s_prev_eval;
             let td = textureLoad(depth_tex, vec2<i32>(tpix), 0);
-            let tz = -view_pos_from_depth(tpix / fdims, td, cam).z;
+            let tz = -view_pos_from_depth(tpix / fdims, scene_depth_at(tpix, fdims), cam).z;
             let step_surf = abs(scene_z - tz);
             // Reflection MAGNIFICATION at the hit: when the ray advances
             // far less in depth per pixel than the surface it lands on
@@ -483,10 +497,9 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
             for (var b = 0; b < 8; b = b + 1) {
                 let mid = 0.5 * (lo + hi);
                 let mpix = s0 + dir * mid;
-                let md = textureLoad(depth_tex, vec2<i32>(mpix), 0);
                 let mk = k0 + dk * mid;
                 let mray_z = -((qz0 + dqz * mid) / mk);
-                let mscene_z = -view_pos_from_depth(mpix / fdims, md, cam).z;
+                let mscene_z = -view_pos_from_depth(mpix / fdims, scene_depth_at(mpix, fdims), cam).z;
                 if (mray_z > mscene_z) {
                     hi = mid;
                 } else {
@@ -527,7 +540,8 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let k = k0 + dk * s_cur;
         let ray_z = -((qz0 + dqz * s_cur) / k);
         let ray_z_prev = -((qz0 + dqz * s_prev) / (k0 + dk * s_prev));
-        let scene_z = -view_pos_from_depth(pix / fdims, sdepth, cam).z;
+        // Bilinear scene depth (see scene_depth_at): continuous intersections.
+        let scene_z = -view_pos_from_depth(pix / fdims, scene_depth_at(pix, fdims), cam).z;
         // ADAPTIVE acceptance (wgsl_validation pins this term). A fixed
         // thickness makes thin geometry a rejection lottery: the crossing
         // texel's penetration depends on subpixel phase, so a thin tube's
@@ -551,7 +565,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let prev_sky = pd >= 1.0;
             {% endif %}
             if (!prev_sky) {
-                let pscene_z = -view_pos_from_depth(ppix / fdims, pd, cam).z;
+                let pscene_z = -view_pos_from_depth(ppix / fdims, scene_depth_at(ppix, fdims), cam).z;
                 let surf_step = abs(scene_z - pscene_z);
                 accept = surf_step < max(params.thickness, 2.0 * step_advance);
             }
@@ -565,10 +579,9 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
             for (var b = 0; b < 8; b = b + 1) {
                 let mid = 0.5 * (lo + hi);
                 let mpix = s0 + dir * mid;
-                let md = textureLoad(depth_tex, vec2<i32>(mpix), 0);
                 let mk = k0 + dk * mid;
                 let mray_z = -((qz0 + dqz * mid) / mk);
-                let mscene_z = -view_pos_from_depth(mpix / fdims, md, cam).z;
+                let mscene_z = -view_pos_from_depth(mpix / fdims, scene_depth_at(mpix, fdims), cam).z;
                 if (mray_z > mscene_z) {
                     hi = mid;
                 } else {
@@ -703,16 +716,24 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         {% endif %}
         // MIRROR-ON-MIRROR fallback (wgsl_validation pins this): a hit ON a
         // reflective surface samples that surface's PRE-composite color,
-        // which is missing its own reflected energy — a metallic mirror's
-        // post-opaque color is near-black, so reflections of reflectors read
-        // as dark speckles/dashes exactly where skimming rays land on the
-        // reflector visible behind an object's silhouette. True multi-bounce
-        // is out of scope for single-pass SSR; substitute the ENVIRONMENT
-        // (what a further bounce converges to for an unoccluded mirror) in
-        // proportion to the hit surface's own reflectivity.
+        // which may be missing its own reflected energy — a metallic
+        // mirror's post-opaque color is near-black, so reflections of
+        // reflectors read as dark speckles/dashes exactly where skimming
+        // rays land on the reflector visible behind an object's silhouette.
+        // True multi-bounce is out of scope for single-pass SSR; substitute
+        // the ENVIRONMENT (what a further bounce converges to for an
+        // unoccluded mirror) — but ONLY in proportion to the energy the
+        // pre-composite buffer actually LACKS: brdf_pbr suppresses IBL
+        // specular only under the ssr-spread-gate ramp, so a NEAR-MIRROR
+        // hit is missing its reflection while a rough reflector (a brushed-
+        // metal sphere) is complete and must never be swapped for sky —
+        // substituting by reflectivity alone ERASED rough metals' own
+        // reflections from every mirror.
         let hit_desc = textureLoad(reflection_descriptor_tex, hc, 0);
         let hit_reflectivity = max(hit_desc.r, max(hit_desc.g, hit_desc.b));
-        hit_color = mix(hit_color, env, hit_reflectivity);
+        let hit_missing = hit_reflectivity
+            * (1.0 - smoothstep(0.0, SSR_SPREAD_GATE, hit_desc.a));
+        hit_color = mix(hit_color, env, hit_missing);
         // Fade toward the screen borders of the hit to hide the SS seam —
         // and fade INTO the env fallback, not into black (wgsl_validation
         // pins the mix): an edge-faded or budget-faded (travel_fade) hit

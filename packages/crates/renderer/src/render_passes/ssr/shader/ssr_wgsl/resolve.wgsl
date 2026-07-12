@@ -196,33 +196,28 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     //              for an isolated THIN FEATURE (a reflected thin ring's
     //              neighbours at ±d AND ±2d are all off-feature) — thin
     //              legit features must never be fused away.
-    //   comb(d) = dev(±d) - agree(±d) - dev(±2d), normalized by the CENTER
-    //             LUMINANCE (Weber contrast): quantization combing in a DARK
-    //             reflection (a shadowed prop's contact band) has tiny
-    //             absolute deviations that an absolute threshold never sees,
-    //             while the eye sees the relative alternation plainly.
+    //   comb(d) = dev(±d) - agree(±d) - dev(±2d).
     // Scales d = 2, 4, 8 track the alternation period as magnification grows
     // toward the apex/contact; the kernel stretches ACROSS the detected
     // axis only, proportional to the DETECTED scale (wider stripes need a
     // wider low-pass to convert duty cycle into smooth coverage falloff).
     var amt_x = 0.0;
     var amt_y = 0.0;
-    let comb_norm = 1.0 / (length(center.rgb) + 0.05);
     for (var sc = 0; sc < 3; sc = sc + 1) {
         let d = 2 << u32(sc);
         let xm1 = textureLoad(src_tex, clamp(coords - vec2<i32>(d, 0), vec2<i32>(0), out_max), 0).rgb;
         let xp1 = textureLoad(src_tex, clamp(coords + vec2<i32>(d, 0), vec2<i32>(0), out_max), 0).rgb;
         let xm2 = textureLoad(src_tex, clamp(coords - vec2<i32>(2 * d, 0), vec2<i32>(0), out_max), 0).rgb;
         let xp2 = textureLoad(src_tex, clamp(coords + vec2<i32>(2 * d, 0), vec2<i32>(0), out_max), 0).rgb;
-        let comb_x = (length(center.rgb - (xm1 + xp1) * 0.5) - length(xm1 - xp1)
-            - length(center.rgb - (xm2 + xp2) * 0.5)) * comb_norm;
+        let comb_x = length(center.rgb - (xm1 + xp1) * 0.5) - length(xm1 - xp1)
+            - length(center.rgb - (xm2 + xp2) * 0.5);
         amt_x = max(amt_x, smoothstep(0.02, 0.12, comb_x) * f32(d));
         let ym1 = textureLoad(src_tex, clamp(coords - vec2<i32>(0, d), vec2<i32>(0), out_max), 0).rgb;
         let yp1 = textureLoad(src_tex, clamp(coords + vec2<i32>(0, d), vec2<i32>(0), out_max), 0).rgb;
         let ym2 = textureLoad(src_tex, clamp(coords - vec2<i32>(0, 2 * d), vec2<i32>(0), out_max), 0).rgb;
         let yp2 = textureLoad(src_tex, clamp(coords + vec2<i32>(0, 2 * d), vec2<i32>(0), out_max), 0).rgb;
-        let comb_y = (length(center.rgb - (ym1 + yp1) * 0.5) - length(ym1 - yp1)
-            - length(center.rgb - (ym2 + yp2) * 0.5)) * comb_norm;
+        let comb_y = length(center.rgb - (ym1 + yp1) * 0.5) - length(ym1 - yp1)
+            - length(center.rgb - (ym2 + yp2) * 0.5);
         amt_y = max(amt_y, smoothstep(0.02, 0.12, comb_y) * f32(d));
     }
     let stretch = vec2<f32>(1.0 + amt_x * 3.0, 1.0 + amt_y * 3.0);
