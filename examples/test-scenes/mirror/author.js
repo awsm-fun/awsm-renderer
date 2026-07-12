@@ -1,9 +1,10 @@
 // test-scene: mirror
-// PERFECT-MIRROR SSR: a flat near-black metallic floor (metallic 1.0,
-// roughness 0.0 -> reflection descriptor spread 0 -> the DETERMINISTIC
-// mirror trace + resolve/temporal bypass) under three emissive probes at
-// varied heights — a white sphere, a red box, and a THIN torus (the
-// thin-geometry acceptance case). SSR runs FULL-res with temporal AND bloom
+// PERFECT-MIRROR SSR: a flat silver metallic floor (metallic 1.0,
+// roughness 0.0 -> reflection descriptor spread 0 -> the spatially
+// deterministic mirror trace, tight resolve AA kernel, temporal
+// supersampling) under emissive probes at varied heights — a white sphere,
+// a red box, a THIN torus (the thin-geometry acceptance case) and a
+// floor-TOUCHING sphere (the contact case). SSR runs FULL-res with bloom
 // OFF so the mirror is judged bare. Camera pinned low + grazing so the
 // reflections dominate the floor. Correct = each reflection is
 // pixel-identical in SHAPE to its geometry: no serration at the contact
@@ -79,9 +80,16 @@ async () => {
     await d({ cmd: 'set_builtin_param', node: p.id, param: 'base_color', value: [0.02, 0.02, 0.02, 1] });
     await d({ cmd: 'set_builtin_param', node: p.id, param: 'emissive', value: p.emissive });
   }
-  // FULL-res SSR, temporal OFF, bloom OFF: the mirror judged bare. Small
-  // thickness — the adaptive acceptance in the trace supplies the rest.
-  await d({ cmd: 'set_post_process', bloom: false, ssr_enabled: true, ssr_intensity: 1.0, ssr_max_distance: 120.0, ssr_thickness: 0.03, ssr_max_steps: 128, ssr_spread_cutoff: 0.6, ssr_edge_fade: 0.1, ssr_resolution_scale: 1.0, ssr_temporal: false });
+  // FULL-res SSR, temporal ON, bloom OFF. Temporal is part of the mirror's
+  // CORRECTNESS, not a mask: the trace cycles the mirror march phase over 8
+  // 16 frames (decorrelated lateral + depth-phase sub-texel dither) and the
+  // accumulator converges magnified quantization at grazing curved
+  // silhouettes (sphere apex/contact rows) into true coverage — the same way
+  // TAA antialiases geometry edges. TIGHT thickness (5mm): the 3cm default
+  // let grazing rays accept on objects' antialiased RIM texels (source-buffer
+  // contamination), hanging dark "eyelash" strokes off every reflected
+  // silhouette; the adaptive step-advance acceptance supplies the rest.
+  await d({ cmd: 'set_post_process', bloom: false, ssr_enabled: true, ssr_intensity: 1.0, ssr_max_distance: 120.0, ssr_thickness: 0.005, ssr_max_steps: 128, ssr_spread_cutoff: 0.6, ssr_edge_fade: 0.1, ssr_resolution_scale: 1.0, ssr_temporal: true, ssr_temporal_weight: 0.94 });
   // Low + grazing camera: Fresnel at grazing pushes the metallic mirror to
   // full reflectance, so the reflections dominate the frame.
   await d({ cmd: 'set_camera_orbit', yaw: 0.1, pitch: 0.12, radius: 12, look_at: [0, 1.0, -1.2] });

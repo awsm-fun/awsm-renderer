@@ -22,13 +22,10 @@
 // CameraRaw + camera_from_raw (inv_proj / inv_view / prev_view_proj).
 {% include "shared_wgsl/camera.wgsl" %}
 
-// ssr-spread-gate: the spread at which SSR's "near-mirror" treatment fully
-// ramps out — here it ramps the history blend in (mirror pixels take the
-// current frame only). Keep in sync with the same-named constant in
-// ssr_wgsl/resolve.wgsl (travel-blur ramp) and
-// shared_wgsl/lighting/brdf_pbr.wgsl (IBL-specular suppression ramp) —
-// grep "ssr-spread-gate".
-const SSR_SPREAD_GATE: f32 = 0.15;
+// NOTE: this pass deliberately has NO spread gate (see the blend below) —
+// mirror pixels accumulate exactly like glossy ones, converging the trace's
+// per-frame mirror phase cycle. The "ssr-spread-gate" constant lives in
+// ssr_wgsl/resolve.wgsl and shared_wgsl/lighting/brdf_pbr.wgsl only.
 
 // Same 32-byte live-tuning uniform the trace binds; only `temporal_weight`
 // is read here. Layout must match `struct SsrParams` in `ssr_wgsl/trace.wgsl`.
@@ -63,9 +60,9 @@ struct SsrParams {
 // This frame's history slot (next frame's reprojection source).
 @group(0) @binding(7) var history_curr_tex: texture_storage_2d<rgba16float, write>;
 // Material-owned reflection descriptor (single-sample, FULL-res; same texture
-// the trace reads at binding 6). Only `.a` (spread) is read: MIRROR pixels
-// (spread ~0) trace deterministically, so history adds nothing and can only
-// smear — the blend weight is gated to 0 for them (current-frame only).
+// the trace reads at binding 6). Declared for bind-group-layout parity but no
+// longer read: the blend is spread-UNGATED (mirror pixels accumulate their
+// per-frame phase cycle like glossy pixels accumulate their jitter).
 @group(0) @binding(8) var reflection_descriptor_tex: texture_2d<f32>;
 
 // Reconstruct VIEW-space position from a hardware depth sample at `uv`
@@ -141,17 +138,35 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
             // pins this line): stale history is pulled to the current
             // neighborhood's AABB, so camera-motion trails die in 1-2 frames.
             let hist_clamped = clamp(hist, nb_min, nb_max);
-            // SPREAD-GATED blend (wgsl_validation pins this term): mirror
-            // pixels (spread → 0) are deterministic in the trace and exact
-            // out of the resolve — history accumulation adds nothing for
-            // them and can only smear under motion, so they take the current
-            // frame only. Glossy pixels keep the clamped accumulation that
-            // converges their jittered march.
-            let spread = textureLoad(reflection_descriptor_tex, fcoords, 0).a;
+            // REPROJECTION-GATED clamp (wgsl_validation pins this): the
+            // trace's per-frame supersampling dither (mirror lateral shift,
+            // glossy phase rotation) produces quantization stripes WIDER
+            // than the 3x3 neighborhood at strong magnification — when a
+            // whole neighborhood sits on one phase, the AABB collapses to
+            // that phase and clamping would reset the accumulated mean every
+            // frame: convergence becomes impossible exactly where the
+            // supersampling matters most. But when the reprojection lands
+            // where the pixel already is (static camera), the history IS the
+            // same surface point under the same view — the only frame-to-
+            // frame difference is the deliberate dither, so the unclamped
+            // history is trustworthy. Ramp the clamp in with reprojected
+            // MOTION (fully in by half a texel), where stale-history
+            // ghosting is the real risk. Known cost: reflections of objects
+            // that move under a STATIC camera trail ~1/(1-weight) frames —
+            // the standard SSR-temporal trade.
+            let reproj_px = length((prev_uv - uv) * vec2<f32>(out_dims));
+            let clamp_t = smoothstep(0.05, 0.5, reproj_px);
+            let hist_used = mix(hist, hist_clamped, clamp_t);
+            // UNIFORM blend weight (wgsl_validation pins this term): MIRROR
+            // pixels accumulate exactly like glossy ones — the trace cycles
+            // its dither per frame (temporal supersampling of sub-texel
+            // silhouettes), so the history blend is what converges magnified
+            // quantization stripes into true coverage. A spread gate here
+            // would silently discard that information.
             out_color = mix(
                 current,
-                hist_clamped,
-                params.temporal_weight * smoothstep(0.0, SSR_SPREAD_GATE, spread),
+                hist_used,
+                params.temporal_weight,
             );
         }
     }

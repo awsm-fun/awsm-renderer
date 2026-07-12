@@ -1016,14 +1016,81 @@ fn ssr_shaders_validate() {
                             "{label}: trace must not reference history_prev \
                              (temporal accumulation moved to temporal.wgsl)"
                         );
-                        // Deterministic mirror (comment-pinned in trace.wgsl):
-                        // mirror pixels (spread < eps) take the FIXED 0.5
-                        // march phase — no per-pixel IGN, no params.frame —
-                        // so a perfect mirror never sparkles or serrates.
+                        // Spatially-deterministic mirror (comment-pinned in
+                        // trace.wgsl): mirror pixels never take per-pixel IGN
+                        // (a stochastic mirror sparkles/serrates); their march
+                        // phase is UNIFORM per frame — pinned 0.5 without a
+                        // temporal pass, cycling a low-discrepancy sub-texel
+                        // sequence when the accumulator will average it
+                        // (temporal supersampling of sub-texel silhouettes).
                         assert!(
-                            src.contains("select(glossy_jitter, 0.5, spread < MIRROR_SPREAD_EPS)"),
-                            "{label}: trace must select the deterministic 0.5 \
-                             phase for mirror pixels (spread < MIRROR_SPREAD_EPS)"
+                            src.contains(
+                                "select(glossy_jitter, mirror_phase, spread < MIRROR_SPREAD_EPS)"
+                            ),
+                            "{label}: trace must select the uniform mirror_phase \
+                             for mirror pixels (spread < MIRROR_SPREAD_EPS)"
+                        );
+                        assert!(
+                            src.contains("let mirror_n = f32(u32(params.frame) & 15u);")
+                                && src.contains("fract(0.5 + mirror_n * 0.7548776662)")
+                                && src.contains("fract(0.5 + mirror_n * 0.5698402909) - 0.5")
+                                && src.contains("params.temporal_weight > 0.0,"),
+                            "{label}: the mirror dither must cycle the 16-frame \
+                             R2 (plastic-constant) pair — decorrelated lateral + \
+                             depth-phase axes — ONLY when temporal accumulation \
+                             is live (temporal_weight > 0)"
+                        );
+                        // Mirror temporal supersampling (comment-pinned in
+                        // trace.wgsl): the Hi-Z DDA samples at cell-boundary
+                        // crossings, which no march phase can dither — the
+                        // per-frame sub-texel dither is a LATERAL shift of
+                        // the screen-space ray line (perpendicular to dir),
+                        // spatially uniform and world-space-neutral.
+                        assert!(
+                            src.contains(
+                                "let s0 = s0_center + vec2<f32>(-dir.y, dir.x) * mirror_lateral;"
+                            ),
+                            "{label}: trace must apply the lateral sub-texel \
+                             ray-line shift for mirror temporal supersampling"
+                        );
+                        // Depth-phase dither (comment-pinned in trace.wgsl):
+                        // Hi-Z cell crossings are geometric, so the mirror's
+                        // per-frame dither of the hit/miss ROW bands comes
+                        // from phasing the ray-depth EVALUATION point within
+                        // each cell (mirror pixels only; 0.5 mid-cell when
+                        // deterministic).
+                        if trace == SsrTrace::HiZ {
+                            assert!(
+                                src.contains(
+                                    "let s_eval = mix(s_cur, min(s_next, screen_len), eval_phase);"
+                                ) && src.contains(
+                                    "select(0.0, mirror_phase, spread < MIRROR_SPREAD_EPS)"
+                                ),
+                                "{label}: Hi-Z trace must phase its ray-depth \
+                                 evaluation point within the cell for mirror \
+                                 pixels (depth-phase dither)"
+                            );
+                        }
+                        // Bilinear hit-color reconstruction for the mirror
+                        // mode (comment-pinned in trace.wgsl): nearest
+                        // sampling dots thin magnified source features.
+                        assert!(
+                            src.contains("hit_color = mix(mix(h00, h10, hfrac.x), mix(h01, h11, hfrac.x), hfrac.y);"),
+                            "{label}: the sharp hit path must reconstruct the \
+                             hit color bilinearly at the refined sub-texel \
+                             hit_uv (both mode templates carry it — the live \
+                             pipeline always compiles Glossy, mirror is its \
+                             runtime spread~0 branch)"
+                        );
+                        // Mirror-on-mirror fallback (comment-pinned in
+                        // trace.wgsl): a hit on a reflective surface samples
+                        // a pre-composite color missing its own reflection —
+                        // substitute the environment in proportion to the
+                        // hit surface's reflectivity (descriptor at the hit).
+                        assert!(
+                            src.contains("hit_color = mix(hit_color, env, hit_reflectivity);"),
+                            "{label}: trace must env-substitute hits on \
+                             reflective surfaces (mirror-on-mirror fallback)"
                         );
                         // Contact-first probe (comment-pinned): the march's
                         // first sample sits at ~1 px, never mid-stride, so
@@ -1155,25 +1222,35 @@ fn ssr_temporal_shader_validates() {
                 src.contains("prev_view_proj"),
                 "{label}: temporal must reproject via cam.prev_view_proj"
             );
-            // Spread-gated blend (comment-pinned in the wgsl): mirror pixels
-            // (spread → 0) are deterministic per frame, so history can only
-            // smear them — the blend weight must ramp in with spread and the
-            // descriptor binding must be present to read it.
+            // UNGATED blend (comment-pinned in the wgsl): mirror pixels
+            // accumulate exactly like glossy ones — the trace cycles the
+            // mirror march phase per frame (temporal supersampling of
+            // sub-texel silhouettes) and the history blend converges it. A
+            // spread gate here would silently discard that information; the
+            // motion safety is the neighborhood clamp, not a gate. The
+            // descriptor binding stays declared for layout parity.
             assert!(
                 src.contains("var reflection_descriptor_tex"),
-                "{label}: temporal must bind the reflection descriptor (spread source)"
+                "{label}: temporal must keep the reflection descriptor binding \
+                 (bind-group-layout parity)"
             );
             assert!(
-                src.contains("params.temporal_weight * smoothstep(0.0, SSR_SPREAD_GATE, spread)"),
-                "{label}: temporal blend must be spread-gated \
-                 (mirror pixels take the current frame only)"
+                src.contains("params.temporal_weight,")
+                    && !src.contains("smoothstep(0.0, SSR_SPREAD_GATE, spread)"),
+                "{label}: temporal blend must be spread-UNGATED \
+                 (mirror pixels accumulate their per-frame phase cycle)"
             );
-            // The gate constant is shared prose-tagged across shader files
-            // (resolve / temporal / brdf_pbr) — grep "ssr-spread-gate".
+            // Reprojection-gated clamp (comment-pinned in the wgsl): a
+            // static camera reprojects onto itself, so the history is the
+            // same surface point and the clamp must relax — otherwise
+            // super-neighborhood-wide quantization stripes reset the
+            // accumulated mean every frame and the supersampling never
+            // converges. The clamp ramps fully in by half a texel of motion.
             assert!(
-                src.contains("ssr-spread-gate"),
-                "{label}: temporal must define its SSR_SPREAD_GATE with the \
-                 `ssr-spread-gate` sync tag"
+                src.contains("let clamp_t = smoothstep(0.05, 0.5, reproj_px);")
+                    && src.contains("mix(hist, hist_clamped, clamp_t)"),
+                "{label}: temporal must gate the neighborhood clamp on the \
+                 reprojection delta (static camera -> trust history)"
             );
             // The multisampled variant must bind the MSAA depth type; the
             // single-sample variant must not.
@@ -1255,16 +1332,35 @@ fn ssr_resolve_shader_validates() {
             );
             // Mirror pixels get a TIGHT (~1px, scale 0.6) antialiasing
             // kernel — never a passthrough (tangency rows quantize) and
-            // never the wide travel blur; glossy pixels widen with travel,
-            // gated by spread (comment-pinned).
+            // NEVER a travel-widened radius (trace alpha rides to ~1 along
+            // reflection silhouettes, so travel-widening frays every mirror
+            // edge); glossy pixels widen with travel, gated by spread
+            // (comment-pinned).
             assert!(
-                src.contains("let radius_scale = max(")
+                src.contains("let radius_scale = mix(")
                     && src.contains("0.6,")
                     && src.contains("1.0 + travel * 2.2,")
-                    && src.contains("smoothstep(0.0, SSR_SPREAD_GATE, spread),")
-                    && src.contains("0.6 + travel * 3.0,"),
-                "{label}: resolve radius must lerp mirror-AA -> travel blur by spread, \
-                 with the alpha (travel|tangency) floor widening mirror pixels too"
+                    && src.contains("smoothstep(0.0, SSR_SPREAD_GATE, spread),"),
+                "{label}: resolve radius must lerp mirror-AA -> travel blur by spread \
+                 with NO unconditional travel widening on mirror pixels"
+            );
+            // Quantization-comb fusing is DIRECTIONAL, two-axis and
+            // multi-scale: columns (contacts) stretch taps in x, rows
+            // (curved-silhouette apex) stretch in y, proportional to the
+            // detected scale — and the periodicity discriminator
+            // (`- dev(±2d)`) must exempt isolated THIN features (a reflected
+            // thin ring) from fusing. Nothing else widens a mirror pixel
+            // (comment-pinned in the wgsl).
+            assert!(
+                src.contains("var amt_x = 0.0;")
+                    && src.contains("var amt_y = 0.0;")
+                    && src.contains("- length(center.rgb - (xm2 + xp2) * 0.5)")
+                    && src.contains("- length(center.rgb - (ym2 + yp2) * 0.5)")
+                    && src.contains("1.0 + amt_x * 3.0")
+                    && src.contains("1.0 + amt_y * 3.0")
+                    && src.contains("tap_offsets[i] * radius_scale * stretch"),
+                "{label}: resolve must fuse quantization combs via the two-axis \
+                 multi-scale comb detector with the thin-feature periodicity guard"
             );
             // The gate constant is shared prose-tagged across shader files
             // (resolve / temporal / brdf_pbr) — grep "ssr-spread-gate".

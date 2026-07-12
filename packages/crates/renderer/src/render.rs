@@ -638,6 +638,13 @@ impl AwsmRenderer {
             // awaited on the first enable).
             if let Some(ssr) = self.render_passes.ssr.as_mut() {
                 let s = &self.post_processing.ssr;
+                // The uniform's temporal_weight doubles as the trace's RUNTIME
+                // "will a temporal pass average my jitter?" gate — it must be
+                // 0 whenever the structural `temporal` axis is off, or the
+                // trace rotates its march phase per frame (the glossy IGN
+                // rotation AND the mirror supersampling phase) with nothing
+                // accumulating it: visible shimmer.
+                let temporal_weight = if s.temporal { s.temporal_weight } else { 0.0 };
                 ssr.params.write(
                     &self.gpu,
                     s.intensity,
@@ -646,7 +653,7 @@ impl AwsmRenderer {
                     s.max_steps as f32,
                     s.spread_cutoff,
                     s.edge_fade,
-                    s.temporal_weight,
+                    temporal_weight,
                 )?;
             }
         }

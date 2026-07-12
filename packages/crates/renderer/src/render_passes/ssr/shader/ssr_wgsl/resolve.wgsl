@@ -168,46 +168,65 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         travel = max(travel, textureLoad(src_tex, t4, 0).a);
     }
     // wgsl_validation pins this exact spread-gated radius term.
-    // Mirror pixels keep the tight AA kernel EXCEPT where the trace flagged
-    // contact-magnification uncertainty (alpha carries max(travel,tangency)):
-    // those bands need fusing regardless of material sharpness — the streaks
-    // are quantization, not reflection detail.
-    let radius_scale = max(
-        mix(
-            0.6,
-            1.0 + travel * 2.2,
-            smoothstep(0.0, SSR_SPREAD_GATE, spread),
-        ),
-        0.6 + travel * 3.0,
+    // MIRROR pixels keep the tight AA kernel UNCONDITIONALLY: travel must
+    // never widen a mirror's radius — trace alpha rides to ~1 exactly along
+    // reflection silhouettes (grazing tangency + env-fallback misses), so a
+    // travel-widened mirror kernel frays every silhouette into a multi-px
+    // fringe (and the receiver-depth weight can't stop it: the RECEIVER is a
+    // flat floor). Quantization bands are fused ONLY by the directional comb
+    // detector below. Glossy widens with travel as spread ramps in.
+    let radius_scale = mix(
+        0.6,
+        1.0 + travel * 2.2,
+        smoothstep(0.0, SSR_SPREAD_GATE, spread),
     );
 
-    // CONTACT-STREAK detection (comb pattern): grazing rays into a curved
-    // CONTACT magnify depth-texel quantization into vertical column
-    // alternation (the surfaces are cotangent there, so no trace-side
-    // signal can see it — detect the pattern itself). A comb differs from
-    // a legitimate vertical EDGE: the center deviates from the MEAN of its
-    // left/right neighbours while those neighbours AGREE with each other.
-    // Measured at 2px and 4px scales to cover 1-4px-wide columns; the
-    // detected strength stretches the kernel HORIZONTALLY (across the
-    // columns — reflections magnify along the vertical travel axis).
-    var comb = 0.0;
-    for (var sc = 0; sc < 2; sc = sc + 1) {
-        let d = select(2, 4, sc == 1);
-        let cl = textureLoad(src_tex, clamp(coords - vec2<i32>(d, 0), vec2<i32>(0), out_max), 0).rgb;
-        let cr = textureLoad(src_tex, clamp(coords + vec2<i32>(d, 0), vec2<i32>(0), out_max), 0).rgb;
-        let mid = (cl + cr) * 0.5;
-        let dev = length(center.rgb - mid);
-        let agree = length(cl - cr);
-        comb = max(comb, dev - agree);
+    // QUANTIZATION-COMB detection, BOTH axes: grazing rays into curved
+    // geometry magnify depth-texel quantization into alternation the trace
+    // cannot resolve (the information is sub-texel) — vertical COLUMNS at
+    // contacts (surfaces cotangent, rays magnify along x) and horizontal ROWS
+    // at a curved silhouette's apex in the reflection. Three discriminators
+    // separate a comb from legitimate reflection detail, per scale d:
+    //   dev(±d)  — center deviates from the mean of its two same-axis
+    //              neighbours (a comb's opposite phase);
+    //   agree(±d)— those neighbours AGREE with each other (at an EDGE they
+    //              disagree, killing the term — edges stay crisp);
+    //   dev(±2d) — a comb is PERIODIC: one full period out (±2d) is back IN
+    //              phase with the center, so this is ~0 for a comb but LARGE
+    //              for an isolated THIN FEATURE (a reflected thin ring's
+    //              neighbours at ±d AND ±2d are all off-feature) — thin
+    //              legit features must never be fused away.
+    //   comb(d) = dev(±d) - agree(±d) - dev(±2d).
+    // Scales d = 2, 4, 8 track the alternation period as magnification grows
+    // toward the apex/contact; the kernel stretches ACROSS the detected
+    // axis only, proportional to the DETECTED scale (wider stripes need a
+    // wider low-pass to convert duty cycle into smooth coverage falloff).
+    var amt_x = 0.0;
+    var amt_y = 0.0;
+    for (var sc = 0; sc < 3; sc = sc + 1) {
+        let d = 2 << u32(sc);
+        let xm1 = textureLoad(src_tex, clamp(coords - vec2<i32>(d, 0), vec2<i32>(0), out_max), 0).rgb;
+        let xp1 = textureLoad(src_tex, clamp(coords + vec2<i32>(d, 0), vec2<i32>(0), out_max), 0).rgb;
+        let xm2 = textureLoad(src_tex, clamp(coords - vec2<i32>(2 * d, 0), vec2<i32>(0), out_max), 0).rgb;
+        let xp2 = textureLoad(src_tex, clamp(coords + vec2<i32>(2 * d, 0), vec2<i32>(0), out_max), 0).rgb;
+        let comb_x = length(center.rgb - (xm1 + xp1) * 0.5) - length(xm1 - xp1)
+            - length(center.rgb - (xm2 + xp2) * 0.5);
+        amt_x = max(amt_x, smoothstep(0.02, 0.12, comb_x) * f32(d));
+        let ym1 = textureLoad(src_tex, clamp(coords - vec2<i32>(0, d), vec2<i32>(0), out_max), 0).rgb;
+        let yp1 = textureLoad(src_tex, clamp(coords + vec2<i32>(0, d), vec2<i32>(0), out_max), 0).rgb;
+        let ym2 = textureLoad(src_tex, clamp(coords - vec2<i32>(0, 2 * d), vec2<i32>(0), out_max), 0).rgb;
+        let yp2 = textureLoad(src_tex, clamp(coords + vec2<i32>(0, 2 * d), vec2<i32>(0), out_max), 0).rgb;
+        let comb_y = length(center.rgb - (ym1 + yp1) * 0.5) - length(ym1 - yp1)
+            - length(center.rgb - (ym2 + yp2) * 0.5);
+        amt_y = max(amt_y, smoothstep(0.02, 0.12, comb_y) * f32(d));
     }
-    let streak = smoothstep(0.02, 0.12, comb);
-    let stretch_x = 1.0 + streak * 5.0;
+    let stretch = vec2<f32>(1.0 + amt_x * 3.0, 1.0 + amt_y * 3.0);
 
     for (var i = 0; i < 8; i = i + 1) {
         let tap = clamp(
             vec2<i32>(floor(
                 vec2<f32>(coords) + vec2<f32>(0.5)
-                    + tap_offsets[i] * radius_scale * vec2<f32>(stretch_x, 1.0)
+                    + tap_offsets[i] * radius_scale * stretch
             )),
             vec2<i32>(0, 0),
             out_max,

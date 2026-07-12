@@ -182,13 +182,32 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // RUNTIME gate (uniform read), not a template axis — a static pattern
     // suits the non-temporal path and the select costs nothing.
     let glossy_jitter = select(ign, fract(ign + params.frame * 0.61803398875), params.temporal_weight > 0.0);
-    // MIRROR rays are fully DETERMINISTIC (wgsl_validation pins this select):
-    // no per-pixel IGN, no params.frame dependence. A stochastic mirror turns
-    // every contact line into a per-pixel hit/miss lottery — the serrated
-    // "teeth" where a reflection meets its reflector. The fixed 0.5 phase
-    // centers each probe in its stride; jitter belongs only to the glossy
-    // path, where the resolve + temporal average it.
-    let jitter = select(glossy_jitter, 0.5, spread < MIRROR_SPREAD_EPS);
+    // MIRROR rays are SPATIALLY deterministic (wgsl_validation pins this
+    // select): no per-pixel IGN — a stochastic mirror turns every contact
+    // line into a per-pixel hit/miss lottery, the serrated "teeth" where a
+    // reflection meets its reflector. But the march phase DOES cycle a
+    // low-discrepancy sub-texel sequence per FRAME when the temporal pass
+    // will average it (same runtime gate as the glossy rotation): a mirror
+    // reflection is a magnified image of the pixel-quantized depth buffer,
+    // so a grazing curved silhouette (a sphere apex in the reflection)
+    // alternates whole hit/miss rows that no single frame can resolve — the
+    // information is sub-texel. Cycling the phase dithers WHERE the samples
+    // land within each stride and the accumulator converges the duty cycle
+    // to true coverage: temporal supersampling, exactly TAA's remedy for
+    // geometry edges. With temporal off the phase pins to 0.5 (centered,
+    // fully deterministic) — a moving pattern with nothing to accumulate it
+    // would shimmer.
+    // R2 low-discrepancy pair (plastic constant): the lateral shift and the
+    // depth-evaluation phase are two INDEPENDENT supersampling axes — keying
+    // both to one sequence would sample a diagonal line of the 2D phase
+    // space instead of covering it. 16-frame cycle.
+    let mirror_n = f32(u32(params.frame) & 15u);
+    let mirror_phase = select(
+        0.5,
+        fract(0.5 + mirror_n * 0.7548776662),
+        params.temporal_weight > 0.0,
+    );
+    let jitter = select(glossy_jitter, mirror_phase, spread < MIRROR_SPREAD_EPS);
 
     // Cap the view-space ray: `max_distance`, and never through the camera
     // plane (a ray toward the camera clips so 1/w stays finite).
@@ -217,7 +236,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let h1 = cam.proj * vec4<f32>(p_end, 1.0);
     let k0 = 1.0 / max(h0.w, 1e-6);
     let k1 = 1.0 / max(h1.w, 1e-6);
-    let s0 = vec2<f32>(
+    let s0_center = vec2<f32>(
         (h0.x * k0 * 0.5 + 0.5) * fdims.x,
         (1.0 - (h0.y * k0 * 0.5 + 0.5)) * fdims.y,
     );
@@ -228,12 +247,34 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let qz0 = p_biased.z * k0;
     let qz1 = p_end.z * k1;
 
-    let delta = s1 - s0;
+    let delta = s1 - s0_center;
     // Degenerate segment (ray ~along the view axis projects inside one
     // pixel): nothing new to sample along it — clamp so math stays finite;
     // the loop then exits on the first out-of-segment step.
     let screen_len = max(length(delta), 1e-3);
     let dir = delta / screen_len;
+    // MIRROR TEMPORAL SUPERSAMPLING (wgsl_validation pins this): shift the
+    // screen-space ray line LATERALLY (perpendicular to `dir`) by a sub-pixel
+    // offset cycling an 8-frame golden-ratio sequence. A mirror reflection is
+    // a magnified image of the pixel-quantized depth buffer, and the Hi-Z
+    // DDA's samples land at cell-boundary crossings — geometric, so a march
+    // PHASE never dithers them. Sliding the line sideways <= half a texel
+    // changes which depth texels it crosses, so grazing curved silhouettes
+    // (apex/contact rows the trace cannot resolve in one frame — the
+    // information is sub-texel) alternate per FRAME, and the temporal
+    // accumulator converges the duty cycle to true coverage: TAA's remedy,
+    // applied to the reflection. Purely a sampling shift — the world-space
+    // ray, its depth parameterization and its origin are untouched (an
+    // origin jitter would re-open the contact-gap wound the bias removal
+    // closed). Spatially uniform (no per-pixel term), so mirror determinism
+    // within a frame is preserved; pinned to 0 when no temporal pass will
+    // average it.
+    let mirror_lateral = select(
+        0.0,
+        fract(0.5 + mirror_n * 0.5698402909) - 0.5,
+        params.temporal_weight > 0.0 && spread < MIRROR_SPREAD_EPS,
+    );
+    let s0 = s0_center + vec2<f32>(-dir.y, dir.x) * mirror_lateral;
     let dk = (k1 - k0) / screen_len;
     let dqz = (qz1 - qz0) / screen_len;
 
@@ -344,9 +385,25 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
             s_cur = s_next;
             continue;
         }
-        let k = k0 + dk * s_cur;
-        let ray_z = -((qz0 + dqz * s_cur) / k);
-        let ray_z_prev = -((qz0 + dqz * s_prev) / (k0 + dk * s_prev));
+        // DEPTH-PHASE dither (wgsl_validation pins this): evaluate the ray's
+        // depth at a phased position WITHIN the cell (entry -> exit) instead
+        // of at the entry. The cell CROSSINGS are geometric — no jitter can
+        // move them — and the lateral line shift cannot dither a
+        // horizontally-flat silhouette apex; but `penetration = ray_z(s) -
+        // scene_z` is continuous in s, so phasing the evaluation point
+        // slides the acceptance bands by up to one cell's depth advance.
+        // Cycled per frame (mirror_phase) this is the supersampling axis
+        // that actually dithers the magnified hit/miss ROW bands, and the
+        // temporal accumulator converges them to true coverage. Mirror
+        // pixels only — glossy keeps its entry-point evaluation (its own
+        // per-pixel IGN jitter already decorrelates it). Without a temporal
+        // pass the phase pins to 0.5: mid-cell, still fully deterministic.
+        let eval_phase = select(0.0, mirror_phase, spread < MIRROR_SPREAD_EPS);
+        let s_eval = mix(s_cur, min(s_next, screen_len), eval_phase);
+        let s_prev_eval = mix(s_prev, s_cur, eval_phase);
+        let k = k0 + dk * s_eval;
+        let ray_z = -((qz0 + dqz * s_eval) / k);
+        let ray_z_prev = -((qz0 + dqz * s_prev_eval) / (k0 + dk * s_prev_eval));
         let scene_z = -view_pos_from_depth(pix / fdims, sdepth, cam).z;
         // ADAPTIVE acceptance (wgsl_validation pins this term). A fixed
         // thickness makes thin geometry a rejection lottery: the crossing
@@ -570,7 +627,25 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // a prefiltered color mip pyramid + stochastic sampling + temporal reuse.)
         let blur_radius = spread * f32(full_dims.y) * 0.045;
         if (blur_radius < 0.75) {
-            hit_color = textureLoad(color_tex, hc, 0).rgb;
+            // SHARP path (mirror + near-mirror): bilinear reconstruction at
+            // the refined sub-texel hit (wgsl_validation pins this). Nearest
+            // sampling at the quantized hit texel breaks thin source
+            // features — an object's 1px antialiased rim over the dark
+            // pre-SSR floor — into dotted serration when the reflection
+            // magnifies them; the binary refine already produces a
+            // sub-texel hit_uv, so a manual 2x2 bilinear reconstructs them
+            // as the smooth curves the object itself shows. Max footprint =
+            // 1 texel: reconstruction, not blur.
+            let hpos = hit_uv * vec2<f32>(full_dims) - vec2<f32>(0.5);
+            let hbase = floor(hpos);
+            let hfrac = hpos - hbase;
+            let hmax = vec2<i32>(full_dims) - vec2<i32>(1, 1);
+            let hzero = vec2<i32>(0, 0);
+            let h00 = textureLoad(color_tex, clamp(vec2<i32>(hbase), hzero, hmax), 0).rgb;
+            let h10 = textureLoad(color_tex, clamp(vec2<i32>(hbase) + vec2<i32>(1, 0), hzero, hmax), 0).rgb;
+            let h01 = textureLoad(color_tex, clamp(vec2<i32>(hbase) + vec2<i32>(0, 1), hzero, hmax), 0).rgb;
+            let h11 = textureLoad(color_tex, clamp(vec2<i32>(hbase) + vec2<i32>(1, 1), hzero, hmax), 0).rgb;
+            hit_color = mix(mix(h00, h10, hfrac.x), mix(h01, h11, hfrac.x), hfrac.y);
         } else {
             var acc = vec3<f32>(0.0);
             for (var s = 0; s < 8; s = s + 1) {
@@ -588,8 +663,37 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
             hit_color = acc / 8.0;
         }
         {% else %}
-        hit_color = textureLoad(color_tex, hc, 0).rgb;
+        // MIRROR: bilinear reconstruction at the refined sub-texel hit
+        // (wgsl_validation pins this). Nearest sampling (textureLoad at the
+        // quantized hit texel) breaks thin source features — an object's
+        // 1px antialiased rim over the dark pre-SSR floor — into dotted
+        // serration when the reflection magnifies them; the binary refine
+        // already produces a sub-texel hit_uv, so a manual 2x2 bilinear
+        // reconstructs those features as the smooth curves the object
+        // itself shows. Max footprint = 1 texel: reconstruction, not blur.
+        let hpos = hit_uv * vec2<f32>(full_dims) - vec2<f32>(0.5);
+        let hbase = floor(hpos);
+        let hfrac = hpos - hbase;
+        let hmax = vec2<i32>(full_dims) - vec2<i32>(1, 1);
+        let hzero = vec2<i32>(0, 0);
+        let h00 = textureLoad(color_tex, clamp(vec2<i32>(hbase), hzero, hmax), 0).rgb;
+        let h10 = textureLoad(color_tex, clamp(vec2<i32>(hbase) + vec2<i32>(1, 0), hzero, hmax), 0).rgb;
+        let h01 = textureLoad(color_tex, clamp(vec2<i32>(hbase) + vec2<i32>(0, 1), hzero, hmax), 0).rgb;
+        let h11 = textureLoad(color_tex, clamp(vec2<i32>(hbase) + vec2<i32>(1, 1), hzero, hmax), 0).rgb;
+        hit_color = mix(mix(h00, h10, hfrac.x), mix(h01, h11, hfrac.x), hfrac.y);
         {% endif %}
+        // MIRROR-ON-MIRROR fallback (wgsl_validation pins this): a hit ON a
+        // reflective surface samples that surface's PRE-composite color,
+        // which is missing its own reflected energy — a metallic mirror's
+        // post-opaque color is near-black, so reflections of reflectors read
+        // as dark speckles/dashes exactly where skimming rays land on the
+        // reflector visible behind an object's silhouette. True multi-bounce
+        // is out of scope for single-pass SSR; substitute the ENVIRONMENT
+        // (what a further bounce converges to for an unoccluded mirror) in
+        // proportion to the hit surface's own reflectivity.
+        let hit_desc = textureLoad(reflection_descriptor_tex, hc, 0);
+        let hit_reflectivity = max(hit_desc.r, max(hit_desc.g, hit_desc.b));
+        hit_color = mix(hit_color, env, hit_reflectivity);
         // Fade toward the screen borders of the hit to hide the SS seam —
         // and fade INTO the env fallback, not into black (wgsl_validation
         // pins the mix): an edge-faded or budget-faded (travel_fade) hit
