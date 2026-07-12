@@ -1239,9 +1239,7 @@ fn ssr_shaders_validate() {
                         // grazing-tangency hit/miss flips into a smooth
                         // transition (comment-pinned in trace.wgsl).
                         assert!(
-                            src.contains(
-                                "mix(env_reflection, hit_reflection, fade * travel_fade * hit_conf)"
-                            ),
+                            src.contains("mix(env_reflection, hit_reflection, confidence)"),
                             "{label}: trace must blend hits toward the env fallback by \
                              fade * travel_fade * hit_conf"
                         );

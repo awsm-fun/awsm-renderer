@@ -763,9 +763,20 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let edge = min(min(hit_uv.x, 1.0 - hit_uv.x), min(hit_uv.y, 1.0 - hit_uv.y));
         let fade = smoothstep(0.0, max(params.edge_fade, 1e-4), edge);
         let hit_reflection = hit_color * fresnel * params.intensity;
-        reflection = mix(env_reflection, hit_reflection, fade * travel_fade * hit_conf);
+        // CONFIDENCE COMPOSITION (wgsl_validation pins this; reflection-plan
+        // Tier 6): SSR is a confidence-weighted contribution over the
+        // fallback stack — confidence = hit quality (refined-penetration
+        // ratio) x screen-edge fade x travel fade. Today the stack is the
+        // prefiltered env only, and the trace owns all of its inputs
+        // (reflected dir, fresnel, spread mip), so the blend lives HERE;
+        // when local probes land, the fallback evaluation + this lerp move
+        // to the composite and the trace exports `confidence` — the split
+        // is deliberately deferred until there is a second fallback source
+        // (see ssr-followups.md #3).
+        let confidence = fade * travel_fade * hit_conf;
+        reflection = mix(env_reflection, hit_reflection, confidence);
         {% if debug == 1 %}
-        debug_hit_blend = fade * travel_fade * hit_conf;
+        debug_hit_blend = confidence;
         {% endif %}
         coverage = max(travel_frac, 0.05);
     }

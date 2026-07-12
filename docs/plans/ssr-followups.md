@@ -27,13 +27,24 @@ camera jitter.
    white = budget). Dev-only + transient (serde(skip) — never persisted).
    The encodings ride the normal resolve/temporal/composite chain
    (additive over the scene; read on dark content). Verified on-device.
-3. **Confidence-weighted composition** — formalize `hit_conf` × edge fade ×
-   travel fade as the SSR confidence output that blends SSR over the
-   fallback stack (env now, probes later), instead of being baked into the
-   trace's own env mix. The socket probes plug into.
-4. **Perf check** — `?trace=sub-frame` on the arena vs the plan's ~1–2 ms
-   budget; bilinear sampling + refine added depth loads that were never
-   measured.
+3. **Confidence-weighted composition** — DONE at the appropriate depth:
+   `confidence = hit_conf (refined-penetration quality) x edge fade x travel
+   fade` is a named first-class value in the trace and drives the SSR-over-
+   fallback lerp (and the confidence debug view). The composite-side split
+   (trace exports confidence; composite evaluates the fallback stack and
+   lerps) is DELIBERATELY deferred until local probes add a second fallback
+   source — doing it today would duplicate the reflected-dir/fresnel/mip
+   math in the composite with zero behavioral gain (the env is the only
+   fallback and the trace owns all of its inputs).
+4. **Perf check** — DONE (2026-07-12, arena @1338x768, MSAA, M-series):
+   vsync-locked 60.0 fps in ALL configs; render_cpu EMA 1.41 ms with
+   full-res SSR, 1.40 off, 1.28 half-res — SSR's CPU record cost is noise.
+   GPU-side per-pass timing is NOT measurable (`?trace=sub-frame` spans are
+   CPU record-time; timestamp-query unused) — at vsync-lock there is GPU
+   headroom on this hardware, but the plan's ~1–2 ms GPU budget can only be
+   verified once timestamp queries are wired (follow-up if mobile/weak-GPU
+   targets matter). Arena ships full-res SSR; half-res remains one knob away
+   (resolution_scale 0.5).
 5. **Local reflection probes** (content-triggered) — box-projected cubemap
    probes + editor authoring. Build when a scene with interiors/occluded
    reflections exists; open arenas gain little.
