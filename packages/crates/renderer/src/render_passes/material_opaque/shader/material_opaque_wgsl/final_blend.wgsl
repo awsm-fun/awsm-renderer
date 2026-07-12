@@ -3,10 +3,13 @@
 // Indirect-dispatched over edge pixels (one thread per edge_pixel_id,
 // workgroup_size = 64). Reads up to 4 accumulator slots
 // (`accumulator[edge_pixel_id × 4 .. +4]`) — each slot holds
-// `vec4<f32>(color_sum, sample_count)` written by either a per-shader-id
-// edge_resolve pass or the skybox_edge_resolve pass. Sums color sums,
-// totals sample counts, divides, and stores the result into
-// `opaque_tex[edge_to_xy[edge_pixel_id]]`.
+// `vec4<f32>(karis_weighted_color_sum, karis_weight_sum)` written by either
+// a per-shader-id edge_resolve pass or the skybox_edge_resolve pass. The
+// division below therefore computes the KARIS (tonemap-weighted) average:
+// every writer weights each HDR sample by 1/(1+maxc), which keeps one hot
+// emissive sample from dominating the resolve and collapsing the edge
+// gradient after tonemapping (plain linear averaging read as barely-AA'd
+// on bright silhouettes at 4x).
 
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {

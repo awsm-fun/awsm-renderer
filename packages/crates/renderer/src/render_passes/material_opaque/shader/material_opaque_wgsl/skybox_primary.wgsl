@@ -143,6 +143,7 @@ fn cs_shade(
     var color_sum = vec3<f32>(0.0);
     var alpha_sum: f32 = 0.0;
     var sample_count: u32 = 0u;
+    var weight_sum: f32 = 0.0;
     for (var s = 0u; s < 4u; s++) {
         var vis_s: vec4<u32>;
         switch(s) {
@@ -160,9 +161,14 @@ fn cs_shade(
         }
         if (is_sky) {
             let sky_col = sample_skybox(coords, sky_screen_dims_f32, camera, skybox_tex, skybox_sampler);
-            color_sum += sky_col.rgb;
+            // Karis weighting — MUST match the material edge arm (both
+            // writers feed the same accumulator; mixing weighted and
+            // unweighted slots would bias the final_blend division).
+            let karis_w = 1.0 / (1.0 + max(sky_col.r, max(sky_col.g, sky_col.b)));
+            color_sum += sky_col.rgb * karis_w;
             alpha_sum += sky_col.a;
             sample_count += 1u;
+            weight_sum += karis_w;
         }
     }
 
@@ -174,6 +180,7 @@ fn cs_shade(
     edge_data[accum_word_index + 0u] = bitcast<u32>(color_sum.x);
     edge_data[accum_word_index + 1u] = bitcast<u32>(color_sum.y);
     edge_data[accum_word_index + 2u] = bitcast<u32>(color_sum.z);
-    edge_data[accum_word_index + 3u] = bitcast<u32>(f32(sample_count));
+    // Karis WEIGHT sum, not the raw sample count (matches the material arm).
+    edge_data[accum_word_index + 3u] = bitcast<u32>(weight_sum);
 }
 {% endif %}

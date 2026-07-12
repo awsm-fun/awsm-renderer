@@ -1163,6 +1163,7 @@ fn cs_shade(
     var color_sum = vec3<f32>(0.0);
     var alpha_sum: f32 = 0.0;
     var sample_count: u32 = 0u;
+    var weight_sum: f32 = 0.0;
 
     for (var s = 0u; s < 4u; s++) {
         // Per-sample ownership: the same shader_id gate `shade_sample`
@@ -1194,9 +1195,12 @@ fn cs_shade(
             g_prep_ctx.edge_shadow_xy = prep_edge_shadow_xy(edge_pixel_id, s);
             {% endif %}
             let shaded = shade_sample(coords, s, edge_camera, edge_screen_dims, edge_screen_dims_f32{% if inc.light_access %}, lights_info{% endif %});
-            color_sum += shaded.rgb;
+            // Karis (tonemap-weighted) resolve; rationale in final_blend.wgsl.
+            let karis_w = 1.0 / (1.0 + max(shaded.r, max(shaded.g, shaded.b)));
+            color_sum += shaded.rgb * karis_w;
             alpha_sum += shaded.a;
             sample_count += 1u;
+            weight_sum += karis_w;
         }
     }
 
@@ -1210,6 +1214,7 @@ fn cs_shade(
     edge_data[accum_word_index + 0u] = bitcast<u32>(color_sum.x);
     edge_data[accum_word_index + 1u] = bitcast<u32>(color_sum.y);
     edge_data[accum_word_index + 2u] = bitcast<u32>(color_sum.z);
-    edge_data[accum_word_index + 3u] = bitcast<u32>(f32(sample_count));
+    // Karis WEIGHT sum, not the raw sample count.
+    edge_data[accum_word_index + 3u] = bitcast<u32>(weight_sum);
 }
 {% endif %}
