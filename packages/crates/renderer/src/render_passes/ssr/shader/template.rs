@@ -41,6 +41,8 @@ pub struct ShaderTemplateSsrTrace {
     pub multisampled_geometry: bool,
     /// Depth convention (003).
     pub reverse_z: bool,
+    /// Debug visualization mode (see ShaderCacheKeySsrTrace::debug).
+    pub debug: u32,
 }
 
 /// SSR spatial resolve compute shader — 9-tap edge-aware disk filter over the
@@ -77,6 +79,7 @@ impl TryFrom<&ShaderCacheKeySsr> for ShaderTemplateSsr {
                 half_res: key.half_res,
                 multisampled_geometry: key.multisampled_geometry,
                 reverse_z: key.reverse_z,
+                debug: key.debug,
             }),
             ShaderCacheKeySsr::Resolve(key) => Self::Resolve(ShaderTemplateSsrResolve {
                 multisampled_geometry: key.multisampled_geometry,

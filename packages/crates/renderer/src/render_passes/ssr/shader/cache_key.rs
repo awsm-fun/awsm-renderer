@@ -62,6 +62,10 @@ pub struct ShaderCacheKeySsrTrace {
     pub multisampled_geometry: bool,
     /// Depth convention (003).
     pub reverse_z: bool,
+    /// Debug visualization (0 = off, 1 = confidence, 2 = travel, 3 = source
+    /// hit/env, 4 = traversal steps). Structural — selects a compiled trace
+    /// variant that REPLACES the reflection output with the encoded value.
+    pub debug: u32,
 }
 
 /// Cache key for the SSR spatial resolve shader (`ssr_wgsl/resolve.wgsl`) —

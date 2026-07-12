@@ -1117,6 +1117,7 @@ fn dispatch_post(
                 ssr_temporal: None,
                 ssr_resolution_scale: None,
                 ssr_temporal_weight: None,
+                ssr_debug: None,
             })
             .await
         {
@@ -1143,6 +1144,7 @@ fn dispatch_ssr(
     ssr_resolution_scale: Option<f32>,
     ssr_temporal_weight: Option<f32>,
 ) {
+    let ssr_debug: Option<u32> = None;
     spawn_local(async move {
         if let Err(e) = controller()
             .dispatch(EditorCommand::SetPostProcess {
@@ -1164,6 +1166,7 @@ fn dispatch_ssr(
                 ssr_temporal,
                 ssr_resolution_scale,
                 ssr_temporal_weight,
+                ssr_debug,
             })
             .await
         {

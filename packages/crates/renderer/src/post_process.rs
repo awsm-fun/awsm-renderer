@@ -56,6 +56,9 @@ pub struct Ssr {
     /// Temporal accumulation. Structural (recompiles).
     pub temporal: bool,
     pub temporal_weight: f32,
+    /// Debug visualization (0 off, 1 confidence, 2 travel, 3 source,
+    /// 4 traversal steps). Structural (recompiles the trace variant).
+    pub debug: u32,
 }
 
 impl Default for Ssr {
@@ -76,6 +79,7 @@ impl Default for Ssr {
             resolution_scale: 0.5,
             temporal: false,
             temporal_weight: 0.9,
+            debug: 0,
         }
     }
 }
@@ -144,7 +148,8 @@ impl AwsmRenderer {
             // SSR knobs are live uniforms and must NOT recompile.
             || self.post_processing.ssr.enabled != pp.ssr.enabled
             || self.post_processing.ssr.temporal != pp.ssr.temporal
-            || self.post_processing.ssr.resolution_scale != pp.ssr.resolution_scale;
+            || self.post_processing.ssr.resolution_scale != pp.ssr.resolution_scale
+            || self.post_processing.ssr.debug != pp.ssr.debug;
         // Toggling SSR flips the `write_ssr_descriptor` axis on the
         // material_opaque cache key, so the live material modules must recompile
         // to add/drop the descriptor store (lazy — only the variants the scene
@@ -162,7 +167,8 @@ impl AwsmRenderer {
         // frozen bind-group layout. Mirrors `set_anti_aliasing`, which rebuilds
         // passes on the MSAA structural flip the same way.
         let ssr_pass_rebuild_needed = self.post_processing.ssr.temporal != pp.ssr.temporal
-            || self.post_processing.ssr.resolution_scale != pp.ssr.resolution_scale;
+            || self.post_processing.ssr.resolution_scale != pp.ssr.resolution_scale
+            || self.post_processing.ssr.debug != pp.ssr.debug;
         // LAZY SSR (axis 1): the pass is `None` until the first enable — a
         // session that never turns SSR on compiles neither the trace compute
         // nor the composite render pipeline. Build it now when enabling with

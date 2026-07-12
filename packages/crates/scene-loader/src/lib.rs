@@ -932,6 +932,7 @@ pub fn post_process_to_renderer(
             resolution_scale: pp.ssr.resolution_scale,
             temporal: pp.ssr.temporal,
             temporal_weight: pp.ssr.temporal_weight,
+            debug: pp.ssr.debug,
         },
     }
 }

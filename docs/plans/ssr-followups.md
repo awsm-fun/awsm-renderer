@@ -21,9 +21,12 @@ camera jitter.
 
 ## Roadmap (in order)
 
-2. **Debug views** — SSR hit/miss, confidence, hit distance, traversal
-   steps, reflection-source selection. Cheap; would have cut this debugging
-   saga to a fraction. Template debug axis on trace + composite.
+2. **Debug views** — DONE (ssr_debug on set_post_process; structural axis):
+   1 = confidence (green hit-blend / red env), 2 = travel heat, 3 = source
+   (green hit / blue env / black none), 4 = traversal steps (gray ramp,
+   white = budget). Dev-only + transient (serde(skip) — never persisted).
+   The encodings ride the normal resolve/temporal/composite chain
+   (additive over the scene; read on dark content). Verified on-device.
 3. **Confidence-weighted composition** — formalize `hit_conf` × edge fade ×
    travel fade as the SSR confidence output that blends SSR over the
    fallback stack (env now, probes later), instead of being baked into the

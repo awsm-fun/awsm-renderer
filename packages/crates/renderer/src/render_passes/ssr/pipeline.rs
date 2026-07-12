@@ -47,6 +47,7 @@ impl SsrPipelines {
         half_res: bool,
         reverse_z: bool,
         hzb: bool,
+        debug: u32,
     ) -> ShaderCacheKeySsrTrace {
         ShaderCacheKeySsrTrace {
             mode: SsrMode::Glossy,
@@ -61,6 +62,7 @@ impl SsrPipelines {
             half_res,
             multisampled_geometry: multisampled,
             reverse_z,
+            debug,
         }
     }
 
@@ -90,6 +92,7 @@ impl SsrPipelines {
         let multisampled = ctx.anti_aliasing.msaa_sample_count.is_some();
         let half_res = ctx.post_processing.ssr.resolution_scale < 1.0;
         let temporal = ctx.post_processing.ssr.temporal;
+        let debug = ctx.post_processing.ssr.debug;
         ctx.shaders
             .ensure_keys(
                 ctx.gpu,
@@ -99,6 +102,7 @@ impl SsrPipelines {
                     temporal,
                     ctx.features.reverse_z,
                     ctx.features.gpu_culling,
+                    debug,
                 ),
             )
             .await?;
@@ -123,6 +127,7 @@ impl SsrPipelines {
                     half_res,
                     ctx.features.reverse_z,
                     ctx.features.gpu_culling,
+                    debug,
                 ),
             )
             .await?;
@@ -183,10 +188,11 @@ impl SsrPipelines {
         temporal: bool,
         reverse_z: bool,
         hzb: bool,
+        debug: u32,
     ) -> Vec<ShaderCacheKey> {
         let multisampled = anti_aliasing.msaa_sample_count.is_some();
         let mut keys = vec![
-            ShaderCacheKey::from(Self::m1_key(multisampled, half_res, reverse_z, hzb)),
+            ShaderCacheKey::from(Self::m1_key(multisampled, half_res, reverse_z, hzb, debug)),
             ShaderCacheKey::from(Self::resolve_key(multisampled, reverse_z)),
         ];
         if temporal {

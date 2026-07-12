@@ -309,6 +309,10 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     var hit = false;
     var hit_uv = vec2<f32>(0.0, 0.0);
+    {% if debug != 0 %}
+    // Debug: iterations actually consumed by the march (both arms).
+    var steps_used: f32 = 0.0;
+    {% endif %}
     var travel_fade = 1.0;
     var travel_frac = 0.0;
     // Hit CONFIDENCE: ~1 at a clean refined surface crossing (penetration
@@ -345,6 +349,9 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // regions are skipped at coarse mips, so the budget goes much further
     // than the linear march's.
     for (var i = 0; i < steps; i = i + 1) {
+        {% if debug != 0 %}
+        steps_used = f32(i);
+        {% endif %}
         if (s_cur >= screen_len) {
             break;
         }
@@ -503,6 +510,9 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 {% else %}
     for (var i = 0; i < steps; i = i + 1) {
+        {% if debug != 0 %}
+        steps_used = f32(i);
+        {% endif %}
         if (s_cur >= screen_len) {
             break;
         }
@@ -621,6 +631,9 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // pixels bypass the resolve anyway).
     var reflection = env_reflection;
     var coverage = 1.0;
+    {% if debug == 1 %}
+    var debug_hit_blend: f32 = 0.0;
+    {% endif %}
     if (hit) {
         let hc = vec2<i32>(hit_uv * vec2<f32>(full_dims));
         var hit_color: vec3<f32>;
@@ -751,6 +764,9 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let fade = smoothstep(0.0, max(params.edge_fade, 1e-4), edge);
         let hit_reflection = hit_color * fresnel * params.intensity;
         reflection = mix(env_reflection, hit_reflection, fade * travel_fade * hit_conf);
+        {% if debug == 1 %}
+        debug_hit_blend = fade * travel_fade * hit_conf;
+        {% endif %}
         coverage = max(travel_frac, 0.05);
     }
 
@@ -771,8 +787,41 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // back in across [GATE, CUTOFF], SSR bows out complementarily. Without
     // this the mid-gloss band double-counted reflection energy.
     let ssr_own = 1.0 - smoothstep(SSR_SPREAD_GATE, SSR_SPREAD_CUTOFF, spread);
+    {% if debug == 0 %}
     // Reflection-ONLY, premultiplied. Full-res invariant: composite_old +
     // reflection == the old base + reflection overwrite, since composite_old
     // == base at this pixel.
     textureStore(out_tex, coords, vec4<f32>(reflection * ssr_own, coverage));
+    {% else %}
+    // DEBUG VISUALIZATION (wgsl_validation pins the encodings): the debug
+    // axis REPLACES the reflection with an encoded value. The composite is
+    // additive, so encodings are bright enough to dominate the (dark) scene;
+    // read them on dark content or with bloom off.
+    var dbg = vec3<f32>(0.0);
+    {% if debug == 1 %}
+    // CONFIDENCE: green = the hit's blend factor (fade x travel_fade x
+    // hit_conf); red = env fallback (no hit); black = SSR-inactive pixel.
+    if (hit) {
+        dbg = vec3<f32>(0.0, debug_hit_blend, 0.0);
+    } else {
+        dbg = vec3<f32>(0.6, 0.0, 0.0);
+    }
+    {% else if debug == 2 %}
+    // TRAVEL: heat ramp of travel_frac on hits (blue near -> red far).
+    if (hit) {
+        dbg = mix(vec3<f32>(0.0, 0.2, 1.0), vec3<f32>(1.0, 0.1, 0.0), travel_frac);
+    }
+    {% else if debug == 3 %}
+    // SOURCE: green = screen-space hit, blue = env fallback, black = none.
+    if (hit) {
+        dbg = vec3<f32>(0.0, 0.8, 0.0);
+    } else {
+        dbg = vec3<f32>(0.0, 0.1, 0.9);
+    }
+    {% else if debug == 4 %}
+    // STEPS: gray ramp of iterations / max_steps (white = budget exhausted).
+    dbg = vec3<f32>(steps_used / max(params.max_steps, 1.0));
+    {% endif %}
+    textureStore(out_tex, coords, vec4<f32>(dbg, 1.0));
+    {% endif %}
 }

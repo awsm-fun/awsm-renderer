@@ -638,6 +638,8 @@ pub enum EditorCommand {
         /// more ghosting). Live uniform; only meaningful when `ssr_temporal` is on.
         #[serde(default)]
         ssr_temporal_weight: Option<f32>,
+        #[serde(default)]
+        ssr_debug: Option<u32>,
     },
 
     /// Set editor viewport view options — partial update, every field

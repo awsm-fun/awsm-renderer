@@ -1241,6 +1241,10 @@ pub struct PostProcessParams {
     /// ssr_temporal is on. Omit to leave unchanged.
     #[serde(default)]
     pub ssr_temporal_weight: Option<f32>,
+    /// SSR debug view: 0 off, 1 confidence, 2 travel, 3 source, 4 steps.
+    /// Dev-only, transient (never persisted). STRUCTURAL (recompiles).
+    #[serde(default)]
+    pub ssr_debug: Option<u32>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -4283,6 +4287,7 @@ impl EditorMcp {
             ssr_temporal: p.ssr_temporal,
             ssr_resolution_scale: p.ssr_resolution_scale,
             ssr_temporal_weight: p.ssr_temporal_weight,
+            ssr_debug: p.ssr_debug,
         })
         .await
     }

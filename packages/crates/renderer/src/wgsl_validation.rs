@@ -1048,6 +1048,7 @@ fn ssr_shaders_validate() {
                             half_res,
                             multisampled_geometry,
                             reverse_z,
+                            debug: 0,
                         });
                         let label = format!(
                             "ssr mode={mode:?} trace={trace:?} \
@@ -1365,6 +1366,45 @@ fn ssr_temporal_shader_validates() {
                 "{label}: temporal sky test must be `{expect}`"
             );
         }
+    }
+}
+
+#[test]
+fn ssr_debug_views_validate() {
+    // Every debug view variant (1 confidence, 2 travel, 3 source, 4 steps)
+    // must naga-validate and REPLACE the reflection store with its encoding
+    // (comment-pinned in trace.wgsl). Validated on the production-shaped
+    // variant (Glossy + HiZ + reverse-Z); debug 0 is covered by the main
+    // ssr_shaders_validate sweep.
+    use crate::render_passes::ssr::shader::cache_key::{
+        ShaderCacheKeySsr, ShaderCacheKeySsrTrace, SsrMode, SsrTrace,
+    };
+    use crate::render_passes::ssr::shader::template::ShaderTemplateSsr;
+    for debug in 1u32..=4 {
+        let key = ShaderCacheKeySsr::Trace(ShaderCacheKeySsrTrace {
+            mode: SsrMode::Glossy,
+            trace: SsrTrace::HiZ,
+            half_res: false,
+            multisampled_geometry: false,
+            reverse_z: true,
+            debug,
+        });
+        let label = format!("ssr debug={debug}");
+        let src = ShaderTemplateSsr::try_from(&key)
+            .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
+            .into_source()
+            .unwrap_or_else(|e| panic!("{label}: render failed: {e:?}"));
+        naga_validate(&src, &label);
+        assert!(
+            src.contains("textureStore(out_tex, coords, vec4<f32>(dbg, 1.0));")
+                && !src.contains("vec4<f32>(reflection * ssr_own, coverage)"),
+            "{label}: debug variant must replace the reflection store with \
+             the encoded debug value"
+        );
+        assert!(
+            src.contains("var steps_used: f32 = 0.0;"),
+            "{label}: debug variant must track the march iteration count"
+        );
     }
 }
 

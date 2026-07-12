@@ -131,6 +131,10 @@ pub struct SsrConfig {
     /// History blend weight (0..1) when `temporal` is on. Live uniform.
     #[serde(default = "default_ssr_temporal_weight")]
     pub temporal_weight: f32,
+    /// Debug visualization (0 off, 1 confidence, 2 travel, 3 source,
+    /// 4 traversal steps). DEV-ONLY and transient — never persisted.
+    #[serde(skip)]
+    pub debug: u32,
 }
 
 fn default_ssr_intensity() -> f32 {
@@ -171,6 +175,7 @@ impl Default for SsrConfig {
             resolution_scale: default_ssr_resolution_scale(),
             temporal: false,
             temporal_weight: default_ssr_temporal_weight(),
+            debug: 0,
         }
     }
 }
