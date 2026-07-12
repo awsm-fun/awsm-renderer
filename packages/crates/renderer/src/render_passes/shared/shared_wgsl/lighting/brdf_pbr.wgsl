@@ -14,6 +14,14 @@
 // Compiled ONLY when the material writes the SSR descriptor
 // (write_ssr_descriptor), so SSR-off builds are byte-identical.
 const SSR_SPREAD_GATE: f32 = 0.15;
+// ssr-spread-cutoff: where the SSR->IBL crossfade ENDS — above this spread
+// the surface is pure IBL specular; below SSR_SPREAD_GATE it is pure SSR;
+// between them the two crossfade COMPLEMENTARILY (the trace scales its
+// output by the inverse ramp — grep "ssr-spread-cutoff" in ssr_wgsl/
+// trace.wgsl). Suppressing IBL only below the GATE while SSR ran to the
+// runtime cutoff double-counted reflection energy across the whole
+// mid-gloss band and visibly washed out floors.
+const SSR_SPREAD_CUTOFF: f32 = 0.6;
 {% endif %}
 // Direct Lighting BRDF (Cook-Torrance)
 // With clearcoat and sheen extensions
@@ -331,7 +339,7 @@ fn brdf_ibl_with_transmission(
     let ssr_f0 = mix(vec3<f32>(0.04), base_color, metallic);
     let ssr_mask_factor = max(ssr_f0.r, max(ssr_f0.g, ssr_f0.b));
     let ssr_spread = saturate(color.metallic_roughness.y);
-    let ssr_ibl_keep = 1.0 - ssr_mask_factor * (1.0 - smoothstep(0.0, SSR_SPREAD_GATE, ssr_spread));
+    let ssr_ibl_keep = 1.0 - ssr_mask_factor * (1.0 - smoothstep(SSR_SPREAD_GATE, SSR_SPREAD_CUTOFF, ssr_spread));
     {% endif %}
     // Apply occlusion to specular with reduced strength to avoid over-darkening reflections
     let specular = prefiltered * (F0 * brdf_lut.x + vec3<f32>(f90) * brdf_lut.y) * mix(1.0, color.occlusion, 0.5){% if write_ssr_descriptor %} * ssr_ibl_keep{% endif %};

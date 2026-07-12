@@ -40,6 +40,12 @@ const MIRROR_SPREAD_EPS: f32 = 0.01;
 // the same-named constant in ssr_wgsl/resolve.wgsl and
 // shared_wgsl/lighting/brdf_pbr.wgsl — grep "ssr-spread-gate".
 const SSR_SPREAD_GATE: f32 = 0.15;
+// ssr-spread-cutoff: the end of the SSR->IBL crossfade — the trace's output
+// scales by the INVERSE of brdf_pbr's ssr_ibl_keep ramp so total reflection
+// energy stays ~constant across the band (below the GATE: pure SSR with IBL
+// specular suppressed; above this: pure IBL). Keep in sync with
+// shared_wgsl/lighting/brdf_pbr.wgsl — grep "ssr-spread-cutoff".
+const SSR_SPREAD_CUTOFF: f32 = 0.6;
 
 // Live tuning uniforms — NOT permutation axes (§5a). 32 bytes / 8×f32.
 struct SsrParams {
@@ -760,8 +766,13 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // distance-soft — also what buries the serrated edges of mirror-sharp
     // thin-tube reflections).
 
+    // SSR->IBL CROSSFADE (wgsl_validation pins this): scale by the inverse
+    // of brdf_pbr's ssr_ibl_keep ramp — as the material's IBL specular fades
+    // back in across [GATE, CUTOFF], SSR bows out complementarily. Without
+    // this the mid-gloss band double-counted reflection energy.
+    let ssr_own = 1.0 - smoothstep(SSR_SPREAD_GATE, SSR_SPREAD_CUTOFF, spread);
     // Reflection-ONLY, premultiplied. Full-res invariant: composite_old +
     // reflection == the old base + reflection overwrite, since composite_old
     // == base at this pixel.
-    textureStore(out_tex, coords, vec4<f32>(reflection, coverage));
+    textureStore(out_tex, coords, vec4<f32>(reflection * ssr_own, coverage));
 }

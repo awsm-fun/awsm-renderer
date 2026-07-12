@@ -54,17 +54,6 @@ radius = 0.800000011920929
 segments_long = 48
 segments_lat = 32
 
-[assets.00000000-0000-4000-8000-000000000001]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-
-[assets.00000000-0000-4000-8000-000000000001.source.mesh.primitive.plane]
-width = 400.0
-depth = 400.0
-segments_x = 1
-segments_z = 1
-
 [assets.00000000-0000-4000-8000-000000000011]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
@@ -87,6 +76,17 @@ radius = 0.800000011920929
 segments_long = 48
 segments_lat = 32
 
+[assets.00000000-0000-4000-8000-000000000001]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+
+[assets.00000000-0000-4000-8000-000000000001.source.mesh.primitive.plane]
+width = 400.0
+depth = 400.0
+segments_x = 1
+segments_z = 1
+
 [assets.00000000-0000-4000-8000-000000000012]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
@@ -102,7 +102,7 @@ segments_minor = 16
 layers = []
 
 [[nodes]]
-id = "99caff01-4e75-4a86-adac-a552cfadf9d8"
+id = "03ad3656-b6da-4f6a-9414-b5a6aef335cb"
 name = "Directional Light"
 locked = false
 visible = true

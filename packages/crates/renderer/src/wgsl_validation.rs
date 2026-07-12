@@ -307,8 +307,8 @@ fn ssr_ibl_suppression_gated_on_descriptor_axis() {
     // must not reference the suppression at all (SSR-off builds stay
     // byte-identical). The `ssr-spread-gate` tag marks every copy of the
     // shared 0.15 constant (resolve / temporal / brdf_pbr).
-    const SUPPRESSION_TERM: &str =
-        "let ssr_ibl_keep = 1.0 - ssr_mask_factor * (1.0 - smoothstep(0.0, SSR_SPREAD_GATE, ssr_spread));";
+    const SUPPRESSION_TERM: &str = "let ssr_ibl_keep = 1.0 - ssr_mask_factor * \
+         (1.0 - smoothstep(SSR_SPREAD_GATE, SSR_SPREAD_CUTOFF, ssr_spread));";
     for (msaa, mips) in CONFIGS {
         // ON: PBR opaque with the descriptor axis set.
         let mut key = first_party_key(MaterialShaderId::PBR, ShadingBase::Pbr, false, msaa, mips);
@@ -1132,6 +1132,17 @@ fn ssr_shaders_validate() {
                                  radius with screen-space travel (cone growth)"
                             );
                         }
+                        // SSR->IBL crossfade (comment-pinned in trace.wgsl):
+                        // output scales by the inverse of brdf_pbr's
+                        // ssr_ibl_keep ramp — no double-counted reflection
+                        // energy in the mid-gloss band.
+                        assert!(
+                            src.contains(
+                                "let ssr_own = 1.0 - smoothstep(SSR_SPREAD_GATE, SSR_SPREAD_CUTOFF, spread);"
+                            ) && src.contains("vec4<f32>(reflection * ssr_own, coverage)"),
+                            "{label}: trace must crossfade its output against \
+                             the IBL specular ramp (ssr-spread-cutoff)"
+                        );
                         // Glossy HDR clamp (comment-pinned in trace.wgsl):
                         // bloom-hot reflections keep view-dependent banding
                         // through any blur width — clamp luminance before
