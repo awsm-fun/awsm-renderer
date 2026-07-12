@@ -1126,10 +1126,23 @@ fn ssr_shaders_validate() {
                         // sharpen like contact shadows.
                         if mode == SsrMode::Glossy {
                             assert!(
-                                src.contains("let cone = clamp(screen_travel / (0.12 * f32(full_dims.y)), 0.08, 1.0);")
+                                src.contains("let cone = clamp(screen_travel / (0.12 * f32(full_dims.y)), 0.3, 1.0);")
                                     && src.contains("* cone;"),
                                 "{label}: glossy trace must scale its disk-blur \
                                  radius with screen-space travel (cone growth)"
+                            );
+                        }
+                        // Glossy HDR clamp (comment-pinned in trace.wgsl):
+                        // bloom-hot reflections keep view-dependent banding
+                        // through any blur width — clamp luminance before
+                        // filtering (glossy template only; mirror exact).
+                        if mode == SsrMode::Glossy {
+                            assert!(
+                                src.contains(
+                                    "hit_color = hit_color * min(1.0, 3.0 / max(hit_lum, 1e-4));"
+                                ),
+                                "{label}: glossy trace must clamp hit luminance \
+                                 before filtering"
                             );
                         }
                         // Mirror-on-mirror fallback (comment-pinned in
@@ -1197,7 +1210,10 @@ fn ssr_shaders_validate() {
                         // environment, never black.
                         assert!(
                             src.contains("var skybox_tex: texture_cube<f32>")
-                                && src.contains("var skybox_sampler: sampler"),
+                                && src.contains("var skybox_sampler: sampler")
+                                && src.contains(
+                                    "let env_mip = spread * f32(textureNumLevels(skybox_tex) - 1u);"
+                                ),
                             "{label}: trace must bind the skybox cubemap + filtering sampler \
                              (miss-path env fallback)"
                         );

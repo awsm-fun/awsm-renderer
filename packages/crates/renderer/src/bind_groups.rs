@@ -367,6 +367,10 @@ impl BindGroups {
                 BindGroupCreate::IblTextures => {
                     functions_to_call.insert(FunctionToCall::OpaqueMain);
                     functions_to_call.insert(FunctionToCall::TransparentLights);
+                    // The SSR trace binds the prefiltered specular env as its
+                    // miss-path fallback; a specular-slot swap must rebind
+                    // the trace group or it samples a stale view.
+                    functions_to_call.insert(FunctionToCall::Ssr);
                 }
                 BindGroupCreate::EnvironmentSkyboxCreate => {
                     functions_to_call.insert(FunctionToCall::OpaqueMain);

@@ -215,19 +215,25 @@ impl SsrBindGroups {
                 BindGroupResource::TextureView(Cow::Borrowed(hzb_view)),
             ));
         }
-        // 8/9 (with HZB) or 7/8 (without) — skybox cubemap + filtering sampler
-        // for the trace's miss-path environment fallback. Same source the
-        // material pass binds (`ctx.environment.skybox`); the
-        // `EnvironmentSkyboxCreate` event fans out to `FunctionToCall::Ssr` so
-        // a skybox swap rebinds this group.
+        // 8/9 (with HZB) or 7/8 (without) — PREFILTERED specular environment
+        // + filtering sampler for the trace's miss-path fallback. This is the
+        // same cube IBL specular samples (`ctx.lights.ibl.prefiltered_env`),
+        // NOT the raw skybox: the fallback replaces exactly the IBL specular
+        // term the brdf suppressed, and the trace samples it at the
+        // spread-scaled mip — a raw mip-0 skybox turned every star of the
+        // arena's starfield into a bright blob reflection on near-mirror
+        // floors. Both `EnvironmentSkyboxCreate` and `IblTextures` events fan
+        // out to `FunctionToCall::Ssr` so slot swaps rebind this group.
         let skybox_binding = if self.hzb { 8 } else { 7 };
         entries.push(BindGroupEntry::new(
             skybox_binding,
-            BindGroupResource::TextureView(Cow::Borrowed(&ctx.environment.skybox.texture_view)),
+            BindGroupResource::TextureView(Cow::Borrowed(
+                &ctx.lights.ibl.prefiltered_env.texture_view,
+            )),
         ));
         entries.push(BindGroupEntry::new(
             skybox_binding + 1,
-            BindGroupResource::Sampler(&ctx.environment.skybox.sampler),
+            BindGroupResource::Sampler(&ctx.lights.ibl.prefiltered_env.sampler),
         ));
         let descriptor = BindGroupDescriptor::new(layout, Some("SSR Trace"), entries);
         self.trace_bind_group = Some(ctx.gpu.create_bind_group(&descriptor.into()));

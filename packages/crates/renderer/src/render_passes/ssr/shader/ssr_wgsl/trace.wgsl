@@ -600,7 +600,14 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // brdf_pbr.wgsl's ssr-spread-gate), so SSR owns the WHOLE reflection:
     // geometry on a hit, environment on a miss — no double counting.
     let dir_w = normalize((cam.inv_view * vec4<f32>(refl, 0.0)).xyz);
-    let env = textureSampleLevel(skybox_tex, skybox_sampler, dir_w, 0.0).rgb;
+    // Spread-scaled mip of the PREFILTERED env (same `roughness * max_mip`
+    // convention as samplePrefilteredEnv — wgsl_validation pins this): the
+    // fallback replaces the IBL specular term the brdf suppressed, so it must
+    // blur with the material exactly like IBL would. Sampling mip 0
+    // unconditionally turned every star of a starfield skybox into a bright
+    // blob reflection on near-mirror floors.
+    let env_mip = spread * f32(textureNumLevels(skybox_tex) - 1u);
+    let env = textureSampleLevel(skybox_tex, skybox_sampler, dir_w, env_mip).rgb;
     let env_reflection = env * fresnel * params.intensity;
 
     // Alpha carries coverage × travel for the resolve's distance-scaled blur.
@@ -625,7 +632,14 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // banding. Full cone by ~12% of screen height of travel; small floor
         // keeps the estimator from collapsing to one noisy tap.
         let screen_travel = length(hit_uv * fdims - vec2<f32>(fcoords));
-        let cone = clamp(screen_travel / (0.12 * f32(full_dims.y)), 0.08, 1.0);
+        // Cone floor 0.3 (was 0.08): contact reflections of thin BRIGHT
+        // features on a near-mirror floor were sharp enough to expose the
+        // view-dependent quantization pattern, which CRAWLS as the camera
+        // moves — far more distracting than a slightly-soft contact. A
+        // near-contact glossy reflection now keeps ~1/3 of the far-field
+        // blur (still sharpening toward contact, like contact shadows, just
+        // never to raw-texel sharpness).
+        let cone = clamp(screen_travel / (0.12 * f32(full_dims.y)), 0.3, 1.0);
         let blur_radius = spread * f32(full_dims.y) * 0.045 * cone;
         if (blur_radius < 0.75) {
             // SHARP path (mirror + near-mirror): bilinear reconstruction at
@@ -689,6 +703,19 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let h01 = textureLoad(color_tex, clamp(vec2<i32>(hbase) + vec2<i32>(0, 1), hzero, hmax), 0).rgb;
         let h11 = textureLoad(color_tex, clamp(vec2<i32>(hbase) + vec2<i32>(1, 1), hzero, hmax), 0).rgb;
         hit_color = mix(mix(h00, h10, hfrac.x), mix(h01, h11, hfrac.x), hfrac.y);
+        {% endif %}
+        {% if glossy %}
+        // GLOSSY HDR clamp (wgsl_validation pins this): a bloom-hot emissive
+        // (10x+ HDR) reflected near contact keeps visible banding through
+        // ANY practical blur width, and the banding pattern is
+        // view-dependent so it CRAWLS as the camera moves. Clamping the hit
+        // luminance before filtering tames the contrast the same way TAA's
+        // Karis weighting tames fireflies — the reflection reads slightly
+        // dimmer (the primary surface's own bloom still glows), the blur
+        // finally fuses, and the crawl disappears. Mirrors (the non-glossy
+        // template) stay exact.
+        let hit_lum = max(hit_color.r, max(hit_color.g, hit_color.b));
+        hit_color = hit_color * min(1.0, 3.0 / max(hit_lum, 1e-4));
         {% endif %}
         // MIRROR-ON-MIRROR fallback (wgsl_validation pins this): a hit ON a
         // reflective surface samples that surface's PRE-composite color,
