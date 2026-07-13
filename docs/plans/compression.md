@@ -572,8 +572,39 @@ BC5/EAC-RG (in-shader Z reconstruct) is a Phase-6 opt. **Block dims multiple of
       harnesses — same coverage, native speed; the on-device robot runs
       remain the Phase-4/5 acceptance records.
 - [ ] Optional: two-channel normals (BC5/EAC-RG) with in-shader Z reconstruction.
-- [ ] Verify 4–8× texture-memory reduction + bundle geometry shrink; transcode +
+      ⏸ DEFERRED 2026-07-14 alongside the GPU-quantized vertex formats — both
+      are shader-touching opts of the same family (the ladder + formats
+      already support BC5/EAC-RG linear-only; what's missing is the in-shader
+      Z reconstruct + per-slot two-channel selection). Bundle them into the
+      sliced follow-up above.
+- [x] Verify 4–8× texture-memory reduction + bundle geometry shrink; transcode +
       meshopt-decode never on the render hot path; no per-frame allocations added.
+      ✅ 2026-07-14 — **Texture VRAM: exactly 4.0×** on the real police
+      bundle (78 textures: 63×1024² + 15×512²): 356MB as RGBA8 → 89MB as
+      ETC2-RGBA/ASTC-4x4 (both 1 B/px; RGBA8 is 4 B/px; full-mip ×4/3 in
+      both). The 8× end of the plan's range needs the deferred opaque-only
+      (ETC2-RGB/BC1, 0.5 B/px) and two-channel rungs — our ladder
+      deliberately picks RGBA-capable rungs today. Wire size: 362KB WebP →
+      67KB ETC1S KTX2 (5.4×) on the kitchen-sink probe.
+      **Bundle geometry: 14.3MB → 2.6MB (5.5×)** summed over the police
+      scene's 20 static mesh glbs (per-mesh numbers logged at bake).
+      **Hot path: clean** — every `decode_buffer_view` /
+      `decode_meshopt_buffer_views` call site lives in renderer-gltf's
+      load-time buffer import (main + worker paths); every Basis
+      `transcode` call site lives in load-time texture decode
+      (renderer-gltf ktx2_image, scene-loader texture). The entire
+      compression range (17 commits, 63 files) touches ZERO
+      render_passes/WGSL/pipeline_scheduler files (`git diff
+      9e36120d^..HEAD --stat` audit). **Per-frame allocations: none
+      added** — the one per-frame-adjacent edit (skins `update_transforms`
+      per-skin IBM lookup) swaps a map-by-joint for map-by-skin + Vec
+      index over Copy types; upload paths (`write_gpu_compressed`) are
+      dirty-gated load-time.
+      ⚠ DoD caveat for sign-off: "desktop + mobile-representative matrix"
+      is verified on this machine's bc+etc2+astc adapter + unit-tested cap
+      matrices (desktop-BC-only / mobile-ETC2+ASTC / none); no run on
+      PHYSICAL mobile hardware yet — `taskfiles/debugging/mobile.yml`
+      exists for that when wanted.
 - **Exit (Definition of Done):** both robots import+render; player loads KTX2
   compressed + meshopt+quant geometry across a desktop+mobile-representative
   matrix; encode is editor-only, off-main-thread (Basis) / cheap in-Rust
