@@ -49,7 +49,7 @@ pub struct ShaderTemplateSsrTrace {
 }
 
 /// SSR software-BVH trace compute shader — the world-space BLAS/TLAS walk
-/// that runs BEFORE the screen-space trace (docs/plans/bvh-reflections.md).
+/// that runs BEFORE the screen-space trace (architecture in bvh.rs).
 #[derive(Template, Debug)]
 #[template(path = "ssr_wgsl/bvh_trace.wgsl", whitespace = "minimize")]
 pub struct ShaderTemplateSsrBvhTrace {

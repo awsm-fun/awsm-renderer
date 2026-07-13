@@ -60,7 +60,7 @@ pub struct Ssr {
     /// 4 traversal steps). Structural (recompiles the trace variant).
     pub debug: u32,
     /// Software-BVH reflections for SSR misses on near-mirror pixels
-    /// (docs/plans/bvh-reflections.md). Structural (recompiles the trace +
+    /// (architecture in the bvh.rs module docs). Structural (recompiles the trace +
     /// builds the bvh_trace pass). Default OFF — a high-end tier.
     pub bvh_reflections: bool,
 }

@@ -1,4 +1,7 @@
-**STATUS: ✅ COMPLETE (2026-07-10).** Full run 19/19 PASS (harness :9091 over
+**STATUS: ✅ shipped; two OPTIONAL scenarios open (5: animation stress,
+7: post/SSR/bloom runtime toggles) — see the checklist.** Suite has since
+grown to 23/23 PASS (2026-07-13, exercised throughout the SSR/probe/BVH
+work as the standing regression gate). Original full run 19/19 PASS (harness :9091 over
 the :9084 bundles; machine-readable PLAYER-TEST lines; CDP-driven):
 startup-census floor 10 render / 8 compute / 15 shaders (lazy families
 absent); 7x load-transaction (one commit each; kitchen-sink 3.4s cold with

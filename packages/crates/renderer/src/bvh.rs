@@ -1,5 +1,6 @@
 //! Software-BVH acceleration structures for off-screen reflections
-//! (docs/plans/bvh-reflections.md — reflection-plan Tier 7).
+//! (reflection-plan Tier 7; the plan doc was deleted as shipped — this
+//! module header is the surviving architecture reference).
 //!
 //! BLAS: one binary BVH per unique STATIC mesh resource, built CPU-side at
 //! mesh commit (`Meshes::resolve_one`, where `GeometrySource.positions` /

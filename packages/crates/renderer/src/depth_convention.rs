@@ -1,6 +1,6 @@
 //! The renderer's depth convention — forward-Z (near→0, far→1) vs
 //! REVERSE-Z (near→1, far→0) — as one value every producer reads
-//! (docs/plans/003-reverse-z.md).
+//! (plan 003-reverse-z, deleted as shipped — git history).
 //!
 //! Reverse-Z pairs the reversed depth distribution with float32's exponent
 //! bunching near 0.0, cancelling perspective's far-field precision starvation

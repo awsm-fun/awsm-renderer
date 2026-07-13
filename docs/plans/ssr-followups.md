@@ -89,3 +89,27 @@ camera jitter.
    arena rings (attempted and reverted; single-torus + higher tube
    tessellation shipped instead). Fix = MSAA (or edge-AA) for the
    transparent pass, then revisit the tube shells.
+
+## Post-sweep state (2026-07-13 evening — ..ea19b12c)
+
+Shipped beyond the roadmap above (details in git history; the standalone
+bvh-reflections.md design doc was deleted as fully implemented):
+- **Software-BVH reflections** (`ssr.bvh_reflections`, default off): BLAS at
+  mesh commit + linear TLAS (revision-gated — zero work per static frame) +
+  bvh_trace pass; the trace's miss fallback prefers a real off-screen hit.
+  Eligibility spread < 0.25. Open follow-ups: device tiering / editor toggle
+  (MCP-only today), morph/skinned exclusion is permanent by design, TLAS
+  tree if a scene exceeds a few hundred instances.
+- **HDR probe support**: rgb9e5 KTX2 cubemaps load natively; probe content
+  must be authored in probe-CENTER space and ENERGY-CONSERVED (see the
+  jetpack arena's gen-assets.py for the reference implementation).
+- **Zero-cost-off audit**: SSR/temporal/half-res/bvh verified idle-free;
+  edge accumulator slots now narrow (16 B) with SSR off (-32 MB at desktop
+  budget) — the classify/opaque/final_blend stride is an axis.
+- **Atmosphere** extracted as its own plan (atmosphere.md): view-path fog +
+  reflection-path haze; replaces the arena's probe-baked haze when it lands.
+
+Still open from the list above: #1 (screenshot readback colorspace),
+#6 (planar reflections), #7 (prefiltered scene-color mips), #8 (transparent
+pass MSAA). Item #5's remaining tier: multiple local probes + editor
+authoring UI + in-engine capture.

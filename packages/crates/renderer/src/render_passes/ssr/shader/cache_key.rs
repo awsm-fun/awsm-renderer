@@ -67,7 +67,7 @@ pub struct ShaderCacheKeySsrTrace {
     /// hit/env, 4 = traversal steps). Structural — selects a compiled trace
     /// variant that REPLACES the reflection output with the encoded value.
     pub debug: u32,
-    /// Software-BVH miss fallback (docs/plans/bvh-reflections.md): binds the
+    /// Software-BVH miss fallback (architecture in bvh.rs): binds the
     /// `ssr_bvh` hit target and swaps the env fallback for a real off-screen
     /// hit where the bvh_trace pass found one. Compiled only when
     /// `post_processing.ssr.bvh_reflections`.

@@ -246,7 +246,7 @@ fn editor_features() -> RendererFeatures {
         // a bounded VRAM budget in-editor. No-op (early-out) when no cluster mesh is
         // resident, so non-nanite scenes pay nothing per frame. `?nopaging` forces off.
         cluster_paging: !url_has_flag("nopaging"),
-        // Reverse-Z depth convention (docs/plans/003-reverse-z.md) — ON by
+        // Reverse-Z depth convention (plan 003, git history) — ON by
         // default since the 003 rollout completed; `?noreversez` = forward-Z
         // rollback/A-B for one release.
         reverse_z: reverse_z_flag(),

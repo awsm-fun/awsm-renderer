@@ -1,4 +1,4 @@
-// SSR software-BVH trace (docs/plans/bvh-reflections.md — Tier 7).
+// SSR software-BVH trace (reflection-plan Tier 7; architecture in bvh.rs).
 //
 // Runs BEFORE the screen-space trace. For every NEAR-MIRROR pixel
 // (spread < BVH_SPREAD_MAX and a live reflection descriptor) it traces ONE

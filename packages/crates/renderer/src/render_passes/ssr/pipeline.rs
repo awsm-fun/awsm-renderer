@@ -72,7 +72,7 @@ impl SsrPipelines {
         }
     }
 
-    /// The software-BVH trace variant (docs/plans/bvh-reflections.md).
+    /// The software-BVH trace variant (architecture in bvh.rs).
     fn bvh_key(
         multisampled: bool,
         reverse_z: bool,

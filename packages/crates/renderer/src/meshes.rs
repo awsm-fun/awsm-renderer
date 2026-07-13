@@ -708,8 +708,8 @@ pub struct Meshes {
     mesh_geometry_pool_uploader: crate::buffer::mapped_uploader::MappedUploader,
     visibility_geometry_index_uploader: crate::buffer::mapped_uploader::MappedUploader,
     transparency_geometry_data_uploader: crate::buffer::mapped_uploader::MappedUploader,
-    /// Software-BVH BLAS store for off-screen reflections (docs/plans/
-    /// bvh-reflections.md). Built at commit (see `resolve_one`), dropped in
+    /// Software-BVH BLAS store for off-screen reflections (architecture in
+    /// the bvh.rs module docs). Built at commit (see `resolve_one`), dropped in
     /// `remove` alongside the shared resource; GPU upload happens on the SSR
     /// path only while `ssr.bvh_reflections` is enabled.
     pub bvh: crate::bvh::BvhStore,

@@ -66,7 +66,8 @@ pub struct RendererFeatures {
     /// [`RendererOptimizationPolicy`]: crate::optimization_policy::RendererOptimizationPolicy
     pub gpu_culling: bool,
 
-    /// REVERSE-Z depth convention (docs/plans/003-reverse-z.md): near→1,
+    /// REVERSE-Z depth convention (plan 003, deleted as shipped — git
+    /// history): near→1,
     /// far→0, float-depth precision near-uniform across the range — kills
     /// far-field z-fighting. Construction-time: pipelines, clears, HZB ops,
     /// frustum extraction, and shader sentinels all bake the convention via

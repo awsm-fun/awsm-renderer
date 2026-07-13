@@ -1117,7 +1117,7 @@ fn box_projected_probe_in_both_env_paths() {
 
 #[test]
 fn ssr_bvh_shaders_validate() {
-    // Software-BVH reflections (docs/plans/bvh-reflections.md): the bvh_trace
+    // Software-BVH reflections (design in the bvh.rs module docs): the bvh_trace
     // module must naga-validate for every axis combo, carry the world-space
     // traversal essentials (bounded stack walk + no-cull Möller–Trumbore +
     // the near-mirror eligibility gate), and constrained hit shading only
@@ -1852,7 +1852,7 @@ fn decal_classify_shader_validates_for_both_depth_conventions() {
     }
 }
 
-/// Axis 1 (docs/plans/006): bloom went content/config-lazy — its 4 compute
+/// Axis 1 (optimization sweep, plan 006 — git history): bloom went content/config-lazy — its 4 compute
 /// shaders no longer compile at boot (only when `post_processing.bloom` turns
 /// on), so on-device boot validation no longer covers them. Keep them
 /// natively validated here: every pyramid step (prefilter / downsample /
@@ -1922,7 +1922,7 @@ fn bloom_shaders_validate() {
     );
 }
 
-/// Axis 1 (docs/plans/006): the cluster-LOD cut + compaction went
+/// Axis 1 (optimization sweep, plan 006 — git history): the cluster-LOD cut + compaction went
 /// content-lazy — they no longer compile at boot (only at the first commit
 /// with a resident cluster mesh), so the "creating the pipeline validates
 /// `cluster_cut.wgsl` on-device" boot checkpoint moved to that commit. Keep

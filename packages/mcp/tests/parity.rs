@@ -1,4 +1,5 @@
-//! CI parity guard for the MCP surface (docs/plans/008-mcp.md Part 1).
+//! CI parity guard for the MCP surface (plan 008-mcp Part 1, deleted as
+//! shipped — git history; the living matrix is docs/mcp-parity.md).
 //!
 //! Enumerates the ACTUAL `EditorCommand` / `EditorQuery` wire tags from their
 //! derived JSON Schemas (the same introspection the `list_commands` tool uses)

@@ -87,7 +87,7 @@ pub struct SsrBindGroups {
     /// read history[1]); slot 1 = the reverse. The render pass selects by
     /// `ping_pong()` (see [`Self::temporal`]). `[None, None]` unless temporal.
     temporal_bind_groups: [Option<web_sys::GpuBindGroup>; 2],
-    /// Software-BVH trace layout (docs/plans/bvh-reflections.md). `None`
+    /// Software-BVH trace layout (architecture in bvh.rs). `None`
     /// unless `ssr.bvh_reflections` at `new()` (a toggle reconstructs the
     /// whole pass, like temporal).
     pub bvh_layout_key: Option<BindGroupLayoutKey>,
@@ -539,7 +539,7 @@ fn create_layout(
         .get_key(ctx.gpu, BindGroupLayoutCacheKey { entries })?)
 }
 
-/// Layout for the software-BVH trace compute (docs/plans/bvh-reflections.md):
+/// Layout for the software-BVH trace compute (architecture in bvh.rs):
 /// ray setup inputs (camera/params/depth/normal/descriptor), the `ssr_bvh`
 /// storage target, the three read-only BVH storage buffers (TLAS instances,
 /// BLAS nodes, BLAS triangles), and the prefiltered env + sampler for the

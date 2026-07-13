@@ -502,7 +502,7 @@ impl RenderPasses {
         // will need. The orchestrator concatenates this onto the
         // cross-renderer shader pool — see `AwsmRendererBuilder::build`.
         //
-        // ── Pass-family compile classification (axis 1, docs/plans/006) ──
+        // ── Pass-family compile classification (axis 1, sweep plan 006 — git history) ──
         // (a) UNIVERSAL, in this pool: geometry (active MSAA branch only),
         //     light_culling, material_prep (active branch), material_classify
         //     (first-party bucket baseline), material_opaque (empty kernel —

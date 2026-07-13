@@ -63,7 +63,8 @@ bundles, which are window-independent.
 ## The optimization axes (plan 006)
 
 The sweep this suite exists to measure. Every axis lands with before/after
-numbers recorded here and in `docs/plans/006-optimizations.md`.
+numbers recorded here (the 006 optimization-sweep plan was deleted as
+shipped — git history).
 
 1. **Build only what we need** — a renderer instantiation compiles ONLY the
    pipelines/shaders/textures its scene requires; startup census (pipelines,
