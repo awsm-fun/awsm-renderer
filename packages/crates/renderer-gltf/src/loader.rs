@@ -397,6 +397,18 @@ fn get_image_futures<'a>(
                 match image.source() {
                     image::Source::Uri { uri, mime_type } => {
                         let url = get_url(base.as_ref(), uri)?;
+                        // KTX2 (KHR_texture_basisu) can't go through
+                        // createImageBitmap — fetch bytes and transcode.
+                        if mime_type == Some("image/ktx2") || uri.ends_with(".ktx2") {
+                            let bytes = gloo_net::http::Request::get(&url)
+                                .send()
+                                .await?
+                                .binary()
+                                .await?;
+                            let data = crate::ktx2_image::transcode_ktx2_image(&bytes).await?;
+                            let encoded = Some((bytes, "image/ktx2".to_string()));
+                            return Ok((data, encoded));
+                        }
                         // DECODE via the unchanged URL path (format handling intact).
                         let data = ImageData::load_url(&url, options).await?;
                         // Best-effort: retain the ENCODED bytes for our-format re-embed.
@@ -419,8 +431,17 @@ fn get_image_futures<'a>(
                         let begin = view.offset();
                         let end = begin + view.length();
                         let encoded_image = &parent_buffer_data[begin..end];
+                        // KTX2 (KHR_texture_basisu) — the robots' path: GLB
+                        // with embedded image/ktx2 payloads.
+                        if mime_type == "image/ktx2" || encoded_image.starts_with(b"\xabKTX 20\xbb")
+                        {
+                            let data =
+                                crate::ktx2_image::transcode_ktx2_image(encoded_image).await?;
+                            let encoded = Some((encoded_image.to_vec(), "image/ktx2".to_string()));
+                            return Ok((data, encoded));
+                        }
                         let image = awsm_renderer_core::image::bitmap::load_u8(
-                            &encoded_image,
+                            encoded_image,
                             mime_type,
                             options.clone(),
                         )

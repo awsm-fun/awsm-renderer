@@ -398,6 +398,32 @@ BC5/EAC-RG (in-shader Z reconstruct) is a Phase-6 opt. **Block dims multiple of
       acceptance run (next task), on-device.
 - **Exit:** the two robots (meshopt+quant) import and render correctly in the
   editor — skinned, textured, GPU-compressed. Screenshot-verify both.
+  ✅ **PHASE 4 ACCEPTANCE MET 2026-07-14** — BOTH robots import + render +
+  screenshot in the editor (`task mcp-dev`, driven over the MCP HTTP link):
+  police (105 nodes, 16 materials, 65 joints) and astrabot — full armor,
+  correct textures (police chest emblem, astrabot's emissive blue eyes),
+  correct skinned pose. Console: `meshopt decode pass: 82 bufferViews`,
+  `KTX2 image (Etc1s …) → Etc2Rgba` color + `(Uastc …) → Astc4x4` normals —
+  the per-slot ladder working end-to-end in the editor. Fixes the run forced:
+  (1) editor mesh-capture (glb-export `extract.rs`) + the thin-shell
+  heuristic (`populate/mesh.rs`) used the gltf crate's TYPED readers, which
+  assert F32 and PANIC on quantized accessors → new quantization-aware
+  readers (`glb-export/src/quant.rs` + a local VEC3 helper);
+  (2) `KHR_texture_basisu` import decode: new `renderer-gltf/src/ktx2_image.rs`
+  (sniff → ladder → worker transcode → `ImageData::Compressed` under the
+  LINEAR format; `populate/material` swaps in the sRGB sibling per slot;
+  `block_format::srgb_variant`); caps come from a documented
+  `latest_texture_compression()` thread-local snapshot (loader has no device
+  handle; machine-constant value);
+  (3) **renderer skins store re-keyed**: IBMs were global per-JOINT and
+  errored `JointAlreadyExistsButDifferent` — gltfpack emits multiple skins
+  sharing one skeleton with different per-skin dequant-baked IBMs (police: 3
+  skins × same 65 joints, different IBM accessors), which glTF allows. IBMs
+  now live per-SKIN (`SecondaryMap<SkinKey, Vec<Mat4>>`), conflict check
+  deleted.
+  Screenshot gotcha for next time: `frame_node` on group/joint nodes framed
+  degenerate joint AABBs (blank shots + uniform `canvas_stats` luma);
+  framing a `skinned_mesh` node works.
 
 ## Phase 5 — Export: meshopt+quant bundle meshes + KTX2 texture default
 

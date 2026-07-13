@@ -21,8 +21,13 @@ use crate::{
 /// Skinning data and GPU buffers.
 pub struct Skins {
     skeleton_transforms: DenseSlotMap<SkinKey, Vec<TransformKey>>,
-    // may be None, in which case its virtually an identity matrix
-    inverse_bind_matrices: SecondaryMap<TransformKey, Mat4>,
+    /// Per-SKIN inverse bind matrices, index-aligned with the skin's joint
+    /// list. Keyed by skin (not joint): glTF allows multiple skins to share
+    /// the same joint nodes with DIFFERENT IBMs — gltfpack's
+    /// KHR_mesh_quantization output does exactly this, baking each mesh's
+    /// dequantization scale into its own skin's IBMs over one shared
+    /// skeleton. Missing entries act as identity.
+    inverse_bind_matrices: SecondaryMap<SkinKey, Vec<Mat4>>,
     sets_len: SecondaryMap<SkinKey, usize>,
     skin_matrices: DynamicStorageBuffer<SkinKey>,
     joint_index_weights: DynamicStorageBuffer<SkinKey>,
@@ -210,39 +215,26 @@ impl Skins {
     ) -> Result<SkinKey> {
         let len = skeleton_joint_transforms.len();
         let mut initial_fill = Vec::with_capacity(len * 16 * 4);
+        // Index-aligned per-skin IBMs (identity where the source has none) —
+        // no cross-skin divergence check: skins legitimately share joints
+        // with different IBMs (see the field doc).
+        let mut skin_ibms = Vec::with_capacity(len);
 
-        for (index, joint) in skeleton_joint_transforms.iter().enumerate() {
-            // check if the inverse bind matrix has diverged
-            match (
-                self.inverse_bind_matrices.get(*joint),
-                inverse_bind_matrices.get(index),
-            ) {
-                (None, None) => { /* eh, they're the same, let it go */ }
-                (None, Some(_)) => { /* it's probably just a new one, let it go */ }
-                (Some(a), Some(b)) if a == b => { /* eh, they're the same, let it go */ }
-                _ => {
-                    return Err(AwsmSkinError::JointAlreadyExistsButDifferent {
-                        joint_transform: *joint,
-                    });
-                }
-            }
-
+        for index in 0..len {
             let joint_matrix = inverse_bind_matrices
                 .get(index)
                 .cloned()
                 .unwrap_or(Mat4::IDENTITY);
 
-            //tracing::info!("{}: {:#?}", index, joint_matrix);
-
             let bytes = unsafe {
                 std::slice::from_raw_parts(joint_matrix.as_ref().as_ptr() as *const u8, 16 * 4)
             };
             initial_fill.extend_from_slice(bytes);
-
-            self.inverse_bind_matrices.insert(*joint, joint_matrix);
+            skin_ibms.push(joint_matrix);
         }
 
         let skin_key = self.skeleton_transforms.insert(skeleton_joint_transforms);
+        self.inverse_bind_matrices.insert(skin_key, skin_ibms);
 
         if let Err(e) = self
             .skin_matrices
@@ -252,6 +244,7 @@ impl Skins {
             // Roll back partial state so a failed allocation doesn't leave an orphan skin.
             self.skin_matrices.remove(skin_key);
             self.skeleton_transforms.remove(skin_key);
+            self.inverse_bind_matrices.remove(skin_key);
             return Err(e);
         }
 
@@ -315,11 +308,10 @@ impl Skins {
             .skeleton_transforms
             .get(skin_key)
             .ok_or(AwsmSkinError::SkinNotFound(skin_key))?;
-        Ok(joints
-            .iter()
-            .map(|jt| {
-                self.inverse_bind_matrices
-                    .get(*jt)
+        let ibms = self.inverse_bind_matrices.get(skin_key);
+        Ok((0..joints.len())
+            .map(|index| {
+                ibms.and_then(|v| v.get(index))
                     .copied()
                     .unwrap_or(Mat4::IDENTITY)
             })
@@ -435,7 +427,12 @@ impl Skins {
                 let Ok(world_mat) = transforms.get_world(*transform_key).copied() else {
                     continue;
                 };
-                let world_matrix = match self.inverse_bind_matrices.get(*transform_key).cloned() {
+                let world_matrix = match self
+                    .inverse_bind_matrices
+                    .get(skin_key)
+                    .and_then(|ibms| ibms.get(index))
+                    .cloned()
+                {
                     Some(ibm) => world_mat * ibm,
                     None => world_mat,
                 };
@@ -466,7 +463,11 @@ impl Skins {
                 if let Some(world_mat) = dirty_skin_joints.get(transform_key) {
                     matched += 1;
                     // could cache this for revisited joints, but, it's not a huge deal - might even be faster to redo the math
-                    let world_matrix = match self.inverse_bind_matrices.get(*transform_key).cloned()
+                    let world_matrix = match self
+                        .inverse_bind_matrices
+                        .get(skin_key)
+                        .and_then(|ibms| ibms.get(index))
+                        .cloned()
                     {
                         Some(inverse_bind_matrix) => *world_mat * inverse_bind_matrix,
                         None => *world_mat,
@@ -621,6 +622,7 @@ impl Skins {
         self.skeleton_transforms.remove(key);
         self.skin_matrices.remove(key);
         self.sets_len.remove(key);
+        self.inverse_bind_matrices.remove(key);
         self.pending_full_refresh.retain(|k| *k != key);
 
         if let Some(owner) = self.joint_weights_alias.remove(key) {
@@ -661,9 +663,9 @@ impl Skins {
             self.joint_index_weights.remove(key);
         }
 
-        if let Some(transform) = transform {
-            self.inverse_bind_matrices.remove(transform);
-        }
+        // `transform` was only consumed by the old per-JOINT IBM map (removed:
+        // IBMs are per-skin now and were already dropped above with the key).
+        let _ = transform;
         self.matrices_gpu_dirty = true;
         self.joint_index_weights_gpu_dirty = true;
     }
@@ -695,9 +697,6 @@ pub enum AwsmSkinError {
         matrix_len: usize,
         joint_len: usize,
     },
-
-    #[error("[skin] joint already exists but is different: {joint_transform:?}")]
-    JointAlreadyExistsButDifferent { joint_transform: TransformKey },
 
     #[error("[skin] {0:?}")]
     BindGroup(#[from] AwsmBindGroupError),

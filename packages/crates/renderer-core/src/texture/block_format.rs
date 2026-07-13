@@ -156,6 +156,28 @@ pub fn mip_level_byte_size(format: TextureFormat, width: u32, height: u32) -> us
     tight_bytes_per_row(format, width) as usize * rows_per_image(format, height) as usize
 }
 
+/// The sRGB-decoding sibling of a linear block/color format, or `None` when
+/// no sibling exists (two-channel data formats, formats that are already
+/// sRGB). Compressed bytes are identical between the pair — only the
+/// sampler-decode semantics differ — so a transcode result can be stored
+/// sRGB-agnostic under the linear format and swapped to the sRGB variant at
+/// bind time when the material slot carries color data.
+pub fn srgb_variant(format: TextureFormat) -> Option<TextureFormat> {
+    Some(match format {
+        TextureFormat::Rgba8unorm => TextureFormat::Rgba8unormSrgb,
+        TextureFormat::Bgra8unorm => TextureFormat::Bgra8unormSrgb,
+        TextureFormat::Bc1RgbaUnorm => TextureFormat::Bc1RgbaUnormSrgb,
+        TextureFormat::Bc2RgbaUnorm => TextureFormat::Bc2RgbaUnormSrgb,
+        TextureFormat::Bc3RgbaUnorm => TextureFormat::Bc3RgbaUnormSrgb,
+        TextureFormat::Bc7RgbaUnorm => TextureFormat::Bc7RgbaUnormSrgb,
+        TextureFormat::Etc2Rgb8unorm => TextureFormat::Etc2Rgb8unormSrgb,
+        TextureFormat::Etc2Rgb8a1unorm => TextureFormat::Etc2Rgb8a1unormSrgb,
+        TextureFormat::Etc2Rgba8unorm => TextureFormat::Etc2Rgba8unormSrgb,
+        TextureFormat::Astc4x4Unorm => TextureFormat::Astc4x4UnormSrgb,
+        _ => return None,
+    })
+}
+
 /// Maps a KTX2 (Vulkan) format to the WebGPU texture format, or `None` when
 /// WebGPU has no equivalent.
 #[cfg(feature = "ktx")]

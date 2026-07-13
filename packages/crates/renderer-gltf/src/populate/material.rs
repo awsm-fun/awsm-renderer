@@ -911,6 +911,36 @@ impl GltfTextureInfo {
                     .get(texture_index)
                     .ok_or(AwsmGltfError::MissingTextureIndex(texture_index))?;
 
+                // KTX2/basisu images arrive sRGB-AGNOSTIC under their linear
+                // block format (bytes are identical between the pair). Color
+                // slots swap in the sRGB sibling here — the srgb_to_linear
+                // compute pass can't run on block data, so the format IS the
+                // decode.
+                let (image_data, color) = match (image_data.as_compressed(), color.srgb_to_linear) {
+                    (Some(compressed), true) => {
+                        let format = awsm_renderer_core::texture::block_format::srgb_variant(
+                            compressed.format,
+                        )
+                        .unwrap_or(compressed.format);
+                        (
+                            awsm_renderer_core::image::ImageData::Compressed(std::sync::Arc::new(
+                                awsm_renderer_core::image::CompressedImage {
+                                    format,
+                                    width: compressed.width,
+                                    height: compressed.height,
+                                    levels: compressed.levels.clone(),
+                                },
+                            )),
+                            awsm_renderer_core::texture::texture_pool::TextureColorInfo {
+                                srgb_to_linear: false,
+                                ..color
+                            },
+                        )
+                    }
+                    (Some(_), false) => (image_data.clone(), color),
+                    (None, _) => (image_data.clone(), color),
+                };
+
                 let texture_key = renderer.textures.add_image(
                     image_data.clone(),
                     image_data.format(),

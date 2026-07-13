@@ -20,6 +20,7 @@ pub mod data;
 pub mod error;
 pub mod ext;
 pub mod extract;
+pub(crate) mod ktx2_image;
 pub mod loader;
 pub(crate) mod meshopt;
 pub mod populate;

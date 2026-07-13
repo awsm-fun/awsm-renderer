@@ -41,6 +41,27 @@ impl TextureCompressionSupport {
     }
 }
 
+thread_local! {
+    /// Snapshot of the most recently built device's
+    /// [`TextureCompressionSupport`] — see [`latest_texture_compression`].
+    static LATEST_TEXTURE_COMPRESSION: std::cell::Cell<TextureCompressionSupport> =
+        const { std::cell::Cell::new(TextureCompressionSupport { bc: false, etc2: false, astc: false }) };
+}
+
+/// The [`TextureCompressionSupport`] of the most recently built device on
+/// this thread (all-false before any device exists).
+///
+/// Exists for decode paths that have no device handle in reach (the glTF
+/// import loader, whose public signature and worker protocol would otherwise
+/// have to thread a machine-constant value through every caller). Correct
+/// because every device we build requests all families its adapter exposes,
+/// so any two devices on one machine report identical support; a fresh
+/// thread before device creation reads all-false, which degrades to the
+/// RGBA8 fallback — safe, never wrong.
+pub fn latest_texture_compression() -> TextureCompressionSupport {
+    LATEST_TEXTURE_COMPRESSION.with(|c| c.get())
+}
+
 /// A process-stable identity for a `GpuDevice`, used to **scope the
 /// device-bound GPU caches** (blit / BRDF-LUT / mipmap / atlas / sRGB
 /// pipelines + samplers + staging buffers) that renderer-core keeps in
@@ -375,12 +396,20 @@ impl AwsmRendererWebGpuBuilder {
         // upload compressed (and to which family) or fall back to RGBA8.
         {
             let features = device.features();
+            let support = TextureCompressionSupport {
+                bc: features.has(TEXTURE_COMPRESSION_BC_FEATURE),
+                etc2: features.has(TEXTURE_COMPRESSION_ETC2_FEATURE),
+                astc: features.has(TEXTURE_COMPRESSION_ASTC_FEATURE),
+            };
             tracing::info!(
                 "texture compression support: bc={} etc2={} astc={}",
-                features.has(TEXTURE_COMPRESSION_BC_FEATURE),
-                features.has(TEXTURE_COMPRESSION_ETC2_FEATURE),
-                features.has(TEXTURE_COMPRESSION_ASTC_FEATURE),
+                support.bc,
+                support.etc2,
+                support.astc,
             );
+            // Device-less decode paths read this snapshot — see
+            // `latest_texture_compression`.
+            LATEST_TEXTURE_COMPRESSION.with(|c| c.set(support));
         }
 
         // Diagnostic: wire `onuncapturederror` so the JS validation /

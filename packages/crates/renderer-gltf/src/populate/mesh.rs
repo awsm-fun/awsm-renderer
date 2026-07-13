@@ -491,9 +491,10 @@ fn should_force_single_sided_for_opaque_thin_shell(
         }
     }
 
-    let reader = primitive.reader(|buffer| buffers.get(buffer.index()).map(|b| b.as_slice()));
-
-    let Some(positions) = reader.read_positions() else {
+    // Quantization-aware reads: the typed readers (`read_positions` /
+    // `read_normals`) assert F32 and panic on KHR_mesh_quantization models
+    // (POSITION i16-normalized, NORMAL i8-normalized).
+    let Some(positions) = read_vec3_dequant(primitive, &gltf::Semantic::Positions, buffers) else {
         return false;
     };
 
@@ -525,7 +526,7 @@ fn should_force_single_sided_for_opaque_thin_shell(
         return false;
     }
 
-    let Some(normals) = reader.read_normals() else {
+    let Some(normals) = read_vec3_dequant(primitive, &gltf::Semantic::Normals, buffers) else {
         return false;
     };
 
@@ -552,6 +553,79 @@ fn should_force_single_sided_for_opaque_thin_shell(
     let neg_ratio = neg_count as f32 / strong_count as f32;
 
     pos_ratio > MIN_AXIS_SIDE_RATIO && neg_ratio > MIN_AXIS_SIDE_RATIO
+}
+
+/// VEC3 attribute read that dequantizes KHR_mesh_quantization component
+/// types (the gltf crate's typed readers assert F32 and panic). Used by the
+/// thin-shell heuristic above, which needs approximate positions/normals of
+/// any quantization.
+fn read_vec3_dequant(
+    primitive: &gltf::Primitive<'_>,
+    semantic: &gltf::Semantic,
+    buffers: &[Vec<u8>],
+) -> Option<Vec<[f32; 3]>> {
+    use gltf::accessor::DataType;
+
+    let accessor = primitive.get(semantic)?;
+    if accessor.dimensions().multiplicity() != 3 {
+        return None;
+    }
+    let view = accessor.view()?;
+    let data_type = accessor.data_type();
+    let normalized = accessor.normalized();
+    let elem_size = accessor.size();
+    let stride = view.stride().unwrap_or(elem_size);
+    let buf = buffers.get(view.buffer().index())?;
+    let base = view.offset() + accessor.offset();
+    let comp_size = data_type.size();
+
+    let mut out = Vec::with_capacity(accessor.count());
+    for i in 0..accessor.count() {
+        let elem = base + i * stride;
+        let mut value = [0f32; 3];
+        for (c, slot) in value.iter_mut().enumerate() {
+            let at = elem + c * comp_size;
+            let bytes = buf.get(at..at + comp_size)?;
+            *slot = match data_type {
+                DataType::F32 => f32::from_le_bytes(bytes.try_into().ok()?),
+                DataType::U8 => {
+                    let v = bytes[0] as f32;
+                    if normalized {
+                        v / 255.0
+                    } else {
+                        v
+                    }
+                }
+                DataType::I8 => {
+                    let v = bytes[0] as i8 as f32;
+                    if normalized {
+                        (v / 127.0).max(-1.0)
+                    } else {
+                        v
+                    }
+                }
+                DataType::U16 => {
+                    let v = u16::from_le_bytes(bytes.try_into().ok()?) as f32;
+                    if normalized {
+                        v / 65535.0
+                    } else {
+                        v
+                    }
+                }
+                DataType::I16 => {
+                    let v = i16::from_le_bytes(bytes.try_into().ok()?) as f32;
+                    if normalized {
+                        (v / 32767.0).max(-1.0)
+                    } else {
+                        v
+                    }
+                }
+                DataType::U32 => u32::from_le_bytes(bytes.try_into().ok()?) as f32,
+            };
+        }
+        out.push(value);
+    }
+    Some(out)
 }
 
 fn try_position_aabb(gltf_primitive: &gltf::Primitive<'_>) -> Option<Aabb> {

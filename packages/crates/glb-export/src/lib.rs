@@ -32,6 +32,7 @@
 //!   textures with no special "slim" flag.
 
 mod extract;
+mod quant;
 mod tangents;
 mod write;
 

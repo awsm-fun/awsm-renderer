@@ -25,6 +25,9 @@ gltf = { workspace = true }
 # EXT_meshopt_compression bufferView decode (official meshoptimizer FFI,
 # linked in-process — see packages/crates/codec-meshopt).
 awsm-renderer-codec-meshopt = { workspace = true }
+# KHR_texture_basisu image transcode (Basis worker client + target ladder).
+# Transcoder only — the encoder feature stays editor-bake-only.
+awsm-renderer-codec-basis = { workspace = true }
 gloo-net = { workspace = true }
 web-sys = { workspace = true }
 wasm-bindgen = { workspace = true }
