@@ -1,0 +1,71 @@
+<!doctype html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <title>Basis vendored-modules smoke test (compression Phase 0)</title>
+    <style>
+        body { font-family: ui-monospace, monospace; background: #111; color: #ddd; padding: 2rem; }
+        .ok { color: #7dd87d; }
+        .fail { color: #ff6b6b; }
+    </style>
+</head>
+<body>
+    <h1>Basis smoke test</h1>
+    <pre id="out">running…</pre>
+    <script>
+        const out = document.getElementById("out");
+        const lines = [];
+        function log(cls, msg) {
+            lines.push(`<span class="${cls}">${msg}</span>`);
+            out.innerHTML = lines.join("\n");
+            console.log(`[basis-smoke] ${msg}`);
+        }
+
+        // Both vendored builds export the SAME global factory name `BASIS`
+        // (Emscripten MODULARIZE+UMD). Load one script at a time and
+        // capture-then-delete the global between loads.
+        function loadFactory(src) {
+            return new Promise((resolve, reject) => {
+                const s = document.createElement("script");
+                s.src = src;
+                s.onload = () => {
+                    const factory = window.BASIS;
+                    delete window.BASIS;
+                    factory ? resolve(factory) : reject(new Error(`${src} loaded but no BASIS global`));
+                };
+                s.onerror = () => reject(new Error(`failed to load ${src}`));
+                document.head.appendChild(s);
+            });
+        }
+
+        async function instantiate(name, factory, wasmPath) {
+            const module = await factory({
+                locateFile: (file) => (file.endsWith(".wasm") ? wasmPath : file),
+            });
+            if (typeof module.initializeBasis === "function") module.initializeBasis();
+            const exports = Object.keys(module).filter((k) => /^[A-Za-z]/.test(k));
+            log("ok", `${name}: instantiated OK (${exports.length} exports, e.g. ${exports.slice(0, 6).join(", ")})`);
+            return module;
+        }
+
+        (async () => {
+            try {
+                const transcoderFactory = await loadFactory("basis_transcoder.js");
+                const transcoder = await instantiate("transcoder", transcoderFactory, "basis_transcoder.wasm");
+                if (!transcoder.KTX2File) throw new Error("transcoder missing KTX2File export");
+                log("ok", "transcoder: KTX2File export present");
+
+                const encoderFactory = await loadFactory("basis_encoder.js");
+                const encoder = await instantiate("encoder", encoderFactory, "basis_encoder.wasm");
+                if (!encoder.BasisEncoder) throw new Error("encoder missing BasisEncoder export");
+                log("ok", "encoder: BasisEncoder export present");
+
+                log("ok", "PHASE-0 EXIT: PASS — both vendored Basis modules instantiate");
+            } catch (e) {
+                log("fail", `PHASE-0 EXIT: FAIL — ${e.message}`);
+                console.error(e);
+            }
+        })();
+    </script>
+</body>
+</html>
