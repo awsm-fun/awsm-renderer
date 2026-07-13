@@ -1,0 +1,20 @@
+[package]
+name = "awsm-renderer-codec-meshopt"
+description = "EXT_meshopt_compression decode/encode over the official meshoptimizer C library (meshopt FFI crate), cross-compiled to wasm32-unknown-unknown — shared by the gltf importer, the player scene-loader, and the editor bake/export path"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+meshopt = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = { workspace = true }

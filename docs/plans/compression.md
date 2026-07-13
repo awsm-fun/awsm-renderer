@@ -183,13 +183,33 @@ BC5/EAC-RG (in-shader Z reconstruct) is a Phase-6 opt. **Block dims multiple of
 
 ## Phase 1 — meshopt+quant spike + Basis worker subsystem
 
-- [ ] **meshopt spike (de-risk FIRST):** add the official `meshopt` crate; get
+- [x] **meshopt spike (de-risk FIRST):** add the official `meshopt` crate; get
       `meshopt-sys` cross-compiling to `wasm32-unknown-unknown` (cc→clang wasm32,
       `-fno-exceptions -fno-rtti`; route allocation via `meshopt_setAllocator` to
       Rust's allocator; stub `assert`/unresolved libc). Confirm the linked app
       wasm resolves cleanly and **decode a real re-exported robot's meshopt
       bufferViews** in-Rust. If the C build is intractable, record it and switch to
       the `meshopt-rs` fallback (then a bitstream check is back on the table).
+      ✅ **GATE PASSED 2026-07-13** — far easier than budgeted: `meshopt` 0.6.2
+      has NO separate meshopt-sys anymore; it vendors meshoptimizer + ships its
+      own wasm32 build glue (`include_wasm32/` stub headers for
+      assert/limits/math/string — "no stdlib, LLVM intrinsics"). **No allocator
+      shim, no libc stubs needed on our side.** Only real fix: Apple clang has
+      no wasm backend → `.cargo/config.toml [env]` points cc at Homebrew LLVM
+      (`CC_wasm32-unknown-unknown=/opt/homebrew/opt/llvm/bin/clang`; requires
+      `brew install llvm`). New crate `packages/crates/codec-meshopt`
+      (`decode_buffer_view(data,count,stride,mode,filter)` + re-exported
+      `meshopt` for encode; stride/count/filter guards + 256MB output cap).
+      Proof, all ON wasm32 (wasm-bindgen-test in node, runner 0.2.118 matched
+      to the workspace pin) AND native: (1) police-meshopt.glb — **82 meshopt
+      bufferViews decoded, 2,942,542 compressed → 7,478,280 logical bytes**
+      (1 TRIANGLES + 81 ATTRIBUTES; filters NONE + OCTAHEDRAL; octahedral
+      output spot-checked unit-length); (2) encode→decode round-trips (vertex,
+      index, octahedral filter) — encode allocates inside the C lib, so this
+      also proves the allocator story on wasm. Fixture tests auto-skip via
+      build.rs cfg when the gitignored fixture is absent. Gotcha: the index
+      codec is lossless only up to per-triangle rotation — never
+      byte-compare round-tripped index streams.
 - [ ] Basis worker: `web/workers/basis-worker.js` hosting the vendored modules;
       versioned protocol; request-id routing; init caching; structured errors;
       restart-on-fatal. Rust client crate `packages/crates/codec-basis` — async
