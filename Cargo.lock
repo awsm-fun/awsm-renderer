@@ -306,6 +306,7 @@ version = "0.20.1"
 dependencies = [
  "anyhow",
  "awsm-renderer",
+ "awsm-renderer-codec-basis",
  "awsm-renderer-core",
  "awsm-renderer-curves",
  "awsm-renderer-editor-protocol",

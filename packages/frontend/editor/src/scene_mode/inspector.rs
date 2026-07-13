@@ -4816,6 +4816,7 @@ fn asset_export(id: AssetId) -> Dom {
             TextureExport::Source => "source",
             TextureExport::WebpLossless => "webp_lossless",
             TextureExport::WebpLossy { .. } => "webp_lossy",
+            TextureExport::Ktx2 { .. } => "ktx2",
         }
         .to_string(),
     );
@@ -4843,6 +4844,7 @@ fn asset_export(id: AssetId) -> Dom {
         segmented(
             mode.clone(),
             vec![
+                SegOption::new("ktx2", "KTX2"),
                 SegOption::new("webp_lossless", "Lossless"),
                 SegOption::new("webp_lossy", "Lossy"),
                 SegOption::new("source", "Source"),
@@ -4893,6 +4895,10 @@ fn dispatch_texture_export(id: AssetId, mode: &str, quality: f64) {
         "source" => TextureExport::Source,
         "webp_lossy" => TextureExport::WebpLossy {
             quality: quality as f32,
+        },
+        // Auto profile: UASTC for normal maps, ETC1S otherwise (bake-time).
+        "ktx2" => TextureExport::Ktx2 {
+            profile: awsm_renderer_editor_protocol::Ktx2Profile::Auto,
         },
         _ => TextureExport::WebpLossless,
     });

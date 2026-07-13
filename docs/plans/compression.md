@@ -458,7 +458,7 @@ BC5/EAC-RG (in-shader Z reconstruct) is a Phase-6 opt. **Block dims multiple of
       wrapper TRS within s/32767×2, normals within dot>0.98, triangles
       rotation-normalized equal, UVs within 2/65535; extensionsRequired
       checked on the WIRE (the lenient parser strips them in-memory).
-- [ ] Textures — authoring: `TextureExport::Ktx2 { profile }` + KTX2
+- [x] Textures — authoring: `TextureExport::Ktx2 { profile }` + KTX2
       source-passthrough (`editor-protocol/src/assets.rs`); inspector option +
       `dispatch_texture_export` (`scene_mode/inspector.rs`); MCP
       `set_texture_export`. Bake arm (`editor/src/controller/export.rs` ~243):
@@ -466,6 +466,24 @@ BC5/EAC-RG (in-shader Z reconstruct) is a Phase-6 opt. **Block dims multiple of
       material-slot + color-space; record `TextureEncoding::Ktx2`; passthrough
       ships original KTX2 verbatim; non-4-multiple → WebP-lossless + `log()`. Make
       `Ktx2` the default when `texture_export` is `None` (document re-bake).
+      ✅ 2026-07-14 — `TextureExport::Ktx2 { profile: Ktx2Profile }`
+      (`Auto`/`Etc1s`/`Uastc`; Auto = UASTC for assets bound to a normal slot
+      — base or clearcoat, collected from merged material defs — ETC1S
+      otherwise) and **Default now = Ktx2(Auto)** (doc'd re-bake migration on
+      the enum). Bake: editor-only Basis ENCODER worker client (thread-local,
+      `with_encoder`; editor Cargo pulls codec-basis `features=["encoder"]` —
+      player stays transcoder-only); decode via `image` crate → %4 guard →
+      encode (mips on, zstd for UASTC, ETC1S q190) → `TextureEncoding::Ktx2`;
+      failures cascade KTX2 → WebP-lossless → source, always logged, a bake
+      never drops a texture. Passthrough: `ImageMime::Ktx2` added end-to-end
+      (glb-export enum + both extract capture arms + editor caches), Source
+      arm and Ktx2 arm both ship verbatim + record Ktx2; scene-glb exports
+      embedding a KTX2 image now declare `KHR_texture_basisu`
+      (used+required) with the ext-source on the texture. Inspector gains a
+      "KTX2" segment (Auto profile); MCP `set_texture_export` gains
+      `ktx2 | ktx2_etc1s | ktx2_uastc` and its description/default text
+      updated. On-device bake verification (bundle export → ktx2 files →
+      player load) = the Phase-5 exit, next iteration.
 - **Exit:** export a scene (meshopt+quant + KTX2 defaults) → load in player →
   matches editor; imported-KTX2 passthrough round-trips byte-identical;
   round-trip/golden tests green.

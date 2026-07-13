@@ -381,6 +381,9 @@ pub struct ExportImage {
 pub enum ImageMime {
     Png,
     Jpeg,
+    /// Basis-supercompressed KTX2 (`KHR_texture_basisu`). Carried for
+    /// passthrough export; the writer declares the extension when embedding.
+    Ktx2,
 }
 
 impl ImageMime {
@@ -388,6 +391,7 @@ impl ImageMime {
         match self {
             ImageMime::Png => "image/png",
             ImageMime::Jpeg => "image/jpeg",
+            ImageMime::Ktx2 => "image/ktx2",
         }
     }
 
@@ -397,6 +401,7 @@ impl ImageMime {
         match self {
             ImageMime::Png => "png",
             ImageMime::Jpeg => "jpg",
+            ImageMime::Ktx2 => "ktx2",
         }
     }
 }

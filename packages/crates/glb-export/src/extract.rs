@@ -171,6 +171,7 @@ impl ImagePool {
                 let mime = match mime.as_str() {
                     "image/png" => ImageMime::Png,
                     "image/jpeg" | "image/jpg" => ImageMime::Jpeg,
+                    "image/ktx2" => ImageMime::Ktx2,
                     _ => return None,
                 };
                 Some((i, (bytes.clone(), mime)))
@@ -234,6 +235,7 @@ impl ImagePool {
         let mime = match mime {
             "image/png" => ImageMime::Png,
             "image/jpeg" | "image/jpg" => ImageMime::Jpeg,
+            "image/ktx2" => ImageMime::Ktx2,
             _ => return None,
         };
         Some((bytes, mime))

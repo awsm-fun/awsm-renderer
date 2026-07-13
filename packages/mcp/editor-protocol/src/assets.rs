@@ -84,26 +84,60 @@ impl AssetSource {
 /// RESULT the bake produced and travels in the bundle.
 ///
 /// `None` on the asset entry — and any project saved before this field existed —
-/// means the default [`WebpLossless`](Self::WebpLossless): every raster texture
-/// ships as lossless WebP (pixel-identical to the source, smaller than PNG,
-/// decoded by the player exactly like PNG) unless the author opts a specific
-/// texture down to lossy or out to its verbatim source bytes.
-#[derive(Clone, Copy, Debug, PartialEq, Default, serde::Serialize, serde::Deserialize)]
+/// means the default [`Ktx2`](Self::Ktx2) with the [`Auto`](Ktx2Profile::Auto)
+/// profile: every raster texture bakes to a Basis-supercompressed KTX2 that the
+/// player transcodes to a native GPU block format (BC/ASTC/ETC2 — 4–8× less
+/// VRAM than RGBA8) unless the author opts a specific texture to WebP or its
+/// verbatim source bytes. ⚠ This default CHANGED from lossless WebP with the
+/// compression feature (docs/plans/compression.md) — the accepted migration is
+/// that existing projects re-bake their textures as KTX2 on the next export.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum TextureExport {
     /// Ship the source bytes verbatim under their real extension — no re-encode.
     /// Use for a texture already in an optimal format, or to preserve the exact
-    /// source bytes.
+    /// source bytes. An imported KTX2 ships verbatim (passthrough) and records
+    /// the KTX2 runtime encoding.
     Source,
-    /// Re-encode to lossless WebP (the default): pixel-identical to the source,
-    /// typically smaller than PNG, browser-decodable.
-    #[default]
+    /// Re-encode to lossless WebP: pixel-identical to the source, typically
+    /// smaller than PNG, browser-decodable (decoded to RGBA8 on the GPU —
+    /// no block compression).
     WebpLossless,
     /// Re-encode to lossy WebP at `quality` (0.0..=1.0). Smaller still, at a
     /// visible-quality cost the author accepts for this texture. Higher = larger,
     /// closer to lossless.
     WebpLossy { quality: f32 },
+    /// Basis-supercompressed KTX2 (the default): one device-agnostic artifact
+    /// the player transcodes to the adapter's native block format at load.
+    /// Sources already in KTX2 ship verbatim regardless of `profile`.
+    /// Textures whose dimensions aren't multiples of 4 fall back to lossless
+    /// WebP at bake time (WebGPU block-size limit), with a log line.
+    Ktx2 { profile: Ktx2Profile },
+}
+
+impl Default for TextureExport {
+    fn default() -> Self {
+        Self::Ktx2 {
+            profile: Ktx2Profile::Auto,
+        }
+    }
+}
+
+/// Basis codec profile for [`TextureExport::Ktx2`].
+#[derive(Clone, Copy, Debug, PartialEq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub enum Ktx2Profile {
+    /// Pick by material slot at bake time: UASTC for normal maps (higher
+    /// quality — data maps corrupt visibly under ETC1S), ETC1S for
+    /// color/roughness/metallic/emissive (much smaller).
+    #[default]
+    Auto,
+    /// Force ETC1S (smallest).
+    Etc1s,
+    /// Force UASTC (highest quality).
+    Uastc,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]

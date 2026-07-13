@@ -20,6 +20,9 @@ harden-diag = []
 awsm-renderer-curves = { workspace = true, features = ["serde"] }
 awsm-renderer-meshgen = { workspace = true, features = ["authoring"] }
 awsm-renderer-glb-export = { workspace = true }
+# Basis worker client WITH the encoder feature — the KTX2 texture bake is an
+# editor-only cost (the player pulls this crate transcoder-only).
+awsm-renderer-codec-basis = { workspace = true, features = ["encoder"] }
 awsm-renderer-materials = { workspace = true }
 awsm-renderer-lod-bake = { workspace = true, features = ["serde"] }
 awsm-renderer-particles = { workspace = true, features = ["serde"] }

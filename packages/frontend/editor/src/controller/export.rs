@@ -242,9 +242,11 @@ pub async fn bake_player_bundle(
     let roots: Vec<Arc<Node>> = ctrl.scene.nodes.lock_ref().iter().cloned().collect();
     let mut ids: Vec<AssetId> = Vec::new();
     let mut seen: HashSet<AssetId> = HashSet::new();
+    let mut normal_assets: HashSet<AssetId> = HashSet::new();
     for n in &roots {
         collect_texture_assets(n, &mut ids, &mut seen);
         collect_custom_texture_assets(ctrl, n, &mut ids, &mut seen);
+        collect_normal_texture_assets(n, &mut normal_assets);
     }
     for id in ids {
         // Referenced by a material ⇒ MUST ship, losslessly, or the export
@@ -288,6 +290,73 @@ pub async fn bake_player_bundle(
                             mime.ext()
                         );
                         (texture_encoding_from_mime(mime), bytes)
+                    }
+                }
+            }
+            TextureExport::Ktx2 { profile } => {
+                use awsm_renderer_editor_protocol::Ktx2Profile;
+                use awsm_renderer_glb_export::ImageMime;
+                // Imported KTX2 → passthrough verbatim, regardless of profile.
+                if matches!(mime, ImageMime::Ktx2) {
+                    (awsm_renderer_scene::TextureEncoding::Ktx2, bytes)
+                } else {
+                    match decode_rgba(&bytes, mime) {
+                        Some((rgba, w, h)) if w % 4 == 0 && h % 4 == 0 => {
+                            let uastc = match profile {
+                                Ktx2Profile::Auto => normal_assets.contains(&id),
+                                Ktx2Profile::Etc1s => false,
+                                Ktx2Profile::Uastc => true,
+                            };
+                            let params = awsm_renderer_codec_basis::EncodeParams {
+                                uastc,
+                                // sRGB/perceptual for color; linear for data
+                                // maps (the player's slot picks the format).
+                                srgb: !normal_assets.contains(&id),
+                                mipmaps: true,
+                                quality: 190,
+                                zstd: true,
+                            };
+                            let client = BASIS_ENCODER.with(|c| c.clone());
+                            match client.encode(&rgba, w, h, &params).await {
+                                Ok(ktx2) => {
+                                    tracing::info!(
+                                        "bundle texture {id}: {w}x{h} → KTX2 {} ({} bytes)",
+                                        if uastc { "UASTC" } else { "ETC1S" },
+                                        ktx2.len()
+                                    );
+                                    (awsm_renderer_scene::TextureEncoding::Ktx2, ktx2)
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        "bundle texture {id}: KTX2 encode failed ({e}) — falling back to lossless WebP"
+                                    );
+                                    match encode_webp_lossless(&bytes, mime) {
+                                        Some(webp) => {
+                                            (awsm_renderer_scene::TextureEncoding::Webp, webp)
+                                        }
+                                        None => (texture_encoding_from_mime(mime), bytes),
+                                    }
+                                }
+                            }
+                        }
+                        Some((_, w, h)) => {
+                            // WebGPU requires block-compressed base dimensions
+                            // to be multiples of 4 — fall back per plan.
+                            tracing::info!(
+                                "bundle texture {id}: {w}x{h} not a multiple of 4 — lossless WebP instead of KTX2"
+                            );
+                            match encode_webp_lossless(&bytes, mime) {
+                                Some(webp) => (awsm_renderer_scene::TextureEncoding::Webp, webp),
+                                None => (texture_encoding_from_mime(mime), bytes),
+                            }
+                        }
+                        None => {
+                            tracing::warn!(
+                                "bundle texture {id}: decode failed — shipping source {}",
+                                mime.ext()
+                            );
+                            (texture_encoding_from_mime(mime), bytes)
+                        }
                     }
                 }
             }
@@ -987,7 +1056,69 @@ fn texture_encoding_from_mime(
     match mime {
         ImageMime::Png => TextureEncoding::Png,
         ImageMime::Jpeg => TextureEncoding::Jpeg,
+        ImageMime::Ktx2 => TextureEncoding::Ktx2,
     }
+}
+
+/// Which texture assets are bound to NORMAL-map slots (base or clearcoat) on
+/// any referencing material — the `Ktx2Profile::Auto` bake encodes those as
+/// UASTC (data maps corrupt visibly under ETC1S) and everything else as ETC1S.
+fn collect_normal_texture_assets(node: &Node, out: &mut HashSet<AssetId>) {
+    let kind = node.kind.get_cloned();
+    let instances: Vec<&awsm_renderer_editor_protocol::dynamic_material::MaterialInstance> = kind
+        .material_variants()
+        .map(|vs| vs.iter().map(|v| &v.instance).collect())
+        .unwrap_or_default();
+    for inst in instances {
+        let merged = crate::engine::bridge::node_sync::builtin_merged(inst)
+            .unwrap_or_else(|| inst.inline.clone());
+        for t in [
+            merged.normal_texture.as_ref(),
+            merged
+                .extensions
+                .clearcoat
+                .as_ref()
+                .and_then(|e| e.normal_tex.as_ref()),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            out.insert(t.asset);
+        }
+    }
+    for c in node.children.lock_ref().iter() {
+        collect_normal_texture_assets(c, out);
+    }
+}
+
+thread_local! {
+    /// Basis ENCODER worker client — editor-only (the `encoder` cargo feature
+    /// + the encoder module URL exist only here). Lazy: spawned on the first
+    /// KTX2 bake.
+    static BASIS_ENCODER: awsm_renderer_codec_basis::BasisWorkerClient =
+        awsm_renderer_codec_basis::BasisWorkerClient::new(
+            awsm_renderer_codec_basis::BasisWorkerConfig::with_encoder(),
+        );
+}
+
+/// Decode PNG/JPEG source bytes to RGBA8 (pure-Rust `image` crate — same
+/// decode the lossless-WebP path uses). `None` for KTX2 (handled upstream as
+/// passthrough) or a failed decode.
+fn decode_rgba(
+    source: &[u8],
+    mime: awsm_renderer_glb_export::ImageMime,
+) -> Option<(Vec<u8>, u32, u32)> {
+    use awsm_renderer_glb_export::ImageMime;
+    let format = match mime {
+        ImageMime::Png => image::ImageFormat::Png,
+        ImageMime::Jpeg => image::ImageFormat::Jpeg,
+        ImageMime::Ktx2 => return None,
+    };
+    let rgba = image::load_from_memory_with_format(source, format)
+        .ok()?
+        .into_rgba8();
+    let (w, h) = rgba.dimensions();
+    Some((rgba.into_raw(), w, h))
 }
 
 /// Re-encode a source image to LOSSLESS WebP via the pure-Rust `image` crate
@@ -1005,6 +1136,9 @@ fn encode_webp_lossless(
     let format = match mime {
         ImageMime::Png => image::ImageFormat::Png,
         ImageMime::Jpeg => image::ImageFormat::Jpeg,
+        // KTX2 sources never re-encode to WebP — they passthrough (or the
+        // caller already fell back before reaching here).
+        ImageMime::Ktx2 => return None,
     };
     let rgba = image::load_from_memory_with_format(source, format)
         .ok()?

@@ -941,8 +941,9 @@ pub struct AddTextureParams {
 pub struct SetTextureExportParams {
     /// Texture asset UUID (from get_snapshot's `textures`).
     pub texture: String,
-    /// webp_lossless | webp_lossy | source | default (clears the per-texture
-    /// override back to the lossless-WebP default).
+    /// ktx2 | ktx2_etc1s | ktx2_uastc | webp_lossless | webp_lossy | source |
+    /// default (clears the per-texture override back to the default — KTX2
+    /// with the auto profile: UASTC for normal maps, ETC1S otherwise).
     pub mode: String,
     /// Lossy quality 0.0..=1.0 (higher = larger, closer to lossless). Required
     /// when mode = webp_lossy; ignored otherwise.
@@ -3627,7 +3628,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Set a texture asset's PER-TEXTURE bundle-export encoding (mode: webp_lossless | webp_lossy | source | default). Authoring preference persisted in the project; takes effect on the NEXT bundle export (export_player_bundle), not on the live scene. webp_lossless is the pixel-identical DEFAULT every raster texture already gets (smaller than PNG); `default` clears the per-texture override back to it. webp_lossy re-encodes at `quality` (0.0..=1.0, required for this mode) for a smaller file at visible-quality cost — ONLY appropriate for color/albedo-like images. WARNING: lossy is NEVER safe for data maps (normal / metallic-roughness / occlusion) — it corrupts the encoded vectors/values (e.g. a visible fresnel sheen from tilted normals) and neither this tool nor the bake guards against it, so keep data maps lossless. `source` ships the original bytes verbatim (already-optimal formats). Undoable. NO query reads this back (get_snapshot's textures list omits it) — the persisted record is the asset entry in project.toml after save_project."
+        description = "Set a texture asset's PER-TEXTURE bundle-export encoding (mode: ktx2 | ktx2_etc1s | ktx2_uastc | webp_lossless | webp_lossy | source | default). Authoring preference persisted in the project; takes effect on the NEXT bundle export (export_player_bundle), not on the live scene. webp_lossless is the pixel-identical DEFAULT every raster texture already gets (smaller than PNG); `default` clears the per-texture override back to it. webp_lossy re-encodes at `quality` (0.0..=1.0, required for this mode) for a smaller file at visible-quality cost — ONLY appropriate for color/albedo-like images. WARNING: lossy is NEVER safe for data maps (normal / metallic-roughness / occlusion) — it corrupts the encoded vectors/values (e.g. a visible fresnel sheen from tilted normals) and neither this tool nor the bake guards against it, so keep data maps lossless. `source` ships the original bytes verbatim (already-optimal formats). Undoable. NO query reads this back (get_snapshot's textures list omits it) — the persisted record is the asset entry in project.toml after save_project."
     )]
     async fn set_texture_export(
         &self,
@@ -3635,6 +3636,15 @@ impl EditorMcp {
     ) -> Result<CallToolResult, McpError> {
         let export = match p.mode.as_str() {
             "default" => None,
+            "ktx2" => Some(TextureExport::Ktx2 {
+                profile: awsm_renderer_editor_protocol::Ktx2Profile::Auto,
+            }),
+            "ktx2_etc1s" => Some(TextureExport::Ktx2 {
+                profile: awsm_renderer_editor_protocol::Ktx2Profile::Etc1s,
+            }),
+            "ktx2_uastc" => Some(TextureExport::Ktx2 {
+                profile: awsm_renderer_editor_protocol::Ktx2Profile::Uastc,
+            }),
             "webp_lossless" => Some(TextureExport::WebpLossless),
             "source" => Some(TextureExport::Source),
             "webp_lossy" => {

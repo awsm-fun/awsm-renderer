@@ -536,11 +536,37 @@ impl Builder {
             extras: Default::default(),
         };
         let image_index = self.root.push(image);
+        // KTX2 payloads ride `KHR_texture_basisu` (declared used+required —
+        // a loader that can't transcode Basis can't render this texture). The
+        // core `source` also points at the image for maximum tooling compat.
+        let extensions = if matches!(img.mime, crate::ImageMime::Ktx2) {
+            self.use_extension("KHR_texture_basisu");
+            if !self
+                .root
+                .extensions_required
+                .iter()
+                .any(|e| e == "KHR_texture_basisu")
+            {
+                self.root
+                    .extensions_required
+                    .push("KHR_texture_basisu".to_string());
+            }
+            let mut basisu = serde_json::Map::new();
+            basisu.insert("source".into(), serde_json::json!(image_index.value()));
+            let mut others = serde_json::Map::new();
+            others.insert(
+                "KHR_texture_basisu".into(),
+                serde_json::Value::Object(basisu),
+            );
+            Some(gltf_json::extensions::texture::Texture { others })
+        } else {
+            Default::default()
+        };
         let tex = Texture {
             name: Some(img.name.clone()),
             sampler: None,
             source: image_index,
-            extensions: Default::default(),
+            extensions,
             extras: Default::default(),
         };
         self.root.push(tex)
