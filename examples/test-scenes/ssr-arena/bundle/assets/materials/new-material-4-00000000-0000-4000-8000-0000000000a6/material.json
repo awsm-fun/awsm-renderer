@@ -1,0 +1,35 @@
+{
+  "name": "New Material 4",
+  "version": 1,
+  "alpha_mode": "blend",
+  "double_sided": false,
+  "uniforms": [
+    {
+      "name": "glow",
+      "ty": "vec3",
+      "default": {
+        "kind": "vec3",
+        "value": [
+          1.0,
+          1.0,
+          1.0
+        ]
+      }
+    },
+    {
+      "name": "strength",
+      "ty": "f32",
+      "default": {
+        "kind": "f32",
+        "value": 1.4
+      }
+    }
+  ],
+  "textures": [],
+  "buffers": [],
+  "shader_includes": [],
+  "fragment_inputs": [
+    "normals",
+    "view_dir"
+  ]
+}

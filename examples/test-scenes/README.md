@@ -50,6 +50,7 @@ bundles, which are window-independent.
 | `env-ibl` | 3-slot environment (skybox/specular/irradiance), KTX2, built-in default | slots independently swapped; reflections track the specular slot |
 | `ssr` | SSR on glossy floor (black glossy dielectric probe), half-res + MSAA edges | continuous reflections of emissive columns, clean silhouettes |
 | `mirror` | perfect-mirror SSR (spread 0: spatially deterministic trace + 16-frame temporal supersampling, tight resolve AA kernel, full-res, bloom off; touching-sphere contact probe) | reflection pixel-identical in shape to geometry, no serration/noise/dashes |
+| `ssr-arena` | the full reflections stack in one production frame: box-projected HDR probe, BVH off-screen fallback, per-material `ssr_mask` (floor 0.7), emissive-only content (see its README) | glossy floor mirrors rings/pads/red wall; platform occluder column stays a soft maroon smudge (BVH-filled), not black; reflections damped ~30% vs mask 1.0 |
 | `bloom-post` | bloom knobs, tonemappers (aces vs khronos_neutral_pbr), exposure, DoF | halo scales with intensity; tonemapper switch visibly re-grades |
 | `lights-many` | froxel culling under many point/spot lights | dozens of local lights, correct falloff, interactive frame rate |
 | `particles` | particle emitter (existing instancing path) | emitter animates; instance colors apply |
