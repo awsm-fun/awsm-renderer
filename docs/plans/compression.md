@@ -378,10 +378,24 @@ BC5/EAC-RG (in-shader Z reconstruct) is a Phase-6 opt. **Block dims multiple of
       views through the real loader plumbing and sanity-checks accessor-level
       results (max index < vertex count per prim; quantized POSITION regions
       non-zero).
-- [ ] Quantized accessors in `buffers/attributes.rs`/`accessor.rs`: accept the new
+- [x] Quantized accessors in `buffers/attributes.rs`/`accessor.rs`: accept the new
       component types; normalized → f32 dequant; unnormalized positions left for
       node-TRS / IBM dequant (verify skinned IBM path). Regenerate tangents
       (MikkTSpace). Confirm `KHR_texture_transform` UVs.
+      ✅ 2026-07-13 — pleasant surprise: the conversion matrix in
+      `attributes.rs` ALREADY covers every quantized type (u8/i8/u16/i16,
+      normalized→f32 with the standard divisors + snorm clamp, unnormalized→
+      integer promotion), `accessor_to_bytes` already destrides (meshopt's
+      stride%4 padding around VEC3<i16>/VEC3<i8> handled), `skin.rs` already
+      takes ubyte JOINTS + ubyte-normalized WEIGHTS, `index.rs` takes ushort.
+      The REAL gap found & fixed: **AABBs read accessor min/max raw** — for
+      normalized-i16 POSITION those are integers up to ±32767, inflating
+      bounds ~32,767× (culling/LOD radii/framing). New shared
+      `aabb::position_min_max` dequantizes per component type; both readers
+      (`aabb.rs` + `populate/mesh.rs try_position_aabb`) use it; fixture test
+      locks the robot's document AABB to model scale. Skinned-IBM /
+      MikkTSpace-tangent / KHR_texture_transform verification = the
+      acceptance run (next task), on-device.
 - **Exit:** the two robots (meshopt+quant) import and render correctly in the
   editor — skinned, textured, GPU-compressed. Screenshot-verify both.
 

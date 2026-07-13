@@ -565,24 +565,8 @@ fn try_position_aabb(gltf_primitive: &gltf::Primitive<'_>) -> Option<Aabb> {
             }
         })?;
 
-    let min = positions_attribute.min()?;
-    let min = min.as_array()?;
-    let max = positions_attribute.max()?;
-    let max = max.as_array()?;
-
-    if min.len() != 3 || max.len() != 3 {
-        return None;
-    }
-
-    let min_x = min[0].as_f64()?;
-    let min_y = min[1].as_f64()?;
-    let min_z = min[2].as_f64()?;
-    let max_x = max[0].as_f64()?;
-    let max_y = max[1].as_f64()?;
-    let max_z = max[2].as_f64()?;
-
-    Some(Aabb {
-        min: Vec3::new(min_x as f32, min_y as f32, min_z as f32),
-        max: Vec3::new(max_x as f32, max_y as f32, max_z as f32),
-    })
+    // Shared reader dequantizes normalized-integer bounds
+    // (KHR_mesh_quantization) — raw min/max are in component-type units.
+    let (min, max) = crate::aabb::position_min_max(&positions_attribute)?;
+    Some(Aabb { min, max })
 }
