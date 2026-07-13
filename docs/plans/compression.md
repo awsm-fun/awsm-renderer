@@ -261,11 +261,26 @@ BC5/EAC-RG (in-shader Z reconstruct) is a Phase-6 opt. **Block dims multiple of
       256-byte row alignment is only a *buffer*-copy requirement;
       `queue.writeTexture` takes tight rows, so the Phase-2 upload path can
       skip the cubemap loader's padding staging entirely.
-- [ ] Compressed upload path in `renderer-core/src/texture/texture_pool.rs`
+- [x] Compressed upload path in `renderer-core/src/texture/texture_pool.rs`
       (`write_gpu`): block `write_texture` + pre-supplied mips; **bucket the
       texture-array pool by compressed format**; skip staging, `srgb_to_linear`
       compute, and compute mipgen (invalid on compressed). Add a `Compressed`
       `ImageData` variant.
+      ✅ 2026-07-13 — `ImageData::Compressed(Arc<CompressedImage>)` (format +
+      tight per-level byte buffers; `validate()` checks chain length & exact
+      per-mip byte sizes so bad transcoder output fails with a message, not a
+      GPU validation error; `write_to_texture_layer` uploads tight rows via
+      `writeTexture` — no 256-align staging). Pool: arrays auto-detect
+      compressed from format (key also carries the pre-supplied mip-chain
+      length so 1-level and full-chain images never share an array);
+      `write_gpu_compressed` = createTexture(mips=N, TEXTURE_BINDING|COPY_DST
+      [+COPY_SRC under texture-export]) + per-layer writeTexture. No encoder,
+      no staging textures, no external-image copy, no sRGB compute (warn if
+      requested — sRGB rides the `*UnormSrgb` format), no mipgen.
+      `ImageData::create_texture` also handles Compressed (single-texture
+      path). Uncompressed path untouched — browser-verified no-regression
+      (Fox renders textured in model-tests). On-device compressed
+      verification lands with the Phase-2 exit after format selection.
 - [ ] Format selection: caps + source codec + slot color-space + color-vs-normal
       → ladders above; RGBA8 last resort; multiple-of-4 guard.
 - **Exit:** a Basis KTX2 texture uploads in a native block format (GPU-readback /

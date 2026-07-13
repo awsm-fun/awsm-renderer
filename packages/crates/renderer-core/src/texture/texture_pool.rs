@@ -43,6 +43,11 @@ pub struct TexturePoolArray<ID> {
     pub width: u32,
     pub height: u32,
     pub mipmap: bool,
+    /// Block-compressed array (BC/ETC2/ASTC): layers upload verbatim via
+    /// `writeTexture` with their pre-supplied mip chains — no staging
+    /// textures, no `srgb_to_linear` compute, no compute mip-gen (all
+    /// invalid on compressed formats).
+    pub compressed: bool,
     pub images: Vec<(ID, ImageData, TextureColorInfo)>,
     pub gpu_dirty: bool,
     pub gpu_texture: Option<web_sys::GpuTexture>,
@@ -72,6 +77,10 @@ struct TexturePoolArrayKey {
     pub width: u32,
     pub height: u32,
     pub format: TextureFormatKey,
+    /// Pre-supplied mip level count for compressed images (they carry their
+    /// whole chain and can't share an array with a different-length chain);
+    /// 0 for uncompressed images, whose mips are computed per-array.
+    pub compressed_mip_levels: u32,
 }
 
 impl<ID: Eq + Hash + Clone> Default for TexturePool<ID> {
@@ -100,10 +109,19 @@ impl<ID: Eq + Hash + Clone> TexturePool<ID> {
     ) {
         let (width, height) = image.size();
 
+        // Compressed images bucket by their pre-supplied mip chain length
+        // too — arrays are created with a fixed mip_level_count, so a 1-level
+        // (no-mip) image can never share one with a full-chain image.
+        let compressed_mip_levels = image
+            .as_compressed()
+            .map(|c| c.levels.len() as u32)
+            .unwrap_or(0);
+
         let array_key = TexturePoolArrayKey {
             width,
             height,
             format: format.into(),
+            compressed_mip_levels,
         };
 
         let array = self
@@ -213,11 +231,15 @@ impl<ID: Eq + Hash + Clone> TexturePool<ID> {
 impl<ID> TexturePoolArray<ID> {
     /// Creates a new texture array for a format and size.
     pub fn new(format: TextureFormat, width: u32, height: u32) -> Self {
+        let compressed = crate::texture::block_format::is_block_compressed(format);
         Self {
             format,
             width,
             height,
-            mipmap: true,
+            // Compressed layers arrive with their whole mip chain; there is
+            // no compute mip-gen for block formats.
+            mipmap: !compressed,
+            compressed,
             images: Vec::new(),
             gpu_dirty: true,
             gpu_texture: None,
@@ -234,7 +256,15 @@ impl<ID> TexturePoolArray<ID> {
 
     /// Returns the mip level count for this array.
     pub fn mipmap_levels(&self) -> u32 {
-        if self.mipmap {
+        if self.compressed {
+            // Pre-supplied chain length (uniform across the array — the pool
+            // buckets compressed images by chain length).
+            self.images
+                .iter()
+                .find_map(|(_, image, _)| image.as_compressed())
+                .map(|c| c.levels.len() as u32)
+                .unwrap_or(1)
+        } else if self.mipmap {
             calculate_mipmap_levels(self.width, self.height)
         } else {
             1
@@ -245,6 +275,10 @@ impl<ID> TexturePoolArray<ID> {
     pub async fn write_gpu(&mut self, gpu: &AwsmRendererWebGpu) -> Result<()> {
         if !self.gpu_dirty {
             return Ok(());
+        }
+
+        if self.compressed {
+            return self.write_gpu_compressed(gpu);
         }
 
         let mipmap_levels = self.mipmap_levels();
@@ -398,6 +432,63 @@ impl<ID> TexturePoolArray<ID> {
 
         Ok(())
     }
+
+    /// Compressed-array upload: every layer's pre-supplied mip chain goes in
+    /// verbatim via `writeTexture` (a queue op — no encoder, no staging
+    /// textures, no external-image copy). The sRGB decode rides in the
+    /// `*UnormSrgb` texture format, and mips were supplied by the
+    /// transcoder/container, so neither compute pass applies.
+    fn write_gpu_compressed(&mut self, gpu: &AwsmRendererWebGpu) -> Result<()> {
+        let mipmap_levels = self.mipmap_levels();
+        let layers = self.images.len() as u32;
+
+        let dest_tex = gpu.create_texture(
+            &TextureDescriptor::new(
+                self.format,
+                Extent3d::new(self.width, Some(self.height), Some(layers)),
+                TEXTURE_USAGE_COMPRESSED.clone(),
+            )
+            .with_label("Texture Pool Array Dest (compressed)")
+            .with_mip_level_count(mipmap_levels)
+            .with_dimension(TextureDimension::N2d)
+            .into(),
+        )?;
+
+        for (index, (_, image, color)) in self.images.iter().enumerate() {
+            let compressed = image.as_compressed().ok_or_else(|| {
+                AwsmCoreError::CompressedImage(
+                    "non-compressed image in a block-format pool array".to_string(),
+                )
+            })?;
+            compressed.validate()?;
+            if color.srgb_to_linear {
+                // Not an error — but the flag is meaningless here and the
+                // compute pass will NOT run; sRGB-ness must come from the
+                // *UnormSrgb block format chosen at transcode time.
+                tracing::warn!(
+                    "srgb_to_linear requested for a compressed texture ({:?}); ignored — use an sRGB block format instead",
+                    self.format
+                );
+            }
+            compressed.write_to_texture_layer(gpu, &dest_tex, index as u32)?;
+        }
+
+        let dest_view = dest_tex
+            .create_view_with_descriptor(
+                &TextureViewDescriptor::new(Some("Texture Pool Array View (compressed)"))
+                    .with_dimension(TextureViewDimension::N2dArray)
+                    .with_array_layer_count(layers)
+                    .with_mip_level_count(mipmap_levels)
+                    .into(),
+            )
+            .map_err(AwsmCoreError::create_texture_view)?;
+
+        self.gpu_dirty = false;
+        self.gpu_texture = Some(dest_tex);
+        self.gpu_texture_view = Some(dest_view);
+
+        Ok(())
+    }
 }
 
 #[cfg(feature = "texture-export")]
@@ -428,3 +519,18 @@ static TEXTURE_USAGE_NO_MIPMAP: LazyLock<TextureUsage> = LazyLock::new(|| {
 #[cfg(not(feature = "texture-export"))]
 static TEXTURE_USAGE_NO_MIPMAP: LazyLock<TextureUsage> =
     LazyLock::new(|| TextureUsage::new().with_storage_binding().with_copy_dst());
+
+// Block-compressed formats support neither STORAGE_BINDING nor
+// RENDER_ATTACHMENT — sampling + upload only (plus COPY_SRC so the
+// texture-export/readback tooling can verify what actually landed on-GPU).
+#[cfg(feature = "texture-export")]
+static TEXTURE_USAGE_COMPRESSED: LazyLock<TextureUsage> = LazyLock::new(|| {
+    TextureUsage::new()
+        .with_texture_binding()
+        .with_copy_src()
+        .with_copy_dst()
+});
+
+#[cfg(not(feature = "texture-export"))]
+static TEXTURE_USAGE_COMPRESSED: LazyLock<TextureUsage> =
+    LazyLock::new(|| TextureUsage::new().with_texture_binding().with_copy_dst());
