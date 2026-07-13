@@ -112,6 +112,11 @@ pub enum BuiltinParamKind {
     /// strength enabled (it's a feature-gated extension; toggling it on/off
     /// recompiles, so a track animates the VALUE, not the feature). PBR only.
     EmissiveStrength,
+    /// SSR participation mask (scalar 0..1) — damp or kill the material's
+    /// received screen-space reflections without touching its gloss (a live
+    /// per-mesh uniform, so it is animatable: e.g. fade a floor's mirror
+    /// as fog rolls in). PBR only.
+    SsrMask,
     /// Alpha-test cutoff (`Mask` alpha mode threshold, scalar) — animate a
     /// dissolve / cutout. Applies only to a `Mask` material (no-op otherwise; the
     /// alpha MODE is a pipeline choice, not animatable). PBR only.

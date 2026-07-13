@@ -28,6 +28,7 @@ struct PbrMaterialHeaderRaw {
     emissive_factor_b: f32,
 
     debug_bitmask: u32,
+    ssr_mask: f32,
 
     // 12 u32 relative indices (word indices relative to header start)
     vertex_color_info_relative_index: u32,
@@ -65,6 +66,10 @@ struct PbrMaterial {
     emissive_factor: vec3<f32>,
 
     debug_bitmask: u32,
+    // SSR participation mask (0..1): multiplies the reflection descriptor's
+    // F0 — 0 opts out of receiving SSR entirely (IBL kept via the
+    // crossfade), fractional damps. Independent of roughness.
+    ssr_mask: f32,
 
     // absolute indices in global `materials` (0 == absent)
     vertex_color_info_index: u32,
@@ -98,8 +103,9 @@ struct PbrMaterial {
 // emissive_tex (5)
 // emissive_factor (3)
 // debug_bitmask (1)
-// = 39 words
-const PBR_CORE_WORDS: u32 = 39u;
+// ssr_mask (1)
+// = 40 words
+const PBR_CORE_WORDS: u32 = 40u;
 
 // Then we reserve 12 u32 indices right after the core:
 const PBR_FEATURE_INDEX_WORDS: u32 = 12u;
@@ -138,8 +144,9 @@ fn pbr_get_material(byte_offset: u32) -> PbrMaterial {
     let em_b = material_load_f32(base_index + 37u);
 
     let debug_bitmask = material_load_u32(base_index + 38u);
+    let ssr_mask = material_load_f32(base_index + 39u);
 
-    // 12 relative indices live immediately after the 38 core words:
+    // 12 relative indices live immediately after the core words:
     let fi = base_index + PBR_CORE_WORDS;
 
     let header = PbrMaterialHeaderRaw(
@@ -163,6 +170,7 @@ fn pbr_get_material(byte_offset: u32) -> PbrMaterial {
         em_r, em_g, em_b,
 
         debug_bitmask,
+        ssr_mask,
 
         material_load_u32(fi + 0u),  // vertex_color_info
         material_load_u32(fi + 1u),  // emissive_strength
@@ -199,6 +207,7 @@ fn pbr_get_material(byte_offset: u32) -> PbrMaterial {
         vec3<f32>(header.emissive_factor_r, header.emissive_factor_g, header.emissive_factor_b),
 
         debug_bitmask,
+        header.ssr_mask,
 
         abs_index(base_index, header.vertex_color_info_relative_index),
         abs_index(base_index, header.emissive_strength_relative_index),

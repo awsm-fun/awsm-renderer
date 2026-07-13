@@ -101,6 +101,26 @@ camera jitter.
    smoothing. Re-diagnose ON DEVICE before building anything — the reverted
    experiment predates the SSR fundamentals rework and the probe.
 
+## Per-material SSR receive mask (2026-07-13)
+
+`ssr_mask` (0..1, PBR-only, default 1.0) controls how strongly a surface
+RECEIVES screen-space reflections, decoupled from roughness/metallic:
+- The opaque pass bakes **Schlick fresnel × ssr_mask** into the reflection
+  descriptor rgb (ssr_pbr_descriptor; wgsl_validation pins it). Fresnel
+  lives in the DESCRIPTOR, not the trace — an F0-only mask is invisible at
+  grazing where Schlick's unmasked (1-F0) term dominates; baking the
+  finished fresnel makes fractional masks damp uniformly at every angle.
+- brdf_pbr's `ssr_ibl_keep` reads the SAME masked value, so `ssr_mask 0`
+  fully opts out of SSR while keeping IBL specular (an unmasked factor
+  black-holed masked mirrors).
+- Plumbing: PBR core word 39 (PBR_CORE_WORDS 40) · MaterialDef +
+  PbrMaterialColor field · set_builtin_param `ssr_mask` (MCP + editor
+  dispatch) · scene_mode inspector "SSR mask" row · animatable
+  (BuiltinParamKind/BuiltinMaterialParam::SsrMask, add-track row).
+- Zero-cost off: the whole descriptor path (fresnel bake included) sits
+  inside the `write_ssr_descriptor` axis.
+- Reference use: the jetpack arena floor ships `ssr_mask 0.7`.
+
 ## Post-sweep state (2026-07-13 evening — ..ea19b12c)
 
 Shipped beyond the roadmap above (details in git history; the standalone

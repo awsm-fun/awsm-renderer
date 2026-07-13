@@ -266,6 +266,7 @@ pub fn reseed_inline_for_material(
         seed!(normal_scale);
         seed!(occlusion_texture);
         seed!(occlusion_strength);
+        seed!(ssr_mask);
         seed!(double_sided);
         seed!(vertex_colors_enabled);
         seed!(alpha_mode);

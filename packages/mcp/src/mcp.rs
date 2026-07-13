@@ -767,6 +767,7 @@ pub enum BuiltinParamArg {
     Emissive,
     NormalScale,
     OcclusionStrength,
+    SsrMask,
     EmissiveStrength,
     AlphaCutoff,
     ToonDiffuseBands,
@@ -3672,7 +3673,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Set a built-in material factor on a mesh node's inline material. param: base_color (value = 3 floats RGB, OR 4 floats RGBA where the 4th is the base-color ALPHA — pair with set_builtin_alpha_mode blend for glass) | emissive (3 floats) | metallic | roughness | normal_scale | occlusion_strength (1 float). For KHR extension PARAMS (clearcoat, sheen, transmission, ior, ...) use patch_kind on mesh.material.inline.extensions — e.g. {\"mesh\":{\"material\":{\"inline\":{\"extensions\":{\"clearcoat\":{\"factor\":1.0,\"roughness_factor\":0.0}}}}}}. Extension ENABLES are owned by the library material (update_builtin_material) — inline params only take effect when the material enables the extension; an inline-only extension is dropped."
+        description = "Set a built-in material factor on a mesh node's inline material. param: base_color (value = 3 floats RGB, OR 4 floats RGBA where the 4th is the base-color ALPHA — pair with set_builtin_alpha_mode blend for glass) | emissive (3 floats) | metallic | roughness | normal_scale | occlusion_strength | ssr_mask (1 float; ssr_mask 0..1 scales how strongly the surface RECEIVES screen-space reflections — 0 fully opts the material out of SSR, IBL specular stays). For KHR extension PARAMS (clearcoat, sheen, transmission, ior, ...) use patch_kind on mesh.material.inline.extensions — e.g. {\"mesh\":{\"material\":{\"inline\":{\"extensions\":{\"clearcoat\":{\"factor\":1.0,\"roughness_factor\":0.0}}}}}}. Extension ENABLES are owned by the library material (update_builtin_material) — inline params only take effect when the material enables the extension; an inline-only extension is dropped."
     )]
     async fn set_builtin_param(
         &self,
@@ -3685,6 +3686,7 @@ impl EditorMcp {
             BuiltinParamArg::Emissive => BuiltinParamKind::Emissive,
             BuiltinParamArg::NormalScale => BuiltinParamKind::NormalScale,
             BuiltinParamArg::OcclusionStrength => BuiltinParamKind::OcclusionStrength,
+            BuiltinParamArg::SsrMask => BuiltinParamKind::SsrMask,
             BuiltinParamArg::EmissiveStrength => BuiltinParamKind::EmissiveStrength,
             BuiltinParamArg::AlphaCutoff => BuiltinParamKind::AlphaCutoff,
             BuiltinParamArg::ToonDiffuseBands => BuiltinParamKind::ToonDiffuseBands,

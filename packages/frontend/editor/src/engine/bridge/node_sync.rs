@@ -916,6 +916,7 @@ pub(crate) fn merged_builtin_def(
         emissive: inline.emissive,
         normal_scale: inline.normal_scale,
         occlusion_strength: inline.occlusion_strength,
+        ssr_mask: inline.ssr_mask,
         base_color_texture: tex(
             "base_color_texture",
             inline.base_color_texture,

@@ -39,6 +39,10 @@ struct PbrMaterialColor {
     iridescence: f32,
     iridescence_ior: f32,
     iridescence_thickness: f32,
+    // Per-material SSR receive mask (0 = opted out of screen-space
+    // reflections; brdf_pbr's IBL-suppression must track it so a masked
+    // mirror keeps its IBL specular instead of going black).
+    ssr_mask: f32,
 };
 
 fn pbr_debug_material_color(material: PbrMaterial, color: PbrMaterialColor) -> vec3<f32> {

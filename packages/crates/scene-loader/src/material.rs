@@ -96,6 +96,7 @@ pub fn material_to_pbr(
     pbr.emissive_factor = def.emissive;
     pbr.normal_scale = def.normal_scale;
     pbr.occlusion_strength = def.occlusion_strength;
+    pbr.ssr_mask = def.ssr_mask;
     if def.vertex_colors_enabled {
         pbr.vertex_color_info = Some(awsm_renderer::materials::pbr::PbrMaterialVertexColorInfo {
             set_index: vertex_color_set.unwrap_or(0),

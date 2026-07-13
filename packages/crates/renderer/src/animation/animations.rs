@@ -666,6 +666,10 @@ impl AwsmRenderer {
                         Material::Pbr(p) => Some(AnimationData::F32(p.normal_scale)),
                         _ => None,
                     },
+                    BuiltinMaterialParam::SsrMask => match m {
+                        Material::Pbr(p) => Some(AnimationData::F32(p.ssr_mask)),
+                        _ => None,
+                    },
                     BuiltinMaterialParam::OcclusionStrength => match m {
                         Material::Pbr(p) => Some(AnimationData::F32(p.occlusion_strength)),
                         _ => None,
@@ -992,6 +996,7 @@ impl AwsmRenderer {
             | BuiltinMaterialParam::Roughness
             | BuiltinMaterialParam::NormalScale
             | BuiltinMaterialParam::OcclusionStrength
+            | BuiltinMaterialParam::SsrMask
             | BuiltinMaterialParam::EmissiveStrength
             | BuiltinMaterialParam::AlphaCutoff
             | BuiltinMaterialParam::ToonDiffuseBands
@@ -1010,6 +1015,7 @@ impl AwsmRenderer {
                         BuiltinMaterialParam::Roughness => pbr.roughness_factor = scalar,
                         BuiltinMaterialParam::NormalScale => pbr.normal_scale = scalar,
                         BuiltinMaterialParam::OcclusionStrength => pbr.occlusion_strength = scalar,
+                        BuiltinMaterialParam::SsrMask => pbr.ssr_mask = scalar.clamp(0.0, 1.0),
                         // Animate the VALUE only when the feature is already enabled
                         // (toggling it on/off would change the compiled feature set).
                         BuiltinMaterialParam::EmissiveStrength => {

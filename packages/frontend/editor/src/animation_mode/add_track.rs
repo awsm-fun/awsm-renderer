@@ -539,6 +539,15 @@ fn mesh_material_rows(node: crate::engine::scene::NodeId) -> Vec<PropRow> {
         PropRow {
             target: TrackTarget::BuiltinParam {
                 node,
+                param: BuiltinParamKind::SsrMask,
+            },
+            label: "SSR Mask".into(),
+            badge: Some("BUILTIN"),
+            hint: "f32 \u{00b7} builtin".into(),
+        },
+        PropRow {
+            target: TrackTarget::BuiltinParam {
+                node,
                 param: BuiltinParamKind::Emissive,
             },
             label: "Emissive".into(),

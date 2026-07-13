@@ -38,6 +38,14 @@ pub struct PbrMaterial {
     /// Debug settings.
     pub debug: PbrMaterialDebug,
 
+    /// SSR participation mask (0..1, default 1). Multiplies the reflection
+    /// descriptor's F0 before it is written: 0 fully opts this material out
+    /// of RECEIVING screen-space/BVH/probe reflections (IBL specular is
+    /// kept automatically — the SSR<->IBL crossfade reads the same masked
+    /// value), fractional values damp them artistically. Decouples "how
+    /// glossy it looks" (roughness) from "does SSR own its reflection".
+    pub ssr_mask: f32,
+
     // Non-core features and extensions
     pub vertex_color_info: Option<PbrMaterialVertexColorInfo>,
     pub emissive_strength: Option<PbrMaterialEmissiveStrength>,
@@ -415,6 +423,7 @@ impl PbrMaterial {
             anisotropy: None,
             iridescence: None,
             debug: PbrMaterialDebug::None,
+            ssr_mask: 1.0,
             alpha_mode,
             double_sided,
         }
@@ -570,6 +579,9 @@ impl MaterialShader for PbrMaterial {
         write(data, self.emissive_factor[2].into());
 
         write(data, self.debug.bitmask().into());
+        // ssr_mask rides at the END of the core header (word 39) so no
+        // existing offset shifts — see PBR_CORE_WORDS in pbr_material.wgsl.
+        write(data, self.ssr_mask.into());
 
         // Feature indices.
         #[derive(Default, Debug)]

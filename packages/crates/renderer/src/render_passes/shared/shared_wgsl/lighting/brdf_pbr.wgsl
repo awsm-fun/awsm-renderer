@@ -339,14 +339,20 @@ fn brdf_ibl_with_transmission(
     // the skybox env fallback on a miss. Adding the prefiltered-env IBL
     // specular on top would double-count the environment (washed-out mirror
     // images), so scale it down by the reflectivity actually handed to SSR.
-    // `ssr_f0`/`ssr_spread` mirror `ssr_pbr_descriptor` in compute.wgsl (the
-    // exact values the descriptor stores): F0 = mix(0.04, base, metallic),
-    // spread = raw GGX roughness (NOT the 0.04-floored `roughness` above —
-    // a mirror's spread is exactly 0). Mirrors (spread 0, mask→1) fully
-    // suppress; by spread ≥ SSR_SPREAD_GATE the IBL specular is fully back
-    // (matching the resolve/temporal ramps); diffuse IBL is untouched.
+    // `ssr_fresnel`/`ssr_spread` mirror `ssr_pbr_descriptor` in compute.wgsl
+    // (the exact value the descriptor stores): Schlick fresnel at the shading
+    // n·v times the material's ssr_mask; spread = raw GGX roughness (NOT the
+    // 0.04-floored `roughness` above — a mirror's spread is exactly 0).
+    // The mask MUST be in this factor: suppression tracks what SSR actually
+    // adds, and an unmasked factor would kill IBL specular on ssr_mask=0
+    // mirrors that SSR no longer covers (black-mirror bug). Mirrors (spread
+    // 0, fresnel→1) fully suppress; by spread ≥ SSR_SPREAD_GATE the IBL
+    // specular is fully back (matching the resolve/temporal ramps); diffuse
+    // IBL is untouched.
     let ssr_f0 = mix(vec3<f32>(0.04), base_color, metallic);
-    let ssr_mask_factor = max(ssr_f0.r, max(ssr_f0.g, ssr_f0.b));
+    let ssr_fresnel = (ssr_f0 + (vec3<f32>(1.0) - ssr_f0) * pow(1.0 - n_dot_v, 5.0))
+        * clamp(color.ssr_mask, 0.0, 1.0);
+    let ssr_mask_factor = max(ssr_fresnel.r, max(ssr_fresnel.g, ssr_fresnel.b));
     let ssr_spread = saturate(color.metallic_roughness.y);
     let ssr_ibl_keep = 1.0 - ssr_mask_factor * (1.0 - smoothstep(SSR_SPREAD_GATE, SSR_SPREAD_CUTOFF, ssr_spread));
     {% endif %}

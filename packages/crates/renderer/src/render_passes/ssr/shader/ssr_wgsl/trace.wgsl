@@ -85,7 +85,7 @@ struct SsrParams {
 @group(0) @binding(4) var color_tex: texture_2d<f32>;
 @group(0) @binding(5) var out_tex: texture_storage_2d<rgba16float, write>;
 // M2a: material-owned reflection descriptor (single-sample, full-res). RGB =
-// reflectivity color (ssr_mask * ssr_tint; 0 = surface opts out), A = ssr_spread
+// fresnel-weighted reflectivity (Schlick × ssr_mask; 0 = opts out), A = ssr_spread
 // (0 mirror … 1 diffuse). Written by `material_opaque`.
 @group(0) @binding(6) var reflection_descriptor_tex: texture_2d<f32>;
 {% if hzb %}
@@ -214,9 +214,9 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
 
-    // M2a: material-owned reflectance. `reflectivity` folds mask*tint (0 = this
-    // surface opts out of SSR entirely); `spread` is the reflection blur (0
-    // mirror … 1 diffuse).
+    // M2a: material-owned reflectance. `reflectivity` is the baked
+    // Schlick-fresnel × ssr_mask (0 = this surface opts out of SSR
+    // entirely); `spread` is the reflection blur (0 mirror … 1 diffuse).
     let descriptor = textureLoad(reflection_descriptor_tex, fcoords, 0);
     let reflectivity = descriptor.rgb;
     let spread = descriptor.a;
@@ -618,13 +618,14 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 {% endif %}
 
-    // Schlick Fresnel with the material's specular F0 (vec3): dielectrics
-    // (F0≈0.04) are weak at normal incidence and ramp to white at grazing;
-    // metals (F0=base color) reflect strongly and tinted at all angles.
-    // Computed for hit AND miss — the environment fallback below is
-    // Fresnel-weighted exactly like a screen-space hit.
-    let f0 = reflectivity;
-    let fresnel = f0 + (vec3<f32>(1.0) - f0) * pow(1.0 - max(dot(n, v), 0.0), 5.0);
+    // Fresnel-weighted reflectivity: the descriptor rgb ALREADY carries
+    // Schlick fresnel × ssr_mask, baked by the opaque pass at the same
+    // geometry normal / view this trace reconstructs (ssr_pbr_descriptor in
+    // compute.wgsl). Consume it directly — recomputing Schlick here from a
+    // masked F0 would let the unmasked (1-F0) grazing term erase fractional
+    // ssr_mask damping at grazing angles. Applies to hit AND miss — the
+    // environment fallback below is weighted exactly like a screen-space hit.
+    let fresnel = reflectivity;
 
     // ENVIRONMENT FALLBACK (wgsl_validation pins the skybox sample): a MISS —
     // the ray left the screen, exhausted its budget, or crossed only sky —

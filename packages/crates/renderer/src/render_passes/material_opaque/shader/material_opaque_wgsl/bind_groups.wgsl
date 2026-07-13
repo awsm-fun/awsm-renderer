@@ -82,7 +82,7 @@ struct ClassifyBuckets {
 @group(0) @binding(23) var<storage, read> extras_pool: array<u32>;
 
 // M2a: material-owned SSR reflection descriptor output. Each material kernel
-// stores vec4(ssr_mask * ssr_tint, ssr_spread) per pixel at sample 0; the SSR
+// stores vec4(Schlick fresnel × ssr_mask, ssr_spread) per pixel at sample 0; the SSR
 // pass reads it (RGB = reflectivity color / 0 = opt out, A = spread). Always
 // present (both AA layouts) so the binding index is stable regardless of the
 // MSAA-gated prep_edge_shadow that follows.

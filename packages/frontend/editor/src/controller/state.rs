@@ -7591,6 +7591,10 @@ fn read_readback_target(
                     Material::Pbr(p) => json!(p.metallic_factor),
                     _ => serde_json::Value::Null,
                 },
+                P::SsrMask => match m {
+                    Material::Pbr(p) => json!(p.ssr_mask),
+                    _ => serde_json::Value::Null,
+                },
                 P::Roughness => match m {
                     Material::Pbr(p) => json!(p.roughness_factor),
                     _ => serde_json::Value::Null,
@@ -8018,6 +8022,10 @@ fn patch_builtin_param(
         },
         P::OcclusionStrength => match value.first() {
             Some(&v) => inline.occlusion_strength = v,
+            None => return false,
+        },
+        P::SsrMask => match value.first() {
+            Some(&v) => inline.ssr_mask = v.clamp(0.0, 1.0),
             None => return false,
         },
         P::EmissiveStrength => match value.first() {

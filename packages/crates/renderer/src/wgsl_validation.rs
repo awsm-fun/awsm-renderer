@@ -345,6 +345,29 @@ fn ssr_ibl_suppression_gated_on_descriptor_axis() {
             "{label}: descriptor reflectivity must be scaled by the material's \
              MSAA sample coverage (ssr_descriptor_coverage)"
         );
+        // Per-material SSR receive mask: the descriptor rgb must be the FULL
+        // Schlick fresnel (baked at the shading n·v) times the material's
+        // ssr_mask (word 39 of the PBR core header). Masking F0 alone is NOT
+        // enough — the trace's unmasked (1-F0) grazing term would erase
+        // fractional damping at grazing angles. ssr_mask=0 zeroes the
+        // descriptor (rgb < 1/255 = SSR opt-out) and the brdf_pbr suppression
+        // below reads the same masked value so IBL specular is kept.
+        assert!(
+            src.contains(
+                "let fresnel = f0 + (vec3<f32>(1.0) - f0) * pow(1.0 - saturate(n_dot_v), 5.0);"
+            ) && src.contains("fresnel * clamp(ssr_mask, 0.0, 1.0)")
+                && src.contains("pbr_material.ssr_mask,"),
+            "{label}: the reflection descriptor must bake Schlick fresnel and scale it \
+             by the material's ssr_mask"
+        );
+        // ...and the IBL suppression factor must carry the SAME mask — an
+        // unmasked factor kills IBL specular on ssr_mask=0 mirrors that SSR
+        // no longer covers (black-mirror bug).
+        assert!(
+            src.contains("* clamp(color.ssr_mask, 0.0, 1.0)"),
+            "{label}: brdf_pbr's ssr_ibl_keep factor must be scaled by the material's \
+             ssr_mask"
+        );
 
         // OFF: the identical key without the axis must not reference any of it.
         let off_key = first_party_key(MaterialShaderId::PBR, ShadingBase::Pbr, false, msaa, mips);

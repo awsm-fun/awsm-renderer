@@ -194,7 +194,7 @@ fn cs_opaque(
 
     {% if write_ssr_descriptor %}
     // M2a: material-owned SSR reflection descriptor. RGB = reflectivity color
-    // (ssr_mask * ssr_tint; 0 = this surface opts out of SSR), A = ssr_spread
+    // (Schlick fresnel × ssr_mask; 0 = this surface opts out of SSR), A = ssr_spread
     // (0 mirror … 1 diffuse). Defaults to "no reflection"; the PBR arm below
     // opts in. Stored once per pixel at sample 0 beside the HDR write. Compiled
     // out entirely when SSR is off (write_ssr_descriptor = false).
@@ -312,14 +312,15 @@ fn cs_opaque(
         {% endif %}
         base_alpha = material_color.base.a;
         {% if write_ssr_descriptor %}
-        // M2a/M2b: PBR opts into SSR by writing its specular reflectance F0 —
-        // dielectrics ~0.04 grey (weak at normal, →white at grazing via Schlick
-        // in the SSR pass), metals = base color (strong, tinted). The GGX
-        // roughness maps to reflection spread (0 mirror … 1 diffuse blur).
+        // M2a/M2b: PBR opts into SSR by writing its fresnel-weighted
+        // reflectivity (Schlick at the geometry n·v — the same normal/view
+        // the trace reconstructs — times ssr_mask; see ssr_pbr_descriptor).
         let ssr_desc = ssr_pbr_descriptor(
             material_color.base.rgb,
             material_color.metallic_roughness.x,
             material_color.metallic_roughness.y,
+            pbr_material.ssr_mask,
+            saturate(dot(world_normal, standard_coordinates.surface_to_camera)),
         );
         ssr_reflectivity = ssr_desc.rgb;
         ssr_spread = ssr_desc.a;
@@ -489,13 +490,30 @@ fn ssr_descriptor_coverage(coords: vec2<i32>, mat_offset: u32) -> f32 {
     {% endif %}
 }
 
-// M2a/M2b: the PBR SSR reflection descriptor — RGB = specular reflectance F0
-// (dielectrics ~0.04 grey, ramping to white at grazing via Schlick in the SSR
-// pass; metals = base color, strong + tinted), A = GGX roughness mapped to
-// reflection spread (0 mirror … 1 diffuse). Single source of truth for the
-// three shading arms (cs_opaque / shade_sample / cs_shade interior).
-fn ssr_pbr_descriptor(base_rgb: vec3<f32>, metallic: f32, roughness: f32) -> vec4<f32> {
-    return vec4<f32>(mix(vec3<f32>(0.04), base_rgb, metallic), roughness);
+// M2a/M2b: the PBR SSR reflection descriptor — RGB = the FULL per-pixel
+// reflectivity the SSR pass multiplies its reflection by: Schlick fresnel
+// (F0 = mix(0.04, base, metallic) at the shading n·v) times the material's
+// ssr_mask. Fresnel is baked HERE, not in the trace: a mask applied to F0
+// alone is invisible at grazing (Schlick's (1-F0) term dominates and is
+// unmasked), so fractional ssr_mask must scale the finished fresnel to damp
+// the reflection uniformly at every angle. 0 = fully opted out (trace + bvh
+// skip the pixel; brdf_pbr keeps IBL specular because its suppression reads
+// the same masked value). A = GGX roughness mapped to reflection spread
+// (0 mirror … 1 diffuse). Single source of truth for the three shading arms
+// (cs_opaque / shade_sample / cs_shade interior).
+fn ssr_pbr_descriptor(
+    base_rgb: vec3<f32>,
+    metallic: f32,
+    roughness: f32,
+    ssr_mask: f32,
+    n_dot_v: f32,
+) -> vec4<f32> {
+    let f0 = mix(vec3<f32>(0.04), base_rgb, metallic);
+    let fresnel = f0 + (vec3<f32>(1.0) - f0) * pow(1.0 - saturate(n_dot_v), 5.0);
+    return vec4<f32>(
+        fresnel * clamp(ssr_mask, 0.0, 1.0),
+        roughness,
+    );
 }
 {% endif %}
 
@@ -602,7 +620,7 @@ fn shade_sample(
 
     {% if write_ssr_descriptor %}
     // M2a: material-owned SSR reflection descriptor. RGB = reflectivity color
-    // (ssr_mask * ssr_tint; 0 = this surface opts out of SSR), A = ssr_spread
+    // (Schlick fresnel × ssr_mask; 0 = this surface opts out of SSR), A = ssr_spread
     // (0 mirror … 1 diffuse). Defaults to "no reflection"; the PBR arm below
     // opts in. Stored once per pixel at sample 0 beside the HDR write. Compiled
     // out entirely when SSR is off (write_ssr_descriptor = false).
@@ -701,14 +719,15 @@ fn shade_sample(
         {% endif %}
         base_alpha = material_color.base.a;
         {% if write_ssr_descriptor %}
-        // M2a/M2b: PBR opts into SSR by writing its specular reflectance F0 —
-        // dielectrics ~0.04 grey (weak at normal, →white at grazing via Schlick
-        // in the SSR pass), metals = base color (strong, tinted). The GGX
-        // roughness maps to reflection spread (0 mirror … 1 diffuse blur).
+        // M2a/M2b: PBR opts into SSR by writing its fresnel-weighted
+        // reflectivity (Schlick at this SAMPLE's geometry n·v times ssr_mask;
+        // see ssr_pbr_descriptor).
         let ssr_desc = ssr_pbr_descriptor(
             material_color.base.rgb,
             material_color.metallic_roughness.x,
             material_color.metallic_roughness.y,
+            pbr_material.ssr_mask,
+            saturate(dot(sample_normal, standard_coordinates.surface_to_camera)),
         );
         ssr_reflectivity = ssr_desc.rgb;
         ssr_spread = ssr_desc.a;
@@ -1054,6 +1073,8 @@ fn cs_shade(
                 material_color.base.rgb,
                 material_color.metallic_roughness.x,
                 material_color.metallic_roughness.y,
+                pbr_material.ssr_mask,
+                saturate(dot(world_normal, standard_coordinates.surface_to_camera)),
             );
             ssr_reflectivity = ssr_desc.rgb;
             ssr_spread = ssr_desc.a;

@@ -2026,6 +2026,26 @@ fn material_editor(node: &Arc<Node>, mat: &MaterialDef, _has_custom: bool) -> Do
                 })
                 .render(),
         ));
+        let n = node.clone();
+        sec = sec.child(row(
+            "SSR mask",
+            NumField::new(mat.ssr_mask as f64)
+                .min(0.0)
+                .max(1.0)
+                .step(0.05)
+                .on_change(move |v| {
+                    if let Some(cur) = current_primitive_material(&n) {
+                        set_inline_material(
+                            &n,
+                            MaterialDef {
+                                ssr_mask: v as f32,
+                                ..cur
+                            },
+                        );
+                    }
+                })
+                .render(),
+        ));
         // Normal-map scale + occlusion strength — per-mesh uniforms, shown only
         // when the assigned material declares the corresponding texture slot.
         if let Some(variant) = assigned_builtin_def(node) {
