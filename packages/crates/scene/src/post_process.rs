@@ -159,7 +159,11 @@ fn default_ssr_spread_cutoff() -> f32 {
     0.6
 }
 fn default_ssr_edge_fade() -> f32 {
-    0.1
+    // 0.04, matching the RENDERER default (renderer/src/post_process.rs) —
+    // these diverged when the "reclaim the periphery" retune changed only
+    // the renderer side, so every authored scene silently pinned the old
+    // 0.1 dead-band and the tuned default never shipped.
+    0.04
 }
 fn default_ssr_resolution_scale() -> f32 {
     0.5

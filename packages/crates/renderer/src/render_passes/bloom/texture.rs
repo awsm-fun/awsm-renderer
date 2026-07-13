@@ -64,6 +64,13 @@ pub struct BloomTexture {
 }
 
 impl BloomTexture {
+    /// Release both GPU mip pyramids. Called by the pass's resize path —
+    /// the texture handles are otherwise only dropped via JS GC.
+    pub fn destroy(self) {
+        self.texture.destroy();
+        self.texture_up.destroy();
+    }
+
     pub fn new(gpu: &AwsmRendererWebGpu, view_width: u32, view_height: u32) -> Result<Self> {
         // mip 0 is half-res (the classic bloom prefilter downsample).
         let base_width = (view_width / 2).max(1);

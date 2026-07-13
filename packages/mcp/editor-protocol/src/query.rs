@@ -150,12 +150,17 @@ pub struct ProjectSnapshot {
     pub units: String,
 }
 
-/// Read-only view of the scene environment's three slots.
+/// Read-only view of the scene environment's three slots + reflection probe.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EnvironmentSnapshot {
     pub skybox: EnvSlotSnapshot,
     pub specular: EnvSlotSnapshot,
     pub irradiance: EnvSlotSnapshot,
+    /// Box-projected reflection probe (serialized `ReflectionProbe` — was
+    /// WRITE-ONLY over MCP before this field: a probe change couldn't be
+    /// verified or discovered by an agent).
+    #[serde(default)]
+    pub probe: crate::ReflectionProbe,
 }
 
 /// Read-only view of one environment slot. `kind` is `"builtin"` (the default

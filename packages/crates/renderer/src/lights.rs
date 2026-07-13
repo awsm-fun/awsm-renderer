@@ -513,7 +513,7 @@ impl Lights {
                 None
             };
 
-            // Fixed 48-byte block — stack array, no per-frame heap allocation.
+            // Fixed 80-byte block — stack array, no per-frame heap allocation.
             let mut data = [0u8; Self::INFO_SIZE];
             data[0..4].copy_from_slice(&(self.lights.len() as u32).to_ne_bytes());
             data[4..8].copy_from_slice(&self.ibl.prefiltered_env.mip_count.to_ne_bytes());

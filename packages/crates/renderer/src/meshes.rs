@@ -176,6 +176,7 @@ impl AwsmRenderer {
     pub fn set_mesh_hidden(&mut self, mesh_key: MeshKey, hidden: bool) -> crate::error::Result<()> {
         let mesh = self.meshes.get_mut(mesh_key)?;
         mesh.hidden = hidden;
+        self.meshes.bvh_tlas_revision += 1;
         self.sync_spatial_for_mesh(mesh_key);
         Ok(())
     }
@@ -186,6 +187,7 @@ impl AwsmRenderer {
     pub fn set_mesh_hud(&mut self, mesh_key: MeshKey, hud: bool) -> crate::error::Result<()> {
         let mesh = self.meshes.get_mut(mesh_key)?;
         mesh.hud = hud;
+        self.meshes.bvh_tlas_revision += 1;
         if hud {
             // T2.6: first HUD usage flips the sticky flag so the next
             // `RenderTextures::views` allocates the HUD depth
@@ -711,6 +713,12 @@ pub struct Meshes {
     /// `remove` alongside the shared resource; GPU upload happens on the SSR
     /// path only while `ssr.bvh_reflections` is enabled.
     pub bvh: crate::bvh::BvhStore,
+    /// Monotonic revision for everything the software-BVH TLAS depends on:
+    /// mesh add/remove/rewire, hidden/HUD flips, transform updates, and
+    /// BLAS store changes. `render.rs` rebuilds + re-uploads the TLAS only
+    /// when this moves — a static scene costs ZERO TLAS work per frame
+    /// (house standard: no idle rebuilds/uploads).
+    pub bvh_tlas_revision: u64,
     // buffer infos
     pub buffer_infos: MeshBufferInfos,
     // meta
@@ -811,6 +819,7 @@ impl Meshes {
             list: DenseSlotMap::with_key(),
             resources: DenseSlotMap::with_key(),
             bvh: crate::bvh::BvhStore::new(gpu)?,
+            bvh_tlas_revision: 1,
             geometries: DenseSlotMap::with_key(),
             mesh_to_geometry: SecondaryMap::new(),
             geometry_to_meshes: SecondaryMap::new(),
@@ -1215,14 +1224,19 @@ impl Meshes {
                 resource.refcount = bound.len();
             }
 
-            // Software-BVH BLAS for reflections: STATIC meshes only (a
-            // skinned mesh's rest pose would reflect frozen limbs); built
-            // here because this is the last moment the CPU-side positions/
-            // indices exist. Capped inside `add` — over-cap meshes simply
-            // stay on the SSR/probe path.
-            if source.skin_key.is_none() && !source.indices.is_empty() {
+            // Software-BVH BLAS for reflections: STATIC meshes only — a
+            // skinned mesh's rest pose would reflect frozen limbs, and a
+            // geometry-morphed mesh would reflect its frozen base pose (the
+            // same rationale). Built here because this is the last moment
+            // the CPU-side positions/indices exist. Capped inside `add` —
+            // over-cap meshes simply stay on the SSR/probe path.
+            if source.skin_key.is_none()
+                && source.geometry_morph_key.is_none()
+                && !source.indices.is_empty()
+            {
                 self.bvh
                     .add(resource_key, &source.positions, &source.indices);
+                self.bvh_tlas_revision += 1;
             }
 
             // Wire every bound mesh to the shared resource (flags + meta).
@@ -1469,6 +1483,8 @@ impl Meshes {
         materials: &Materials,
         transforms: &Transforms,
     ) -> Result<()> {
+        // A mesh (re)bound to a resource/material is a TLAS instance change.
+        self.bvh_tlas_revision += 1;
         let (
             resource_aabb,
             buffer_info_key,
@@ -1894,6 +1910,12 @@ impl Meshes {
 
         let mut touched = std::mem::take(&mut self.touched_spare);
         touched.clear();
+
+        // Any moved transform can move a TLAS instance — one bump covers
+        // the frame (the TLAS rebuild reads every instance anyway).
+        if !dirty_transforms.is_empty() || !dirty_instances.is_empty() {
+            self.bvh_tlas_revision += 1;
+        }
 
         // This doesn't mark anything as dirty, it just updates the world AABB for frustum culling and depth sorting
         for transform_key in update_keys {
@@ -2651,6 +2673,7 @@ impl Meshes {
                         self.visibility_geometry_index_buffers.remove(resource_key);
                         self.transparency_geometry_data_buffers.remove(resource_key);
                         self.bvh.remove(resource_key);
+                        self.bvh_tlas_revision += 1;
 
                         self.mesh_geometry_pool_dirty = true;
                         self.visibility_geometry_index_dirty = true;
@@ -2703,6 +2726,14 @@ impl Meshes {
         out.clear();
         let mut count: u32 = 0;
         for (mesh_key, mesh) in self.list.iter() {
+            // Hidden meshes must not reflect: the primary render and the
+            // shadow pass both skip them, and discrete LOD keeps every
+            // non-selected level loaded-but-hidden — without this filter a
+            // mirror shows ALL LOD levels at once (and editor-hidden
+            // objects). HUD overlays aren't world geometry either.
+            if mesh.hidden || mesh.hud {
+                continue;
+            }
             let Some(&resource_key) = self.mesh_to_resource.get(mesh_key) else {
                 continue;
             };

@@ -42,10 +42,13 @@ const NODE_BYTES: usize = 32;
 const TRI_BYTES: usize = 48;
 /// Leaf size — small leaves keep traversal shallow without exploding nodes.
 const LEAF_TRIS: usize = 4;
-/// The WGSL traversal stack is `array<u32, 28>`; the builder never emits a
-/// tree deeper than this (median splits on ≤ MAX_TRIS_PER_MESH tris are
-/// ~log2(64k/4) ≈ 14 deep; the cap is a hard safety net, not a tuning knob).
-const MAX_DEPTH: usize = 28;
+/// The WGSL traversal stack is `array<u32, 28>` and its push guard drops
+/// children when `sp >= 26` — so the builder must never emit internal nodes
+/// past depth 24 (a depth-d internal node's children push at sp ≤ d+1).
+/// Median splits on ≤ MAX_TRIS_PER_MESH tris are ~log2(64k/4) ≈ 14 deep in
+/// practice; the cap is a hard safety net that now actually honors the
+/// traversal contract instead of merely gesturing at it.
+const MAX_DEPTH: usize = 24;
 
 /// GPU TLAS instance layout (112 bytes, matches `BvhInstance` in
 /// `ssr_wgsl/bvh_trace.wgsl`): inv_world mat4 + emissive vec4 +
@@ -56,6 +59,12 @@ pub const INSTANCE_BYTES: usize = 112;
 pub struct BvhStore {
     nodes: DynamicStorageBuffer<MeshResourceKey>,
     tris: DynamicStorageBuffer<MeshResourceKey>,
+    /// Exact stored triangle count per key. The budget accounting MUST use
+    /// this, not `tris.size(key)` — the buddy allocator rounds allocations
+    /// up to a power of two, so subtracting the allocated size on remove
+    /// drifts `total_tris` toward zero over import/delete churn and quietly
+    /// disarms the `MAX_TOTAL_TRIS` guard.
+    tri_counts: slotmap::SecondaryMap<MeshResourceKey, usize>,
     /// Total triangles stored (across all BLASes) — the byte-cap guard.
     total_tris: usize,
     nodes_dirty: bool,
@@ -84,6 +93,7 @@ impl BvhStore {
         Ok(Self {
             nodes,
             tris,
+            tri_counts: slotmap::SecondaryMap::new(),
             total_tris: 0,
             nodes_dirty: false,
             tris_dirty: false,
@@ -129,14 +139,15 @@ impl BvhStore {
             self.tris.remove(key);
             return;
         }
+        self.tri_counts.insert(key, tri_count);
         self.total_tris += tri_count;
         self.nodes_dirty = true;
         self.tris_dirty = true;
     }
 
     pub fn remove(&mut self, key: MeshResourceKey) {
-        if let Some(size) = self.tris.size(key) {
-            self.total_tris = self.total_tris.saturating_sub(size / TRI_BYTES);
+        if let Some(count) = self.tri_counts.remove(key) {
+            self.total_tris = self.total_tris.saturating_sub(count);
         }
         self.nodes.remove(key);
         self.tris.remove(key);
@@ -274,8 +285,6 @@ fn build_blas(positions: &[[f32; 3]], indices: &[u32]) -> (Vec<u8>, Vec<u8>) {
     let mut nodes: Vec<Node> = Vec::with_capacity(tri_count / LEAF_TRIS * 2 + 1);
     let mut order: Vec<u32> = Vec::with_capacity(tri_count);
 
-    // Iterative split via an explicit stack of (range, node_index, depth).
-    let mut ranges: Vec<(usize, usize)> = Vec::new(); // parallel to created nodes needing children
     fn bounds(tris: &[BuildTri], lo: usize, hi: usize) -> ([f32; 3], [f32; 3]) {
         let (mut mn, mut mx) = ([f32::MAX; 3], [f32::MIN; 3]);
         for t in &tris[lo..hi] {
@@ -298,15 +307,11 @@ fn build_blas(positions: &[[f32; 3]], indices: &[u32]) -> (Vec<u8>, Vec<u8>) {
         b: 0,
     });
     stack.push((0, tris.len(), 0, 0));
-    let _ = &mut ranges;
 
     while let Some((lo, hi, ni, depth)) = stack.pop() {
         let count = hi - lo;
         if count <= LEAF_TRIS || depth >= MAX_DEPTH {
             let first = order.len() as u32;
-            for t in &tris[lo..hi] {
-                let _ = t;
-            }
             for k in lo..hi {
                 order.push(k as u32);
             }

@@ -179,7 +179,7 @@ impl ClusterPaging {
         // every frame without allocating).
         let graph = GroupGraph::build(&pages);
         let gs = graph.stats();
-        tracing::info!(
+        tracing::debug!(
             "cluster paging: group graph — {} groups over {} clusters ({} roots, {} leaves, \
              {} parentless groups) [20b-iv-b-2c]",
             gs.groups,

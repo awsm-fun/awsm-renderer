@@ -650,13 +650,20 @@ impl AwsmRenderer {
             // awaited on the first enable).
             if let Some(ssr) = self.render_passes.ssr.as_mut() {
                 if self.post_processing.ssr.bvh_reflections {
-                    bvh_instances = self.meshes.build_bvh_tlas(
-                        &self.transforms,
-                        &self.materials,
-                        &mut ssr.tlas.scratch,
-                    );
-                    ssr.tlas.write(&self.gpu)?;
-                    bvh_buffers_recreated |= ssr.tlas.recreated;
+                    // Rebuild + upload only when something the TLAS depends
+                    // on actually changed (transforms, mesh set, hidden
+                    // flips, BLAS store) — a static scene skips ALL of it.
+                    if ssr.tlas.built_revision != self.meshes.bvh_tlas_revision {
+                        ssr.tlas.instance_count = self.meshes.build_bvh_tlas(
+                            &self.transforms,
+                            &self.materials,
+                            &mut ssr.tlas.scratch,
+                        );
+                        ssr.tlas.write(&self.gpu)?;
+                        ssr.tlas.built_revision = self.meshes.bvh_tlas_revision;
+                        bvh_buffers_recreated |= ssr.tlas.recreated;
+                    }
+                    bvh_instances = ssr.tlas.instance_count;
                 }
                 let s = &self.post_processing.ssr;
                 // The uniform's temporal_weight doubles as the trace's RUNTIME

@@ -5327,6 +5327,7 @@ impl EditorController {
             skybox: slot(&env.skybox),
             specular: slot(&env.specular),
             irradiance: slot(&env.irradiance),
+            probe: env.probe,
         }
     }
 

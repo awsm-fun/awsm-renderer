@@ -70,7 +70,10 @@ impl BloomParams {
         self.raw_data[12..16].copy_from_slice(&scatter.to_ne_bytes());
     }
 
-    /// Packs + uploads the params via the mapped-ring path.
+    /// Packs + uploads the params via the mapped-ring path. Skips the GPU
+    /// write entirely when the packed bytes are unchanged — these values
+    /// only move on user edits, and an every-frame 16-byte upload while
+    /// bloom is merely ENABLED is pure idle work (house standard).
     pub fn write(
         &mut self,
         gpu: &AwsmRendererWebGpu,
@@ -79,7 +82,11 @@ impl BloomParams {
         intensity: f32,
         scatter: f32,
     ) -> Result<()> {
+        let prev = self.raw_data;
         self.pack(threshold, knee, intensity, scatter);
+        if self.raw_data == prev {
+            return Ok(());
+        }
         self.uploader.write_dirty_ranges(
             gpu,
             &self.gpu_buffer,
@@ -133,7 +140,14 @@ impl BloomRenderPass {
         if cur_view_w == view_width.max(1) && cur_view_h == view_height.max(1) {
             return Ok(false);
         }
-        self.texture = BloomTexture::new(gpu, view_width, view_height)?;
+        // Explicitly release the old pyramid pair (two RGBA16F half-res mip
+        // chains) — matching render_textures' destroy discipline instead of
+        // waiting on JS GC to notice, which leaks VRAM across resizes.
+        let old = std::mem::replace(
+            &mut self.texture,
+            BloomTexture::new(gpu, view_width, view_height)?,
+        );
+        old.destroy();
         Ok(true)
     }
 

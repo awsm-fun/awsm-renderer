@@ -24,7 +24,7 @@ use crate::{
     },
 };
 
-/// `SsrParams` — 64-byte uniform (16×f32): the live-tuning knobs (§5a) plus
+/// `SsrParams` — 80-byte uniform (20×f32): the live-tuning knobs (§5a) plus
 /// the mirrored reflection-probe box (bytes 32..64 — copied from
 /// `Lights::reflection_probe` each frame so the SSR miss fallback projects
 /// identically to the material IBL path). Layout must match `struct
@@ -117,7 +117,15 @@ impl SsrParams {
         probe: Option<crate::lights::ReflectionProbeBox>,
         bvh_instances: u32,
     ) -> Result<()> {
-        self.frame = self.frame.wrapping_add(1);
+        // The frame counter only rotates the march jitter when a temporal
+        // pass accumulates it (temporal_weight > 0). Advancing it with
+        // temporal OFF forced an 80-byte upload of otherwise-unchanged
+        // params every frame — and the unchanged-bytes skip below then
+        // makes a static configuration upload NOTHING per frame.
+        if temporal_weight > 0.0 {
+            self.frame = self.frame.wrapping_add(1);
+        }
+        let prev = self.raw_data;
         self.pack(
             intensity,
             max_distance,
@@ -129,6 +137,9 @@ impl SsrParams {
             probe,
             bvh_instances,
         );
+        if self.raw_data == prev {
+            return Ok(());
+        }
         self.uploader.write_dirty_ranges(
             gpu,
             &self.gpu_buffer,
@@ -140,16 +151,23 @@ impl SsrParams {
     }
 }
 
-/// The per-frame TLAS instance buffer for the software-BVH pass. `scratch`
-/// is the pooled CPU staging (rebuilt each enabled frame, capacity kept —
-/// no per-frame heap allocation once warm); the GPU buffer grows by
-/// doubling and flags `recreated` so the bind group rebuilds.
+/// The TLAS instance buffer for the software-BVH pass. `scratch` is the
+/// pooled CPU staging (capacity kept across rebuilds); the GPU buffer grows
+/// by doubling and flags `recreated` so the bind group rebuilds. Rebuild +
+/// upload happen ONLY when `Meshes::bvh_tlas_revision` moves past
+/// `built_revision` — a static scene does zero TLAS work per frame.
 pub struct SsrTlas {
     pub gpu_buffer: web_sys::GpuBuffer,
     capacity: usize,
     pub scratch: Vec<u8>,
     uploader: crate::buffer::mapped_uploader::MappedUploader,
     pub recreated: bool,
+    /// The `Meshes::bvh_tlas_revision` the current GPU contents were built
+    /// from. 0 = never built.
+    pub built_revision: u64,
+    /// Instance count matching the current GPU contents (mirrored into
+    /// `SsrParams` every frame — a uniform value, not an upload trigger).
+    pub instance_count: u32,
 }
 
 impl SsrTlas {
@@ -173,6 +191,8 @@ impl SsrTlas {
             scratch: Vec::new(),
             uploader: crate::buffer::mapped_uploader::MappedUploader::new("SsrTlas"),
             recreated: false,
+            built_revision: 0,
+            instance_count: 0,
         })
     }
 

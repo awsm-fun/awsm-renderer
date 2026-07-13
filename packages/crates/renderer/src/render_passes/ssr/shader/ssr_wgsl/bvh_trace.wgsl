@@ -198,19 +198,24 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let inv_w = vec3<f32>(1.0) / safe_w;
 
     for (var i: u32 = 0u; i < n_inst; i = i + 1u) {
-        let inst = tlas[i];
-        // World AABB early reject (also rejects anything beyond best_t).
-        let se = slab(inst.world_min.xyz, inst.world_max.xyz, origin, inv_w);
+        // World AABB early reject on FIELD loads (also rejects anything
+        // beyond best_t) — copying the whole 112-byte instance up front
+        // would pull the 64-byte inverse matrix for every rejected
+        // instance too.
+        let wmin = tlas[i].world_min;
+        let wmax = tlas[i].world_max;
+        let se = slab(wmin.xyz, wmax.xyz, origin, inv_w);
         if (se.x > se.y || se.y < 0.0 || se.x > best_t) {
             continue;
         }
+        let inv_world = tlas[i].inv_world;
         // Object-space ray; direction unnormalized so t is shared.
-        let ro = (inst.inv_world * vec4<f32>(origin, 1.0)).xyz;
-        let rd = (inst.inv_world * vec4<f32>(dir_w, 0.0)).xyz;
+        let ro = (inv_world * vec4<f32>(origin, 1.0)).xyz;
+        let rd = (inv_world * vec4<f32>(dir_w, 0.0)).xyz;
         let safe_o = select(rd, vec3<f32>(1e-7), abs(rd) < vec3<f32>(1e-7));
         let inv_o = vec3<f32>(1.0) / safe_o;
-        let node_base = bitcast<u32>(inst.world_min.w);
-        let tri_base = bitcast<u32>(inst.world_max.w);
+        let node_base = bitcast<u32>(wmin.w);
+        let tri_base = bitcast<u32>(wmax.w);
 
         var stack: array<u32, 28>;
         var sp: i32 = 0;
