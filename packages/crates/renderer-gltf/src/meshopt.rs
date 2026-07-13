@@ -143,6 +143,202 @@ mod roundtrip_tests {
         (scene, mesh)
     }
 
+    /// Minimal-cube golden: 8 verts / 12 tris, exact corner positions.
+    #[test]
+    fn cube_roundtrip() {
+        let mut mesh = MeshData::default();
+        for z in [-1.0f32, 1.0] {
+            for y in [-1.0f32, 1.0] {
+                for x in [-1.0f32, 1.0] {
+                    mesh.positions.push([x * 0.5, y * 0.5 + 2.0, z * 0.5]);
+                }
+            }
+        }
+        mesh.indices = vec![
+            0, 1, 2, 2, 1, 3, 4, 6, 5, 5, 6, 7, 0, 4, 1, 1, 4, 5, 2, 3, 6, 6, 3, 7, 0, 2, 4, 4, 2,
+            6, 1, 5, 3, 3, 5, 7,
+        ];
+        mesh.compute_vertex_normals();
+        let scene = GlbScene {
+            nodes: vec![ExportNode::new("cube").with_mesh(mesh.clone())],
+            animations: vec![],
+            skins: vec![],
+            images: vec![],
+            env: None,
+        };
+        let compressed = compress_glb(&write_glb(&scene)).unwrap();
+        let gltf = parse_gltf_lenient(&compressed).unwrap();
+        let doc = &gltf.document;
+        let blob = gltf.blob.clone().unwrap();
+        let mut buffers = materialize(doc, &blob);
+        decode_meshopt_buffer_views(doc, &mut buffers).unwrap();
+
+        let wrapper = doc
+            .nodes()
+            .find(|n| n.name() == Some("dequant") && n.mesh().is_some())
+            .expect("dequant wrapper");
+        let (t, _r, s) = wrapper.transform().decomposed();
+        let prim = wrapper.mesh().unwrap().primitives().next().unwrap();
+        let positions =
+            crate::populate::mesh::read_vec3_dequant(&prim, &gltf::Semantic::Positions, &buffers)
+                .unwrap();
+        let tol = s[0] / 32767.0 * 2.0;
+        for (got, want) in positions.iter().zip(&mesh.positions) {
+            for k in 0..3 {
+                assert!((got[k] * s[k] + t[k] - want[k]).abs() <= tol);
+            }
+        }
+    }
+
+    /// Skinned round-trip: the dequant transform must fold into the skin's
+    /// IBMs (NOT a wrapper node — skinned vertices ignore node TRS), and
+    /// `IBM' × v_quant` must reproduce the source within tolerance at bind
+    /// pose (identity joints, identity original IBMs ⇒ IBM' IS the dequant).
+    #[test]
+    fn skinned_roundtrip_folds_dequant_into_ibms() {
+        use awsm_renderer_glb_export::ExportSkin;
+
+        let mut mesh = MeshData::default();
+        for i in 0..12u32 {
+            let f = i as f32;
+            mesh.positions
+                .push([f * 0.3 - 1.5, (f * 0.7).sin() * 2.0, f * 0.1 + 5.0]);
+        }
+        mesh.indices = (0..12u32).collect();
+        mesh.compute_vertex_normals();
+        let n = mesh.positions.len();
+
+        let mut skinned = ExportNode::new("skinned").with_mesh(mesh.clone());
+        skinned.skin = Some(0);
+        skinned.joints = Some(vec![[0u16, 0, 0, 0]; n]);
+        skinned.weights = Some(vec![[1.0f32, 0.0, 0.0, 0.0]; n]);
+
+        let identity: [f32; 16] = glam::Mat4::IDENTITY.to_cols_array();
+        let scene = GlbScene {
+            // node 0 = the joint (identity transform), node 1 = skinned mesh
+            nodes: vec![ExportNode::new("joint0"), skinned],
+            animations: vec![],
+            skins: vec![ExportSkin {
+                // Explicit identity IBMs so the accessor EXISTS — the dequant
+                // folds into it. (A skin with NO IBM accessor must skip
+                // quantization instead; see the sibling test below.)
+                joints: vec![0],
+                inverse_bind_matrices: vec![identity],
+                skeleton: Some(0),
+            }],
+            images: vec![],
+            env: None,
+        };
+        let compressed = compress_glb(&write_glb(&scene)).unwrap();
+        let gltf = parse_gltf_lenient(&compressed).unwrap();
+        let doc = &gltf.document;
+        let blob = gltf.blob.clone().unwrap();
+        let mut buffers = materialize(doc, &blob);
+        decode_meshopt_buffer_views(doc, &mut buffers).unwrap();
+
+        // No wrapper node for skinned meshes.
+        assert!(
+            !doc.nodes().any(|nd| nd.name() == Some("dequant")),
+            "skinned dequant must ride the IBMs, not a wrapper node"
+        );
+
+        let skinned_node = doc
+            .nodes()
+            .find(|nd| nd.mesh().is_some() && nd.skin().is_some())
+            .expect("skinned node");
+        let prim = skinned_node.mesh().unwrap().primitives().next().unwrap();
+        let positions =
+            crate::populate::mesh::read_vec3_dequant(&prim, &gltf::Semantic::Positions, &buffers)
+                .unwrap();
+
+        // Patched IBM (one joint) from the (uncompressed) IBM accessor.
+        let skin = skinned_node.skin().unwrap();
+        let ibm_acc = skin.inverse_bind_matrices().expect("IBM accessor");
+        let view = ibm_acc.view().unwrap();
+        let raw = &buffers[view.buffer().index()]
+            [view.offset() + ibm_acc.offset()..view.offset() + ibm_acc.offset() + 64];
+        let mut cols = [0f32; 16];
+        for (i, c) in raw.chunks_exact(4).enumerate() {
+            cols[i] = f32::from_le_bytes(c.try_into().unwrap());
+        }
+        let ibm = glam::Mat4::from_cols_array(&cols);
+
+        // Bind pose with identity joint world: position = IBM' × v_quant.
+        let scale = ibm.x_axis.x; // uniform dequant scale
+        let tol = scale / 32767.0 * 2.0;
+        for (q, want) in positions.iter().zip(&mesh.positions) {
+            let v = ibm.transform_point3(glam::Vec3::from_array(*q));
+            for k in 0..3 {
+                assert!(
+                    (v[k] - want[k]).abs() <= tol,
+                    "skinned position {v:?} vs {want:?} (tol {tol})"
+                );
+            }
+        }
+    }
+
+    /// A skin with NO inverseBindMatrices accessor has nowhere to fold the
+    /// dequant — its meshes must skip quantization (positions stay F32),
+    /// never quantize-and-corrupt.
+    #[test]
+    fn ibm_less_skin_skips_quantization() {
+        let mut mesh = MeshData::default();
+        for i in 0..6u32 {
+            mesh.positions.push([i as f32, 1.0, -2.0]);
+        }
+        mesh.indices = vec![0, 1, 2, 3, 4, 5];
+        mesh.compute_vertex_normals();
+        let n = mesh.positions.len();
+        let mut skinned = ExportNode::new("skinned").with_mesh(mesh);
+        skinned.skin = Some(0);
+        skinned.joints = Some(vec![[0u16, 0, 0, 0]; n]);
+        skinned.weights = Some(vec![[1.0f32, 0.0, 0.0, 0.0]; n]);
+        let scene = GlbScene {
+            nodes: vec![ExportNode::new("joint0"), skinned],
+            animations: vec![],
+            skins: vec![awsm_renderer_glb_export::ExportSkin {
+                joints: vec![0],
+                inverse_bind_matrices: Vec::new(), // NO accessor
+                skeleton: Some(0),
+            }],
+            images: vec![],
+            env: None,
+        };
+        let compressed = compress_glb(&write_glb(&scene)).unwrap();
+        let gltf = parse_gltf_lenient(&compressed).unwrap();
+        let prim_acc = gltf
+            .document
+            .meshes()
+            .next()
+            .unwrap()
+            .primitives()
+            .next()
+            .unwrap()
+            .get(&gltf::Semantic::Positions)
+            .unwrap();
+        assert_eq!(
+            prim_acc.data_type(),
+            gltf::accessor::DataType::F32,
+            "IBM-less skinned mesh must keep F32 positions"
+        );
+    }
+
+    fn materialize(doc: &gltf::Document, blob: &[u8]) -> Vec<Vec<u8>> {
+        doc.buffers()
+            .map(|b| {
+                if buffer_is_meshopt_fallback(&b) {
+                    vec![0u8; b.length()]
+                } else {
+                    let mut bin = blob.to_vec();
+                    while bin.len() % 4 != 0 {
+                        bin.push(0);
+                    }
+                    bin
+                }
+            })
+            .collect()
+    }
+
     #[test]
     fn compressed_glb_roundtrips_through_the_import_decode_path() {
         let (scene, source) = grid_scene();
@@ -246,6 +442,49 @@ mod roundtrip_tests {
         for (got, want) in uvs.iter().zip(&source.uvs[0]) {
             for k in 0..2 {
                 assert!((got[k] - want[k]).abs() <= 2.0 / 65535.0);
+            }
+        }
+    }
+}
+
+/// Astrabot — the second paid robot — through the same decode plumbing, so
+/// both acceptance fixtures are locked when present locally.
+#[cfg(all(test, has_local_fixtures_astrabot))]
+mod astrabot_fixture_tests {
+    use super::*;
+    use crate::loader::parse_gltf_lenient;
+
+    const ASTRABOT_GLB: &[u8] = include_bytes!("../../../../fixtures/local/astrabot-meshopt.glb");
+
+    #[test]
+    fn astrabot_decode_pass_and_accessor_sanity() {
+        let gltf = parse_gltf_lenient(ASTRABOT_GLB).unwrap();
+        let doc = &gltf.document;
+        let blob = gltf.blob.expect("GLB BIN");
+        let mut buffers: Vec<Vec<u8>> = doc
+            .buffers()
+            .map(|b| {
+                if buffer_is_meshopt_fallback(&b) {
+                    vec![0u8; b.length()]
+                } else {
+                    let mut bin = blob.clone();
+                    while bin.len() % 4 != 0 {
+                        bin.push(0);
+                    }
+                    bin
+                }
+            })
+            .collect();
+        let decoded = decode_meshopt_buffer_views(doc, &mut buffers).unwrap();
+        assert!(decoded > 0, "astrabot must carry meshopt bufferViews");
+        for mesh in doc.meshes() {
+            for prim in mesh.primitives() {
+                let reader = prim.reader(|b| buffers.get(b.index()).map(|v| &v[..]));
+                let vcount = prim.get(&gltf::Semantic::Positions).unwrap().count();
+                if let Some(indices) = reader.read_indices() {
+                    let max = indices.into_u32().max().unwrap_or(0) as usize;
+                    assert!(max < vcount, "index {max} out of range ({vcount} verts)");
+                }
             }
         }
     }

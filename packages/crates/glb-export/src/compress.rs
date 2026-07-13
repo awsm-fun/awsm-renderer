@@ -126,9 +126,15 @@ pub fn compress_glb(glb: &[u8]) -> anyhow::Result<Vec<u8>> {
         }
     }
     // A mesh used by >1 skin, or both skinned and static, can't carry a single
-    // dequant transform through shared IBMs — skip quantizing it.
+    // dequant transform through shared IBMs — skip quantizing it. Same when
+    // the skin has NO inverseBindMatrices accessor (all-identity IBMs): there
+    // is nowhere to fold the dequant, and quantizing anyway would corrupt the
+    // geometry.
     for (mesh, skins) in &skin_users {
-        if skins.len() > 1 || static_users.contains_key(mesh) {
+        let ibm_less_skin = skins
+            .iter()
+            .any(|&s| root.skins[s].inverse_bind_matrices.is_none());
+        if skins.len() > 1 || static_users.contains_key(mesh) || ibm_less_skin {
             quantize_mesh[*mesh] = false;
         }
     }

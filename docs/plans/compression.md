@@ -549,9 +549,28 @@ BC5/EAC-RG (in-shader Z reconstruct) is a Phase-6 opt. **Block dims multiple of
       3.8MB → 3.3MB (Δ −0.5MB)** — measure the GC FLOOR (min of first vs
       last quarter), not instantaneous heap: the sawtooth (105MB peaks →
       15MB reclaims) fails naive thresholds while proving health.
-- [ ] Golden fixtures: meshopt+quant round-trip (cube / normals+uv / skinned);
+- [x] Golden fixtures: meshopt+quant round-trip (cube / normals+uv / skinned);
       Basis transcode goldens; the two robots as **local** (gitignored) fixtures
       in model-tests / player-tests.
+      ✅ 2026-07-14 — always-on round-trip goldens in renderer-gltf
+      (`meshopt.rs`): cube (exact corners through the wrapper TRS), grid
+      (normals+uv, pre-existing), **skinned** (dequant folds into IBMs, no
+      wrapper node, `IBM′×v_quant` reproduces bind-pose positions), plus an
+      IBM-less-skin guard test. 🐛 The skinned golden FOUND A REAL BUG:
+      `compress_glb` quantized meshes of skins that have NO
+      inverseBindMatrices accessor (identity IBMs) with nowhere to fold the
+      dequant → corrupt geometry; such meshes now skip quantization. Basis
+      transcode goldens: sha-256 of level-0 output for the in-repo Khronos
+      fixture baked into `basis-worker-smoke.html` (bc7 159aa349…, astc-4x4
+      c3980339…, rgba32 596fd0f7…) — browser-verified MATCH ×3; a mismatch
+      after a transcoder re-vendor means outputs changed and goldens must be
+      re-baked knowingly. Robots as local fixtures: police (parse + decode
+      pass + AABB, since Phase 4) + NEW astrabot decode-pass/accessor-sanity
+      test, all fixture-gated via build.rs cfgs (auto-skip when absent;
+      never committed). Note: the fixture tests live in renderer-gltf (the
+      import pipeline) rather than the model-tests/player-tests browser
+      harnesses — same coverage, native speed; the on-device robot runs
+      remain the Phase-4/5 acceptance records.
 - [ ] Optional: two-channel normals (BC5/EAC-RG) with in-shader Z reconstruction.
 - [ ] Verify 4–8× texture-memory reduction + bundle geometry shrink; transcode +
       meshopt-decode never on the render hot path; no per-frame allocations added.

@@ -57,13 +57,28 @@
                 const ktx2 = await (await fetch(FIXTURE)).arrayBuffer();
                 log("ok", `fetched fixture ${FIXTURE.split("/").pop()} (${ktx2.byteLength} bytes)`);
 
+                // GOLDENS: sha-256 of the level-0 transcode output for the
+                // in-repo Khronos fixture. Locks transcoder determinism across
+                // re-vendors — a hash change means the vendored transcoder
+                // changed its output and every golden must be re-baked
+                // knowingly.
+                const GOLDENS = {
+                    "bc7": "159aa3497ba4afe012f3a7efa52d2daa8ba92b8ecb0ce3a78e0a817017e9a052",
+                    "astc-4x4": "c3980339fc7c86b80efb9a135907ea3ddc7cef53a2ee5a0361f614042076e85c",
+                    "rgba32": "596fd0f7aa0aae85f554699892a0a7e300a54efa6e604e46828a2df7bdd2e67e",
+                };
                 for (const target of ["bc7", "astc-4x4", "rgba32"]) {
                     const t0 = performance.now();
                     // Copy per-target since the buffer transfers to the worker.
                     const r = await request({ op: "transcode", ktx2: ktx2.slice(0), target }, []);
                     const ms = (performance.now() - t0).toFixed(1);
                     const bytes = r.levels.reduce((n, l) => n + l.data.byteLength, 0);
-                    log("ok", `transcode → ${target}: ${r.width}×${r.height}, ${r.levels.length} mips, ${bytes} bytes, uastc=${r.isUastc}, alpha=${r.hasAlpha} (${ms}ms)`);
+                    const digest = await crypto.subtle.digest("SHA-256", r.levels[0].data);
+                    const hash = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+                    const golden = GOLDENS[target];
+                    const verdict = !golden ? `hash ${hash} (no golden baked)` : hash === golden ? "golden MATCH" : `golden MISMATCH: got ${hash}`;
+                    log(!golden || hash === golden ? "ok" : "fail",
+                        `transcode → ${target}: ${r.width}×${r.height}, ${r.levels.length} mips, ${bytes} bytes (${ms}ms) — ${verdict}`);
                 }
 
                 // Encode roundtrip: 32×32 gradient → ETC1S KTX2 → transcode back.
