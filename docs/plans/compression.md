@@ -341,11 +341,27 @@ BC5/EAC-RG (in-shader Z reconstruct) is a Phase-6 opt. **Block dims multiple of
 
 ## Phase 4 — Editor import: meshopt + quantization + KHR_texture_basisu
 
-- [ ] Add `EXT_meshopt_compression`, `KHR_mesh_quantization`, `KHR_texture_basisu`
+- [x] Add `EXT_meshopt_compression`, `KHR_mesh_quantization`, `KHR_texture_basisu`
       to `RENDERER_SUPPORTED_EXTENSIONS` (`renderer-gltf/src/loader.rs:30`).
       Verify the `gltf` crate accepts quantized accessor component types
       (POSITION=short etc.); add lenient handling if it rejects them. Remove dead
       `GltfFileType::Draco` scaffolding.
+      ✅ 2026-07-13 — trio added. Fixture-gated test (build.rs cfg, same
+      pattern as codec-meshopt) proves the real robot parses: **quantized
+      accessors need NO extra leniency** (gltf-json doesn't validate the
+      semantic↔component-type matrix; POSITION=i16-normalized accepted as-is;
+      82 meshopt bufferViews visible via raw `extension_value`). The gap was
+      `KHR_texture_basisu` instead: those textures OMIT core `texture.source`
+      (gltf-json sentinel Index(u32::MAX)) → validation "Missing".
+      `parse_gltf_lenient` now lifts the extension's `source` into the core
+      field, so basisu textures point at their KTX2 image entry like any PNG
+      texture — the image DECODE path (later task) branches on payload.
+      Draco fully removed (enum variant, `.drc` sniff, both reject branches,
+      worker `FileTypeHint::Draco`); `GltfLoader::load`'s file_type param kept
+      for API stability but no longer consulted (content sniffing decides).
+      Gotcha: renderer-core's `map_ktx_format` needed `#[cfg(feature="ktx")]`
+      — renderer-gltf pulls renderer-core without `ktx`, which the Phase-2
+      lift had silently broken for that combination.
 - [ ] meshopt bufferView decode pass (pure-Rust crate) BEFORE accessor decode:
       reconstruct `byteStride×count` bytes from the ext buffer per `mode`+`filter`;
       ignore the `fallback:true` buffer. Feed reconstructed data to the existing

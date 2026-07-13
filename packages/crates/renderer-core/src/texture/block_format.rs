@@ -158,6 +158,7 @@ pub fn mip_level_byte_size(format: TextureFormat, width: u32, height: u32) -> us
 
 /// Maps a KTX2 (Vulkan) format to the WebGPU texture format, or `None` when
 /// WebGPU has no equivalent.
+#[cfg(feature = "ktx")]
 pub fn map_ktx_format(format: ktx2::Format) -> Option<TextureFormat> {
     Some(match format {
         // ------------------------
@@ -444,6 +445,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "ktx")]
     #[test]
     fn ktx_format_mapping_spot_checks() {
         assert_eq!(

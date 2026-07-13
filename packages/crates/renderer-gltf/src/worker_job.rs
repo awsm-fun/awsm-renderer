@@ -40,7 +40,6 @@ use serde::{Deserialize, Serialize};
 use wasm_bindgen::{JsCast, JsValue};
 use web_sys::js_sys::{Array, Object, Reflect, Uint8Array};
 
-use crate::error::AwsmGltfError;
 use crate::loader::{GltfFileType, GltfLoader};
 
 // Worker-side thread-local: per-image-index slot for the
@@ -87,7 +86,6 @@ pub struct GltfParseInput {
 pub enum FileTypeHint {
     Json,
     Glb,
-    Draco,
 }
 
 impl From<&GltfFileType> for FileTypeHint {
@@ -95,7 +93,6 @@ impl From<&GltfFileType> for FileTypeHint {
         match t {
             GltfFileType::Json => FileTypeHint::Json,
             GltfFileType::Glb => FileTypeHint::Glb,
-            GltfFileType::Draco => FileTypeHint::Draco,
         }
     }
 }
@@ -105,7 +102,6 @@ impl From<FileTypeHint> for GltfFileType {
         match t {
             FileTypeHint::Json => GltfFileType::Json,
             FileTypeHint::Glb => GltfFileType::Glb,
-            FileTypeHint::Draco => GltfFileType::Draco,
         }
     }
 }
@@ -508,21 +504,14 @@ impl WorkerJob for GltfParseJob {
 /// constructing a `WorkerPool`.
 pub async fn execute_async(input: GltfParseInput) -> anyhow::Result<GltfParseOutput> {
     let url = input.url;
-    // Mirror `GltfLoader::load`: Draco needs its explicit hint (and is
-    // rejected here); everything else is ONE binary fetch and
-    // `parse_gltf_lenient` sniffs GLB-vs-JSON from the CONTENT ("glTF"
-    // magic ⇒ GLB, else JSON bytes) — the URL extension is never consulted,
-    // so extensionless / query-suffixed URLs parse correctly. A `.gltf`
-    // JSON body is just its UTF-8 bytes, so the binary fetch serves both.
+    // Mirror `GltfLoader::load`: ONE binary fetch and `parse_gltf_lenient`
+    // sniffs GLB-vs-JSON from the CONTENT ("glTF" magic ⇒ GLB, else JSON
+    // bytes) — the URL extension is never consulted, so extensionless /
+    // query-suffixed URLs parse correctly. A `.gltf` JSON body is just its
+    // UTF-8 bytes, so the binary fetch serves both.
     // NOTE: no `bypass_http_cache` here yet — this parity path has no live
     // dispatch site (GltfParseJob is registered but never dispatched); wire
     // the cache-mode through `GltfParseInput` when/if it is promoted.
-    if matches!(
-        input.file_type.map(GltfFileType::from),
-        Some(GltfFileType::Draco)
-    ) {
-        return Err(AwsmGltfError::Load.into());
-    }
     let (doc, blob, doc_bytes) = {
         let bytes = gloo_net::http::Request::get(&url)
             .send()
