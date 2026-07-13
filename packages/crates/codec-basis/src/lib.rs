@@ -68,10 +68,15 @@ pub enum BasisError {
     #[error("basis worker protocol violation: {0}")]
     Protocol(String),
     /// A structured error from the worker (`code` is machine-readable:
-    /// bad-ktx2, bad-target, unsupported-layout, transcode-failed,
-    /// encode-failed, module-load, module-unavailable, …).
+    /// bad-ktx2, bad-target, bad-request, too-large, unsupported-layout,
+    /// transcode-failed, encode-failed, module-load, module-unavailable, …).
     #[error("basis worker error [{code}]: {message}")]
     Worker { code: String, message: String },
+    /// The watchdog fired: no reply within the configured deadline. The
+    /// worker is presumed hung and has been terminated; the next request
+    /// spawns a fresh one.
+    #[error("basis worker request timed out after {ms}ms (worker restarted)")]
+    Timeout { ms: u32 },
 }
 
 /// URLs the client needs; all resolved by the browser against the document
@@ -83,6 +88,11 @@ pub struct BasisWorkerConfig {
     /// Editor-only; leave `None` in player builds so the encoder module can
     /// never even be requested.
     pub encoder_url: Option<String>,
+    /// Watchdog deadline per request. A worker that doesn't reply within
+    /// this window is presumed hung (wasm can't be interrupted), terminated,
+    /// and lazily respawned; the request fails with [`BasisError::Timeout`].
+    /// Generous by default — a large ETC1S encode on one thread is slow.
+    pub request_timeout_ms: u32,
 }
 
 impl Default for BasisWorkerConfig {
@@ -91,6 +101,7 @@ impl Default for BasisWorkerConfig {
             worker_url: "/workers/basis-worker.js".to_string(),
             transcoder_url: "/vendor/basis/basis_transcoder.js".to_string(),
             encoder_url: None,
+            request_timeout_ms: 120_000,
         }
     }
 }
@@ -364,7 +375,7 @@ impl BasisWorkerClient {
         Ok(())
     }
 
-    /// Send one request and await its routed reply.
+    /// Send one request and await its routed reply — racing the watchdog.
     async fn request(
         &self,
         msg: &js_sys::Object,
@@ -393,8 +404,30 @@ impl BasisWorkerClient {
             return Err(BasisError::Fatal(format!("postMessage failed: {e:?}")));
         }
 
-        rx.await
-            .map_err(|_| BasisError::Fatal("worker died with request in flight".into()))?
+        // Watchdog: a hung wasm module can't be interrupted — if the reply
+        // doesn't arrive in time, terminate the worker (failing every other
+        // in-flight request) and let the next call respawn it.
+        let timeout_ms = self.config.request_timeout_ms;
+        use futures::FutureExt;
+        let mut reply = rx.fuse();
+        let mut deadline = Box::pin(sleep_ms(timeout_ms).fuse());
+        futures::select! {
+            outcome = reply => outcome
+                .map_err(|_| BasisError::Fatal("worker died with request in flight".into()))?,
+            _ = deadline => {
+                tracing::error!(
+                    "basis worker request {id} exceeded {timeout_ms}ms — terminating the worker"
+                );
+                let mut shared = self.shared.borrow_mut();
+                shared.pending.remove(&id);
+                if let Some(worker) = shared.worker.take() {
+                    worker.terminate();
+                }
+                shared.initialized = false;
+                fail_all_pending(&mut shared.pending, "sibling request timed out");
+                Err(BasisError::Timeout { ms: timeout_ms })
+            }
+        }
     }
 
     /// Get the live worker, creating (or re-creating after a fatal) on demand.
@@ -467,6 +500,24 @@ fn fail_all_pending(pending: &mut PendingMap, message: &str) {
     for (_, tx) in pending.drain() {
         let _ = tx.send(Err(BasisError::Fatal(message.to_string())));
     }
+}
+
+/// Resolve after `ms` via the global `setTimeout` (works on the main thread
+/// and in workers — no `Window` assumption).
+async fn sleep_ms(ms: u32) {
+    let promise = js_sys::Promise::new(&mut |resolve, _reject| {
+        let global = js_sys::global();
+        if let Ok(set_timeout) = js_sys::Reflect::get(&global, &"setTimeout".into()) {
+            if let Ok(f) = set_timeout.dyn_into::<js_sys::Function>() {
+                let _ = f.call2(&global, &resolve, &JsValue::from_f64(ms as f64));
+                return;
+            }
+        }
+        // No setTimeout (never on web targets) — resolve immediately rather
+        // than hang the watchdog arm.
+        let _ = resolve.call0(&JsValue::UNDEFINED);
+    });
+    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
 }
 
 fn set(obj: &js_sys::Object, key: &str, value: &JsValue) -> Result<(), BasisError> {

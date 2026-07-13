@@ -20,6 +20,12 @@
 
 const PROTOCOL_VERSION = 1;
 
+// Hard input limits — untrusted containers must not be able to make the
+// worker allocate unbounded memory. Structured errors, never crashes.
+const MAX_KTX2_BYTES = 64 * 1024 * 1024;
+const MAX_ENCODE_PIXELS = 4096 * 4096;
+const MAX_TEXTURE_DIMENSION = 16384;
+
 let urls = null; // set by "init"
 const modulePromises = { transcoder: null, encoder: null };
 
@@ -100,6 +106,12 @@ async function handleTranscode(req) {
     if (!(req.ktx2 instanceof ArrayBuffer) || req.ktx2.byteLength === 0) {
         throw new WorkerError('bad-request', 'transcode needs a non-empty ktx2 ArrayBuffer');
     }
+    if (req.ktx2.byteLength > MAX_KTX2_BYTES) {
+        throw new WorkerError(
+            'too-large',
+            `ktx2 input ${req.ktx2.byteLength} bytes exceeds the ${MAX_KTX2_BYTES} limit`
+        );
+    }
     const format = resolveTargetFormat(module, req.target);
     const layer = req.layer ?? 0;
     const face = req.face ?? 0;
@@ -108,6 +120,15 @@ async function handleTranscode(req) {
     try {
         if (!ktx2File.isValid()) {
             throw new WorkerError('bad-ktx2', 'not a valid Basis KTX2 file');
+        }
+        if (
+            ktx2File.getWidth() > MAX_TEXTURE_DIMENSION ||
+            ktx2File.getHeight() > MAX_TEXTURE_DIMENSION
+        ) {
+            throw new WorkerError(
+                'too-large',
+                `${ktx2File.getWidth()}x${ktx2File.getHeight()} exceeds the ${MAX_TEXTURE_DIMENSION} dimension limit`
+            );
         }
         const levels = ktx2File.getLevels();
         const layers = ktx2File.getLayers();
@@ -164,6 +185,13 @@ async function handleEncode(req) {
         throw new WorkerError(
             'bad-request',
             `encode needs an rgba ArrayBuffer of exactly width*height*4 bytes (got ${rgba?.byteLength}, want ${width * height * 4})`
+        );
+    }
+
+    if (width * height > MAX_ENCODE_PIXELS || width > MAX_TEXTURE_DIMENSION || height > MAX_TEXTURE_DIMENSION) {
+        throw new WorkerError(
+            'too-large',
+            `${width}x${height} exceeds the encode limit (${MAX_ENCODE_PIXELS} pixels / ${MAX_TEXTURE_DIMENSION} per side)`
         );
     }
 

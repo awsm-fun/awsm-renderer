@@ -84,6 +84,10 @@ pub enum DecodeError {
 /// real mesh we ship while staying far below the wasm32 address space.
 pub const MAX_DECODED_BYTES: usize = 256 * 1024 * 1024;
 
+/// Upper bound on a single COMPRESSED input stream — a container that claims
+/// a larger range than this is rejected before the C library ever sees it.
+pub const MAX_ENCODED_BYTES: usize = 256 * 1024 * 1024;
+
 /// Decode one `EXT_meshopt_compression` bufferView: `data` is the extension's
 /// own byte range (NOT the fallback buffer), `count`/`stride` are the
 /// extension's `count`/`byteStride`. Returns the reconstructed logical
@@ -98,6 +102,12 @@ pub fn decode_buffer_view(
     mode: Mode,
     filter: Filter,
 ) -> Result<Vec<u8>, DecodeError> {
+    if data.len() > MAX_ENCODED_BYTES {
+        return Err(DecodeError::SizeOverflow {
+            count: data.len(),
+            stride: 1,
+        });
+    }
     let total = count
         .checked_mul(stride)
         .filter(|&t| t <= MAX_DECODED_BYTES)

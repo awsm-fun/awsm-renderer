@@ -86,6 +86,36 @@
                 log("ok", `encode→transcode roundtrip: ${back.levels.length} mips, gradient preserved (R ${probe(0,0)}→${probe(31,0)})`);
 
                 log("ok", "PHASE-1 BASIS EXIT: PASS — worker transcodes + encodes off the main thread");
+
+                // Leak soak: ?cycles=N runs N transcode+encode round-trips and
+                // reports JS heap growth (Chrome exposes performance.memory).
+                const cycles = Number(new URLSearchParams(location.search).get("cycles") || 0);
+                if (cycles > 0) {
+                    // The JS heap sawtooths with GC, so instantaneous readings
+                    // mislead — compare the MINIMUM heap (the GC floor) of the
+                    // first vs last quarter of the run. A real leak raises the
+                    // floor; GC timing noise doesn't.
+                    const heap = () => (performance.memory ? performance.memory.usedJSHeapSize : 0);
+                    await new Promise((r) => setTimeout(r, 500));
+                    let headFloor = Infinity, tailFloor = Infinity;
+                    for (let i = 0; i < cycles; i++) {
+                        const t = await request({ op: "transcode", ktx2: ktx2.slice(0), target: "bc7" }, []);
+                        // drop t.levels (transferred buffers) immediately
+                        const rgba2 = new Uint8Array(W * H * 4).fill(128);
+                        const e2 = await request(
+                            { op: "encode", rgba: rgba2.buffer, width: W, height: H, uastc: false, srgb: true, mipmaps: false, quality: 128 },
+                            [rgba2.buffer]
+                        );
+                        void t; void e2;
+                        const h = heap();
+                        if (i < cycles / 4) headFloor = Math.min(headFloor, h);
+                        if (i >= cycles * 3 / 4) tailFloor = Math.min(tailFloor, h);
+                        if ((i + 1) % 100 === 0) log("ok", `cycle ${i + 1}/${cycles}, heap ${(h / 1048576).toFixed(1)}MB`);
+                    }
+                    const growth = (tailFloor - headFloor) / 1048576;
+                    log(growth < 10 ? "ok" : "fail",
+                        `LEAK SOAK: ${cycles} cycles, GC floor ${(headFloor / 1048576).toFixed(1)}MB → ${(tailFloor / 1048576).toFixed(1)}MB (Δ ${growth.toFixed(1)}MB, threshold 10MB)`);
+                }
             } catch (e) {
                 log("fail", `PHASE-1 BASIS EXIT: FAIL — ${e.message}`);
                 console.error(e);

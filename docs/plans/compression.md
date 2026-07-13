@@ -514,10 +514,41 @@ BC5/EAC-RG (in-shader Z reconstruct) is a Phase-6 opt. **Block dims multiple of
       the visibility/geometry packing (WebGPU `unorm/snorm 8/16`) instead of
       expanding to f32 — measure the VRAM win; browser-verify the vertex-format
       change.
-- [ ] meshopt decode: bounds/limit checks in our FFI wrapper before handing
+      📋 **SCOPED 2026-07-14, implementation deferred behind the rest of
+      Phase 6** — recon verdict: NOT a contained change. The geometry pool is
+      consumed by BOTH fixed-function vertex fetch (~7 pipeline layouts; the
+      easy half — snorm16x4/snorm8x4/unorm16x2 convert natively) AND raw
+      `array<f32>` storage-buffer vertex pulling hardcoded in ~6 WGSL helpers
+      across four passes (positions.wgsl, material_color_calc.wgsl,
+      material_load_helpers.wgsl, masked_alpha.wgsl, material_prep compute —
+      each needs bitcast/unpack2x16snorm word-offset math), plus packers
+      (mesh_pack.rs ×3, buffer_info.rs size constants, scene-loader
+      build_slot_geometry, cluster_lod), plus per-mesh dequant constants in
+      MaterialMeshMeta since object-space positions have arbitrary range.
+      Slice order when implemented: (A) UVs unorm16x2 in the custom-attribute
+      buffer — most contained but needs per-mesh format flags in meta (UVs
+      outside [0,1] can't quantize); (B) normals+tangents snorm8x4 oct in the
+      56-byte visibility record; (C) positions snorm16x4 + meta dequant.
+      Estimated win: visibility record 56→~32B (~1.75×) on the largest
+      geometry pool. Multi-session; do NOT attempt as one loop iteration.
+- [x] meshopt decode: bounds/limit checks in our FFI wrapper before handing
       untrusted buffers to the C lib (max vertex/index/byte counts; validate
       mode/filter/stride). Basis worker: limits, watchdog, cancellation, restart,
       leak test (thousands of transcode/encode cycles).
+      ✅ 2026-07-14 — meshopt: stride/mode/filter validation + 256MB decoded
+      cap existed since Phase 1; added a 256MB COMPRESSED-input cap
+      (`MAX_ENCODED_BYTES`) so a hostile container is rejected before the C
+      lib sees it. Basis worker: input limits (KTX2 ≤64MB, dimensions ≤16384,
+      encode ≤4096² px) with structured `too-large` errors; client-side
+      WATCHDOG (`request_timeout_ms`, default 120s) — a hung wasm can't be
+      interrupted, so timeout terminates the worker, fails all in-flight
+      requests, and the next call respawns (restart-on-fatal already
+      existed); cancellation = drop the future (pending entry reaped on
+      reply/timeout). LEAK SOAK browser-verified: 1000 transcode+encode
+      cycles (`basis-worker-smoke.html?cycles=N`), worker stable, **GC floor
+      3.8MB → 3.3MB (Δ −0.5MB)** — measure the GC FLOOR (min of first vs
+      last quarter), not instantaneous heap: the sawtooth (105MB peaks →
+      15MB reclaims) fails naive thresholds while proving health.
 - [ ] Golden fixtures: meshopt+quant round-trip (cube / normals+uv / skinned);
       Basis transcode goldens; the two robots as **local** (gitignored) fixtures
       in model-tests / player-tests.
