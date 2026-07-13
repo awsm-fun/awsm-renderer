@@ -333,6 +333,7 @@ impl Slot {
             skybox,
             specular,
             irradiance,
+            probe: None,
         }
     }
 }

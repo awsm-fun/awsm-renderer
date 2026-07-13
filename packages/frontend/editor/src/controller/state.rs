@@ -3158,6 +3158,7 @@ impl EditorController {
                 skybox,
                 specular,
                 irradiance,
+                probe,
             } => {
                 // Partial update: `None` slots PRESERVE the current config, so
                 // setting just one slot (skybox / specular / irradiance) doesn't
@@ -3169,6 +3170,7 @@ impl EditorController {
                     skybox: skybox.unwrap_or(prev.skybox),
                     specular: specular.unwrap_or(prev.specular),
                     irradiance: irradiance.unwrap_or(prev.irradiance),
+                    probe: probe.unwrap_or(prev.probe),
                 };
                 self.scene.environment.set(next);
                 self.scene.bump_revision();

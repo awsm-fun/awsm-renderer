@@ -19,6 +19,11 @@
 struct LightsInfoPacked {
     data: vec4<u32>,
     directional: array<vec4<u32>, 2>,
+    // Box-projected reflection probe (bytes 48..80 of the info uniform):
+    // xyz = box center, w = enabled (1.0 / 0.0); xyz = half-extents, w = pad.
+    // Zeroed = disabled = classic direction-only env sampling.
+    probe_center_enabled: vec4<f32>,
+    probe_half_pad: vec4<f32>,
 }
 
 struct LightsInfo {
@@ -29,6 +34,11 @@ struct LightsInfo {
 struct IblInfo {
     prefiltered_env_mip_count: u32,
     irradiance_mip_count: u32,
+    // Reflection-probe box for parallax-corrected specular env sampling
+    // (see box_project_env_dir in shared_wgsl/math.wgsl). center_enabled.w
+    // gates the correction at runtime — NOT a template axis.
+    probe_center_enabled: vec4<f32>,
+    probe_half: vec3<f32>,
 }
 
 struct LightPacked {

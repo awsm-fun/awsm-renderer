@@ -183,6 +183,21 @@ pub struct Lights {
     /// dirties every frame, so a fresh `Vec` here was a per-frame heap
     /// allocation.
     punctual_scratch: Vec<u8>,
+    /// Box-projected reflection probe (parallax-corrected specular env
+    /// sampling). `None` = disabled: every env lookup falls back to the
+    /// classic direction-only sample. Packed into the info uniform's tail
+    /// (bytes 48..80) and mirrored into the SSR params uniform each frame.
+    reflection_probe: Option<ReflectionProbeBox>,
+}
+
+/// The world-space box a [`Lights::set_reflection_probe`] probe projects
+/// against. Reflection directions are parallax-corrected by intersecting the
+/// reflected ray with this AABB and sampling the specular env cubemap toward
+/// the intersection point (relative to `center`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ReflectionProbeBox {
+    pub center: [f32; 3],
+    pub half_extents: [f32; 3],
 }
 
 impl Lights {
@@ -196,7 +211,9 @@ impl Lights {
     /// `LightsInfoPacked` WGSL struct):
     ///   data: vec4<u32> (16) — x=n_lights, y/z=IBL mip counts, w=n_directional
     ///   directional: array<vec4<u32>, 2> (32) — packed indices of the ≤8 directionals
-    pub const INFO_SIZE: usize = 48;
+    ///   probe_center_enabled: vec4<f32> (16) — reflection-probe box center + enabled flag
+    ///   probe_half_pad: vec4<f32> (16) — probe box half-extents + pad
+    pub const INFO_SIZE: usize = 80;
 
     /// Creates light buffers and initializes IBL state.
     pub fn new(gpu: &AwsmRendererWebGpu, ibl: Ibl, brdf_lut: BrdfLut) -> Result<Self> {
@@ -230,7 +247,26 @@ impl Lights {
             ),
             info_uploader: crate::buffer::mapped_uploader::MappedUploader::new("Lights Info"),
             punctual_scratch: Vec::new(),
+            reflection_probe: None,
         })
+    }
+
+    /// Set (or clear) the global box-projected reflection probe. `None`
+    /// disables parallax correction — env lookups revert to direction-only
+    /// sampling. Marks the info uniform dirty; the values land on the GPU at
+    /// the next `write_gpu`.
+    pub fn set_reflection_probe(&mut self, probe: Option<ReflectionProbeBox>) {
+        if self.reflection_probe != probe {
+            self.reflection_probe = probe;
+            self.lighting_info_gpu_dirty = true;
+        }
+    }
+
+    /// The currently-set reflection probe (see [`Self::set_reflection_probe`]).
+    /// The render loop mirrors this into the SSR params uniform so the SSR
+    /// miss fallback projects identically to the material IBL path.
+    pub fn reflection_probe(&self) -> Option<ReflectionProbeBox> {
+        self.reflection_probe
     }
 
     /// Mapped-ring upload telemetry for the lights buffers.
@@ -499,6 +535,18 @@ impl Lights {
                 }
             }
             data[12..16].copy_from_slice(&n_directional.to_ne_bytes());
+
+            // Reflection-probe tail (bytes 48..80): box center + enabled flag,
+            // half-extents + pad. Zeroed (= disabled) when no probe is set.
+            if let Some(probe) = &self.reflection_probe {
+                for (i, v) in probe.center.iter().enumerate() {
+                    data[48 + i * 4..52 + i * 4].copy_from_slice(&v.to_ne_bytes());
+                }
+                data[60..64].copy_from_slice(&1.0f32.to_ne_bytes());
+                for (i, v) in probe.half_extents.iter().enumerate() {
+                    data[64 + i * 4..68 + i * 4].copy_from_slice(&v.to_ne_bytes());
+                }
+            }
 
             self.info_uploader.write_dirty_ranges(
                 gpu,

@@ -24,8 +24,11 @@ use crate::{
     },
 };
 
-/// `SsrParams` — 32-byte uniform (8×f32): the live-tuning knobs (§5a). Layout
-/// must match `struct SsrParams` in `ssr_wgsl/trace.wgsl`.
+/// `SsrParams` — 64-byte uniform (16×f32): the live-tuning knobs (§5a) plus
+/// the mirrored reflection-probe box (bytes 32..64 — copied from
+/// `Lights::reflection_probe` each frame so the SSR miss fallback projects
+/// identically to the material IBL path). Layout must match `struct
+/// SsrParams` in `ssr_wgsl/trace.wgsl`.
 pub struct SsrParams {
     pub gpu_buffer: web_sys::GpuBuffer,
     raw_data: [u8; Self::BYTE_SIZE],
@@ -40,7 +43,7 @@ pub struct SsrParams {
 }
 
 impl SsrParams {
-    pub const BYTE_SIZE: usize = 32;
+    pub const BYTE_SIZE: usize = 64;
 
     pub fn new(gpu: &AwsmRendererWebGpu) -> Result<Self> {
         let gpu_buffer = gpu.create_buffer(
@@ -57,7 +60,7 @@ impl SsrParams {
             uploader: MappedUploader::new("SsrParams"),
             frame: 0,
         };
-        params.pack(1.0, 100.0, 1.0, 96.0, 0.6, 0.1, 0.9);
+        params.pack(1.0, 100.0, 1.0, 96.0, 0.6, 0.1, 0.9, None);
         Ok(params)
     }
 
@@ -71,6 +74,7 @@ impl SsrParams {
         spread_cutoff: f32,
         edge_fade: f32,
         temporal_weight: f32,
+        probe: Option<crate::lights::ReflectionProbeBox>,
     ) {
         self.raw_data[0..4].copy_from_slice(&intensity.to_ne_bytes());
         self.raw_data[4..8].copy_from_slice(&max_distance.to_ne_bytes());
@@ -81,6 +85,18 @@ impl SsrParams {
         self.raw_data[24..28].copy_from_slice(&temporal_weight.to_ne_bytes());
         // [28..32] = frame counter (as f32) for temporal jitter rotation.
         self.raw_data[28..32].copy_from_slice(&(self.frame as f32).to_ne_bytes());
+        // [32..64] = reflection-probe box: center + enabled, half-extents +
+        // pad. Zeroed = disabled (same convention as the lights info tail).
+        self.raw_data[32..64].fill(0);
+        if let Some(probe) = probe {
+            for (i, v) in probe.center.iter().enumerate() {
+                self.raw_data[32 + i * 4..36 + i * 4].copy_from_slice(&v.to_ne_bytes());
+            }
+            self.raw_data[44..48].copy_from_slice(&1.0f32.to_ne_bytes());
+            for (i, v) in probe.half_extents.iter().enumerate() {
+                self.raw_data[48 + i * 4..52 + i * 4].copy_from_slice(&v.to_ne_bytes());
+            }
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -94,6 +110,7 @@ impl SsrParams {
         spread_cutoff: f32,
         edge_fade: f32,
         temporal_weight: f32,
+        probe: Option<crate::lights::ReflectionProbeBox>,
     ) -> Result<()> {
         self.frame = self.frame.wrapping_add(1);
         self.pack(
@@ -104,6 +121,7 @@ impl SsrParams {
             spread_cutoff,
             edge_fade,
             temporal_weight,
+            probe,
         );
         self.uploader.write_dirty_ranges(
             gpu,

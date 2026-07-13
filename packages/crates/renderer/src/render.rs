@@ -654,6 +654,9 @@ impl AwsmRenderer {
                     s.spread_cutoff,
                     s.edge_fade,
                     temporal_weight,
+                    // Mirror the lights' reflection probe so the SSR miss
+                    // fallback box-projects identically to the IBL path.
+                    self.lights.reflection_probe(),
                 )?;
             }
         }

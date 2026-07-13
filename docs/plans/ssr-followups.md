@@ -45,9 +45,20 @@ camera jitter.
    verified once timestamp queries are wired (follow-up if mobile/weak-GPU
    targets matter). Arena ships full-res SSR; half-res remains one knob away
    (resolution_scale 0.5).
-5. **Local reflection probes** (content-triggered) — box-projected cubemap
-   probes + editor authoring. Build when a scene with interiors/occluded
-   reflections exists; open arenas gain little.
+5. **Local reflection probes** — STEP 1 SHIPPED (2026-07-13, triggered by the
+   arena's platform-occlusion reflection gaps + periphery fade): a GLOBAL
+   box-projected probe on `scene.environment.probe` ({enabled, center,
+   half_extents}). When enabled, BOTH specular env consumers (IBL specular in
+   brdf_pbr + the SSR miss fallback in the trace) parallax-correct their
+   lookup through the shared `box_project_env_dir` (shared_wgsl/math.wgsl) —
+   fallback reflections anchor to the scene bounds instead of sliding like an
+   infinite sky. Runtime uniform gate (lights info bytes 48..80, mirrored
+   into SsrParams 32..64), NOT a template axis; disabled = zeroed = exactly
+   the old behavior. Wire: set_environment probe field (MCP) /
+   PatchEnvironment (editor, partial semantics). REMAINING for full tier 4:
+   multiple local probes w/ per-renderable assignment, editor authoring UI,
+   in-engine capture (today the cubemap is authored offline — the arena's
+   gen_interior()).
 6. **Planar reflections** (content-triggered) — re-render from mirrored
    camera for explicitly-flagged hero mirrors. The real answer to
    perfect-mirror quality; SSR is not (undersides/off-screen content are
@@ -69,3 +80,12 @@ camera jitter.
   bloom-hot contact reflections stopped crawling with the camera.
 - SSR↔IBL crossfade over [0.15, 0.6] — mid-gloss band no longer
   double-counts reflection energy.
+
+## New follow-up (2026-07-12, Phase B)
+
+8. **Transparent pass has no MSAA** — KHR-transmission / alpha-blend
+   geometry renders with blocky aliased silhouettes (bright-on-dark makes
+   it glaring). This blocks the two-layer "glass neon tube" look for the
+   arena rings (attempted and reverted; single-torus + higher tube
+   tessellation shipped instead). Fix = MSAA (or edge-AA) for the
+   transparent pass, then revisit the tube shells.

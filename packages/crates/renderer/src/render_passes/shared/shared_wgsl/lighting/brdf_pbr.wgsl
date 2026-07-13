@@ -193,6 +193,10 @@ fn brdf_ibl_with_transmission(
     color: PbrMaterialColor,
     normal: vec3<f32>,
     surface_to_camera: vec3<f32>,
+    // World-space surface position — feeds the reflection-probe box
+    // projection (ibl_info.probe_center_enabled); unused when no probe is
+    // enabled (the runtime gate inside box_project_env_dir).
+    world_position: vec3<f32>,
     ibl_filtered_env_tex: texture_cube<f32>,
     ibl_filtered_env_sampler: sampler,
     ibl_irradiance_tex: texture_cube<f32>,
@@ -321,7 +325,12 @@ fn brdf_ibl_with_transmission(
         ibl_roughness = mix(roughness, 1.0, aniso_strength * aniso_strength * (1.0 - n_dot_v));
     }
     {% endif %}
-    let prefiltered = samplePrefilteredEnv(R, ibl_roughness, ibl_filtered_env_tex, ibl_filtered_env_sampler, ibl_info);
+    // Reflection-probe box projection (parallax correction): when a probe is
+    // enabled, aim the prefiltered-env lookup at the box intersection instead
+    // of the raw direction, so env reflections track the surface's position
+    // inside the probe volume (grep box-projected-probe in wgsl_validation).
+    let R_env = box_project_env_dir(R, world_position, ibl_info.probe_center_enabled, ibl_info.probe_half);
+    let prefiltered = samplePrefilteredEnv(R_env, ibl_roughness, ibl_filtered_env_tex, ibl_filtered_env_sampler, ibl_info);
     let brdf_lut = sampleBRDFLUT(n_dot_v, roughness, brdf_lut_tex, brdf_lut_sampler);
     {% if write_ssr_descriptor %}
     // ssr-spread-gate (wgsl_validation pins this term): SSR is on and this
@@ -364,7 +373,7 @@ fn brdf_ibl_with_transmission(
     {% if pbr_features.clearcoat %}
     let cc_n = safe_normalize(color.clearcoat_normal);
     let cc_n_dot_v = saturate(dot(cc_n, v));
-    let cc_R = reflect(-v, cc_n);
+    let cc_R = box_project_env_dir(reflect(-v, cc_n), world_position, ibl_info.probe_center_enabled, ibl_info.probe_half);
     let cc_roughness = max(color.clearcoat_roughness, 0.04);
     // Sample prefiltered environment for clearcoat reflection
     let cc_prefiltered = samplePrefilteredEnv(cc_R, cc_roughness, ibl_filtered_env_tex, ibl_filtered_env_sampler, ibl_info);
@@ -389,6 +398,7 @@ fn brdf_ibl(
     color: PbrMaterialColor,
     normal: vec3<f32>,
     surface_to_camera: vec3<f32>,
+    world_position: vec3<f32>,
     ibl_filtered_env_tex: texture_cube<f32>,
     ibl_filtered_env_sampler: sampler,
     ibl_irradiance_tex: texture_cube<f32>,
@@ -468,6 +478,7 @@ fn brdf_ibl(
         color,
         normal,
         surface_to_camera,
+        world_position,
         ibl_filtered_env_tex,
         ibl_filtered_env_sampler,
         ibl_irradiance_tex,

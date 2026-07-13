@@ -17,7 +17,7 @@ use awsm_renderer_scene::particle::{
 };
 use awsm_renderer_scene::{
     AssetId, EnvSlot, EnvironmentConfig, MaterialDef, MaterialShading, NodeId, NodeKind,
-    ToneMappingConfig, Trs, VariantId,
+    ReflectionProbe, ToneMappingConfig, Trs, VariantId,
 };
 
 use awsm_renderer_meshgen::recipe::{Modifier, ModifierStack};
@@ -553,6 +553,12 @@ pub enum EditorCommand {
         skybox: Option<EnvSlot>,
         specular: Option<EnvSlot>,
         irradiance: Option<EnvSlot>,
+        /// Box-projected reflection probe (parallax-corrected specular env).
+        /// `None` preserves the current probe; `Some` replaces the whole
+        /// probe block (including its enabled flag). `#[serde(default)]`
+        /// keeps older wire payloads (no probe key) deserializing.
+        #[serde(default)]
+        probe: Option<ReflectionProbe>,
     },
 
     /// Patch the renderer-wide shadow config on `scene.shadows` (persisted into

@@ -1023,6 +1023,68 @@ fn material_final_blend_shader_validates() {
 }
 
 #[test]
+fn box_projected_probe_in_both_env_paths() {
+    // box-projected-probe (comment-pinned in brdf_pbr.wgsl + trace.wgsl): the
+    // reflection-probe parallax correction must go through the ONE shared
+    // `box_project_env_dir` helper (shared_wgsl/math.wgsl) in BOTH specular
+    // env consumers — the material IBL path and the SSR miss fallback — with
+    // the SAME (dir, world_pos, center_enabled, half_extents) argument shape,
+    // or the two paths drift and a probe-anchored reflection jumps when a
+    // pixel crosses from SSR-hit to fallback. The gate is the RUNTIME
+    // `center_enabled.w` (probe off = zeroed uniform = classic direction-only
+    // sampling), NOT a template axis — pin that no `{% if probe %}`-style
+    // axis snuck in by asserting the call exists in every permutation.
+    const IBL_CALL: &str =
+        "box_project_env_dir(R, world_position, ibl_info.probe_center_enabled, ibl_info.probe_half)";
+    const SSR_CALL: &str = "box_project_env_dir(dir_raw, world_pos, \
+         params.probe_center_enabled, params.probe_half_pad.xyz)";
+    for (msaa, mips) in CONFIGS {
+        for write_ssr_descriptor in [false, true] {
+            let mut key =
+                first_party_key(MaterialShaderId::PBR, ShadingBase::Pbr, false, msaa, mips);
+            key.write_ssr_descriptor = write_ssr_descriptor;
+            let label =
+                format!("opaque/pbr probe msaa={msaa:?} mips={mips} ssr={write_ssr_descriptor}");
+            let src = render(&key, &label);
+            naga_validate(&src, &label);
+            assert!(
+                src.contains(IBL_CALL),
+                "{label}: IBL specular must box-project through the shared helper `{IBL_CALL}`"
+            );
+        }
+    }
+    {
+        use crate::render_passes::ssr::shader::cache_key::{
+            ShaderCacheKeySsr, ShaderCacheKeySsrTrace, SsrMode, SsrTrace,
+        };
+        use crate::render_passes::ssr::shader::template::ShaderTemplateSsr;
+        for mode in [SsrMode::Mirror, SsrMode::Glossy] {
+            for trace in [SsrTrace::LinearDda, SsrTrace::HiZ] {
+                let key = ShaderCacheKeySsr::Trace(ShaderCacheKeySsrTrace {
+                    mode,
+                    trace,
+                    half_res: false,
+                    multisampled_geometry: false,
+                    reverse_z: false,
+                    debug: 0,
+                });
+                let label = format!("ssr probe mode={mode:?} trace={trace:?}");
+                let src = ShaderTemplateSsr::try_from(&key)
+                    .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
+                    .into_source()
+                    .unwrap_or_else(|e| panic!("{label}: render failed: {e:?}"));
+                naga_validate(&src, &label);
+                assert!(
+                    src.contains(SSR_CALL),
+                    "{label}: SSR env fallback must box-project through the shared helper \
+                     `{SSR_CALL}`"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn ssr_shaders_validate() {
     // SSR trace shader must naga-validate for EVERY permutation
     // (mode × trace-strategy × half_res × msaa × reverse_z) — proving the §5a

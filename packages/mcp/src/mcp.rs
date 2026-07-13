@@ -1079,6 +1079,16 @@ pub struct EnvironmentParams {
     /// colors, no hosted `.ktx2` needed.
     #[serde(default)]
     pub zenith: Option<[f32; 3]>,
+    /// Box-projected reflection probe: `{enabled, center: [x,y,z], half_extents:
+    /// [x,y,z]}`. When enabled, specular env lookups (IBL + the SSR miss
+    /// fallback) are parallax-corrected against this world-space box, so
+    /// fallback reflections anchor to the scene's actual bounds (set it to the
+    /// room/arena interior box; center should match where the specular cubemap
+    /// was authored/captured from). Omit to keep the current probe; pass
+    /// `{"enabled": false}` to turn it off. Requires a meaningful `specular`
+    /// cubemap to look right (the probe re-aims lookups INTO that map).
+    #[serde(default)]
+    pub probe: Option<awsm_renderer_scene::ReflectionProbe>,
     /// Agent-authored sky-gradient nadir (ground) color, linear-RGB `[r,g,b]`.
     /// Pairs with `zenith`.
     #[serde(default)]
@@ -4129,6 +4139,9 @@ impl EditorMcp {
                         skybox: grad,
                         specular: grad,
                         irradiance: grad,
+                        // Full-replace semantics: the gradient shortcut resets
+                        // the probe too unless the call carries one.
+                        probe: p.probe.unwrap_or_default(),
                     },
                 })
                 .await;
@@ -4183,6 +4196,7 @@ impl EditorMcp {
             skybox,
             specular,
             irradiance,
+            probe: p.probe,
         })
         .await
     }

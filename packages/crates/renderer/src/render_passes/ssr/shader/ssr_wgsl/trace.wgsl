@@ -47,7 +47,7 @@ const SSR_SPREAD_GATE: f32 = 0.15;
 // shared_wgsl/lighting/brdf_pbr.wgsl — grep "ssr-spread-cutoff".
 const SSR_SPREAD_CUTOFF: f32 = 0.6;
 
-// Live tuning uniforms — NOT permutation axes (§5a). 32 bytes / 8×f32.
+// Live tuning uniforms — NOT permutation axes (§5a). 64 bytes / 16×f32.
 struct SsrParams {
     intensity: f32,
     max_distance: f32,
@@ -57,6 +57,12 @@ struct SsrParams {
     edge_fade: f32,
     temporal_weight: f32,
     frame: f32,     // monotonic; rotates the march jitter when temporal_weight > 0
+    // Box-projected reflection probe, mirrored from the lights info uniform
+    // (render.rs copies it each frame) so the SSR miss fallback projects
+    // IDENTICALLY to the material IBL path: xyz = box center, w = enabled;
+    // xyz = half-extents, w = pad. Zeroed = disabled.
+    probe_center_enabled: vec4<f32>,
+    probe_half_pad: vec4<f32>,
 };
 
 // M1 probes everything with integer textureLoad (depth is non-filterable), so
@@ -615,7 +621,16 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // specular is suppressed while the SSR descriptor is written (see
     // brdf_pbr.wgsl's ssr-spread-gate), so SSR owns the WHOLE reflection:
     // geometry on a hit, environment on a miss — no double counting.
-    let dir_w = normalize((cam.inv_view * vec4<f32>(refl, 0.0)).xyz);
+    // Box-projected reflection probe (parallax correction): when enabled the
+    // fallback direction is re-aimed at the probe box intersection from the
+    // SURFACE's world position, so off-screen fallback reflections stay
+    // geometrically anchored (a wall band reflects at the right spot on the
+    // floor) instead of sliding like an infinitely-distant sky. Must match
+    // the material IBL path (brdf_pbr.wgsl) — both call the shared
+    // box_project_env_dir (grep box-projected-probe in wgsl_validation).
+    let world_pos = (cam.inv_view * vec4<f32>(p, 1.0)).xyz;
+    let dir_raw = normalize((cam.inv_view * vec4<f32>(refl, 0.0)).xyz);
+    let dir_w = box_project_env_dir(dir_raw, world_pos, params.probe_center_enabled, params.probe_half_pad.xyz);
     // Spread-scaled mip of the PREFILTERED env (same `roughness * max_mip`
     // convention as samplePrefilteredEnv — wgsl_validation pins this): the
     // fallback replaces the IBL specular term the brdf suppressed, so it must

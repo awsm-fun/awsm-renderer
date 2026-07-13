@@ -21,6 +21,8 @@ pub struct EnvironmentConfig {
     pub specular: EnvSlot,
     #[serde(default)]
     pub irradiance: EnvSlot,
+    #[serde(default)]
+    pub probe: ReflectionProbe,
 }
 
 impl EnvironmentConfig {
@@ -40,6 +42,45 @@ impl EnvironmentConfig {
                 _ => None,
             })
             .collect()
+    }
+}
+
+/// Box-projected reflection probe: anchors the specular-env fallback to the
+/// scene's actual bounds (parallax correction). When enabled, every specular
+/// env-map lookup (IBL specular + the SSR miss fallback) intersects the
+/// reflection ray with this axis-aligned box and samples the cubemap toward
+/// the INTERSECTION point instead of along the raw direction — so fallback
+/// reflections track the surface's position inside the room/arena rather than
+/// behaving like an infinitely-distant sky. One global probe per scene (MVP);
+/// disabled = classic direction-only sampling, bit-for-bit the old behavior.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[derive(Copy)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub struct ReflectionProbe {
+    #[serde(default)]
+    pub enabled: bool,
+    /// World-space center of the projection box (usually also where the
+    /// probe cubemap was authored/captured from).
+    #[serde(default)]
+    pub center: [f32; 3],
+    /// Half-extents of the projection box, in meters. Must be > 0 on every
+    /// axis when enabled.
+    #[serde(default = "default_probe_half_extents")]
+    pub half_extents: [f32; 3],
+}
+
+fn default_probe_half_extents() -> [f32; 3] {
+    [10.0, 10.0, 10.0]
+}
+
+impl Default for ReflectionProbe {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            center: [0.0; 3],
+            half_extents: default_probe_half_extents(),
+        }
     }
 }
 
@@ -85,6 +126,7 @@ mod tests {
             irradiance: EnvSlot::Ktx {
                 asset_id: AssetId::new(),
             },
+            probe: Default::default(),
         };
         let toml = toml::to_string_pretty(&cfg).unwrap();
         let back: EnvironmentConfig = toml::from_str(&toml).unwrap();

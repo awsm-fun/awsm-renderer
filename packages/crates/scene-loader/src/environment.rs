@@ -45,6 +45,18 @@ pub async fn apply_environment(
     let prefiltered = slot_image(&env.specular, SPECULAR_SIZE, assets).await?;
     let irradiance = slot_image(&env.irradiance, IRRADIANCE_SIZE, assets).await?;
     set_ibl(renderer, prefiltered, irradiance).await?;
+
+    // Box-projected reflection probe: parallax-anchors the specular env
+    // (IBL + SSR fallback) to the scene bounds. Disabled probes clear any
+    // previously-set box.
+    renderer
+        .lights
+        .set_reflection_probe(env.probe.enabled.then_some(
+            awsm_renderer::lights::ReflectionProbeBox {
+                center: env.probe.center,
+                half_extents: env.probe.half_extents,
+            },
+        ));
     Ok(())
 }
 
