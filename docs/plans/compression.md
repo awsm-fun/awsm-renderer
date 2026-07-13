@@ -235,9 +235,21 @@ BC5/EAC-RG (in-shader Z reconstruct) is a Phase-6 opt. **Block dims multiple of
 
 ## Phase 2 — Core renderer: block-compressed material textures (THE core change)
 
-- [ ] Request `texture-compression-{bc,etc2,astc}` on device create, gated on
+- [x] Request `texture-compression-{bc,etc2,astc}` on device create, gated on
       `adapter.features().has(..)` (mirror `indirect-first-instance`,
       `renderer-core/src/renderer.rs:263-306`). Expose the supported set.
+      ✅ 2026-07-13 — all three families requested when the adapter has them;
+      exposed as `AwsmRendererWebGpu::texture_compression() ->
+      TextureCompressionSupport { bc, etc2, astc }` (+ `.none()` for the RGBA8
+      last-resort check); one-shot tracing diagnostic at device create.
+      Browser-verified in model-tests: device creates cleanly, console prints
+      `texture compression support: bc=true etc2=true astc=true` (Apple
+      Silicon/Metal exposes all three). Bonus verified: the Phase-0 trunk
+      copy-file wiring really lands in the dist (transcoder + worker 200 on
+      :9080; encoder correctly ABSENT from player dists — its "200" is trunk's
+      SPA index.html fallback, a gotcha to remember when curl-probing dists).
+      `compatibility.rs` untouched on purpose: compression is optional
+      (RGBA8 fallback), never a compat gate.
 - [ ] Lift `cubemap/ktx.rs` block-layout + format-map helpers into a shared
       `renderer-core` module used by cubemaps AND materials.
 - [ ] Compressed upload path in `renderer-core/src/texture/texture_pool.rs`

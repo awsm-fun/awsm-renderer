@@ -15,6 +15,32 @@ use crate::{
 /// non-zero `firstInstance` values written by the compaction shader.
 const INDIRECT_FIRST_INSTANCE_FEATURE: &str = "indirect-first-instance";
 
+/// GPU block-compressed texture-format families. Requested at device-create
+/// whenever the adapter exposes them (they cost nothing when unused) so
+/// KTX2/Basis textures can upload compressed instead of expanding to RGBA8.
+/// BC ≈ desktop, ASTC ≈ modern mobile, ETC2 ≈ older mobile; WebGPU guarantees
+/// at least one of the three on real hardware.
+const TEXTURE_COMPRESSION_BC_FEATURE: &str = "texture-compression-bc";
+const TEXTURE_COMPRESSION_ETC2_FEATURE: &str = "texture-compression-etc2";
+const TEXTURE_COMPRESSION_ASTC_FEATURE: &str = "texture-compression-astc";
+
+/// Which block-compressed texture families the active device supports.
+/// Drives the KTX2/Basis transcode-target ladder (see docs/plans/compression.md).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TextureCompressionSupport {
+    pub bc: bool,
+    pub etc2: bool,
+    pub astc: bool,
+}
+
+impl TextureCompressionSupport {
+    /// True when no block-compressed family is available and textures must
+    /// fall back to RGBA8 (software WebGPU implementations, mostly).
+    pub fn none(&self) -> bool {
+        !self.bc && !self.etc2 && !self.astc
+    }
+}
+
 /// A process-stable identity for a `GpuDevice`, used to **scope the
 /// device-bound GPU caches** (blit / BRDF-LUT / mipmap / atlas / sRGB
 /// pipelines + samplers + staging buffers) that renderer-core keeps in
@@ -80,6 +106,18 @@ impl AwsmRendererWebGpu {
     /// WebGPU silently drops the call.
     pub fn has_indirect_first_instance(&self) -> bool {
         self.device.features().has(INDIRECT_FIRST_INSTANCE_FEATURE)
+    }
+
+    /// Which block-compressed texture families the active `GpuDevice` was
+    /// created with. Texture upload paths consult this to pick a transcode
+    /// target (BC/ASTC/ETC2) or fall back to RGBA8.
+    pub fn texture_compression(&self) -> TextureCompressionSupport {
+        let features = self.device.features();
+        TextureCompressionSupport {
+            bc: features.has(TEXTURE_COMPRESSION_BC_FEATURE),
+            etc2: features.has(TEXTURE_COMPRESSION_ETC2_FEATURE),
+            astc: features.has(TEXTURE_COMPRESSION_ASTC_FEATURE),
+        }
     }
 
     /// The canvas the renderer was built against. Use this to branch
@@ -275,9 +313,24 @@ impl AwsmRendererWebGpuBuilder {
                 // (callers can detect and disable `RendererFeatures::gpu_culling`
                 // upstream if needed).
                 let features = adapter.features();
+                let mut required: Vec<js_sys::JsString> = Vec::new();
                 if features.has(INDIRECT_FIRST_INSTANCE_FEATURE) {
-                    let required: [js_sys::JsString; 1] =
-                        [js_sys::JsString::from(INDIRECT_FIRST_INSTANCE_FEATURE)];
+                    required.push(js_sys::JsString::from(INDIRECT_FIRST_INSTANCE_FEATURE));
+                }
+                // Block-compressed texture families for the KTX2/Basis
+                // upload path — request every family the adapter has (free
+                // when unused; the transcode ladder picks among them at
+                // load time via `texture_compression()`).
+                for feature in [
+                    TEXTURE_COMPRESSION_BC_FEATURE,
+                    TEXTURE_COMPRESSION_ETC2_FEATURE,
+                    TEXTURE_COMPRESSION_ASTC_FEATURE,
+                ] {
+                    if features.has(feature) {
+                        required.push(js_sys::JsString::from(feature));
+                    }
+                }
+                if !required.is_empty() {
                     descriptor.set_required_features(&required);
                 }
                 if let Some(limits) = self.device_req_limits {
@@ -316,6 +369,19 @@ impl AwsmRendererWebGpuBuilder {
         // values in the logs rather than us guessing from
         // hardcoded-spec-minimum assumptions.
         log_device_limits(&device);
+
+        // Diagnostic: which block-compressed texture families this device
+        // carries — tells us at a glance whether KTX2/Basis textures will
+        // upload compressed (and to which family) or fall back to RGBA8.
+        {
+            let features = device.features();
+            tracing::info!(
+                "texture compression support: bc={} etc2={} astc={}",
+                features.has(TEXTURE_COMPRESSION_BC_FEATURE),
+                features.has(TEXTURE_COMPRESSION_ETC2_FEATURE),
+                features.has(TEXTURE_COMPRESSION_ASTC_FEATURE),
+            );
+        }
 
         // Diagnostic: wire `onuncapturederror` so the JS validation /
         // OOM / internal-error channel surfaces in our tracing stream.
