@@ -14,10 +14,12 @@ camera jitter.
    canvas format, then the exporter converted again. Swapchain captures now
    go through `export_display_texture_as_rgba8` / `mark_display_encoded`
    (readback verified byte-matching the on-screen luminance on the arena).
-   CAVEAT: goldens captured before the fix are double-encoded — still
-   self-consistent with each other, but regenerate a scene's golden the
-   next time it is touched (regenerating all 21 wholesale is not worth the
-   authoring round-trips).
+   All 23 pre-fix goldens were CORRECTED OFFLINE (no authoring round-trips):
+   the double-encode is a deterministic transform, so one sRGB decode per
+   pixel recovers the single-encoded image — proven exact to ±1 LSB over
+   all 256 byte values, and validated empirically (converted ssr golden's
+   sky matches a fresh fixed-readback capture within 1 LSB; the old bytes
+   were ~40 levels lifted). No footgun remains.
 
 ## Roadmap (in order)
 
