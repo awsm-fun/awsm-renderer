@@ -362,10 +362,22 @@ BC5/EAC-RG (in-shader Z reconstruct) is a Phase-6 opt. **Block dims multiple of
       Gotcha: renderer-core's `map_ktx_format` needed `#[cfg(feature="ktx")]`
       — renderer-gltf pulls renderer-core without `ktx`, which the Phase-2
       lift had silently broken for that combination.
-- [ ] meshopt bufferView decode pass (pure-Rust crate) BEFORE accessor decode:
+- [x] meshopt bufferView decode pass (pure-Rust crate) BEFORE accessor decode:
       reconstruct `byteStride×count` bytes from the ext buffer per `mode`+`filter`;
       ignore the `fallback:true` buffer. Feed reconstructed data to the existing
       accessor path.
+      ✅ 2026-07-13 — `renderer-gltf/src/meshopt.rs`. Design: the fallback
+      buffer is ALLOCATED ZEROED (never fetched — it would otherwise fall into
+      the `Source::Bin` arm and steal/miss the GLB blob) and the decode pass
+      writes each view's logical bytes into its parent range there, so the
+      ENTIRE downstream accessor path reads through unchanged. Runs at the end
+      of `import_buffer_data` in BOTH the main-thread loader and the worker
+      parse job. Structured errors on missing/invalid ext fields + bounds
+      checks on both source and destination ranges; per-model tracing line
+      (views, compressed→logical bytes). Fixture test decodes the robot's 82
+      views through the real loader plumbing and sanity-checks accessor-level
+      results (max index < vertex count per prim; quantized POSITION regions
+      non-zero).
 - [ ] Quantized accessors in `buffers/attributes.rs`/`accessor.rs`: accept the new
       component types; normalized → f32 dequant; unnormalized positions left for
       node-TRS / IBM dequant (verify skinned IBM path). Regenerate tangents

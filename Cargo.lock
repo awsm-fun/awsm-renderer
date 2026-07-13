@@ -391,6 +391,7 @@ version = "0.20.1"
 dependencies = [
  "anyhow",
  "awsm-renderer",
+ "awsm-renderer-codec-meshopt",
  "awsm-renderer-core",
  "awsm-renderer-materials",
  "awsm-renderer-tangents",

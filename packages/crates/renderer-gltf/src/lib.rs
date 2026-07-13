@@ -21,6 +21,7 @@ pub mod error;
 pub mod ext;
 pub mod extract;
 pub mod loader;
+pub(crate) mod meshopt;
 pub mod populate;
 pub mod worker_job;
 

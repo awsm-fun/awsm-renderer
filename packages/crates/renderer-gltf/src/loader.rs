@@ -289,6 +289,11 @@ async fn import_buffer_data<'a>(
         }
         buffers.push(data);
     }
+
+    // EXT_meshopt_compression: reconstruct every compressed bufferView into
+    // the (zero-allocated) fallback buffer BEFORE anything reads an accessor.
+    crate::meshopt::decode_meshopt_buffer_views(document, &mut buffers)?;
+
     Ok(buffers)
 }
 
@@ -308,6 +313,13 @@ fn get_buffer_futures<'a>(
             let base = base.clone();
 
             async move {
+                // EXT_meshopt_compression `fallback: true` buffers carry no
+                // data on the wire — allocate zeroed at the declared length;
+                // the meshopt decode pass fills them. (They'd otherwise fall
+                // into the `Bin` arm below and steal/miss the GLB blob.)
+                if crate::meshopt::buffer_is_meshopt_fallback(&buffer) {
+                    return Ok(vec![0u8; buffer.length()]);
+                }
                 match buffer.source() {
                     buffer::Source::Uri(uri) => {
                         let url = get_url(base.as_ref(), uri)?;
