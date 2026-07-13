@@ -13,6 +13,8 @@
 //! fatal worker error fails all in-flight requests and the next request
 //! spawns a fresh worker.
 
+pub mod selection;
+
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;

@@ -281,10 +281,27 @@ BC5/EAC-RG (in-shader Z reconstruct) is a Phase-6 opt. **Block dims multiple of
       path). Uncompressed path untouched — browser-verified no-regression
       (Fox renders textured in model-tests). On-device compressed
       verification lands with the Phase-2 exit after format selection.
-- [ ] Format selection: caps + source codec + slot color-space + color-vs-normal
+- [x] Format selection: caps + source codec + slot color-space + color-vs-normal
       → ladders above; RGBA8 last resort; multiple-of-4 guard.
+      ✅ 2026-07-13 — `codec-basis::selection`: `TranscodeCaps` (mirror of
+      renderer-core's `TextureCompressionSupport`; crate stays independent),
+      `SourceCodec::{Etc1s,Uastc}`, `select_transcode_target[_checked]`
+      (UASTC: ASTC→BC7→ETC2→RGBA8; ETC1S: ETC2→BC7→ASTC→RGBA8 — ETC1S stays
+      in-family where possible, every rung RGBA-capable),
+      `dims_block_compatible` (base level must be multiple-of-4 in WebGPU;
+      guard folds into `_checked` → RGBA8), `texture_format_for_target`
+      (sRGB rides the format; two-channel BC5/EAC-RG are linear-only →
+      `None` on srgb=true; ETC1 uploads as ETC2-RGB superset). Unit-tested
+      (desktop/mobile/Apple/none caps matrices). Normal maps = full-RGB
+      first cut per plan.
 - **Exit:** a Basis KTX2 texture uploads in a native block format (GPU-readback /
   assert no RGBA8 fallback on BC-capable desktop) and renders correctly.
+  ➡ Exit proof FOLDED INTO PHASE 3 (recorded 2026-07-13): all Phase-2 pieces
+  are in and individually verified, but nothing constructs
+  `ImageData::Compressed` until the scene-loader KTX2 path lands — Phase 3's
+  browser verification (tracing shows the selected block format; assert no
+  RGBA8 on this BC+ETC2+ASTC machine; visual check) IS the Phase-2 exit,
+  avoiding a throwaway harness.
 
 ## Phase 3 — Player runtime KTX2 load (scene-loader)
 
