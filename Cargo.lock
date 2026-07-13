@@ -229,6 +229,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "awsm-renderer-codec-basis"
+version = "0.20.1"
+dependencies = [
+ "futures",
+ "js-sys",
+ "thiserror 2.0.18",
+ "tracing",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
 name = "awsm-renderer-codec-meshopt"
 version = "0.20.1"
 dependencies = [

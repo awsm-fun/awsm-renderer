@@ -210,13 +210,28 @@ BC5/EAC-RG (in-shader Z reconstruct) is a Phase-6 opt. **Block dims multiple of
       build.rs cfg when the gitignored fixture is absent. Gotcha: the index
       codec is lossless only up to per-triangle rotation — never
       byte-compare round-tripped index streams.
-- [ ] Basis worker: `web/workers/basis-worker.js` hosting the vendored modules;
+- [x] Basis worker: `web/workers/basis-worker.js` hosting the vendored modules;
       versioned protocol; request-id routing; init caching; structured errors;
       restart-on-fatal. Rust client crate `packages/crates/codec-basis` — async
       `transcode` (+ `encode` behind editor-only `encoder` feature); transferable
       fast path + owned convenience path. Feature-gate: player = transcoder only.
 - **Exit:** meshopt round-trips in-Rust (wasm) AND decodes real gltfpack output;
   Basis worker transcodes a fixture off the main thread (verify BROWSER console).
+  ✅ **PHASE 1 COMPLETE 2026-07-13.** Worker shipped (protocol v1: init/ping/
+  transcode/encode, structured `{code,message}` errors, per-request ids;
+  module URLs passed at init; target names resolved against the embind enum at
+  runtime, no hardcoded ints). Client crate `awsm-renderer-codec-basis`:
+  `transcode_js` (transferred ArrayBuffer levels) + owned `transcode`, encode
+  behind `encoder` feature (default OFF; player never enables), restart-on-
+  fatal drains in-flight requests and respawns lazily. Worker copied to all 3
+  app dists (`workers/`). Browser-verified (console): khronos_basecolor.ktx2
+  (ETC1S 12.4KB) → **bc7 349,584B / astc-4x4 349,584B / rgba32 1,398,108B, 11
+  mips, 1.9–4.4ms each**; encode 32×32 RGBA → ETC1S KTX2 800B → transcode-back
+  gradient preserved (6 mips). Gotchas: worker `var BASIS` global is
+  non-configurable (assign `undefined`, don't `delete`); Chrome disk-caches
+  worker scripts hard (smoke page uses a cache-buster; dev pages should too);
+  encoder v2_1_0r dropped `setKTX2SRGBTransferFunc` (worker feature-detects
+  optional setters).
 
 ## Phase 2 — Core renderer: block-compressed material textures (THE core change)
 
