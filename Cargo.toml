@@ -136,6 +136,8 @@ awsm-renderer-particles = { path = "packages/crates/particles", version = "0.20.
 awsm-renderer-materials = { path = "packages/crates/materials", version = "0.20.1" }
 awsm-renderer = { path = "packages/crates/renderer", version = "0.20.1" }
 awsm-renderer-gltf = { path = "packages/crates/renderer-gltf", version = "0.20.1" }
+awsm-renderer-codec-meshopt = { path = "packages/crates/codec-meshopt", version = "0.20.1" }
+awsm-renderer-codec-basis = { path = "packages/crates/codec-basis", version = "0.20.1" }
 # Frontend-only (not published); workspace dep keeps consumers path-agnostic.
 awsm-renderer-web-shared = { path = "packages/frontend/web-shared", version = "0.20.1" }
 

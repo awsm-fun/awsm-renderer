@@ -12,12 +12,19 @@
 //! `textures.add_image`) and the editor's `sampler_for` / `apply_textures`.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use awsm_renderer::materials::MaterialTexture;
 use awsm_renderer::textures::{SamplerCacheKey, SamplerKey, TextureKey};
 use awsm_renderer::AwsmRenderer;
+use awsm_renderer_codec_basis::selection::{
+    select_transcode_target_checked, sniff_basis_ktx2, texture_format_for_target, TranscodeCaps,
+};
+use awsm_renderer_codec_basis::{
+    BasisWorkerClient, BasisWorkerConfig, TranscodeTarget, TranscodedLevel,
+};
 use awsm_renderer_core::image::{
-    ColorSpaceConversion, ImageBitmapOptions, ImageData, PremultiplyAlpha,
+    ColorSpaceConversion, CompressedImage, ImageBitmapOptions, ImageData, PremultiplyAlpha,
 };
 use awsm_renderer_core::sampler::{AddressMode, FilterMode, MipmapFilterMode};
 use awsm_renderer_core::texture::mipmap::MipmapTextureKind;
@@ -58,11 +65,35 @@ pub struct TextureCache {
     /// hardcoded `.png`. Assets the bake left unset (legacy bundles, procedural
     /// PNGs) resolve to `Png` on lookup, so old bundles load unchanged.
     encodings: HashMap<AssetId, TextureEncoding>,
+    /// Which block-compressed families the device supports — drives the KTX2
+    /// transcode-target ladder. Captured once at cache construction.
+    caps: TranscodeCaps,
 }
 
 /// A fetched + decoded bundle image, not yet staged in the pool.
-struct DecodedImage {
-    image_data: ImageData,
+enum DecodedImage {
+    Bitmap {
+        image_data: ImageData,
+    },
+    /// KTX2/Basis, already transcoded (in the Basis worker, off the main
+    /// thread) to the device's block target. Kept sRGB-agnostic here: the
+    /// slot's color-space picks the concrete `*Unorm`/`*UnormSrgb` format at
+    /// bind time in [`load_texture`], since one asset can serve both a color
+    /// slot and a data slot.
+    Compressed {
+        target: TranscodeTarget,
+        width: u32,
+        height: u32,
+        levels: Vec<TranscodedLevel>,
+    },
+}
+
+thread_local! {
+    /// One Basis worker per thread, spawned lazily on the first KTX2 texture
+    /// (player config: transcoder module only — no encoder URL, so the
+    /// editor-only encoder can never even be requested).
+    static BASIS_CLIENT: BasisWorkerClient =
+        BasisWorkerClient::new(BasisWorkerConfig::default());
 }
 
 impl TextureCache {
@@ -70,15 +101,22 @@ impl TextureCache {
     /// scene's asset table. Assets with no recorded encoding resolve to `Png`
     /// (the legacy default) on lookup, so old `assets/<id>.png` bundles — which
     /// predate the field — keep loading unchanged.
-    pub fn new(scene: &Scene) -> Self {
+    pub fn new(scene: &Scene, renderer: &AwsmRenderer) -> Self {
         let encodings = scene
             .assets
             .entries
             .iter()
             .filter_map(|(id, entry)| entry.texture_encoding.map(|enc| (*id, enc)))
             .collect();
+        // Device caps drive the KTX2/Basis transcode-target ladder.
+        let support = renderer.gpu.texture_compression();
         Self {
             encodings,
+            caps: TranscodeCaps {
+                bc: support.bc,
+                etc2: support.etc2,
+                astc: support.astc,
+            },
             ..Default::default()
         }
     }
@@ -101,6 +139,7 @@ impl TextureCache {
         use futures::StreamExt;
         // Resolve each pending asset's encoding up front so the fetch futures
         // capture a plain `TextureEncoding` (not `&self`).
+        let caps = self.caps;
         let pending: Vec<(AssetId, TextureEncoding)> = ids
             .into_iter()
             .filter(|id| !self.decoded.contains_key(id))
@@ -114,7 +153,7 @@ impl TextureCache {
         let mut stream = futures::stream::iter(
             pending
                 .into_iter()
-                .map(|(id, enc)| async move { (id, fetch_decode(assets, id, enc).await) }),
+                .map(|(id, enc)| async move { (id, fetch_decode(assets, id, enc, caps).await) }),
         )
         .buffer_unordered(PREFETCH_CONCURRENCY);
         let mut done = 0;
@@ -136,6 +175,7 @@ async fn fetch_decode(
     assets: &impl SceneAssets,
     asset: AssetId,
     encoding: TextureEncoding,
+    caps: TranscodeCaps,
 ) -> Option<DecodedImage> {
     let path = format!("{ASSETS_DIR}/{asset}.{}", encoding.ext());
 
@@ -187,19 +227,43 @@ async fn fetch_decode(
                     .ok()?
             }
             TextureEncoding::Ktx2 => {
-                // No in-loader transcode for MATERIAL KTX2 yet (environment KTX2
-                // cubemaps load via `environment.rs`). A URL wouldn't have helped
-                // either — KTX2 isn't browser-decodable. Add a transcode arm here
-                // when material KTX2 ships.
-                tracing::warn!(
-                    "scene-loader: texture `{path}` is KTX2 — material KTX2 not supported yet, slot left unbound"
-                );
-                return None;
+                // Basis-supercompressed KTX2: sniff codec + dims from the
+                // header, pick the device's block target, transcode in the
+                // Basis worker (off the main thread). Kept sRGB-agnostic —
+                // the binding slot picks the *Unorm/*UnormSrgb variant.
+                let Some((codec, width, height)) = sniff_basis_ktx2(&bytes) else {
+                    tracing::warn!(
+                        "scene-loader: texture `{path}` is not a Basis KTX2 (native/uncompressed KTX2 unsupported for materials) — slot left unbound"
+                    );
+                    return None;
+                };
+                let target = select_transcode_target_checked(caps, codec, width, height);
+                let client = BASIS_CLIENT.with(|c| c.clone());
+                match client.transcode(&bytes, target).await {
+                    Ok(tex) => {
+                        tracing::info!(
+                            "scene-loader: texture `{path}` ({codec:?} {width}x{height}) transcoded → {target:?}, {} mips",
+                            tex.levels.len()
+                        );
+                        return Some(DecodedImage::Compressed {
+                            target,
+                            width: tex.width,
+                            height: tex.height,
+                            levels: tex.levels,
+                        });
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "scene-loader: texture `{path}` KTX2 transcode failed — slot left unbound ({e})"
+                        );
+                        return None;
+                    }
+                }
             }
         }
     };
 
-    Some(DecodedImage {
+    Some(DecodedImage::Bitmap {
         image_data: ImageData::Bitmap { image, options },
     })
 }
@@ -263,29 +327,67 @@ pub async fn load_texture(
         None => {
             // Resolve the encoding before the mutable `decoded` borrow below.
             let encoding = cache.encoding(tref.asset);
+            let caps = cache.caps;
             let decoded = match cache.decoded.entry(tref.asset) {
                 std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
                 // Not prefetched (e.g. a slot the collector doesn't know about)
                 // — fall back to the old on-demand path, cached for next time.
                 std::collections::hash_map::Entry::Vacant(v) => {
-                    v.insert(fetch_decode(assets, tref.asset, encoding).await)
+                    v.insert(fetch_decode(assets, tref.asset, encoding, caps).await)
                 }
             };
-            let key = decoded.as_ref().and_then(|d| {
-                let color = TextureColorInfo {
-                    mipmap_kind,
-                    srgb_to_linear: srgb,
-                    premultiplied_alpha: None,
-                };
-                // Clones of `ImageData::Bitmap` share the underlying JS
-                // `ImageBitmap` handle — the pool never closes it, so one
-                // decode can feed multiple `(srgb, kind)` pool entries.
-                let image_data = d.image_data.clone();
-                let format = image_data.format();
-                renderer
-                    .textures
-                    .add_image(image_data, format, sampler_key, color)
-                    .ok()
+            let key = decoded.as_ref().and_then(|d| match d {
+                DecodedImage::Bitmap { image_data } => {
+                    let color = TextureColorInfo {
+                        mipmap_kind,
+                        srgb_to_linear: srgb,
+                        premultiplied_alpha: None,
+                    };
+                    // Clones of `ImageData::Bitmap` share the underlying JS
+                    // `ImageBitmap` handle — the pool never closes it, so one
+                    // decode can feed multiple `(srgb, kind)` pool entries.
+                    let image_data = image_data.clone();
+                    let format = image_data.format();
+                    renderer
+                        .textures
+                        .add_image(image_data, format, sampler_key, color)
+                        .ok()
+                }
+                DecodedImage::Compressed {
+                    target,
+                    width,
+                    height,
+                    levels,
+                } => {
+                    // The slot's color-space picks the concrete block format
+                    // — sRGB decode rides the format on compressed uploads,
+                    // so srgb_to_linear stays FALSE (the compute pass can't
+                    // run on block data, and must not be requested).
+                    let format = texture_format_for_target(*target, srgb)?;
+                    tracing::info!(
+                        "scene-loader: binding compressed texture as {format:?} (srgb={srgb})"
+                    );
+                    let compressed = CompressedImage {
+                        format,
+                        width: *width,
+                        height: *height,
+                        levels: levels.iter().map(|l| l.data.clone()).collect(),
+                    };
+                    let color = TextureColorInfo {
+                        mipmap_kind,
+                        srgb_to_linear: false,
+                        premultiplied_alpha: None,
+                    };
+                    renderer
+                        .textures
+                        .add_image(
+                            ImageData::Compressed(Arc::new(compressed)),
+                            format,
+                            sampler_key,
+                            color,
+                        )
+                        .ok()
+                }
             });
             cache.bound.insert(bound_at, key);
             key

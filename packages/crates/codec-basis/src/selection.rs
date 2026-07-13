@@ -35,6 +35,41 @@ pub enum SourceCodec {
     Uastc,
 }
 
+/// The 12-byte KTX2 file identifier.
+const KTX2_IDENTIFIER: [u8; 12] = [
+    0xAB, b'K', b'T', b'X', b' ', b'2', b'0', 0xBB, 0x0D, 0x0A, 0x1A, 0x0A,
+];
+
+/// Cheap header sniff of a (possibly Basis-supercompressed) KTX2 file:
+/// `(source codec, pixel width, pixel height)` — everything target selection
+/// needs before handing the container to the transcoder worker. `None` when
+/// the bytes aren't KTX2 or aren't Basis-encoded (a native/uncompressed KTX2
+/// belongs on a different path).
+///
+/// Codec rule (KTX2 spec): Basis containers have `vkFormat == 0`
+/// (`VK_FORMAT_UNDEFINED`); ETC1S is exactly `supercompressionScheme ==
+/// BasisLZ (1)`, while UASTC rides Zstd (2) or no supercompression.
+pub fn sniff_basis_ktx2(bytes: &[u8]) -> Option<(SourceCodec, u32, u32)> {
+    if bytes.len() < 48 || bytes[0..12] != KTX2_IDENTIFIER {
+        return None;
+    }
+    let u32_at = |offset: usize| u32::from_le_bytes(bytes[offset..offset + 4].try_into().unwrap());
+    let vk_format = u32_at(12);
+    let width = u32_at(20);
+    let height = u32_at(24);
+    let scheme = u32_at(44);
+    if vk_format != 0 {
+        // A concrete Vulkan format = native KTX2, not Basis.
+        return None;
+    }
+    let codec = if scheme == 1 {
+        SourceCodec::Etc1s
+    } else {
+        SourceCodec::Uastc
+    };
+    Some((codec, width, height))
+}
+
 /// WebGPU requires a block-compressed texture's BASE dimensions to be
 /// multiples of the block size (4×4 for every target we pick). Textures that
 /// fail this must fall back to RGBA8 at runtime (or WebP-lossless at encode
@@ -159,6 +194,32 @@ mod tests {
         // No caps: RGBA8 last resort.
         assert_eq!(select_transcode_target(NONE, Uastc), Rgba32);
         assert_eq!(select_transcode_target(NONE, Etc1s), Rgba32);
+    }
+
+    #[test]
+    fn sniffs_basis_ktx2_headers() {
+        let mut header = vec![0u8; 48];
+        header[0..12].copy_from_slice(&KTX2_IDENTIFIER);
+        header[20..24].copy_from_slice(&1024u32.to_le_bytes());
+        header[24..28].copy_from_slice(&512u32.to_le_bytes());
+
+        // vkFormat=0 + BasisLZ → ETC1S.
+        header[44..48].copy_from_slice(&1u32.to_le_bytes());
+        assert_eq!(
+            sniff_basis_ktx2(&header),
+            Some((SourceCodec::Etc1s, 1024, 512))
+        );
+        // vkFormat=0 + Zstd → UASTC.
+        header[44..48].copy_from_slice(&2u32.to_le_bytes());
+        assert_eq!(
+            sniff_basis_ktx2(&header),
+            Some((SourceCodec::Uastc, 1024, 512))
+        );
+        // Concrete vkFormat → native KTX2, not Basis.
+        header[12..16].copy_from_slice(&37u32.to_le_bytes()); // VK_FORMAT_R8G8B8A8_UNORM
+        assert_eq!(sniff_basis_ktx2(&header), None);
+        // Not KTX2 at all.
+        assert_eq!(sniff_basis_ktx2(b"glTF whatever"), None);
     }
 
     #[test]

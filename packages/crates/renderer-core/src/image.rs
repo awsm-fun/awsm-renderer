@@ -103,15 +103,29 @@ impl CompressedImage {
         texture: &web_sys::GpuTexture,
         layer: u32,
     ) -> Result<()> {
+        let (block_w, block_h, _) = crate::texture::block_format::block_dims(self.format)
+            .ok_or_else(|| {
+                AwsmCoreError::CompressedImage(format!(
+                    "{:?} is not a block-compressed format",
+                    self.format
+                ))
+            })?;
         for (level, data) in self.levels.iter().enumerate() {
             let (w, h) = self.level_size(level as u32);
+            // Copies on compressed textures are validated against the
+            // PHYSICAL mip size (virtual size rounded up to whole blocks):
+            // the 2×2 and 1×1 tail mips of a 4×4-block format must be
+            // written as 4×4, or writeTexture rejects the copy
+            // ("copySize.width (2) is not a multiple of block width (4)").
+            let w_phys = w.div_ceil(block_w) * block_w;
+            let h_phys = h.div_ceil(block_h) * block_h;
             let destination = TexelCopyTextureInfo::new(texture)
                 .with_mip_level(level as u32)
                 .with_origin(Origin3d::new().with_z(layer));
             let layout = TexelCopyBufferLayout::new()
                 .with_bytes_per_row(tight_bytes_per_row(self.format, w))
                 .with_rows_per_image(rows_per_image(self.format, h));
-            let size = Extent3d::new(w, Some(h), Some(1));
+            let size = Extent3d::new(w_phys, Some(h_phys), Some(1));
             gpu.write_texture(
                 &destination.into(),
                 data.as_slice(),

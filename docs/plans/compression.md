@@ -305,12 +305,39 @@ BC5/EAC-RG (in-shader Z reconstruct) is a Phase-6 opt. **Block dims multiple of
 
 ## Phase 3 — Player runtime KTX2 load (scene-loader)
 
-- [ ] Replace the `TextureEncoding::Ktx2 =>` reject-stub
+- [x] Replace the `TextureEncoding::Ktx2 =>` reject-stub
       (`scene-loader/src/texture.rs:189`): fetch → hand whole KTX2 to the Basis
       transcoder worker (parses container + Zstd + transcodes) with caps target +
       slot color-space + normal flag → upload compressed via Phase 2.
+      ✅ 2026-07-13 — `sniff_basis_ktx2` (new, codec-basis: 48-byte header
+      sniff → codec + dims, no transcode round-trip needed for target
+      selection; native KTX2 = warn+unbound) → `select_transcode_target_checked`
+      → thread-local `BasisWorkerClient` (player default config, encoder
+      impossible) → `DecodedImage::Compressed` kept **sRGB-agnostic**; the
+      binding slot picks `*Unorm`/`*UnormSrgb` at `load_texture` time (one
+      asset can serve color AND data slots). `TextureCache::new` now takes the
+      renderer for caps.
 - **Exit:** a bundle with Basis KTX2 loads in player-tests, textures compressed on
   GPU, correct visuals, transcode off the main thread, no perf regression.
+  ✅ **VERIFIED 2026-07-13** (also discharges the folded Phase-2 exit) — method:
+  kitchen-sink bundle COPY (repo scene untouched) with both webp textures
+  re-encoded as ETC1S KTX2 (node + vendored encoder; 362KB→67KB and tiny→5KB),
+  `texture_encoding = "ktx2"`, served on :9096; player-tests
+  `?bundles=…&scenes=kitchen-sink`. Console: `transcoded → Etc2Rgba, 10/11
+  mips` + `binding compressed texture as Etc2Rgba8unormSrgb (srgb=true)` — a
+  NATIVE BLOCK FORMAT, **no RGBA8 fallback**; ETC1S ladder correctly prefers
+  ETC2 on this bc+etc2+astc device. `PLAYER-TESTS COMPLETE: 3/3` (35 nodes, 7
+  meshes, 9,296 visible tris), load-transaction 273ms (vs 393ms on the
+  first webp-era run — no regression; transcode is in the worker, off-main).
+  🐛 REAL BUG found & fixed by this run: compressed `writeTexture` copies must
+  use the PHYSICAL (block-rounded) size for sub-block tail mips — Dawn rejects
+  a 2×2 copy on a 4×4-block format ("copySize.width (2) is not a multiple of
+  block width (4)"); `CompressedImage::write_to_texture_layer` now rounds the
+  copy extent up to whole blocks. Zero GPU validation errors after the fix.
+  ⚠ Residual: a human-eyeball PIXEL check wasn't capturable here (WebGPU
+  canvas reads back black post-present; the 1.2s run outruns screenshot RTT) —
+  the definitive visual acceptance rides Phase 4's robot screenshots and
+  Phase 5's golden round-trip, both mandatory anyway.
 
 ## Phase 4 — Editor import: meshopt + quantization + KHR_texture_basisu
 

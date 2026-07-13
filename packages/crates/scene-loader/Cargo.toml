@@ -29,6 +29,9 @@ futures = { workspace = true }
 # the bundle's clips + mixer through.
 awsm-renderer = { workspace = true, features = ["scene-schema"] }
 awsm-renderer-core = { workspace = true, features = ["ktx"] }
+# KTX2/Basis material textures: worker-transcode client + target selection.
+# TRANSCODER ONLY — the player must never pull the editor-only `encoder` feature.
+awsm-renderer-codec-basis = { workspace = true }
 awsm-renderer-gltf = { workspace = true }
 # Dynamic-material types (custom-WGSL registration: layout, registration, shader id).
 awsm-renderer-materials = { workspace = true }
