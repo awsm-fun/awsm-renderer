@@ -487,6 +487,26 @@ BC5/EAC-RG (in-shader Z reconstruct) is a Phase-6 opt. **Block dims multiple of
 - **Exit:** export a scene (meshopt+quant + KTX2 defaults) → load in player →
   matches editor; imported-KTX2 passthrough round-trips byte-identical;
   round-trip/golden tests green.
+  ✅ **PHASE 5 EXIT VERIFIED 2026-07-14** (mcp-dev, police scene):
+  `export_player_bundle` → bundle inspected on disk: **20/21 mesh glbs carry
+  EXT_meshopt_compression + KHR_mesh_quantization** (~6× smaller each, e.g.
+  1,494,184→251,064B; console logs per-mesh deltas); **all 78 assets/*.ktx2
+  byte-identical (sha256) to the fixture's embedded sources** — passthrough
+  round-trips exactly; scene.toml records `texture_encoding = "ktx2"` for
+  all 78, zero webp. Then `load_player_bundle` (in-memory bake → reset →
+  reload through populate_awsm_scene, the RUNTIME path): scene-loader
+  transcoded **74/74 unique KTX2 textures** (ETC1S→Etc2Rgba, UASTC→Astc4x4
+  per slot), zero errors, and the robot renders correctly from the reload
+  (screenshot: armor + police chest emblem + proportions match the
+  authored render). Round-trip tests green (synthetic grid + full suite).
+  📌 Residuals recorded: (1) the 1 uncompressed glb is the 29MB SKINNED RIG
+  reexport (uncompressed f32 + embedded ktx2) — larger than the 10.7MB
+  original source; compressing rig glbs is the highest-value follow-up
+  (Phase 6 hardening or its own pass). (2) `load_player_bundle` gotchas for
+  future runs: it takes NO url (bakes the CURRENT project); the editor tree
+  is empty after it (runtime objects only — `frame_node` can't target them;
+  use `reset_camera` + viewport zoom); its "textures are follow-ons" doc
+  text is now stale (they load).
 
 ## Phase 6 — Hardening, tests, perf, GPU-quantized formats
 
