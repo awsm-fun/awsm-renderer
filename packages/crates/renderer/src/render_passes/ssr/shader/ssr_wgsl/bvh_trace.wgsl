@@ -25,9 +25,14 @@
 // unpack_normal_tangent + box_project_env_dir.
 {% include "shared_wgsl/math.wgsl" %}
 
-// Eligibility: only near-mirror pixels get software rays (rougher pixels'
-// cone blur hides the probe approximation — the fallback is fine there).
-const BVH_SPREAD_MAX: f32 = 0.1;
+// Eligibility: near-mirror THROUGH polished-floor spreads get software rays
+// (0.25 covers the arena floor's 0.18 — at a low camera most of the wall
+// stack is cropped off-screen and nearly EVERY floor pixel's mirror target
+// is off-screen: probe wash across the whole floor unless real geometry
+// fills it). Sharpness mismatch is a non-issue: BVH hits ride the ssr
+// target through the spatial resolve, which blurs by spread exactly like
+// screen-space hits. Rougher than this, the cone blur hides the probe.
+const BVH_SPREAD_MAX: f32 = 0.25;
 // Matches the glossy HDR clamp in trace.wgsl: reflected luminance is capped
 // so a bloom-hot emissive hit can't bloom AGAIN through the reflection.
 const BVH_LUM_CLAMP: f32 = 3.0;
