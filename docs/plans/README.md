@@ -12,7 +12,7 @@ offscreen-editor-screenshots.md.
 | Plan | Status | One-liner |
 |------|--------|-----------|
 | [007-player-tests](007-player-tests.md) | shipped; 2 optional scenarios open | `examples/player-tests/` runtime harness (23/23 — the standing regression gate). Open: animation stress, post/SSR/bloom runtime toggles |
-| [ssr-followups](ssr-followups.md) | living queue | Reflections roadmap + what shipped; open: readback colorspace bug, planar reflections, prefiltered scene mips, transparent-pass MSAA, probe tier 2 |
+| [ssr-followups](ssr-followups.md) | dormant queue (no active SSR work planned) | Reflections roadmap + what shipped (probe, BVH fallback, ssr_mask, zero-cost-off). All remaining items are future tiers, none are defects: planar reflections (content-triggered), prefiltered scene mips, glass-shell shading aliasing, probe tier 2, BVH thin-emitter hit quality |
 | [atmosphere](atmosphere.md) | designed, not started | Haze as a real feature: view-path fog (effects pass) + reflection-path haze; replaces the arena's probe-baked fake |
 | [crashes](crashes.md) | planned, not started | Editor-tab 70 GB VA-leak crash investigation (soak harness) |
 

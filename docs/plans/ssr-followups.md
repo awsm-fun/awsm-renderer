@@ -121,6 +121,27 @@ RECEIVES screen-space reflections, decoupled from roughness/metallic:
   inside the `write_ssr_descriptor` axis.
 - Reference use: the jetpack arena floor ships `ssr_mask 0.7`.
 
+## Occluder-shadow diagnosis (2026-07-13, arena platform — for the next SSR round)
+
+David flagged dark smudges on the glossy floor "spreading far" from a
+floating platform. Measured decomposition (influence masks + source-view
+debug + geometric projection, all on-device):
+- The patch near the arena CENTER is the platform's TRUE mirror image
+  (mirrored-camera projection of the 7x0.9x7 slab at [0,7,24] lands at
+  x 0.4..5.3, z -0.7..6.1) — physically correct, keep.
+- The column just BELOW the platform is the classic SSR occluder shadow:
+  the floor there mirrors wall content hidden behind the platform's screen
+  rect (the true rays pass ~3.5 m UNDER the deck). The BVH fallback fires
+  on exactly those pixels and supplies the true content (dim red base
+  wall), which is why it's maroon, not black — but its one-ray,
+  emissive-only shading of the thin 0.3 m ring tori reads dimmer/patchier
+  than the neighboring screen-sampled streaks, so the column still smudges.
+- Verdict vs industry: at-or-above shipped non-RT SSR standard; NOT a
+  shipping gate. 9. **BVH thin-emitter hit quality** is the follow-up if
+  it ever bothers again (few-ray jitter or cone-widened torus acceptance,
+  bloom-matched intensity); content-side fix is lighting platform
+  undersides.
+
 ## Post-sweep state (2026-07-13 evening — ..ea19b12c)
 
 Shipped beyond the roadmap above (details in git history; the standalone
