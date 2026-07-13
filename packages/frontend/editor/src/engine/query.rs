@@ -86,8 +86,11 @@ pub fn poll_scene_capture(renderer: &awsm_renderer::AwsmRenderer) {
     let format = renderer.gpu.current_context_format();
     wasm_bindgen_futures::spawn_local(async move {
         let result: CapturedFrame = match (texture, size) {
+            // Display variant: the swapchain is already sRGB-encoded by the
+            // display pass — the plain export double-gammas it (the pastel
+            // screenshot bug).
             (Ok(texture), Ok((w, h))) => gpu
-                .export_texture_as_rgba8(&texture, w, h, 0, format)
+                .export_display_texture_as_rgba8(&texture, w, h, 0, format)
                 .await
                 .map(|rgba| (rgba, w, h))
                 .map_err(|e| format!("{e}")),

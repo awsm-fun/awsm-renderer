@@ -9,15 +9,15 @@ camera jitter.
 
 ## Bugs
 
-1. **MCP screenshot readback colorspace** — `screenshot_scene`'s GPU
-   swapchain copy produces a pastel/lifted-shadows image vs the on-screen
-   render (obvious on dark HDR scenes: the arena; invisible on bright flat
-   scenes, which is why goldens never caught it). Likely a missing/double
-   sRGB transfer in the copy→PNG path. Until fixed, dark-scene previews are
-   captured via the browser (canvas crop) instead — the arena previews
-   currently carry minor editor chrome for this reason. Goldens captured via
-   the readback are self-consistent (compared against each other), but not
-   display-accurate.
+1. **MCP screenshot readback colorspace** — FIXED (2026-07-13): a double
+   sRGB encode — the display pass hand-encodes sRGB into the non-sRGB
+   canvas format, then the exporter converted again. Swapchain captures now
+   go through `export_display_texture_as_rgba8` / `mark_display_encoded`
+   (readback verified byte-matching the on-screen luminance on the arena).
+   CAVEAT: goldens captured before the fix are double-encoded — still
+   self-consistent with each other, but regenerate a scene's golden the
+   next time it is touched (regenerating all 21 wholesale is not worth the
+   authoring round-trips).
 
 ## Roadmap (in order)
 
@@ -109,7 +109,9 @@ bvh-reflections.md design doc was deleted as fully implemented):
 - **Atmosphere** extracted as its own plan (atmosphere.md): view-path fog +
   reflection-path haze; replaces the arena's probe-baked haze when it lands.
 
-Still open from the list above: #1 (screenshot readback colorspace),
-#6 (planar reflections), #7 (prefiltered scene-color mips), #8 (transparent
-pass MSAA). Item #5's remaining tier: multiple local probes + editor
-authoring UI + in-engine capture.
+Still open from the list above — ALL deliberate future tiers, none of them
+loose ends of the `updates` branch work: #6 (planar reflections,
+content-triggered), #7 (prefiltered scene-color mips, quality/perf tier),
+#8 (transparent pass MSAA — a transparent-pass feature, not SSR), item #5
+tier 2 (multiple local probes + editor authoring UI + in-engine capture),
+and atmosphere.md. Bug #1 was the only defect in the queue and is fixed.

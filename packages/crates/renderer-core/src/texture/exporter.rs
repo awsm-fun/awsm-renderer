@@ -345,6 +345,25 @@ impl AwsmRendererWebGpu {
     /// render frame (before the next `getCurrentTexture`/present) captures the
     /// just-rendered swapchain — the reliable replacement for `toDataURL`/
     /// `drawImage`, which return empty on a WebGPU canvas.
+    /// Like [`Self::export_texture_as_rgba8`], but for textures whose bytes
+    /// are ALREADY display-encoded — i.e. the swapchain (see
+    /// `mark_display_encoded` for the double-gamma rationale). Regular
+    /// texture exports (materials, texture assets) keep the plain variant:
+    /// their linear sources genuinely need the display conversion.
+    pub async fn export_display_texture_as_rgba8(
+        &self,
+        texture: &web_sys::GpuTexture,
+        width: u32,
+        height: u32,
+        array_index: u32,
+        format: TextureFormat,
+    ) -> Result<Vec<u8>> {
+        self.copy_texture_for_readback(texture, width, height, array_index, format)?
+            .mark_display_encoded()
+            .finish_rgba8()
+            .await
+    }
+
     pub async fn export_texture_as_rgba8(
         &self,
         texture: &web_sys::GpuTexture,
@@ -521,6 +540,20 @@ pub struct TextureReadback {
 impl TextureReadback {
     /// Map the buffer and return tightly-packed display-space RGBA8 bytes
     /// (BGRA→RGBA swizzle + linear→sRGB applied to match what's on screen).
+    /// Mark the source bytes as ALREADY display-encoded (sRGB), suppressing
+    /// the linear->sRGB conversion in `finish_*`. The SWAPCHAIN needs this:
+    /// the display pass hand-encodes sRGB into a non-sRGB canvas format
+    /// (`linear_to_srgb` in display_wgsl/fragment.wgsl — the standard
+    /// pattern when the preferred canvas format is plain bgra8unorm), so
+    /// converting again double-gammas the capture — the long-standing
+    /// "pastel / lifted shadows" screenshot_scene bug: obvious on dark HDR
+    /// scenes, invisible on bright flat ones, which is why goldens never
+    /// caught it.
+    pub fn mark_display_encoded(mut self) -> Self {
+        self.is_srgb = true;
+        self
+    }
+
     pub async fn finish_rgba8(self) -> Result<Vec<u8>> {
         JsFuture::from(self.buffer.map_async(MapMode::Read as u32))
             .await

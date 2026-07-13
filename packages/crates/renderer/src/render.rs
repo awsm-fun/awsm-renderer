@@ -146,7 +146,10 @@ impl AwsmRenderer {
                 .copy_texture_for_readback(&texture, width, height, 0, format)
         })();
         Box::pin(async move {
-            let bytes = readback?.finish_png_opaque().await?;
+            // Swapchain bytes are already display-encoded (the display pass
+            // hand-encodes sRGB into the non-sRGB canvas format) — mark them
+            // so the readback doesn't double-gamma the capture.
+            let bytes = readback?.mark_display_encoded().finish_png_opaque().await?;
             Ok::<Vec<u8>, AwsmError>(bytes)
         })
     }
