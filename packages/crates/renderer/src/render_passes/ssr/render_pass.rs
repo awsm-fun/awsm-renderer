@@ -43,7 +43,7 @@ pub struct SsrParams {
 }
 
 impl SsrParams {
-    pub const BYTE_SIZE: usize = 64;
+    pub const BYTE_SIZE: usize = 80;
 
     pub fn new(gpu: &AwsmRendererWebGpu) -> Result<Self> {
         let gpu_buffer = gpu.create_buffer(
@@ -60,7 +60,7 @@ impl SsrParams {
             uploader: MappedUploader::new("SsrParams"),
             frame: 0,
         };
-        params.pack(1.0, 100.0, 1.0, 96.0, 0.6, 0.1, 0.9, None);
+        params.pack(1.0, 100.0, 1.0, 96.0, 0.6, 0.1, 0.9, None, 0);
         Ok(params)
     }
 
@@ -75,6 +75,7 @@ impl SsrParams {
         edge_fade: f32,
         temporal_weight: f32,
         probe: Option<crate::lights::ReflectionProbeBox>,
+        bvh_instances: u32,
     ) {
         self.raw_data[0..4].copy_from_slice(&intensity.to_ne_bytes());
         self.raw_data[4..8].copy_from_slice(&max_distance.to_ne_bytes());
@@ -97,6 +98,9 @@ impl SsrParams {
                 self.raw_data[48 + i * 4..52 + i * 4].copy_from_slice(&v.to_ne_bytes());
             }
         }
+        // [64..80] = bvh_meta: x = TLAS instance count (f32 — exact to 16M).
+        self.raw_data[64..80].fill(0);
+        self.raw_data[64..68].copy_from_slice(&(bvh_instances as f32).to_ne_bytes());
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -111,6 +115,7 @@ impl SsrParams {
         edge_fade: f32,
         temporal_weight: f32,
         probe: Option<crate::lights::ReflectionProbeBox>,
+        bvh_instances: u32,
     ) -> Result<()> {
         self.frame = self.frame.wrapping_add(1);
         self.pack(
@@ -122,6 +127,7 @@ impl SsrParams {
             edge_fade,
             temporal_weight,
             probe,
+            bvh_instances,
         );
         self.uploader.write_dirty_ranges(
             gpu,
@@ -134,11 +140,79 @@ impl SsrParams {
     }
 }
 
+/// The per-frame TLAS instance buffer for the software-BVH pass. `scratch`
+/// is the pooled CPU staging (rebuilt each enabled frame, capacity kept —
+/// no per-frame heap allocation once warm); the GPU buffer grows by
+/// doubling and flags `recreated` so the bind group rebuilds.
+pub struct SsrTlas {
+    pub gpu_buffer: web_sys::GpuBuffer,
+    capacity: usize,
+    pub scratch: Vec<u8>,
+    uploader: crate::buffer::mapped_uploader::MappedUploader,
+    pub recreated: bool,
+}
+
+impl SsrTlas {
+    const INITIAL_BYTES: usize = 16 * 1024;
+
+    fn create(gpu: &AwsmRendererWebGpu, size: usize) -> Result<web_sys::GpuBuffer> {
+        Ok(gpu.create_buffer(
+            &BufferDescriptor::new(
+                Some("SsrTlas"),
+                size,
+                BufferUsage::new().with_storage().with_copy_dst(),
+            )
+            .into(),
+        )?)
+    }
+
+    pub fn new(gpu: &AwsmRendererWebGpu) -> Result<Self> {
+        Ok(Self {
+            gpu_buffer: Self::create(gpu, Self::INITIAL_BYTES)?,
+            capacity: Self::INITIAL_BYTES,
+            scratch: Vec::new(),
+            uploader: crate::buffer::mapped_uploader::MappedUploader::new("SsrTlas"),
+            recreated: false,
+        })
+    }
+
+    /// Upload this frame's instance bytes (from `scratch`). Grows by
+    /// doubling; sets `recreated` when the buffer handle changed so the
+    /// caller can fire `BindGroupCreate::SsrBvhBuffers`.
+    pub fn write(&mut self, gpu: &AwsmRendererWebGpu) -> Result<()> {
+        self.recreated = false;
+        if self.scratch.is_empty() {
+            return Ok(());
+        }
+        if self.scratch.len() > self.capacity {
+            let mut new_cap = self.capacity.max(1);
+            while new_cap < self.scratch.len() {
+                new_cap *= 2;
+            }
+            self.gpu_buffer = Self::create(gpu, new_cap)?;
+            self.capacity = new_cap;
+            self.recreated = true;
+        }
+        self.uploader.write_dirty_ranges(
+            gpu,
+            &self.gpu_buffer,
+            self.capacity,
+            &self.scratch,
+            &[(0, self.scratch.len())],
+        )?;
+        Ok(())
+    }
+}
+
 pub struct SsrRenderPass {
     pub bind_groups: SsrBindGroups,
     pub pipelines: SsrPipelines,
     pub params: SsrParams,
     pub composite: SsrComposite,
+    /// Per-frame TLAS instances for the software-BVH pass (allocated even
+    /// when the axis is off — a 16 KB buffer — so the recreate plumbing
+    /// needs no Option dance).
+    pub tlas: SsrTlas,
 }
 
 impl SsrRenderPass {
@@ -147,11 +221,13 @@ impl SsrRenderPass {
         let pipelines = SsrPipelines::new(ctx, &bind_groups).await?;
         let params = SsrParams::new(ctx.gpu)?;
         let composite = SsrComposite::new(ctx).await?;
+        let tlas = SsrTlas::new(ctx.gpu)?;
         Ok(Self {
             bind_groups,
             pipelines,
             params,
             composite,
+            tlas,
         })
     }
 
@@ -173,10 +249,6 @@ impl SsrRenderPass {
             let compute_pass = ctx.command_encoder.begin_compute_pass(Some(
                 &ComputePassDescriptor::new(Some("SSR Trace + Resolve + Temporal")).into(),
             ));
-            compute_pass.set_pipeline(ctx.pipelines.compute.get(self.pipelines.trace)?);
-            // Single non-parity trace group — the history ping-pong moved to
-            // the temporal pass below.
-            compute_pass.set_bind_group(0, self.bind_groups.trace()?, None)?;
             // Trace dims match the `ssr` target: halved when half-res, matching
             // the `((w+1)/2, (h+1)/2)` target sizing in `RenderTexturesInner`.
             let (w, h) = if half_res {
@@ -186,6 +258,21 @@ impl SsrRenderPass {
             };
             let w = w.max(1);
             let h = h.max(1);
+
+            // Software-BVH trace — BEFORE the screen-space trace, which
+            // consumes its `ssr_bvh` output as the miss fallback (dispatch
+            // ordering makes the storage writes visible, same as
+            // trace→resolve below).
+            if let Some(bvh) = self.pipelines.bvh_trace {
+                compute_pass.set_pipeline(ctx.pipelines.compute.get(bvh)?);
+                compute_pass.set_bind_group(0, self.bind_groups.bvh()?, None)?;
+                compute_pass.dispatch_workgroups(w.div_ceil(8), Some(h.div_ceil(8)), Some(1));
+            }
+
+            compute_pass.set_pipeline(ctx.pipelines.compute.get(self.pipelines.trace)?);
+            // Single non-parity trace group — the history ping-pong moved to
+            // the temporal pass below.
+            compute_pass.set_bind_group(0, self.bind_groups.trace()?, None)?;
             compute_pass.dispatch_workgroups(w.div_ceil(8), Some(h.div_ceil(8)), Some(1));
 
             // Spatial resolve — the edge-aware denoise between trace and

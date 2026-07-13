@@ -706,6 +706,11 @@ pub struct Meshes {
     mesh_geometry_pool_uploader: crate::buffer::mapped_uploader::MappedUploader,
     visibility_geometry_index_uploader: crate::buffer::mapped_uploader::MappedUploader,
     transparency_geometry_data_uploader: crate::buffer::mapped_uploader::MappedUploader,
+    /// Software-BVH BLAS store for off-screen reflections (docs/plans/
+    /// bvh-reflections.md). Built at commit (see `resolve_one`), dropped in
+    /// `remove` alongside the shared resource; GPU upload happens on the SSR
+    /// path only while `ssr.bvh_reflections` is enabled.
+    pub bvh: crate::bvh::BvhStore,
     // buffer infos
     pub buffer_infos: MeshBufferInfos,
     // meta
@@ -805,6 +810,7 @@ impl Meshes {
         Ok(Self {
             list: DenseSlotMap::with_key(),
             resources: DenseSlotMap::with_key(),
+            bvh: crate::bvh::BvhStore::new(gpu)?,
             geometries: DenseSlotMap::with_key(),
             mesh_to_geometry: SecondaryMap::new(),
             geometry_to_meshes: SecondaryMap::new(),
@@ -1207,6 +1213,16 @@ impl Meshes {
             )?;
             if let Some(resource) = self.resources.get_mut(resource_key) {
                 resource.refcount = bound.len();
+            }
+
+            // Software-BVH BLAS for reflections: STATIC meshes only (a
+            // skinned mesh's rest pose would reflect frozen limbs); built
+            // here because this is the last moment the CPU-side positions/
+            // indices exist. Capped inside `add` — over-cap meshes simply
+            // stay on the SSR/probe path.
+            if source.skin_key.is_none() && !source.indices.is_empty() {
+                self.bvh
+                    .add(resource_key, &source.positions, &source.indices);
             }
 
             // Wire every bound mesh to the shared resource (flags + meta).
@@ -2634,6 +2650,7 @@ impl Meshes {
                         self.mesh_geometry_pool_buffers.remove(resource_key);
                         self.visibility_geometry_index_buffers.remove(resource_key);
                         self.transparency_geometry_data_buffers.remove(resource_key);
+                        self.bvh.remove(resource_key);
 
                         self.mesh_geometry_pool_dirty = true;
                         self.visibility_geometry_index_dirty = true;
@@ -2671,6 +2688,67 @@ impl Meshes {
     }
 
     /// Writes dirty mesh buffers to the GPU and updates bind groups.
+    /// Assemble the software-BVH TLAS instance bytes for this frame into
+    /// `out` (cleared first; capacity reused frame to frame — no per-frame
+    /// heap allocation once warm). One instance per mesh whose shared
+    /// resource carries a BLAS (static, under the caps) and whose world
+    /// AABB is known. Returns the instance count. Linear array — the GPU
+    /// pass scans it (fine to a few hundred instances; see bvh.rs).
+    pub fn build_bvh_tlas(
+        &self,
+        transforms: &crate::transforms::Transforms,
+        materials: &crate::materials::Materials,
+        out: &mut Vec<u8>,
+    ) -> u32 {
+        out.clear();
+        let mut count: u32 = 0;
+        for (mesh_key, mesh) in self.list.iter() {
+            let Some(&resource_key) = self.mesh_to_resource.get(mesh_key) else {
+                continue;
+            };
+            let Some((node_base, tri_base)) = self.bvh.bases(resource_key) else {
+                continue;
+            };
+            let Some(world_aabb) = &mesh.world_aabb else {
+                continue;
+            };
+            let Ok(world) = transforms.get_world(mesh.transform_key) else {
+                continue;
+            };
+            let inv = world.inverse();
+            // Constrained hit shading: premultiplied emissive only (plus the
+            // shared probe/env term added in the shader). Texture-emissive
+            // surfaces are approximated by their factor — documented MVP.
+            let emissive = match materials.get(mesh.material_key) {
+                Ok(crate::materials::Material::Pbr(pbr)) => {
+                    let strength = pbr
+                        .emissive_strength
+                        .as_ref()
+                        .map(|s| s.strength)
+                        .unwrap_or(1.0);
+                    [
+                        pbr.emissive_factor[0] * strength,
+                        pbr.emissive_factor[1] * strength,
+                        pbr.emissive_factor[2] * strength,
+                    ]
+                }
+                Ok(crate::materials::Material::Toon(t)) => t.emissive_factor,
+                _ => [0.0, 0.0, 0.0],
+            };
+            crate::bvh::push_instance(
+                out,
+                &inv,
+                world_aabb.min.to_array(),
+                world_aabb.max.to_array(),
+                node_base,
+                tri_base,
+                emissive,
+            );
+            count += 1;
+        }
+        count
+    }
+
     pub fn write_gpu(
         &mut self,
         logging: &AwsmRendererLogging,

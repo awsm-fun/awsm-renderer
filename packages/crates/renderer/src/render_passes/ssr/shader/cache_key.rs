@@ -43,6 +43,7 @@ pub enum ShaderCacheKeySsr {
     Trace(ShaderCacheKeySsrTrace),
     Resolve(ShaderCacheKeySsrResolve),
     Temporal(ShaderCacheKeySsrTemporal),
+    BvhTrace(ShaderCacheKeySsrBvhTrace),
 }
 
 /// Cache key for the SSR trace shader (`ssr_wgsl/trace.wgsl`). Temporal
@@ -66,6 +67,21 @@ pub struct ShaderCacheKeySsrTrace {
     /// hit/env, 4 = traversal steps). Structural — selects a compiled trace
     /// variant that REPLACES the reflection output with the encoded value.
     pub debug: u32,
+    /// Software-BVH miss fallback (docs/plans/bvh-reflections.md): binds the
+    /// `ssr_bvh` hit target and swaps the env fallback for a real off-screen
+    /// hit where the bvh_trace pass found one. Compiled only when
+    /// `post_processing.ssr.bvh_reflections`.
+    pub bvh: bool,
+}
+
+/// Cache key for the software-BVH trace shader (`ssr_wgsl/bvh_trace.wgsl`) —
+/// the world-space BLAS/TLAS walk that runs BEFORE the screen-space trace.
+/// Compiled only when `post_processing.ssr.bvh_reflections`. Same
+/// depth-binding + depth-convention axes as the resolve/temporal stages.
+#[derive(Hash, Debug, Clone, PartialEq, Eq)]
+pub struct ShaderCacheKeySsrBvhTrace {
+    pub multisampled_geometry: bool,
+    pub reverse_z: bool,
 }
 
 /// Cache key for the SSR spatial resolve shader (`ssr_wgsl/resolve.wgsl`) —
@@ -117,6 +133,12 @@ impl From<ShaderCacheKeySsrResolve> for ShaderCacheKey {
 impl From<ShaderCacheKeySsrTemporal> for ShaderCacheKey {
     fn from(key: ShaderCacheKeySsrTemporal) -> Self {
         ShaderCacheKeySsr::Temporal(key).into()
+    }
+}
+
+impl From<ShaderCacheKeySsrBvhTrace> for ShaderCacheKey {
+    fn from(key: ShaderCacheKeySsrBvhTrace) -> Self {
+        ShaderCacheKeySsr::BvhTrace(key).into()
     }
 }
 

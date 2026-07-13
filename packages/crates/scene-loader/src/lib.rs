@@ -933,6 +933,7 @@ pub fn post_process_to_renderer(
             temporal: pp.ssr.temporal,
             temporal_weight: pp.ssr.temporal_weight,
             debug: pp.ssr.debug,
+            bvh_reflections: pp.ssr.bvh_reflections,
         },
     }
 }

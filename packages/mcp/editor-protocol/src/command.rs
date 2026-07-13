@@ -646,6 +646,10 @@ pub enum EditorCommand {
         ssr_temporal_weight: Option<f32>,
         #[serde(default)]
         ssr_debug: Option<u32>,
+        /// Software-BVH reflections toggle (structural — rebuilds the SSR
+        /// pass). Persisted like `ssr_temporal`.
+        #[serde(default)]
+        ssr_bvh_reflections: Option<bool>,
     },
 
     /// Set editor viewport view options — partial update, every field

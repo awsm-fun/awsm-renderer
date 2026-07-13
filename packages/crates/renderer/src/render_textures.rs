@@ -205,6 +205,7 @@ impl RenderTextures {
         ssr_enabled: bool,
         ssr_half_res: bool,
         ssr_temporal: bool,
+        ssr_bvh: bool,
     ) -> Result<RenderTextureViews> {
         let size_changed = match self.inner.as_ref() {
             Some(inner) => (inner.width, inner.height) != current_size,
@@ -245,6 +246,14 @@ impl RenderTextures {
             None => false,
         };
 
+        // SSR software-BVH: the `ssr_bvh` hit target is only allocated
+        // full-size when SSR is on AND bvh_reflections is on, else a 1x1
+        // placeholder. Toggling rebuilds inner exactly like `ssr_temporal`.
+        let ssr_bvh_changed = match self.inner.as_ref() {
+            Some(inner) => inner.ssr_bvh != ssr_bvh,
+            None => false,
+        };
+
         // T2.5: opaque mip-chain state changed (false → true). The
         // false → true direction is the only one we care about; the
         // flag is sticky so the texture never shrinks back to mip 1.
@@ -268,6 +277,7 @@ impl RenderTextures {
             || ssr_enabled_changed
             || ssr_half_res_changed
             || ssr_temporal_changed
+            || ssr_bvh_changed
         {
             if let Some(inner) = self.inner.take() {
                 // Defer destroy: a prior frame's "Rendering" submit may still
@@ -294,6 +304,7 @@ impl RenderTextures {
                 ssr_enabled,
                 ssr_half_res,
                 ssr_temporal,
+                ssr_bvh,
             )?;
             self.inner = Some(inner);
         }
@@ -314,7 +325,8 @@ impl RenderTextures {
             || hud_depth_appeared
             || ssr_enabled_changed
             || ssr_half_res_changed
-            || ssr_temporal_changed;
+            || ssr_temporal_changed
+            || ssr_bvh_changed;
         Ok(RenderTextureViews::new(
             self.inner.as_ref().unwrap(),
             self.ping_pong(),
@@ -414,6 +426,11 @@ pub struct RenderTextureViews {
     /// frame's into the other, swapping by frame parity. 1×1 placeholders
     /// unless SSR is on AND temporal is on.
     pub ssr_history: [web_sys::GpuTextureView; 2],
+    /// Software-BVH raw hit target (rgba16float, `ssr` dims): the bvh_trace
+    /// compute storage-writes (hit color, hit flag) here; the SSR trace reads
+    /// it as its miss fallback when `bvh_reflections` is on. 1x1 placeholder
+    /// otherwise.
+    pub ssr_bvh: web_sys::GpuTextureView,
     /// M2a material-owned reflection descriptor — `material_opaque` writes it,
     /// the SSR pass reads it.
     pub reflection_descriptor: web_sys::GpuTextureView,
@@ -486,6 +503,7 @@ impl RenderTextureViews {
             ssr: inner.ssr_view.clone(),
             ssr_resolved: inner.ssr_resolved_view.clone(),
             ssr_final: inner.ssr_final_view.clone(),
+            ssr_bvh: inner.ssr_bvh_view.clone(),
             ssr_history: [
                 inner.ssr_history_views[0].clone(),
                 inner.ssr_history_views[1].clone(),
@@ -613,6 +631,9 @@ pub struct RenderTexturesInner {
     /// frame). 1×1 placeholders unless `ssr_enabled && ssr_temporal`.
     pub ssr_history: [web_sys::GpuTexture; 2],
     pub ssr_history_views: [web_sys::GpuTextureView; 2],
+    /// Software-BVH hit target. 1×1 placeholder unless `ssr_enabled && ssr_bvh`.
+    pub ssr_bvh_tex: web_sys::GpuTexture,
+    pub ssr_bvh_view: web_sys::GpuTextureView,
 
     /// M2a material-owned reflection descriptor (Rgba8unorm). `material_opaque`
     /// storage-writes it; the SSR pass texture-reads it. See
@@ -635,6 +656,8 @@ pub struct RenderTexturesInner {
     /// allocated at the `ssr` dims (SSR on AND temporal on) vs. 1×1
     /// placeholders. `views()` rebuilds inner when this flips.
     pub ssr_temporal: bool,
+    /// Whether the `ssr_bvh` hit target is full-size.
+    pub ssr_bvh: bool,
 }
 
 impl RenderTexturesInner {
@@ -660,6 +683,7 @@ impl RenderTexturesInner {
         ssr_enabled: bool,
         ssr_half_res: bool,
         ssr_temporal: bool,
+        ssr_bvh: bool,
     ) -> Result<Self> {
         // Lazy SSR-target sizing: full-res only when SSR is on, else a 1×1
         // placeholder (the material_opaque layout always binds `reflection_descriptor`
@@ -990,6 +1014,28 @@ impl RenderTexturesInner {
             make_history("SSR History 1")?,
         ];
 
+        // Software-BVH hit target — same dims/format/usage as `ssr`; the
+        // bvh_trace compute storage-writes it, the SSR trace texture-reads
+        // it. Full-size only when SSR is on AND bvh_reflections is on.
+        let (bvh_w, bvh_h) = if ssr_enabled && ssr_bvh {
+            (ssr_w, ssr_h)
+        } else {
+            (1u32, 1u32)
+        };
+        let ssr_bvh_tex = gpu
+            .create_texture(
+                &TextureDescriptor::new(
+                    render_texture_formats.color,
+                    Extent3d::new(bvh_w, Some(bvh_h), Some(1)),
+                    TextureUsage::new()
+                        .with_storage_binding()
+                        .with_texture_binding(),
+                )
+                .with_label("SSR BVH")
+                .into(),
+            )
+            .map_err(AwsmRenderTextureError::CreateTexture)?;
+
         // M2a: material-owned SSR reflection descriptor. `material_opaque`
         // storage-writes it per pixel; the SSR pass texture-reads it. Always
         // allocated (a small Rgba8unorm target) — the zero-cost gate lives on
@@ -1298,6 +1344,10 @@ impl RenderTexturesInner {
             })?,
         ];
 
+        let ssr_bvh_view = ssr_bvh_tex
+            .create_view()
+            .map_err(|e| AwsmRenderTextureError::CreateTextureView(format!("ssr_bvh: {e:?}")))?;
+
         let reflection_descriptor_view = reflection_descriptor.create_view().map_err(|e| {
             AwsmRenderTextureError::CreateTextureView(format!("reflection_descriptor: {e:?}"))
         })?;
@@ -1392,6 +1442,8 @@ impl RenderTexturesInner {
             ssr_final_view,
             ssr_history,
             ssr_history_views,
+            ssr_bvh_tex,
+            ssr_bvh_view,
 
             reflection_descriptor,
             reflection_descriptor_view,
@@ -1403,6 +1455,7 @@ impl RenderTexturesInner {
             ssr_enabled,
             ssr_half_res,
             ssr_temporal,
+            ssr_bvh,
         })
     }
 
@@ -1444,6 +1497,7 @@ impl RenderTexturesInner {
         self.bloom.destroy();
         self.ssr.destroy();
         self.ssr_resolved.destroy();
+        self.ssr_bvh_tex.destroy();
         self.ssr_final.destroy();
         self.ssr_history[0].destroy();
         self.ssr_history[1].destroy();

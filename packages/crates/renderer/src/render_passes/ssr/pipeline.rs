@@ -31,6 +31,10 @@ pub struct SsrPipelines {
     /// `None` unless `post_processing.ssr.temporal` at construction (the
     /// toggle reconstructs the SSR pass, so this never flips in place).
     pub temporal: Option<ComputePipelineKey>,
+    /// Software-BVH trace — dispatched BEFORE the screen-space trace.
+    /// `None` unless `post_processing.ssr.bvh_reflections` at construction
+    /// (same reconstruct-on-toggle semantics as `temporal`).
+    pub bvh_trace: Option<ComputePipelineKey>,
 }
 
 impl SsrPipelines {
@@ -48,6 +52,7 @@ impl SsrPipelines {
         reverse_z: bool,
         hzb: bool,
         debug: u32,
+        bvh: bool,
     ) -> ShaderCacheKeySsrTrace {
         ShaderCacheKeySsrTrace {
             mode: SsrMode::Glossy,
@@ -63,6 +68,18 @@ impl SsrPipelines {
             multisampled_geometry: multisampled,
             reverse_z,
             debug,
+            bvh,
+        }
+    }
+
+    /// The software-BVH trace variant (docs/plans/bvh-reflections.md).
+    fn bvh_key(
+        multisampled: bool,
+        reverse_z: bool,
+    ) -> super::shader::cache_key::ShaderCacheKeySsrBvhTrace {
+        super::shader::cache_key::ShaderCacheKeySsrBvhTrace {
+            multisampled_geometry: multisampled,
+            reverse_z,
         }
     }
 
@@ -93,6 +110,7 @@ impl SsrPipelines {
         let half_res = ctx.post_processing.ssr.resolution_scale < 1.0;
         let temporal = ctx.post_processing.ssr.temporal;
         let debug = ctx.post_processing.ssr.debug;
+        let bvh = ctx.post_processing.ssr.bvh_reflections;
         ctx.shaders
             .ensure_keys(
                 ctx.gpu,
@@ -103,6 +121,7 @@ impl SsrPipelines {
                     ctx.features.reverse_z,
                     ctx.features.gpu_culling,
                     debug,
+                    bvh,
                 ),
             )
             .await?;
@@ -128,6 +147,7 @@ impl SsrPipelines {
                     ctx.features.reverse_z,
                     ctx.features.gpu_culling,
                     debug,
+                    bvh,
                 ),
             )
             .await?;
@@ -169,16 +189,41 @@ impl SsrPipelines {
             ));
         }
 
+        // Software-BVH pipeline — lazy exactly like temporal.
+        if bvh {
+            let bvh_layout_key = bind_groups
+                .bvh_layout_key
+                .expect("SSR bvh layout missing despite ssr.bvh_reflections on");
+            let bvh_layout = ctx.pipeline_layouts.get_key(
+                ctx.gpu,
+                ctx.bind_group_layouts,
+                PipelineLayoutCacheKey::new(vec![bvh_layout_key]),
+            )?;
+            let bvh_shader = ctx
+                .shaders
+                .get_key(ctx.gpu, Self::bvh_key(multisampled, ctx.features.reverse_z))
+                .await?;
+            cache_keys.push(ComputePipelineCacheKey::new(bvh_shader, bvh_layout));
+        }
+
         let pipeline_keys = ctx
             .pipelines
             .compute
             .ensure_keys(ctx.gpu, ctx.shaders, ctx.pipeline_layouts, cache_keys)
             .await?;
 
+        let mut next = 2usize;
+        let temporal_key_slot = temporal.then(|| {
+            let k = pipeline_keys[next];
+            next += 1;
+            k
+        });
+        let bvh_key_slot = bvh.then(|| pipeline_keys[next]);
         Ok(Self {
             trace: pipeline_keys[0],
             resolve: pipeline_keys[1],
-            temporal: temporal.then(|| pipeline_keys[2]),
+            temporal: temporal_key_slot,
+            bvh_trace: bvh_key_slot,
         })
     }
 
@@ -189,10 +234,18 @@ impl SsrPipelines {
         reverse_z: bool,
         hzb: bool,
         debug: u32,
+        bvh: bool,
     ) -> Vec<ShaderCacheKey> {
         let multisampled = anti_aliasing.msaa_sample_count.is_some();
         let mut keys = vec![
-            ShaderCacheKey::from(Self::m1_key(multisampled, half_res, reverse_z, hzb, debug)),
+            ShaderCacheKey::from(Self::m1_key(
+                multisampled,
+                half_res,
+                reverse_z,
+                hzb,
+                debug,
+                bvh,
+            )),
             ShaderCacheKey::from(Self::resolve_key(multisampled, reverse_z)),
         ];
         if temporal {
@@ -200,6 +253,9 @@ impl SsrPipelines {
                 multisampled,
                 reverse_z,
             )));
+        }
+        if bvh {
+            keys.push(ShaderCacheKey::from(Self::bvh_key(multisampled, reverse_z)));
         }
         keys
     }

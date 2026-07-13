@@ -1067,6 +1067,7 @@ fn box_projected_probe_in_both_env_paths() {
                     multisampled_geometry: false,
                     reverse_z: false,
                     debug: 0,
+                    bvh: false,
                 });
                 let label = format!("ssr probe mode={mode:?} trace={trace:?}");
                 let src = ShaderTemplateSsr::try_from(&key)
@@ -1080,6 +1081,81 @@ fn box_projected_probe_in_both_env_paths() {
                      `{SSR_CALL}`"
                 );
             }
+        }
+    }
+}
+
+#[test]
+fn ssr_bvh_shaders_validate() {
+    // Software-BVH reflections (docs/plans/bvh-reflections.md): the bvh_trace
+    // module must naga-validate for every axis combo, carry the world-space
+    // traversal essentials (bounded stack walk + no-cull Möller–Trumbore +
+    // the near-mirror eligibility gate), and constrained hit shading only
+    // (no recursion: exactly one traversal loop, emissive + env term).
+    // The screen-space trace's bvh axis must consume the hit target in its
+    // miss fallback when ON and reference none of it when OFF (zero-cost).
+    use crate::render_passes::ssr::shader::cache_key::{
+        ShaderCacheKeySsr, ShaderCacheKeySsrBvhTrace, ShaderCacheKeySsrTrace, SsrMode, SsrTrace,
+    };
+    use crate::render_passes::ssr::shader::template::ShaderTemplateSsr;
+    for multisampled_geometry in [false, true] {
+        for reverse_z in [false, true] {
+            let key = ShaderCacheKeySsr::BvhTrace(ShaderCacheKeySsrBvhTrace {
+                multisampled_geometry,
+                reverse_z,
+            });
+            let label = format!("ssr bvh msaa={multisampled_geometry} reverse_z={reverse_z}");
+            let src = ShaderTemplateSsr::try_from(&key)
+                .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
+                .into_source()
+                .unwrap_or_else(|e| panic!("{label}: render failed: {e:?}"));
+            naga_validate(&src, &label);
+            assert!(
+                src.contains("spread > BVH_SPREAD_MAX"),
+                "{label}: must gate on the near-mirror spread bound"
+            );
+            assert!(
+                src.contains("var stack: array<u32, 28>"),
+                "{label}: bounded traversal stack"
+            );
+            assert!(
+                src.contains("fn tri_hit("),
+                "{label}: Möller–Trumbore intersector"
+            );
+            assert!(
+                src.contains("inst.emissive.rgb + env_c"),
+                "{label}: constrained hit shading (emissive + env term only)"
+            );
+        }
+    }
+    // Trace consumption: ON pins the select over the env fallback; OFF must
+    // compile no bvh reference at all.
+    for bvh in [false, true] {
+        let key = ShaderCacheKeySsr::Trace(ShaderCacheKeySsrTrace {
+            mode: SsrMode::Glossy,
+            trace: SsrTrace::LinearDda,
+            half_res: false,
+            multisampled_geometry: false,
+            reverse_z: false,
+            debug: 0,
+            bvh,
+        });
+        let label = format!("ssr trace bvh={bvh}");
+        let src = ShaderTemplateSsr::try_from(&key)
+            .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
+            .into_source()
+            .unwrap_or_else(|e| panic!("{label}: render failed: {e:?}"));
+        naga_validate(&src, &label);
+        if bvh {
+            assert!(
+                src.contains("select(env, bvh_sample.rgb, bvh_sample.a > 0.5)"),
+                "{label}: miss fallback must prefer a real BVH hit over the env"
+            );
+        } else {
+            assert!(
+                !src.contains("bvh_tex"),
+                "{label}: bvh-off trace must reference no bvh binding"
+            );
         }
     }
 }
@@ -1111,6 +1187,7 @@ fn ssr_shaders_validate() {
                             multisampled_geometry,
                             reverse_z,
                             debug: 0,
+                            bvh: false,
                         });
                         let label = format!(
                             "ssr mode={mode:?} trace={trace:?} \
@@ -1448,6 +1525,7 @@ fn ssr_debug_views_validate() {
             multisampled_geometry: false,
             reverse_z: true,
             debug,
+            bvh: false,
         });
         let label = format!("ssr debug={debug}");
         let src = ShaderTemplateSsr::try_from(&key)

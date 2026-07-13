@@ -134,6 +134,7 @@ impl AwsmRenderer {
             self.post_processing.ssr.enabled,
             self.post_processing.ssr.resolution_scale < 1.0,
             self.post_processing.ssr.temporal,
+            self.post_processing.ssr.bvh_reflections,
         )?;
         let ctx = crate::bind_groups::BindGroupRecreateContext {
             gpu: &self.gpu,

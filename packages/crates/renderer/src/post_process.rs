@@ -59,6 +59,10 @@ pub struct Ssr {
     /// Debug visualization (0 off, 1 confidence, 2 travel, 3 source,
     /// 4 traversal steps). Structural (recompiles the trace variant).
     pub debug: u32,
+    /// Software-BVH reflections for SSR misses on near-mirror pixels
+    /// (docs/plans/bvh-reflections.md). Structural (recompiles the trace +
+    /// builds the bvh_trace pass). Default OFF — a high-end tier.
+    pub bvh_reflections: bool,
 }
 
 impl Default for Ssr {
@@ -80,6 +84,7 @@ impl Default for Ssr {
             temporal: false,
             temporal_weight: 0.9,
             debug: 0,
+            bvh_reflections: false,
         }
     }
 }
@@ -149,7 +154,8 @@ impl AwsmRenderer {
             || self.post_processing.ssr.enabled != pp.ssr.enabled
             || self.post_processing.ssr.temporal != pp.ssr.temporal
             || self.post_processing.ssr.resolution_scale != pp.ssr.resolution_scale
-            || self.post_processing.ssr.debug != pp.ssr.debug;
+            || self.post_processing.ssr.debug != pp.ssr.debug
+            || self.post_processing.ssr.bvh_reflections != pp.ssr.bvh_reflections;
         // Toggling SSR flips the `write_ssr_descriptor` axis on the
         // material_opaque cache key, so the live material modules must recompile
         // to add/drop the descriptor store (lazy — only the variants the scene
@@ -168,7 +174,8 @@ impl AwsmRenderer {
         // passes on the MSAA structural flip the same way.
         let ssr_pass_rebuild_needed = self.post_processing.ssr.temporal != pp.ssr.temporal
             || self.post_processing.ssr.resolution_scale != pp.ssr.resolution_scale
-            || self.post_processing.ssr.debug != pp.ssr.debug;
+            || self.post_processing.ssr.debug != pp.ssr.debug
+            || self.post_processing.ssr.bvh_reflections != pp.ssr.bvh_reflections;
         // LAZY SSR (axis 1): the pass is `None` until the first enable — a
         // session that never turns SSR on compiles neither the trace compute
         // nor the composite render pipeline. Build it now when enabling with

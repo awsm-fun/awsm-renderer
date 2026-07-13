@@ -38,6 +38,7 @@ pub mod bind_group_layout;
 pub mod bind_groups;
 pub mod bounds;
 pub mod buffer;
+pub mod bvh;
 pub mod camera;
 pub mod cameras;
 #[cfg(feature = "lod")]

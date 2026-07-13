@@ -577,6 +577,8 @@ impl AwsmRenderer {
             // M3 temporal-SSR history pair allocation. Must match the picker's
             // `views()` value to avoid rebuild thrash.
             self.post_processing.ssr.temporal,
+            // Software-BVH hit target. Must match the picker's `views()` too.
+            self.post_processing.ssr.bvh_reflections,
         )?;
 
         if render_texture_views.views_recreated {
@@ -634,9 +636,28 @@ impl AwsmRenderer {
         // SSR live-tuning uniforms (no ensure_size — the ssr target lives in
         // RenderTextures and resizes with the rest). Only written when enabled.
         if self.post_processing.ssr.enabled {
+            // Software-BVH: flush any BLAS dirt to the GPU + rebuild this
+            // frame's TLAS instance array BEFORE borrowing the pass (the
+            // BLAS store lives on `meshes`). Buffer reallocation fires the
+            // SsrBvhBuffers event so the bvh_trace bind group rebinds.
+            let mut bvh_instances: u32 = 0;
+            let mut bvh_buffers_recreated = false;
+            if self.post_processing.ssr.bvh_reflections {
+                self.meshes.bvh.write_gpu(&self.gpu)?;
+                bvh_buffers_recreated = self.meshes.bvh.buffers_recreated;
+            }
             // Lazy pass: enabled ⇒ `Some` (set_post_processing builds it
             // awaited on the first enable).
             if let Some(ssr) = self.render_passes.ssr.as_mut() {
+                if self.post_processing.ssr.bvh_reflections {
+                    bvh_instances = self.meshes.build_bvh_tlas(
+                        &self.transforms,
+                        &self.materials,
+                        &mut ssr.tlas.scratch,
+                    );
+                    ssr.tlas.write(&self.gpu)?;
+                    bvh_buffers_recreated |= ssr.tlas.recreated;
+                }
                 let s = &self.post_processing.ssr;
                 // The uniform's temporal_weight doubles as the trace's RUNTIME
                 // "will a temporal pass average my jitter?" gate — it must be
@@ -657,7 +678,12 @@ impl AwsmRenderer {
                     // Mirror the lights' reflection probe so the SSR miss
                     // fallback box-projects identically to the IBL path.
                     self.lights.reflection_probe(),
+                    bvh_instances,
                 )?;
+            }
+            if bvh_buffers_recreated {
+                self.bind_groups
+                    .mark_create(crate::bind_groups::BindGroupCreate::SsrBvhBuffers);
             }
         }
 

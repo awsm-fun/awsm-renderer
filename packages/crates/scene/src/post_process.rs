@@ -135,6 +135,12 @@ pub struct SsrConfig {
     /// 4 traversal steps). DEV-ONLY and transient — never persisted.
     #[serde(skip)]
     pub debug: u32,
+    /// Software-BVH reflections: real off-screen hits replace the probe/env
+    /// fallback for SSR misses on near-mirror pixels. Structural
+    /// (recompiles + builds the bvh_trace pass). A HIGH-END tier — default
+    /// off; persisted like `temporal`.
+    #[serde(default)]
+    pub bvh_reflections: bool,
 }
 
 fn default_ssr_intensity() -> f32 {
@@ -176,6 +182,7 @@ impl Default for SsrConfig {
             temporal: false,
             temporal_weight: default_ssr_temporal_weight(),
             debug: 0,
+            bvh_reflections: false,
         }
     }
 }

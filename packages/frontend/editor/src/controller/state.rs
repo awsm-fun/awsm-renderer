@@ -3249,6 +3249,7 @@ impl EditorController {
                 ssr_resolution_scale,
                 ssr_temporal_weight,
                 ssr_debug,
+                ssr_bvh_reflections,
             } => {
                 let prev = self.scene.post_process.get_cloned();
                 let mut next = prev.clone();
@@ -3306,6 +3307,9 @@ impl EditorController {
                 if let Some(v) = ssr_temporal_weight {
                     next.ssr.temporal_weight = v;
                 }
+                if let Some(v) = ssr_bvh_reflections {
+                    next.ssr.bvh_reflections = v;
+                }
                 if let Some(v) = ssr_debug {
                     next.ssr.debug = v;
                 }
@@ -3333,6 +3337,7 @@ impl EditorController {
                     ssr_resolution_scale: Some(prev.ssr.resolution_scale),
                     ssr_temporal_weight: Some(prev.ssr.temporal_weight),
                     ssr_debug: Some(prev.ssr.debug),
+                    ssr_bvh_reflections: Some(prev.ssr.bvh_reflections),
                 }))
             }
             EditorCommand::SetViewOptions {

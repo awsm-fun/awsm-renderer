@@ -47,7 +47,7 @@ const SSR_SPREAD_GATE: f32 = 0.15;
 // shared_wgsl/lighting/brdf_pbr.wgsl — grep "ssr-spread-cutoff".
 const SSR_SPREAD_CUTOFF: f32 = 0.6;
 
-// Live tuning uniforms — NOT permutation axes (§5a). 64 bytes / 16×f32.
+// Live tuning uniforms — NOT permutation axes (§5a). 80 bytes / 20×f32.
 struct SsrParams {
     intensity: f32,
     max_distance: f32,
@@ -63,6 +63,9 @@ struct SsrParams {
     // xyz = half-extents, w = pad. Zeroed = disabled.
     probe_center_enabled: vec4<f32>,
     probe_half_pad: vec4<f32>,
+    // Software-BVH: x = TLAS instance count (bvh_trace.wgsl reads it; kept
+    // here so every SSR stage declares the SAME buffer layout).
+    bvh_meta: vec4<f32>,
 };
 
 // M1 probes everything with integer textureLoad (depth is non-filterable), so
@@ -101,6 +104,17 @@ struct SsrParams {
 {% else %}
 @group(0) @binding(7) var skybox_tex: texture_cube<f32>;
 @group(0) @binding(8) var skybox_sampler: sampler;
+{% endif %}
+{% if bvh %}
+// Software-BVH raw hit target (bvh_trace ran BEFORE this pass): rgb = the
+// constrained hit color for this pixel's mirror ray, a = 1 on a hit. Used
+// as the miss fallback in place of the probe/env approximation. Rides after
+// the sampler in BOTH hzb arms (10 with hzb, 9 without).
+{% if hzb %}
+@group(0) @binding(10) var bvh_tex: texture_2d<f32>;
+{% else %}
+@group(0) @binding(9) var bvh_tex: texture_2d<f32>;
+{% endif %}
 {% endif %}
 
 // Reconstruct VIEW-space position from a hardware depth sample at `uv`
@@ -639,7 +653,17 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // blob reflection on near-mirror floors.
     let env_mip = spread * f32(textureNumLevels(skybox_tex) - 1u);
     let env = textureSampleLevel(skybox_tex, skybox_sampler, dir_w, env_mip).rgb;
-    let env_reflection = env * fresnel * params.intensity;
+    {% if bvh %}
+    // Software-BVH fallback (wgsl_validation pins this): a REAL off-screen
+    // hit for this exact ray beats the probe/env approximation. Weighted by
+    // the very same fresnel/intensity path as the env it replaces, so the
+    // confidence composition downstream is untouched.
+    let bvh_sample = textureLoad(bvh_tex, coords, 0);
+    let env_fb = select(env, bvh_sample.rgb, bvh_sample.a > 0.5);
+    {% else %}
+    let env_fb = env;
+    {% endif %}
+    let env_reflection = env_fb * fresnel * params.intensity;
 
     // Alpha carries coverage × travel for the resolve's distance-scaled blur.
     // Env-fallback misses store 1.0 (max travel → max glossy blur; mirror

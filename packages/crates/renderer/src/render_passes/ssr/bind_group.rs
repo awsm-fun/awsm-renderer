@@ -87,6 +87,14 @@ pub struct SsrBindGroups {
     /// read history[1]); slot 1 = the reverse. The render pass selects by
     /// `ping_pong()` (see [`Self::temporal`]). `[None, None]` unless temporal.
     temporal_bind_groups: [Option<web_sys::GpuBindGroup>; 2],
+    /// Software-BVH trace layout (docs/plans/bvh-reflections.md). `None`
+    /// unless `ssr.bvh_reflections` at `new()` (a toggle reconstructs the
+    /// whole pass, like temporal).
+    pub bvh_layout_key: Option<BindGroupLayoutKey>,
+    /// Software-BVH trace bind group. Rebuilt on every `recreate` — which the
+    /// BLAS/TLAS buffer reallocations also trigger via
+    /// `BindGroupCreate::SsrBvhBuffers`.
+    bvh_bind_group: Option<web_sys::GpuBindGroup>,
 }
 
 impl SsrBindGroups {
@@ -94,10 +102,16 @@ impl SsrBindGroups {
         // Under MSAA the depth + normal G-buffer targets are multisampled.
         let multisampled = ctx.anti_aliasing.msaa_sample_count.is_some();
         let temporal = ctx.post_processing.ssr.temporal;
-        let layout_key = create_layout(ctx, multisampled, ctx.features.gpu_culling)?;
+        let bvh = ctx.post_processing.ssr.bvh_reflections;
+        let layout_key = create_layout(ctx, multisampled, ctx.features.gpu_culling, bvh)?;
         let resolve_layout_key = create_resolve_layout(ctx, multisampled)?;
         let temporal_layout_key = if temporal {
             Some(create_temporal_layout(ctx, multisampled)?)
+        } else {
+            None
+        };
+        let bvh_layout_key = if bvh {
+            Some(create_bvh_layout(ctx, multisampled)?)
         } else {
             None
         };
@@ -131,6 +145,8 @@ impl SsrBindGroups {
             trace_bind_group: None,
             resolve_bind_group: None,
             temporal_bind_groups: [None, None],
+            bvh_layout_key,
+            bvh_bind_group: None,
         })
     }
 
@@ -139,6 +155,14 @@ impl SsrBindGroups {
         self.trace_bind_group
             .as_ref()
             .ok_or_else(|| AwsmBindGroupError::NotFound("SSR Trace".to_string()))
+    }
+
+    /// The software-BVH trace bind group (single group; only when the
+    /// bvh_reflections axis was on at construction).
+    pub fn bvh(&self) -> std::result::Result<&web_sys::GpuBindGroup, AwsmBindGroupError> {
+        self.bvh_bind_group
+            .as_ref()
+            .ok_or_else(|| AwsmBindGroupError::NotFound("SSR BVH Trace".to_string()))
     }
 
     /// The spatial-resolve bind group (parity-independent, single group).
@@ -166,6 +190,7 @@ impl SsrBindGroups {
         &mut self,
         ctx: &BindGroupRecreateContext<'_>,
         params_buffer: &web_sys::GpuBuffer,
+        tlas_buffer: &web_sys::GpuBuffer,
     ) -> Result<()> {
         // Trace: bindings 0-6 (+ HZB at 7) — identical every frame, no parity.
         let layout = ctx.bind_group_layouts.get(self.layout_key)?;
@@ -235,8 +260,78 @@ impl SsrBindGroups {
             skybox_binding + 1,
             BindGroupResource::Sampler(&ctx.lights.ibl.prefiltered_env.sampler),
         ));
+        // 10 (with HZB) / 9 (without) — the software-BVH hit target the trace
+        // consumes as its miss fallback (bvh axis only).
+        if self.bvh_layout_key.is_some() {
+            entries.push(BindGroupEntry::new(
+                skybox_binding + 2,
+                BindGroupResource::TextureView(Cow::Borrowed(&ctx.render_texture_views.ssr_bvh)),
+            ));
+        }
         let descriptor = BindGroupDescriptor::new(layout, Some("SSR Trace"), entries);
         self.trace_bind_group = Some(ctx.gpu.create_bind_group(&descriptor.into()));
+
+        // Software-BVH trace group (bindings mirror ssr_wgsl/bvh_trace.wgsl).
+        if let Some(bvh_layout_key) = self.bvh_layout_key {
+            let bvh_layout = ctx.bind_group_layouts.get(bvh_layout_key)?;
+            let bvh_entries = vec![
+                BindGroupEntry::new(
+                    0,
+                    BindGroupResource::Buffer(BufferBinding::new(&ctx.camera.gpu_buffer)),
+                ),
+                BindGroupEntry::new(
+                    1,
+                    BindGroupResource::Buffer(BufferBinding::new(params_buffer)),
+                ),
+                BindGroupEntry::new(
+                    2,
+                    BindGroupResource::TextureView(Cow::Borrowed(&ctx.render_texture_views.depth)),
+                ),
+                BindGroupEntry::new(
+                    3,
+                    BindGroupResource::TextureView(Cow::Borrowed(
+                        &ctx.render_texture_views.normal_tangent,
+                    )),
+                ),
+                BindGroupEntry::new(
+                    4,
+                    BindGroupResource::TextureView(Cow::Borrowed(
+                        &ctx.render_texture_views.reflection_descriptor,
+                    )),
+                ),
+                BindGroupEntry::new(
+                    5,
+                    BindGroupResource::TextureView(Cow::Borrowed(
+                        &ctx.render_texture_views.ssr_bvh,
+                    )),
+                ),
+                BindGroupEntry::new(
+                    6,
+                    BindGroupResource::Buffer(BufferBinding::new(tlas_buffer)),
+                ),
+                BindGroupEntry::new(
+                    7,
+                    BindGroupResource::Buffer(BufferBinding::new(&ctx.meshes.bvh.nodes_gpu)),
+                ),
+                BindGroupEntry::new(
+                    8,
+                    BindGroupResource::Buffer(BufferBinding::new(&ctx.meshes.bvh.tris_gpu)),
+                ),
+                BindGroupEntry::new(
+                    9,
+                    BindGroupResource::TextureView(Cow::Borrowed(
+                        &ctx.lights.ibl.prefiltered_env.texture_view,
+                    )),
+                ),
+                BindGroupEntry::new(
+                    10,
+                    BindGroupResource::Sampler(&ctx.lights.ibl.prefiltered_env.sampler),
+                ),
+            ];
+            let bvh_descriptor =
+                BindGroupDescriptor::new(bvh_layout, Some("SSR BVH Trace"), bvh_entries);
+            self.bvh_bind_group = Some(ctx.gpu.create_bind_group(&bvh_descriptor.into()));
+        }
 
         // Spatial resolve: camera + raw trace output (sampled) + full-res
         // depth + `ssr_resolved` storage write. Rebuilt alongside the trace
@@ -353,6 +448,7 @@ fn create_layout(
     ctx: &mut RenderPassInitContext<'_>,
     multisampled: bool,
     hzb: bool,
+    bvh: bool,
 ) -> Result<BindGroupLayoutKey> {
     let compute_only = |resource: BindGroupLayoutResource| BindGroupLayoutCacheKeyEntry {
         resource,
@@ -427,6 +523,93 @@ fn create_layout(
         SamplerBindingLayout::new().with_binding_type(SamplerBindingType::Filtering),
     )));
 
+    // 10 (with HZB) / 9 (without) — the software-BVH hit target (single-
+    // sample rgba16float, textureLoad) the trace's miss fallback consumes.
+    if bvh {
+        entries.push(compute_only(BindGroupLayoutResource::Texture(
+            TextureBindingLayout::new()
+                .with_view_dimension(TextureViewDimension::N2d)
+                .with_sample_type(TextureSampleType::UnfilterableFloat)
+                .with_multisampled(false),
+        )));
+    }
+
+    Ok(ctx
+        .bind_group_layouts
+        .get_key(ctx.gpu, BindGroupLayoutCacheKey { entries })?)
+}
+
+/// Layout for the software-BVH trace compute (docs/plans/bvh-reflections.md):
+/// ray setup inputs (camera/params/depth/normal/descriptor), the `ssr_bvh`
+/// storage target, the three read-only BVH storage buffers (TLAS instances,
+/// BLAS nodes, BLAS triangles), and the prefiltered env + sampler for the
+/// constrained hit shading.
+fn create_bvh_layout(
+    ctx: &mut RenderPassInitContext<'_>,
+    multisampled: bool,
+) -> Result<BindGroupLayoutKey> {
+    let compute_only = |resource: BindGroupLayoutResource| BindGroupLayoutCacheKeyEntry {
+        resource,
+        visibility_vertex: false,
+        visibility_fragment: false,
+        visibility_compute: true,
+    };
+    let entries = vec![
+        // 0 — camera uniform
+        compute_only(BindGroupLayoutResource::Buffer(
+            BufferBindingLayout::new().with_binding_type(BufferBindingType::Uniform),
+        )),
+        // 1 — SsrParams uniform (probe box + instance count)
+        compute_only(BindGroupLayoutResource::Buffer(
+            BufferBindingLayout::new().with_binding_type(BufferBindingType::Uniform),
+        )),
+        // 2 — depth
+        compute_only(BindGroupLayoutResource::Texture(
+            TextureBindingLayout::new()
+                .with_view_dimension(TextureViewDimension::N2d)
+                .with_sample_type(TextureSampleType::Depth)
+                .with_multisampled(multisampled),
+        )),
+        // 3 — normal_tangent
+        compute_only(BindGroupLayoutResource::Texture(
+            TextureBindingLayout::new()
+                .with_view_dimension(TextureViewDimension::N2d)
+                .with_sample_type(TextureSampleType::UnfilterableFloat)
+                .with_multisampled(multisampled),
+        )),
+        // 4 — reflection descriptor (eligibility: spread + reflectivity)
+        compute_only(BindGroupLayoutResource::Texture(
+            TextureBindingLayout::new()
+                .with_view_dimension(TextureViewDimension::N2d)
+                .with_sample_type(TextureSampleType::UnfilterableFloat)
+                .with_multisampled(false),
+        )),
+        // 5 — ssr_bvh hit target (storage write)
+        compute_only(BindGroupLayoutResource::StorageTexture(
+            StorageTextureBindingLayout::new(TextureFormat::Rgba16float)
+                .with_view_dimension(TextureViewDimension::N2d)
+                .with_access(StorageTextureAccess::WriteOnly),
+        )),
+        // 6 — TLAS instances (read-only storage)
+        compute_only(BindGroupLayoutResource::Buffer(
+            BufferBindingLayout::new().with_binding_type(BufferBindingType::ReadOnlyStorage),
+        )),
+        // 7 — BLAS nodes (read-only storage)
+        compute_only(BindGroupLayoutResource::Buffer(
+            BufferBindingLayout::new().with_binding_type(BufferBindingType::ReadOnlyStorage),
+        )),
+        // 8 — BLAS triangles (read-only storage)
+        compute_only(BindGroupLayoutResource::Buffer(
+            BufferBindingLayout::new().with_binding_type(BufferBindingType::ReadOnlyStorage),
+        )),
+        // 9/10 — prefiltered env cube + filtering sampler (hit shading)
+        compute_only(BindGroupLayoutResource::Texture(
+            TextureBindingLayout::new().with_view_dimension(TextureViewDimension::Cube),
+        )),
+        compute_only(BindGroupLayoutResource::Sampler(
+            SamplerBindingLayout::new().with_binding_type(SamplerBindingType::Filtering),
+        )),
+    ];
     Ok(ctx
         .bind_group_layouts
         .get_key(ctx.gpu, BindGroupLayoutCacheKey { entries })?)

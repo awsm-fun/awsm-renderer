@@ -25,6 +25,7 @@ pub enum ShaderTemplateSsr {
     Trace(ShaderTemplateSsrTrace),
     Resolve(ShaderTemplateSsrResolve),
     Temporal(ShaderTemplateSsrTemporal),
+    BvhTrace(ShaderTemplateSsrBvhTrace),
 }
 
 /// SSR trace compute shader.
@@ -43,6 +44,19 @@ pub struct ShaderTemplateSsrTrace {
     pub reverse_z: bool,
     /// Debug visualization mode (see ShaderCacheKeySsrTrace::debug).
     pub debug: u32,
+    /// Software-BVH miss fallback (binds `ssr_bvh`; see bvh_trace.wgsl).
+    pub bvh: bool,
+}
+
+/// SSR software-BVH trace compute shader — the world-space BLAS/TLAS walk
+/// that runs BEFORE the screen-space trace (docs/plans/bvh-reflections.md).
+#[derive(Template, Debug)]
+#[template(path = "ssr_wgsl/bvh_trace.wgsl", whitespace = "minimize")]
+pub struct ShaderTemplateSsrBvhTrace {
+    /// Multisampled depth + normal bindings (MSAA) — same axis as the trace.
+    pub multisampled_geometry: bool,
+    /// Depth convention (003).
+    pub reverse_z: bool,
 }
 
 /// SSR spatial resolve compute shader — 9-tap edge-aware disk filter over the
@@ -80,12 +94,17 @@ impl TryFrom<&ShaderCacheKeySsr> for ShaderTemplateSsr {
                 multisampled_geometry: key.multisampled_geometry,
                 reverse_z: key.reverse_z,
                 debug: key.debug,
+                bvh: key.bvh,
             }),
             ShaderCacheKeySsr::Resolve(key) => Self::Resolve(ShaderTemplateSsrResolve {
                 multisampled_geometry: key.multisampled_geometry,
                 reverse_z: key.reverse_z,
             }),
             ShaderCacheKeySsr::Temporal(key) => Self::Temporal(ShaderTemplateSsrTemporal {
+                multisampled_geometry: key.multisampled_geometry,
+                reverse_z: key.reverse_z,
+            }),
+            ShaderCacheKeySsr::BvhTrace(key) => Self::BvhTrace(ShaderTemplateSsrBvhTrace {
                 multisampled_geometry: key.multisampled_geometry,
                 reverse_z: key.reverse_z,
             }),
@@ -99,6 +118,7 @@ impl ShaderTemplateSsr {
             Self::Trace(tmpl) => tmpl.render().map_err(AwsmShaderError::from),
             Self::Resolve(tmpl) => tmpl.render().map_err(AwsmShaderError::from),
             Self::Temporal(tmpl) => tmpl.render().map_err(AwsmShaderError::from),
+            Self::BvhTrace(tmpl) => tmpl.render().map_err(AwsmShaderError::from),
         }
     }
 
@@ -107,6 +127,7 @@ impl ShaderTemplateSsr {
             Self::Trace(_) => Some("SSR Trace"),
             Self::Resolve(_) => Some("SSR Resolve"),
             Self::Temporal(_) => Some("SSR Temporal"),
+            Self::BvhTrace(_) => Some("SSR BVH Trace"),
         }
     }
 }

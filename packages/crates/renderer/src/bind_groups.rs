@@ -134,6 +134,9 @@ pub enum BindGroupCreate {
     /// Occlusion-cull instance / visibility buffers were reallocated.
     /// Only the cull pass's bind group binds them.
     OcclusionBuffersResize,
+    /// Software-BVH BLAS/TLAS storage buffers were reallocated — the SSR
+    /// bvh_trace bind group binds them and must rebuild.
+    SsrBvhBuffers,
     /// Decal classify buckets were reallocated (viewport tile-count
     /// grew). The classify pass + decal shading pass both rebind.
     DecalClassifyBuffersResize,
@@ -363,6 +366,9 @@ impl BindGroups {
                 BindGroupCreate::BrdfLutTextures => {
                     functions_to_call.insert(FunctionToCall::OpaqueMain);
                     functions_to_call.insert(FunctionToCall::TransparentLights);
+                }
+                BindGroupCreate::SsrBvhBuffers => {
+                    functions_to_call.insert(FunctionToCall::Ssr);
                 }
                 BindGroupCreate::IblTextures => {
                     functions_to_call.insert(FunctionToCall::OpaqueMain);
@@ -726,9 +732,10 @@ impl BindGroups {
                             bind_groups,
                             params,
                             composite,
+                            tlas,
                             ..
                         } = ssr;
-                        bind_groups.recreate(&ctx, &params.gpu_buffer)?;
+                        bind_groups.recreate(&ctx, &params.gpu_buffer, &tlas.gpu_buffer)?;
                         composite.recreate(&ctx)?;
                     }
                 }

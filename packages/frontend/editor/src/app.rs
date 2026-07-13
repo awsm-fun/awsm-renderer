@@ -1118,6 +1118,7 @@ fn dispatch_post(
                 ssr_resolution_scale: None,
                 ssr_temporal_weight: None,
                 ssr_debug: None,
+                ssr_bvh_reflections: None,
             })
             .await
         {
@@ -1145,6 +1146,7 @@ fn dispatch_ssr(
     ssr_temporal_weight: Option<f32>,
 ) {
     let ssr_debug: Option<u32> = None;
+    let ssr_bvh_reflections: Option<bool> = None;
     spawn_local(async move {
         if let Err(e) = controller()
             .dispatch(EditorCommand::SetPostProcess {
@@ -1167,6 +1169,7 @@ fn dispatch_ssr(
                 ssr_resolution_scale,
                 ssr_temporal_weight,
                 ssr_debug,
+                ssr_bvh_reflections,
             })
             .await
         {
