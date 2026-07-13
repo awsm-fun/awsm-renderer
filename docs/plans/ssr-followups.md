@@ -83,12 +83,21 @@ camera jitter.
 
 ## New follow-up (2026-07-12, Phase B)
 
-8. **Transparent pass has no MSAA** — KHR-transmission / alpha-blend
-   geometry renders with blocky aliased silhouettes (bright-on-dark makes
-   it glaring). This blocks the two-layer "glass neon tube" look for the
-   arena rings (attempted and reverted; single-torus + higher tube
-   tessellation shipped instead). Fix = MSAA (or edge-AA) for the
-   transparent pass, then revisit the tube shells.
+8. **Glass-shell aliasing (CORRECTED 2026-07-13** — the original "transparent
+   pass has no MSAA" claim was WRONG, called out by David: the transparent
+   pass is a forward pass into the MULTISAMPLED target (pipelines keyed on
+   msaa_sample_count; the pass performs the hardware resolve — render.rs
+   "handled by MSAA resolve in transparent pass"). The Phase B observation
+   stands — the two-layer glass neon tube shells DID render with blocky
+   bright-on-dark aliasing (attempted + reverted) — but the cause must be
+   SHADING-space, which hardware MSAA cannot help: MSAA supersamples
+   coverage, not shading (one fragment shade per pixel), so a fresnel-bright
+   shell's steep gradient and the screen-space transmission/background fetch
+   (pixel-granular refraction offsets) alias regardless. Candidate fixes
+   when revisited: per-sample shading for flagged transparent materials, a
+   mip-biased/supersampled transmission fetch, or shader-side gradient
+   smoothing. Re-diagnose ON DEVICE before building anything — the reverted
+   experiment predates the SSR fundamentals rework and the probe.
 
 ## Post-sweep state (2026-07-13 evening — ..ea19b12c)
 
@@ -112,6 +121,7 @@ bvh-reflections.md design doc was deleted as fully implemented):
 Still open from the list above — ALL deliberate future tiers, none of them
 loose ends of the `updates` branch work: #6 (planar reflections,
 content-triggered), #7 (prefiltered scene-color mips, quality/perf tier),
-#8 (transparent pass MSAA — a transparent-pass feature, not SSR), item #5
+#8 (glass-shell shading aliasing — see the corrected entry; not an MSAA
+gap), item #5
 tier 2 (multiple local probes + editor authoring UI + in-engine capture),
 and atmosphere.md. Bug #1 was the only defect in the queue and is fixed.
