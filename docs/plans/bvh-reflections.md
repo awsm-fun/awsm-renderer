@@ -1,12 +1,23 @@
 # Software-BVH reflections (reflection-plan Tier 7) — design
 
-Status: **design only** (2026-07-13). Written while closing the probes round
-(ssr-followups #5 step 1). Greenlit by David as "maybe even BVH"; the MVP
-below is deliberately NOT prototyped yet — the honest line count for a
-correct, gated, validated first cut is ~1–1.5k lines across build + traversal
-+ integration, well past the "prototype it casually" threshold, and a
-half-broken tracer is worse than none. This doc is the map for when it's
-scheduled on purpose.
+Status: **SHIPPED** (2026-07-13, updates ..dfe1c77d) behind the default-off
+`ssr.bvh_reflections` toggle (set_post_process `ssr_bvh_reflections`),
+David's explicit greenlight ("if we can toggle it off/on, do it"). Deltas
+from the design below, learned on-device:
+- The bvh_trace pass runs BEFORE the screen-space trace and writes its own
+  `ssr_bvh` target; the trace's miss fallback prefers a real BVH hit over
+  the probe/env (no read-write hazard, SSR hits untouched).
+- GRAZING GATE: far-pixel normal reconstruction noise tilts mirror rays
+  below the reflector's tangent plane — the walk then returns the
+  reflector's own far geometry as a false dark horizon band. Rays with
+  dot(dir, n) < 0.005 fall through to the env fallback; the self-hit
+  offset scales with camera distance.
+- Verified: a mirrored torus reflects as a COMPLETE ring (camera-invisible
+  underside supplied by the BVH); 60 fps at the full-screen-eligible mirror
+  worst case; zero-cost off (pinned).
+- Eligibility stayed spread < 0.1 — the arena floor (0.18) deliberately
+  does NOT qualify (its occlusion gaps are already probe-anchored); raising
+  the bound would need blur-matching the sharp BVH hit to the glossy cone.
 
 Reference: `~/Downloads/awsmrenderer-reflection-plan.md` Tier 7. The layered
 model it slots into (all shipped today): SSR trace confidence → box-projected
