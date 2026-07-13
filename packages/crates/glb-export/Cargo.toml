@@ -13,10 +13,14 @@ awsm-renderer-meshgen = { workspace = true }
 gltf-json = { workspace = true }
 glam = { workspace = true }
 serde_json = { workspace = true }
+anyhow = { workspace = true }
 # The reader half of the gltf stack. Used by `extract::extract_node_mesh` to read
 # geometry back out of a source glTF/GLB's accessors (the editor's Model-node
 # export re-reads the imported file). Pure-Rust + wasm-friendly, no GPU deps.
 gltf = { workspace = true }
+# Mesh compression (EXT_meshopt_compression encode) — the official
+# meshoptimizer FFI, re-exported through our decode wrapper crate.
+awsm-renderer-codec-meshopt = { workspace = true }
 # Decoding `data:` image URIs when copying source textures into the clean
 # re-export (GLB buffer-view images are sliced directly; no re-encode either way).
 base64 = { workspace = true }

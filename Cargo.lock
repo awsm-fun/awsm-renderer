@@ -374,6 +374,8 @@ dependencies = [
 name = "awsm-renderer-glb-export"
 version = "0.20.1"
 dependencies = [
+ "anyhow",
+ "awsm-renderer-codec-meshopt",
  "awsm-renderer-meshgen",
  "awsm-renderer-tangents",
  "base64 0.22.1",
@@ -394,6 +396,7 @@ dependencies = [
  "awsm-renderer-codec-basis",
  "awsm-renderer-codec-meshopt",
  "awsm-renderer-core",
+ "awsm-renderer-glb-export",
  "awsm-renderer-materials",
  "awsm-renderer-tangents",
  "bevy_mikktspace",

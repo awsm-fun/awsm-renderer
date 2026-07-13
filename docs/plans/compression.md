@@ -427,13 +427,37 @@ BC5/EAC-RG (in-shader Z reconstruct) is a Phase-6 opt. **Block dims multiple of
 
 ## Phase 5 — Export: meshopt+quant bundle meshes + KTX2 texture default
 
-- [ ] Mesh encode (editor bake, pure-Rust): quantize attributes (positions→short,
+- [x] Mesh encode (editor bake, pure-Rust): quantize attributes (positions→short,
       normals/tangents→octahedral, UVs→short; dequant transform into node TRS /
       IBMs / tex-transform) → meshopt-encode. `glb-export` writes
       `KHR_mesh_quantization` accessors + `EXT_meshopt_compression` bufferViews
       (+ `fallback:true` buffer), both in `extensionsRequired`. Player/editor
       decode via the Phase-4 path — round-trip must be lossless within the chosen
       quantization tolerance.
+      ✅ 2026-07-14 — `glb-export/src/compress.rs`: `compress_glb(&[u8])`, a
+      POST-PASS over the finished GLB (writer untouched, composable anywhere).
+      POSITION→i16-norm stride 8, NORMAL→oct-i8 stride 4, TANGENT→oct-i8 vec4
+      (w=handedness), UV∈[0,1]→u16-norm; dequant = UNIFORM scale+translation
+      (normals never skew) carried by a fresh `dequant` WRAPPER child node for
+      static meshes (the original node may be an animation target — its TRS is
+      never touched) or folded into the skin's IBMs (per-skin transform =
+      union of its meshes' bounds; a mesh spanning >1 skin or skin+static
+      skips quantization). Every mesh stream meshopt-encodes (ATTRIBUTES /
+      TRIANGLES); IBM/animation/morph accessors + image views pass through
+      raw. Guards: morph-target meshes skip quantization (deltas untreated);
+      non-[0,1] UVs stay f32 (a per-prim KHR_texture_transform remap would
+      collide with authored transforms) — both still meshopt-encode.
+      Wired into the editor bundle bake (`controller/export.rs`) for the
+      per-mesh `assets/<id>.glb` bakes — dedup stays on uncompressed bytes,
+      compression failure falls back to plain glb with a warn (never fails a
+      bake); per-mesh size line traced. NOT yet applied to rig glbs
+      (skinned save-format) or the standalone scene-glb exports — deliberate,
+      revisit after the exit round-trip. Round-trip test (always-on,
+      synthetic grid, renderer-gltf dev-dep on glb-export): encode →
+      parse_gltf_lenient → decode pass → positions reproduce through the
+      wrapper TRS within s/32767×2, normals within dot>0.98, triangles
+      rotation-normalized equal, UVs within 2/65535; extensionsRequired
+      checked on the WIRE (the lenient parser strips them in-memory).
 - [ ] Textures — authoring: `TextureExport::Ktx2 { profile }` + KTX2
       source-passthrough (`editor-protocol/src/assets.rs`); inspector option +
       `dispatch_texture_export` (`scene_mode/inspector.rs`); MCP

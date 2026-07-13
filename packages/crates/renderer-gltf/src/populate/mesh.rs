@@ -559,7 +559,7 @@ fn should_force_single_sided_for_opaque_thin_shell(
 /// types (the gltf crate's typed readers assert F32 and panic). Used by the
 /// thin-shell heuristic above, which needs approximate positions/normals of
 /// any quantization.
-fn read_vec3_dequant(
+pub(crate) fn read_vec3_dequant(
     primitive: &gltf::Primitive<'_>,
     semantic: &gltf::Semantic,
     buffers: &[Vec<u8>],

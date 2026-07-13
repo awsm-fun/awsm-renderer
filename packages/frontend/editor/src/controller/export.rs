@@ -194,7 +194,28 @@ pub async fn bake_player_bundle(
         // at load only when the `virtual_geometry` feature is on.
         let cluster_files =
             crate::controller::lod_bake::bake_static_clusters(&canon.id.0.to_string(), &canon.mesh);
-        files.push(BundleFile::asset(mesh_glb_filename(canon.id), canon.glb));
+        // Bundle meshes ship meshopt+quantized (docs/plans/compression.md);
+        // the canonical DEDUP above stays on the uncompressed bytes. A
+        // failed compression falls back to the plain glb — never fail a bake.
+        let mesh_glb = match awsm_renderer_glb_export::compress_glb(&canon.glb) {
+            Ok(compressed) => {
+                tracing::info!(
+                    "bundle mesh {}: {} -> {} bytes (meshopt+quant)",
+                    canon.id,
+                    canon.glb.len(),
+                    compressed.len()
+                );
+                compressed
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "bundle mesh {}: compression failed ({e}); shipping uncompressed",
+                    canon.id
+                );
+                canon.glb
+            }
+        };
+        files.push(BundleFile::asset(mesh_glb_filename(canon.id), mesh_glb));
         files.extend(lod_files);
         files.extend(cluster_files);
     }

@@ -31,12 +31,14 @@
 //!   *assigned* materials use, so reassigning a lighter material drops the heavy
 //!   textures with no special "slim" flag.
 
+mod compress;
 mod extract;
 mod quant;
 mod tangents;
 mod write;
 
 pub use awsm_renderer_meshgen::MeshData;
+pub use compress::compress_glb;
 pub use extract::{
     extract_node_mesh, extract_node_mesh_from_bytes, extract_node_mesh_with_skin_from_bytes,
     extract_texture_images, extract_texture_images_from_bytes,

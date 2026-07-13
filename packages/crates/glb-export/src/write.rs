@@ -766,35 +766,40 @@ impl Builder {
     // ───────────────────────── GLB container ─────────────────────────
 
     fn into_glb(self) -> Vec<u8> {
-        let mut json = serde_json::to_vec(&self.root).expect("serialize gltf json");
-        while json.len() % 4 != 0 {
-            json.push(b' ');
-        }
-        let mut bin = self.bin;
-        while bin.len() % 4 != 0 {
-            bin.push(0);
-        }
-
-        let has_bin = !bin.is_empty();
-        let bin_chunk = if has_bin { 8 + bin.len() } else { 0 };
-        let total = 12 + 8 + json.len() + bin_chunk;
-
-        let mut out = Vec::with_capacity(total);
-        out.extend_from_slice(b"glTF");
-        out.extend_from_slice(&GLB_VERSION.to_le_bytes());
-        out.extend_from_slice(&(total as u32).to_le_bytes());
-
-        out.extend_from_slice(&(json.len() as u32).to_le_bytes());
-        out.extend_from_slice(b"JSON");
-        out.extend_from_slice(&json);
-
-        if has_bin {
-            out.extend_from_slice(&(bin.len() as u32).to_le_bytes());
-            out.extend_from_slice(b"BIN\0");
-            out.extend_from_slice(&bin);
-        }
-        out
+        let json = serde_json::to_vec(&self.root).expect("serialize gltf json");
+        glb_from_parts(json, self.bin)
     }
+}
+
+/// Assemble a GLB container from serialized glTF JSON + BIN bytes. Shared by
+/// the writer and the compression post-pass (`crate::compress`).
+pub(crate) fn glb_from_parts(mut json: Vec<u8>, mut bin: Vec<u8>) -> Vec<u8> {
+    while json.len() % 4 != 0 {
+        json.push(b' ');
+    }
+    while bin.len() % 4 != 0 {
+        bin.push(0);
+    }
+
+    let has_bin = !bin.is_empty();
+    let bin_chunk = if has_bin { 8 + bin.len() } else { 0 };
+    let total = 12 + 8 + json.len() + bin_chunk;
+
+    let mut out = Vec::with_capacity(total);
+    out.extend_from_slice(b"glTF");
+    out.extend_from_slice(&GLB_VERSION.to_le_bytes());
+    out.extend_from_slice(&(total as u32).to_le_bytes());
+
+    out.extend_from_slice(&(json.len() as u32).to_le_bytes());
+    out.extend_from_slice(b"JSON");
+    out.extend_from_slice(&json);
+
+    if has_bin {
+        out.extend_from_slice(&(bin.len() as u32).to_le_bytes());
+        out.extend_from_slice(b"BIN\0");
+        out.extend_from_slice(&bin);
+    }
+    out
 }
 
 // ───────────────────────── free helpers ─────────────────────────

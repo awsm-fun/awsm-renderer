@@ -54,6 +54,10 @@ serde_bytes = "0.11"
 serde-wasm-bindgen = { workspace = true }
 
 [dev-dependencies]
+# Compression round-trip: encode (glb-export compress_glb) → decode (this
+# crate's meshopt pass + quantized accessors) must be lossless within the
+# quantization tolerance.
+awsm-renderer-glb-export = { workspace = true }
 # Phase-2b byte-identity proptests: the mesh_pack delegation vs the retained
 # reference writers (visibility + transparency).
 proptest = { workspace = true }

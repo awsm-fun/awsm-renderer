@@ -101,6 +101,156 @@ pub(crate) fn decode_meshopt_buffer_views(
     Ok(decoded_views)
 }
 
+/// Encode→decode round-trip over the FULL pipeline: glb-export's
+/// `compress_glb` (quantize + meshopt) → this crate's parse + decode pass +
+/// quantization-aware reads. Synthetic data — always runs.
+#[cfg(test)]
+mod roundtrip_tests {
+    use super::*;
+    use crate::loader::parse_gltf_lenient;
+    use awsm_renderer_glb_export::{compress_glb, write_glb, ExportNode, GlbScene, MeshData};
+
+    fn grid_scene() -> (GlbScene, MeshData) {
+        // 9×9 grid with wavy z, normals up-ish, UVs in [0,1].
+        let mut mesh = MeshData::default();
+        for y in 0..9 {
+            for x in 0..9 {
+                let (fx, fy) = (x as f32 / 8.0, y as f32 / 8.0);
+                mesh.positions
+                    .push([fx * 4.0 - 2.0, fy * 2.0 + 1.0, (fx * 7.0).sin() * 0.3]);
+                mesh.uvs
+                    .get_mut(0)
+                    .map(|_| ())
+                    .unwrap_or_else(|| mesh.uvs.push(Vec::new()));
+                mesh.uvs[0].push([fx, fy]);
+            }
+        }
+        for y in 0..8u32 {
+            for x in 0..8u32 {
+                let a = y * 9 + x;
+                mesh.indices
+                    .extend_from_slice(&[a, a + 1, a + 9, a + 9, a + 1, a + 10]);
+            }
+        }
+        mesh.compute_vertex_normals();
+        let scene = GlbScene {
+            nodes: vec![ExportNode::new("grid").with_mesh(mesh.clone())],
+            animations: vec![],
+            skins: vec![],
+            images: vec![],
+            env: None,
+        };
+        (scene, mesh)
+    }
+
+    #[test]
+    fn compressed_glb_roundtrips_through_the_import_decode_path() {
+        let (scene, source) = grid_scene();
+        let plain = write_glb(&scene);
+        let compressed = compress_glb(&plain).expect("compress");
+        assert!(
+            compressed.len() < plain.len(),
+            "compression should shrink the grid ({} -> {})",
+            plain.len(),
+            compressed.len()
+        );
+
+        // extensionsRequired must be on the WIRE (parse_gltf_lenient strips
+        // the supported ones before re-validating, so check raw JSON).
+        let json_len = u32::from_le_bytes(compressed[12..16].try_into().unwrap()) as usize;
+        let raw_json: gltf::json::Value =
+            gltf::json::deserialize::from_slice(&compressed[20..20 + json_len]).unwrap();
+        let required: Vec<&str> = raw_json["extensionsRequired"]
+            .as_array()
+            .expect("extensionsRequired present")
+            .iter()
+            .filter_map(|v| v.as_str())
+            .collect();
+        assert!(required.contains(&"EXT_meshopt_compression"));
+        assert!(required.contains(&"KHR_mesh_quantization"));
+
+        let gltf = parse_gltf_lenient(&compressed).expect("compressed glb parses");
+        let doc = &gltf.document;
+
+        // Materialize buffers the way the loader does.
+        let blob = gltf.blob.clone().expect("BIN");
+        let mut buffers: Vec<Vec<u8>> = doc
+            .buffers()
+            .map(|b| {
+                if buffer_is_meshopt_fallback(&b) {
+                    vec![0u8; b.length()]
+                } else {
+                    let mut bin = blob.clone();
+                    while bin.len() % 4 != 0 {
+                        bin.push(0);
+                    }
+                    bin
+                }
+            })
+            .collect();
+        let decoded = decode_meshopt_buffer_views(doc, &mut buffers).expect("decode pass");
+        assert!(decoded >= 3, "positions + normals + uvs + indices views");
+
+        // The quantized mesh hangs off a "dequant" wrapper node.
+        let wrapper = doc
+            .nodes()
+            .find(|n| n.name() == Some("dequant") && n.mesh().is_some())
+            .expect("dequant wrapper node");
+        let (translation, _r, scale) = wrapper.transform().decomposed();
+        let prim = wrapper.mesh().unwrap().primitives().next().unwrap();
+
+        // Positions: dequantize + wrapper TRS must reproduce the source
+        // within quantization tolerance.
+        let positions =
+            crate::populate::mesh::read_vec3_dequant(&prim, &gltf::Semantic::Positions, &buffers)
+                .expect("quantized positions readable");
+        assert_eq!(positions.len(), source.positions.len());
+        let tolerance = scale[0] / 32767.0 * 2.0;
+        for (got, want) in positions.iter().zip(&source.positions) {
+            for k in 0..3 {
+                let world = got[k] * scale[k] + translation[k];
+                assert!(
+                    (world - want[k]).abs() <= tolerance,
+                    "position {world} vs {} (tol {tolerance})",
+                    want[k]
+                );
+            }
+        }
+
+        // Normals: octahedral round-trip stays within ~1 degree.
+        let normals =
+            crate::populate::mesh::read_vec3_dequant(&prim, &gltf::Semantic::Normals, &buffers)
+                .expect("quantized normals readable");
+        let source_normals = source.normals.as_ref().unwrap();
+        for (got, want) in normals.iter().zip(source_normals) {
+            let len = (got[0] * got[0] + got[1] * got[1] + got[2] * got[2]).sqrt();
+            let dot = (got[0] * want[0] + got[1] * want[1] + got[2] * want[2]) / len.max(1e-6);
+            assert!(dot > 0.98, "normal deviated (dot {dot})");
+        }
+
+        // Indices: same triangles (index codec preserves order for sequential
+        // grid strips; compare as sets of rotation-normalized triangles).
+        let reader = prim.reader(|b| buffers.get(b.index()).map(|v| &v[..]));
+        let indices: Vec<u32> = reader.read_indices().unwrap().into_u32().collect();
+        assert_eq!(indices.len(), source.indices.len());
+        fn norm(t: &[u32]) -> [u32; 3] {
+            let m = (0..3).min_by_key(|&i| t[i]).unwrap();
+            [t[m], t[(m + 1) % 3], t[(m + 2) % 3]]
+        }
+        for (a, b) in indices.chunks_exact(3).zip(source.indices.chunks_exact(3)) {
+            assert_eq!(norm(a), norm(b));
+        }
+
+        // UVs (u16-normalized): the gltf typed reader handles unorm16.
+        let uvs: Vec<[f32; 2]> = reader.read_tex_coords(0).unwrap().into_f32().collect();
+        for (got, want) in uvs.iter().zip(&source.uvs[0]) {
+            for k in 0..2 {
+                assert!((got[k] - want[k]).abs() <= 2.0 / 65535.0);
+            }
+        }
+    }
+}
+
 #[cfg(all(test, has_local_fixtures))]
 mod fixture_tests {
     use super::*;
