@@ -1126,6 +1126,13 @@ fn ssr_bvh_shaders_validate() {
                 src.contains("inst.emissive.rgb + env_c"),
                 "{label}: constrained hit shading (emissive + env term only)"
             );
+            // Grazing gate: noisy far-pixel normals tilt mirror rays below
+            // the reflector's tangent plane; tracing those paints a false
+            // dark self-hit band across the horizon (mirror-scene A/B).
+            assert!(
+                src.contains("if (up < 0.005) {"),
+                "{label}: grazing rays must fall through to the env fallback"
+            );
         }
     }
     // Trace consumption: ON pins the select over the env fallback; OFF must

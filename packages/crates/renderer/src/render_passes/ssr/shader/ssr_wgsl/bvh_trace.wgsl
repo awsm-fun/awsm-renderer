@@ -164,8 +164,23 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let cam_pos_w = cam.inv_view[3].xyz;
     let incident = normalize(world_pos - cam_pos_w);
     let dir_w = normalize(reflect(incident, n_world));
-    // Nudge off the surface — the reflector itself must not self-hit.
-    let origin = world_pos + n_world * 0.02 + dir_w * 0.01;
+    // GRAZING GATE (wgsl_validation pins this): at far/grazing pixels the
+    // reconstructed normal is noisy enough to tilt the mirror ray BELOW the
+    // reflector's tangent plane — the walk then faithfully "hits" the
+    // reflector's own far geometry and paints a false dark band across the
+    // horizon (observed on the mirror test scene). A ray that barely clears
+    // the surface can't return useful BVH content anyway; leave those to
+    // the env fallback.
+    let up = dot(dir_w, n_world);
+    if (up < 0.005) {
+        textureStore(out_tex, coords, vec4<f32>(0.0, 0.0, 0.0, 0.0));
+        return;
+    }
+    // Nudge off the surface — the reflector itself must not self-hit; the
+    // normal offset grows with camera distance so far pixels (coarser
+    // position reconstruction) clear their own surface too.
+    let cam_dist = length(world_pos - cam_pos_w);
+    let origin = world_pos + n_world * (0.02 + 0.002 * cam_dist) + dir_w * 0.01;
 
     var best_t = params.max_distance;
     var best_inst: u32 = 0xffffffffu;
