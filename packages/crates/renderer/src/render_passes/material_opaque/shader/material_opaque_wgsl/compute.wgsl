@@ -1205,8 +1205,10 @@ fn cs_shade(
     var alpha_sum: f32 = 0.0;
     var sample_count: u32 = 0u;
     var weight_sum: f32 = 0.0;
+    {% if write_ssr_descriptor %}
     var desc_rgb_sum = vec3<f32>(0.0);
     var desc_spread_wsum: f32 = 0.0;
+    {% endif %}
 
     for (var s = 0u; s < 4u; s++) {
         // Per-sample ownership: the same shader_id gate `shade_sample`
@@ -1245,11 +1247,13 @@ fn cs_shade(
             alpha_sum += shaded.a;
             sample_count += 1u;
             weight_sum += karis_w;
+            {% if write_ssr_descriptor %}
             // SSR descriptor accumulation — RAW sums (final_blend divides by
             // the 4 MSAA samples); spread weighted by its own reflectivity.
             desc_rgb_sum += ss.ssr_desc.rgb;
             desc_spread_wsum += ss.ssr_desc.a
                 * max(ss.ssr_desc.r, max(ss.ssr_desc.g, ss.ssr_desc.b));
+            {% endif %}
         }
     }
 
@@ -1259,17 +1263,21 @@ fn cs_shade(
 
     // Accumulate into accumulator[edge_pixel_id × 4 + slot_index] (IDENTICAL
     // to cs_edge — same format the unchanged final_blend resolves).
-    // 8 words per slot: 0..4 = Karis color sum + weight, 4..8 = SSR
-    // descriptor sums (see ACCUMULATOR_SLOT_BYTES in edge_buffers.rs).
-    let accum_word_index = edge_layout.accumulator_base + (edge_pixel_id * 4u + slot_index) * 8u;
+    // SSR on: 8 words per slot (0..4 Karis color sum + weight, 4..8 SSR
+    // descriptor sums). SSR off: 4 words — the descriptor half is not
+    // ALLOCATED (see ACCUMULATOR_SLOT_BYTES in edge_buffers.rs: the wide
+    // stride cost ~32 MB of idle VRAM at the desktop edge budget).
+    let accum_word_index = edge_layout.accumulator_base + (edge_pixel_id * 4u + slot_index) * {% if write_ssr_descriptor %}8u{% else %}4u{% endif %};
     edge_data[accum_word_index + 0u] = bitcast<u32>(color_sum.x);
     edge_data[accum_word_index + 1u] = bitcast<u32>(color_sum.y);
     edge_data[accum_word_index + 2u] = bitcast<u32>(color_sum.z);
     // Karis WEIGHT sum, not the raw sample count.
     edge_data[accum_word_index + 3u] = bitcast<u32>(weight_sum);
+    {% if write_ssr_descriptor %}
     edge_data[accum_word_index + 4u] = bitcast<u32>(desc_rgb_sum.x);
     edge_data[accum_word_index + 5u] = bitcast<u32>(desc_rgb_sum.y);
     edge_data[accum_word_index + 6u] = bitcast<u32>(desc_rgb_sum.z);
     edge_data[accum_word_index + 7u] = bitcast<u32>(desc_spread_wsum);
+    {% endif %}
 }
 {% endif %}

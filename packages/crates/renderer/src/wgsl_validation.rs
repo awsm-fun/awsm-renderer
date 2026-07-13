@@ -713,9 +713,19 @@ fn opaque_shadow_from_buffer_variant_validates() {
 /// for a given config. Mirrors the renderer's `ShaderTemplateMaterialClassify`
 /// build path so the gating is exercised exactly as the pipeline cache does.
 fn render_classify(msaa: Option<u32>, emit_edge_data: bool, label: &str) -> String {
+    render_classify_slots(msaa, emit_edge_data, true, label)
+}
+
+fn render_classify_slots(
+    msaa: Option<u32>,
+    emit_edge_data: bool,
+    wide_edge_slots: bool,
+    label: &str,
+) -> String {
     use crate::render_passes::material_classify::shader::cache_key::ShaderCacheKeyMaterialClassify;
     use crate::render_passes::material_classify::shader::template::ShaderTemplateMaterialClassify;
     ShaderTemplateMaterialClassify::try_from(&ShaderCacheKeyMaterialClassify {
+        wide_edge_slots,
         msaa_sample_count: msaa,
         bucket_count: crate::dynamic_materials::first_party_bucket_entries().len() as u32,
         emit_edge_data,
@@ -742,6 +752,23 @@ fn material_classify_shader_validates() {
     // On the MSAA edge path, both edge scaffolds must render: the edge_id_tex
     // storage texture (declared + written) and the ANY-sample tile_mask branch.
     let on = render_classify(Some(4), true, "classify on");
+    // Accumulator-clear stride pin: the clear must cover the FULL 32-word
+    // (4 slots x 8 words) per-edge region — when the slots widened 16->32
+    // bytes for the per-sample SSR descriptor, a stale 16-word clear left
+    // the upper half of the edge-id range never-cleared (stale resolves).
+    assert!(
+        on.contains("edge_id * 32u") && on.contains("ci < 32u"),
+        "wide classify accumulator clear must cover 32B x 4 slots = 32 words"
+    );
+    // Narrow (SSR-off) variant: 16-byte slots -> 16-word clear, and the
+    // wide stride must be absent (the allocation is half the size).
+    let narrow = render_classify_slots(Some(4), true, false, "classify narrow");
+    assert!(
+        narrow.contains("edge_id * 16u")
+            && narrow.contains("ci < 16u")
+            && !narrow.contains("edge_id * 32u"),
+        "narrow classify accumulator clear must cover 16B x 4 slots = 16 words"
+    );
     assert!(
         on.contains("var edge_id_tex: texture_storage_2d<r32uint, write>"),
         "MSAA classify must declare `edge_id_tex` storage texture (binding 11)"
@@ -1001,10 +1028,13 @@ fn material_final_blend_shader_validates() {
             .into_source()
             .unwrap_or_else(|e| panic!("{label}: render failed: {e:?}"));
         naga_validate(&src, &label);
-        // 8-word slot stride (see ACCUMULATOR_SLOT_BYTES) in every variant.
+        // Slot stride tracks the axis (see accumulator_slot_bytes): 8 words
+        // (32 B, color + SSR descriptor) when SSR is on, 4 words (16 B,
+        // color only — the descriptor half is not allocated) when off.
+        let stride = if write_ssr_descriptor { "8u" } else { "4u" };
         assert!(
-            src.contains("(edge_pixel_id * 4u + slot) * 8u"),
-            "{label}: final_blend must read the 8-word accumulator stride"
+            src.contains(&format!("(edge_pixel_id * 4u + slot) * {stride}")),
+            "{label}: final_blend must read the {stride}-word accumulator stride"
         );
         if write_ssr_descriptor {
             assert!(

@@ -60,9 +60,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             continue;
         }
         {% endif %}
-        // 8 words per slot: 0..4 = Karis color sum + weight, 4..8 = SSR
-        // descriptor sums (see ACCUMULATOR_SLOT_BYTES in edge_buffers.rs).
-        let accum_word_index = edge_layout.accumulator_base + (edge_pixel_id * 4u + slot) * 8u;
+        // SSR on: 8 words per slot (0..4 Karis color + weight, 4..8 SSR
+        // descriptor sums); SSR off: 4 words, no descriptor half (see
+        // ACCUMULATOR_SLOT_BYTES in edge_buffers.rs).
+        let accum_word_index = edge_layout.accumulator_base + (edge_pixel_id * 4u + slot) * {% if write_ssr_descriptor %}8u{% else %}4u{% endif %};
         let r = bitcast<f32>(edge_data[accum_word_index + 0u]);
         let g = bitcast<f32>(edge_data[accum_word_index + 1u]);
         let b = bitcast<f32>(edge_data[accum_word_index + 2u]);

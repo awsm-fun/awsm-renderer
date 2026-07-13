@@ -109,7 +109,11 @@ impl AwsmRenderer {
             use crate::render_passes::material_opaque::edge_buffers::{
                 build_edge_layout_uniform, MaterialEdgeBuffers,
             };
-            let edge_buffers = MaterialEdgeBuffers::new(&self.gpu, bucket_count)?;
+            let edge_buffers = MaterialEdgeBuffers::new(
+                &self.gpu,
+                bucket_count,
+                self.post_processing.ssr.enabled,
+            )?;
             let max_edge_budget = edge_buffers.max_edge_budget;
             let (uniform, _bytes) =
                 build_edge_layout_uniform(&self.gpu, bucket_count, max_edge_budget)?;

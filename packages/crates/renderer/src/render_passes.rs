@@ -565,6 +565,9 @@ impl RenderPasses {
             ctx.gpu,
             &first_party_entries,
             ctx.anti_aliasing,
+            // Wide (SSR-descriptor) accumulator slots track ssr.enabled —
+            // same condition as the opaque write_ssr_descriptor axis.
+            ctx.post_processing.ssr.enabled,
         ));
         if let Some(bg) = coverage_bg_single.as_ref() {
             shader_cache_keys.extend(CoveragePipelines::shader_cache_keys(bg));

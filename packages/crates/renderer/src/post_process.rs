@@ -259,6 +259,19 @@ impl AwsmRenderer {
             // pass. Same mark `set_anti_aliasing` uses for its texture rebuild.
             self.bind_groups
                 .mark_create(crate::bind_groups::BindGroupCreate::TextureViewRecreate);
+            // Edge accumulator slot width tracks ssr.enabled (narrow 16 B off
+            // / wide 32 B on — the descriptor half is only allocated when SSR
+            // can write it; ~32 MB at the desktop budget). The classify /
+            // opaque / final_blend shaders recompile for the new stride via
+            // the reconcile + classify re-key above; recreate the buffer to
+            // match and rebind everything that references it.
+            if let Some(edge_buffers) = self.material_edge_buffers.as_mut() {
+                if edge_buffers.set_wide_slots(&self.gpu, self.post_processing.ssr.enabled)? {
+                    self.bind_groups.mark_create(
+                        crate::bind_groups::BindGroupCreate::MaterialClassifyBuffersResize,
+                    );
+                }
+            }
         }
 
         if !recompile_needed {

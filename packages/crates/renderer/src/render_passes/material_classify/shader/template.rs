@@ -79,6 +79,9 @@ pub struct ShaderTemplateMaterialClassifyCompute {
     /// (>254). Derived from `bucket_count` (in the cache key via
     /// `bucket_entries`), so writer + readers + buffer sizing all agree.
     pub edge_slot_bits: u32,
+    /// Wide (32-byte) vs narrow (16-byte) accumulator slots — the clear's
+    /// stride must match the allocation (see the cache key's field doc).
+    pub wide_edge_slots: bool,
 }
 
 /// Returns the number of trailing `u32` padding words the templated
@@ -121,6 +124,7 @@ impl TryFrom<&ShaderCacheKeyMaterialClassify> for ShaderTemplateMaterialClassify
                 n_words: mask_words,
                 words_iter: (0..mask_words).collect(),
                 edge_slot_bits: crate::dynamic_materials::edge_slot_bits(bucket_count) as u32,
+                wide_edge_slots: key.wide_edge_slots,
             },
         })
     }

@@ -2276,10 +2276,13 @@ impl AwsmRendererBuilder {
             use render_passes::material_opaque::edge_buffers::{
                 build_edge_layout_uniform, MaterialEdgeBuffers,
             };
+            // Built with NARROW slots: post-processing defaults have SSR off
+            // at build time; enabling SSR recreates the buffers wide (see
+            // set_post_processing's edge-slot flip).
             let edge_buffers = if let Some(budget) = max_edge_budget {
-                MaterialEdgeBuffers::new_with_budget(&gpu, first_party_bucket_count, budget)?
+                MaterialEdgeBuffers::new_with_budget(&gpu, first_party_bucket_count, budget, false)?
             } else {
-                MaterialEdgeBuffers::new(&gpu, first_party_bucket_count)?
+                MaterialEdgeBuffers::new(&gpu, first_party_bucket_count, false)?
             };
             let max_edge_budget = edge_buffers.max_edge_budget;
             let (uniform, _bytes) =
