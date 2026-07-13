@@ -47,6 +47,11 @@ const MIN_BLOCK: usize = 256;
 pub struct DynamicStorageBuffer<K: Key, const ZERO: u8 = 0> {
     raw_data: Vec<u8>,
     dirty_ranges: Vec<(usize, usize)>,
+    /// Recycled backing storage for [`Self::take_dirty_ranges`] — the
+    /// per-frame `write_gpu` callers hand it back via
+    /// [`Self::recycle_dirty_ranges`] so dirty frames reuse its capacity
+    /// instead of allocating a fresh `Vec` ([[avoid-per-frame-allocations]]).
+    dirty_ranges_spare: Vec<(usize, usize)>,
     /// Complete binary tree stored as an array where each node
     /// is the size of the *largest* free block in that subtree.
     buddy_tree: Vec<usize>,
@@ -79,6 +84,7 @@ impl<K: Key, const ZERO: u8> DynamicStorageBuffer<K, ZERO> {
         Self {
             raw_data,
             dirty_ranges: Vec::new(),
+            dirty_ranges_spare: Vec::new(),
             buddy_tree,
             slot_indices: SecondaryMap::new(),
             gpu_buffer_needs_resize: capacity != initial_bytes,
@@ -171,6 +177,22 @@ impl<K: Key, const ZERO: u8> DynamicStorageBuffer<K, ZERO> {
         Ok(off)
     }
 
+    /// Transfers `old`'s allocation to `new` without touching the bytes.
+    /// Used by the instance-sharing stores (skins / morphs) to PROMOTE a
+    /// shared slot to a surviving instance when its original owner is
+    /// removed — the data stays in place, only the key that addresses it
+    /// changes, so no GPU write happens. No-op when `old` has no slot;
+    /// `new` must not already have one (debug-pinned).
+    pub fn rekey(&mut self, old: K, new: K) {
+        if let Some(slot) = self.slot_indices.remove(old) {
+            debug_assert!(
+                self.slot_indices.get(new).is_none(),
+                "rekey target {new:?} already has an allocation"
+            );
+            self.slot_indices.insert(new, slot);
+        }
+    }
+
     /// Removes a key and frees its allocation.
     pub fn remove(&mut self, key: K) {
         if let Some((off, size)) = self.slot_indices.remove(key) {
@@ -209,8 +231,23 @@ impl<K: Key, const ZERO: u8> DynamicStorageBuffer<K, ZERO> {
     }
 
     /// Takes and clears dirty ranges.
+    ///
+    /// The returned `Vec`'s backing storage is recycled: hand it back via
+    /// [`Self::recycle_dirty_ranges`] after the upload so dirty frames
+    /// reuse its capacity instead of allocating.
     pub fn take_dirty_ranges(&mut self) -> Vec<(usize, usize)> {
-        std::mem::take(&mut self.dirty_ranges)
+        std::mem::replace(
+            &mut self.dirty_ranges,
+            std::mem::take(&mut self.dirty_ranges_spare),
+        )
+    }
+
+    /// Return the `Vec` handed out by [`Self::take_dirty_ranges`] so its
+    /// capacity is reused. Dropping it instead is harmless — the next
+    /// take just re-allocates.
+    pub fn recycle_dirty_ranges(&mut self, mut ranges: Vec<(usize, usize)>) {
+        ranges.clear();
+        self.dirty_ranges_spare = ranges;
     }
 
     /// Clears dirty ranges without returning them.

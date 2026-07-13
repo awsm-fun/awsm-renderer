@@ -211,14 +211,16 @@ nodes — exactly what an imported multi-primitive glTF already destructures int
   when **all 3** of its vertices are selected. Pick the region with
   `select_vertices_where` (the `connected_to_seed` predicate grabs a whole piece, or
   store a handle with `store:true`). The new sibling node inherits the source's
-  transform + material — `assign_material` a different material to it next. By default
+  transform + material — give it a different material next (`add_material_variant`
+  + `select_material_variant`; there is no `assign_material`). By default
   the source is left intact (the new node is an extracted **copy**); pass
   `keep_remainder:true` to also **remove** those faces from the source (no overlap /
   z-fighting). Undoable.
 
 **Example — re-skin one belt of a tank:** `select_vertices_where {node, {"kind":"connected_to_seed","seed":[<a vert on that belt>]}, store:true}`
 → `separate_mesh {node, selection:<handle>, keep_remainder:true}`
-→ `assign_material {node:<new "Separated" node>, material:<belt material>}`.
+→ `add_material_variant {node:<new "Separated" node>, material:<belt material>}`
+→ `select_material_variant {node:<that node>, variant:<returned id>}`.
 
 ---
 

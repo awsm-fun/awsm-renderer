@@ -385,6 +385,8 @@ fn pbr_get_material_color{{ mipmap.suffix() }}(
         {% if pbr_features.iridescence %}iridescence_factor{% else %}0.0{% endif %},
         {% if pbr_features.iridescence %}iridescence.ior{% else %}1.3{% endif %},
         {% if pbr_features.iridescence %}iridescence_thickness{% else %}0.0{% endif %},
+        // SSR receive mask (no feature gate — one scalar, always loaded)
+        material.ssr_mask,
     );
 }
 

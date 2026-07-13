@@ -131,6 +131,48 @@ fn abs_index(base_index: u32, relative_index: u32) -> u32 {
 // non-PBR pipelines where brdf.wgsl is gated out. They're generic utilities, not
 // BRDF lobes.
 
+// Box-projected (parallax-corrected) environment sampling direction.
+// Intersects the world-space ray (world_pos, dir_w) with the reflection
+// probe's AABB (center_enabled.xyz ± half) and returns the direction from
+// the box CENTER to the intersection point — so a cubemap authored/captured
+// at the center reflects with correct parallax anywhere inside the box,
+// instead of behaving like an infinitely-distant sky. center_enabled.w is
+// the runtime enable gate (1.0 / 0.0): disabled (or a ray that can't hit
+// the box — degenerate extents) returns dir_w unchanged.
+//
+// Standard slab exit-distance: the surface point is assumed inside (or
+// near) the box, so the FURTHEST slab crossing along +dir is the exit.
+fn box_project_env_dir(
+    dir_w: vec3<f32>,
+    world_pos: vec3<f32>,
+    center_enabled: vec4<f32>,
+    half_extents: vec3<f32>,
+) -> vec3<f32> {
+    if (center_enabled.w < 0.5) {
+        return dir_w;
+    }
+    let center = center_enabled.xyz;
+    // Clamp near-zero components away from 0 (sign-preserving; sign(0)=0
+    // would divide by zero). A 1e-6 component puts that slab's crossing at
+    // a huge |t| where it can never win the min() — the right limit.
+    let safe_dir = select(
+        sign(dir_w) * max(abs(dir_w), vec3<f32>(1e-6)),
+        vec3<f32>(1e-6),
+        abs(dir_w) < vec3<f32>(1e-12),
+    );
+    let inv_dir = vec3<f32>(1.0) / safe_dir;
+    let t_a = (center + half_extents - world_pos) * inv_dir;
+    let t_b = (center - half_extents - world_pos) * inv_dir;
+    let t_max = max(t_a, t_b);
+    let t_exit = min(min(t_max.x, t_max.y), t_max.z);
+    // Outside-the-box surfaces (t_exit <= 0) keep the uncorrected direction:
+    // the probe only describes the interior.
+    if (t_exit <= 0.0) {
+        return dir_w;
+    }
+    return (world_pos + dir_w * t_exit) - center;
+}
+
 // Get effective IOR value, defaulting to 1.5 when invalid (< 1.0).
 // IOR = 1.0 is valid (air, no refraction), IOR < 1.0 is physically invalid.
 fn effective_ior(ior: f32) -> f32 {

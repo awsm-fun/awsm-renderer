@@ -1,0 +1,5784 @@
+name = "untitled.awsm"
+custom_animations = []
+editor_animations = []
+
+[environment.skybox.ktx]
+asset_id = "00000000-0000-4000-8000-0000000000e0"
+
+[environment.specular.ktx]
+asset_id = "00000000-0000-4000-8000-0000000000e2"
+
+[environment.irradiance.ktx]
+asset_id = "00000000-0000-4000-8000-0000000000e1"
+
+[environment.probe]
+enabled = true
+center = [
+    0.0,
+    13.0,
+    0.0,
+]
+half_extents = [
+    42.0,
+    14.0,
+    42.0,
+]
+
+[shadows]
+sscs_enabled = false
+sscs_step_count = 16
+sscs_step_world = 0.03999999910593033
+sscs_thickness = 0.05000000074505806
+sscs_directional_darkening = 0.3499999940395355
+sscs_punctual_darkening = 0.8999999761581421
+atlas_size = 4096
+evsm_atlas_size = 2048
+evsm_exponent = 10.0
+evsm_blur_radius = 6
+max_point_shadows = 8
+point_shadow_resolution = 1024
+debug_cascade_colors = false
+
+[post_process]
+tonemapping = "khronos_neutral_pbr"
+bloom = true
+dof = false
+exposure = 0.05000000074505806
+bloom_threshold = 1.149999976158142
+bloom_knee = 0.550000011920929
+bloom_intensity = 0.5
+bloom_scatter = 0.6200000047683716
+
+[post_process.ssr]
+enabled = true
+intensity = 0.8999999761581421
+max_distance = 45.0
+thickness = 0.019999999552965164
+max_steps = 96
+spread_cutoff = 0.6200000047683716
+edge_fade = 0.02500000037252903
+resolution_scale = 1.0
+temporal = true
+temporal_weight = 0.8500000238418579
+bvh_reflections = true
+
+[assets.00000000-0000-4000-8000-000000000081]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+
+[assets.00000000-0000-4000-8000-000000000081.source.mesh]
+label = "Box"
+editable = true
+
+[assets.00000000-0000-4000-8000-000000000081.source.mesh.source.primitive.box]
+dims = [
+    7.699999809265137,
+    0.23999999463558197,
+    7.699999809265137,
+]
+
+[assets.00000000-0000-4000-8000-000000000081.source.mesh.stack]
+modifiers = []
+
+[assets.00000000-0000-4000-8000-000000000081.source.mesh.stack.base.primitive.box]
+dims = [
+    7.699999809265137,
+    0.23999999463558197,
+    7.699999809265137,
+]
+
+[assets.00000000-0000-4000-8000-000000000081.source.mesh.overrides.positions]
+
+[assets.00000000-0000-4000-8000-000000000081.source.mesh.overrides.colors]
+
+[assets.00000000-0000-4000-8000-000000000081.source.mesh.overrides.normals]
+
+[assets.00000000-0000-4000-8000-000000000081.source.mesh.overrides.uvs]
+
+[assets.00000000-0000-4000-8000-000000000013]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = "04c3fc8c2fb901359190128c677761f94598f624272161e9e12bee256b222fb9"
+
+[assets.00000000-0000-4000-8000-000000000013.source.texture.raster]
+display_name = "floor-tile-mr.png"
+color_kind = "metallic_roughness"
+
+[assets.00000000-0000-4000-8000-0000000000ba]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+
+[assets.00000000-0000-4000-8000-0000000000ba.source.mesh]
+label = "Cylinder"
+editable = true
+
+[assets.00000000-0000-4000-8000-0000000000ba.source.mesh.source.primitive.cylinder]
+radius = 40.599998474121094
+height = 2.0
+radial_segments = 192
+
+[assets.00000000-0000-4000-8000-0000000000ba.source.mesh.stack]
+modifiers = []
+
+[assets.00000000-0000-4000-8000-0000000000ba.source.mesh.stack.base.lathe]
+profile = [
+    [
+    -0.10000000149011612,
+    40.599998474121094,
+],
+    [
+    2.450000047683716,
+    40.599998474121094,
+],
+]
+segments = 192
+angle = 6.2831854820251465
+
+[assets.00000000-0000-4000-8000-0000000000ba.source.mesh.overrides.positions]
+
+[assets.00000000-0000-4000-8000-0000000000ba.source.mesh.overrides.colors]
+
+[assets.00000000-0000-4000-8000-0000000000ba.source.mesh.overrides.normals]
+
+[assets.00000000-0000-4000-8000-0000000000ba.source.mesh.overrides.uvs]
+
+[assets.00000000-0000-4000-8000-0000000000b3]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+
+[assets.00000000-0000-4000-8000-0000000000b3.source.mesh]
+label = "Torus"
+editable = true
+
+[assets.00000000-0000-4000-8000-0000000000b3.source.mesh.source.primitive.torus]
+radius = 1.4500000476837158
+thickness = 0.07999999821186066
+segments_major = 72
+segments_minor = 16
+
+[assets.00000000-0000-4000-8000-0000000000b3.source.mesh.stack]
+modifiers = []
+
+[assets.00000000-0000-4000-8000-0000000000b3.source.mesh.stack.base.primitive.torus]
+radius = 1.4500000476837158
+thickness = 0.07999999821186066
+segments_major = 72
+segments_minor = 16
+
+[assets.00000000-0000-4000-8000-0000000000b3.source.mesh.overrides.positions]
+
+[assets.00000000-0000-4000-8000-0000000000b3.source.mesh.overrides.colors]
+
+[assets.00000000-0000-4000-8000-0000000000b3.source.mesh.overrides.normals]
+
+[assets.00000000-0000-4000-8000-0000000000b3.source.mesh.overrides.uvs]
+
+[assets.00000000-0000-4000-8000-0000000000b1]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+
+[assets.00000000-0000-4000-8000-0000000000b1.source.mesh]
+label = "Torus"
+editable = true
+
+[assets.00000000-0000-4000-8000-0000000000b1.source.mesh.source.primitive.torus]
+radius = 2.450000047683716
+thickness = 0.1599999964237213
+segments_major = 96
+segments_minor = 24
+
+[assets.00000000-0000-4000-8000-0000000000b1.source.mesh.stack]
+modifiers = []
+
+[assets.00000000-0000-4000-8000-0000000000b1.source.mesh.stack.base.primitive.torus]
+radius = 2.450000047683716
+thickness = 0.1599999964237213
+segments_major = 96
+segments_minor = 24
+
+[assets.00000000-0000-4000-8000-0000000000b1.source.mesh.overrides.positions]
+
+[assets.00000000-0000-4000-8000-0000000000b1.source.mesh.overrides.colors]
+
+[assets.00000000-0000-4000-8000-0000000000b1.source.mesh.overrides.normals]
+
+[assets.00000000-0000-4000-8000-0000000000b1.source.mesh.overrides.uvs]
+
+[assets.00000000-0000-4000-8000-000000000010]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = "7e68529802541b8c9775198e1b8723eb1276088527d5e28b4b6b90866576e8ab"
+
+[assets.00000000-0000-4000-8000-000000000010.source.texture.raster]
+display_name = "hex-floor.png"
+color_kind = "albedo"
+
+[assets.00000000-0000-4000-8000-0000000000b0]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+
+[assets.00000000-0000-4000-8000-0000000000b0.source.mesh]
+label = "Cylinder"
+editable = true
+
+[assets.00000000-0000-4000-8000-0000000000b0.source.mesh.source.primitive.cylinder]
+radius = 2.25
+height = 0.10000000149011612
+radial_segments = 64
+
+[assets.00000000-0000-4000-8000-0000000000b0.source.mesh.stack]
+modifiers = []
+
+[assets.00000000-0000-4000-8000-0000000000b0.source.mesh.stack.base.primitive.cylinder]
+radius = 2.25
+height = 0.10000000149011612
+radial_segments = 64
+
+[assets.00000000-0000-4000-8000-0000000000b0.source.mesh.overrides.positions]
+
+[assets.00000000-0000-4000-8000-0000000000b0.source.mesh.overrides.colors]
+
+[assets.00000000-0000-4000-8000-0000000000b0.source.mesh.overrides.normals]
+
+[assets.00000000-0000-4000-8000-0000000000b0.source.mesh.overrides.uvs]
+
+[assets.00000000-0000-4000-8000-0000000000b4]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+
+[assets.00000000-0000-4000-8000-0000000000b4.source.mesh]
+label = "Cylinder"
+editable = true
+
+[assets.00000000-0000-4000-8000-0000000000b4.source.mesh.source.primitive.cylinder]
+radius = 0.6200000047683716
+height = 0.07999999821186066
+radial_segments = 48
+
+[assets.00000000-0000-4000-8000-0000000000b4.source.mesh.stack]
+modifiers = []
+
+[assets.00000000-0000-4000-8000-0000000000b4.source.mesh.stack.base.primitive.cylinder]
+radius = 0.6200000047683716
+height = 0.07999999821186066
+radial_segments = 48
+
+[assets.00000000-0000-4000-8000-0000000000b4.source.mesh.overrides.positions]
+
+[assets.00000000-0000-4000-8000-0000000000b4.source.mesh.overrides.colors]
+
+[assets.00000000-0000-4000-8000-0000000000b4.source.mesh.overrides.normals]
+
+[assets.00000000-0000-4000-8000-0000000000b4.source.mesh.overrides.uvs]
+
+[assets.00000000-0000-4000-8000-0000000000e0]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+
+[assets.00000000-0000-4000-8000-0000000000e0.source]
+filename = "starfield.ktx2"
+
+[assets.00000000-0000-4000-8000-000000000011]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = "9f7188982b1fecf2b107a656489149adc9b1d0f029e3e70354c54a98361f60d1"
+
+[assets.00000000-0000-4000-8000-000000000011.source.texture.raster]
+display_name = "hex-floor-emit.png"
+color_kind = "emissive"
+
+[assets.00000000-0000-4000-8000-0000000000a7]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+
+[assets.00000000-0000-4000-8000-0000000000a7.source.mesh]
+label = "Torus"
+editable = true
+
+[assets.00000000-0000-4000-8000-0000000000a7.source.mesh.source.primitive.torus]
+radius = 40.0
+thickness = 0.8500000238418579
+segments_major = 128
+segments_minor = 24
+
+[assets.00000000-0000-4000-8000-0000000000a7.source.mesh.stack]
+modifiers = []
+
+[assets.00000000-0000-4000-8000-0000000000a7.source.mesh.stack.base.primitive.torus]
+radius = 40.0
+thickness = 0.8500000238418579
+segments_major = 128
+segments_minor = 24
+
+[assets.00000000-0000-4000-8000-0000000000a7.source.mesh.overrides.positions]
+
+[assets.00000000-0000-4000-8000-0000000000a7.source.mesh.overrides.colors]
+
+[assets.00000000-0000-4000-8000-0000000000a7.source.mesh.overrides.normals]
+
+[assets.00000000-0000-4000-8000-0000000000a7.source.mesh.overrides.uvs]
+
+[assets.00000000-0000-4000-8000-000000000080]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+
+[assets.00000000-0000-4000-8000-000000000080.source.mesh]
+label = "Box"
+editable = true
+
+[assets.00000000-0000-4000-8000-000000000080.source.mesh.source.primitive.box]
+dims = [
+    7.0,
+    0.8999999761581421,
+    7.0,
+]
+
+[assets.00000000-0000-4000-8000-000000000080.source.mesh.stack]
+modifiers = []
+
+[assets.00000000-0000-4000-8000-000000000080.source.mesh.stack.base.primitive.box]
+dims = [
+    7.0,
+    0.8999999761581421,
+    7.0,
+]
+
+[assets.00000000-0000-4000-8000-000000000080.source.mesh.overrides.positions]
+
+[assets.00000000-0000-4000-8000-000000000080.source.mesh.overrides.colors]
+
+[assets.00000000-0000-4000-8000-000000000080.source.mesh.overrides.normals]
+
+[assets.00000000-0000-4000-8000-000000000080.source.mesh.overrides.uvs]
+
+[assets.00000000-0000-4000-8000-0000000000e1]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+
+[assets.00000000-0000-4000-8000-0000000000e1.source]
+filename = "irradiance.ktx2"
+
+[assets.00000000-0000-4000-8000-0000000000e2]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+
+[assets.00000000-0000-4000-8000-0000000000e2.source]
+filename = "interior.ktx2"
+
+[assets.00000000-0000-4000-8000-000000000001]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+
+[assets.00000000-0000-4000-8000-000000000001.source.mesh]
+label = "Plane"
+editable = true
+
+[assets.00000000-0000-4000-8000-000000000001.source.mesh.source.primitive.plane]
+width = 84.0
+depth = 84.0
+segments_x = 1
+segments_z = 1
+
+[assets.00000000-0000-4000-8000-000000000001.source.mesh.stack]
+modifiers = []
+
+[assets.00000000-0000-4000-8000-000000000001.source.mesh.stack.base.primitive.plane]
+width = 84.0
+depth = 84.0
+segments_x = 1
+segments_z = 1
+
+[assets.00000000-0000-4000-8000-000000000001.source.mesh.overrides.positions]
+
+[assets.00000000-0000-4000-8000-000000000001.source.mesh.overrides.colors]
+
+[assets.00000000-0000-4000-8000-000000000001.source.mesh.overrides.normals]
+
+[assets.00000000-0000-4000-8000-000000000001.source.mesh.overrides.uvs]
+
+[assets.00000000-0000-4000-8000-000000000040]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+
+[assets.00000000-0000-4000-8000-000000000040.source.mesh]
+label = "Torus"
+editable = true
+
+[assets.00000000-0000-4000-8000-000000000040.source.mesh.source.primitive.torus]
+radius = 40.0
+thickness = 0.30000001192092896
+segments_major = 128
+segments_minor = 32
+
+[assets.00000000-0000-4000-8000-000000000040.source.mesh.stack]
+modifiers = []
+
+[assets.00000000-0000-4000-8000-000000000040.source.mesh.stack.base.primitive.torus]
+radius = 40.0
+thickness = 0.30000001192092896
+segments_major = 128
+segments_minor = 32
+
+[assets.00000000-0000-4000-8000-000000000040.source.mesh.overrides.positions]
+
+[assets.00000000-0000-4000-8000-000000000040.source.mesh.overrides.colors]
+
+[assets.00000000-0000-4000-8000-000000000040.source.mesh.overrides.normals]
+
+[assets.00000000-0000-4000-8000-000000000040.source.mesh.overrides.uvs]
+
+[assets.00000000-0000-4000-8000-000000000060]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+
+[assets.00000000-0000-4000-8000-000000000060.source.mesh]
+label = "Box"
+editable = true
+
+[assets.00000000-0000-4000-8000-000000000060.source.mesh.source.primitive.box]
+dims = [
+    0.3400000035762787,
+    24.600000381469727,
+    0.3400000035762787,
+]
+
+[assets.00000000-0000-4000-8000-000000000060.source.mesh.stack]
+modifiers = []
+
+[assets.00000000-0000-4000-8000-000000000060.source.mesh.stack.base.primitive.box]
+dims = [
+    0.3400000035762787,
+    24.600000381469727,
+    0.3400000035762787,
+]
+
+[assets.00000000-0000-4000-8000-000000000060.source.mesh.overrides.positions]
+
+[assets.00000000-0000-4000-8000-000000000060.source.mesh.overrides.colors]
+
+[assets.00000000-0000-4000-8000-000000000060.source.mesh.overrides.normals]
+
+[assets.00000000-0000-4000-8000-000000000060.source.mesh.overrides.uvs]
+
+[[custom_materials]]
+id = "00000000-0000-4000-8000-0000000000a6"
+name = "New Material 4"
+folder = "assets/materials/new-material-4-00000000-0000-4000-8000-0000000000a6"
+
+[[editor_materials]]
+id = "00000000-0000-4000-8000-000000000020"
+name = "PBR Material 1"
+wgsl = """
+// Opaque material. Inputs arrive as fields on `input` (declare them in Pass
+// Dependencies): input.world_normal, input.surface_to_camera (normalized),
+// input.world_position, input.coords. Time: frame_globals_from_raw(frame_globals_raw).
+// `color` is linear HDR (tonemap is a later pass); it is UNLIT — to light it,
+// declare `light_access` and walk lights yourself (get_lights_info / get_light /
+// light_sample). Must end in `return OpaqueShadingOutput(color, ao)`.
+let n = normalize(input.world_normal);
+let v = input.surface_to_camera;          // already normalized (surface -> camera)
+let fresnel = pow(1.0 - max(dot(n, v), 0.0), 3.0);
+let base = vec3<f32>(0.1, 0.12, 0.2);
+let color = base + vec3<f32>(0.6, 0.7, 1.0) * fresnel;
+return OpaqueShadingOutput(color, 1.0);"""
+alpha_wgsl = ""
+vertex_wgsl = ""
+alpha = "opaque"
+cutoff = 0.5
+double_sided = false
+color = "#8aa0b8"
+uniforms = []
+textures = []
+buffers = []
+registered = true
+shader_includes = []
+fragment_inputs = [
+    "normals",
+    "view_dir",
+]
+
+[editor_materials.builtin]
+label = "arena-floor"
+base_color = [
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+]
+metallic = 1.0
+roughness = 1.0
+emissive = [
+    1.0,
+    1.0,
+    1.0,
+]
+normal_scale = 0.800000011920929
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+shading = "pbr"
+
+[editor_materials.builtin.base_color_texture]
+asset = "00000000-0000-4000-8000-000000000010"
+
+[editor_materials.builtin.metallic_roughness_texture]
+asset = "00000000-0000-4000-8000-000000000013"
+
+[editor_materials.builtin.emissive_texture]
+asset = "00000000-0000-4000-8000-000000000011"
+
+[editor_materials.builtin.alpha_mode.mask]
+cutoff = 0.5
+
+[editor_materials.builtin.extensions.emissive_strength]
+strength = 2.4000000953674316
+
+[[editor_materials]]
+id = "00000000-0000-4000-8000-000000000021"
+name = "PBR Material 2"
+wgsl = """
+// Opaque material. Inputs arrive as fields on `input` (declare them in Pass
+// Dependencies): input.world_normal, input.surface_to_camera (normalized),
+// input.world_position, input.coords. Time: frame_globals_from_raw(frame_globals_raw).
+// `color` is linear HDR (tonemap is a later pass); it is UNLIT — to light it,
+// declare `light_access` and walk lights yourself (get_lights_info / get_light /
+// light_sample). Must end in `return OpaqueShadingOutput(color, ao)`.
+let n = normalize(input.world_normal);
+let v = input.surface_to_camera;          // already normalized (surface -> camera)
+let fresnel = pow(1.0 - max(dot(n, v), 0.0), 3.0);
+let base = vec3<f32>(0.1, 0.12, 0.2);
+let color = base + vec3<f32>(0.6, 0.7, 1.0) * fresnel;
+return OpaqueShadingOutput(color, 1.0);"""
+alpha_wgsl = ""
+vertex_wgsl = ""
+alpha = "opaque"
+cutoff = 0.5
+double_sided = false
+color = "#8aa0b8"
+uniforms = []
+textures = []
+buffers = []
+registered = true
+shader_includes = []
+fragment_inputs = [
+    "normals",
+    "view_dir",
+]
+
+[editor_materials.builtin]
+label = "arena-neon"
+base_color = [
+    0.10000000149011612,
+    0.10000000149011612,
+    0.11999999731779099,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.550000011920929
+emissive = [
+    1.0,
+    1.0,
+    1.0,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[editor_materials.builtin.extensions.emissive_strength]
+strength = 2.4000000953674316
+
+[[editor_materials]]
+id = "00000000-0000-4000-8000-000000000022"
+name = "PBR Material 3"
+wgsl = """
+// Opaque material. Inputs arrive as fields on `input` (declare them in Pass
+// Dependencies): input.world_normal, input.surface_to_camera (normalized),
+// input.world_position, input.coords. Time: frame_globals_from_raw(frame_globals_raw).
+// `color` is linear HDR (tonemap is a later pass); it is UNLIT — to light it,
+// declare `light_access` and walk lights yourself (get_lights_info / get_light /
+// light_sample). Must end in `return OpaqueShadingOutput(color, ao)`.
+let n = normalize(input.world_normal);
+let v = input.surface_to_camera;          // already normalized (surface -> camera)
+let fresnel = pow(1.0 - max(dot(n, v), 0.0), 3.0);
+let base = vec3<f32>(0.1, 0.12, 0.2);
+let color = base + vec3<f32>(0.6, 0.7, 1.0) * fresnel;
+return OpaqueShadingOutput(color, 1.0);"""
+alpha_wgsl = ""
+vertex_wgsl = ""
+alpha = "opaque"
+cutoff = 0.5
+double_sided = false
+color = "#8aa0b8"
+uniforms = []
+textures = []
+buffers = []
+registered = true
+shader_includes = []
+fragment_inputs = [
+    "normals",
+    "view_dir",
+]
+
+[editor_materials.builtin]
+label = "arena-deck"
+base_color = [
+    0.1599999964237213,
+    0.17000000178813934,
+    0.20999999344348907,
+    1.0,
+]
+metallic = 0.800000011920929
+roughness = 0.6499999761581421
+emissive = [
+    0.0,
+    0.0,
+    0.0,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[editor_materials.builtin.extensions]
+
+[[editor_materials]]
+id = "00000000-0000-4000-8000-0000000000a6"
+name = "New Material 4"
+wgsl = """
+let n = normalize(input.world_normal);
+let v = input.surface_to_camera;
+let facing = clamp(dot(n, v), 0.0, 1.0);
+let a = pow(facing, 2.5);
+return TransparentShadingOutput(vec4<f32>(input.material.glow * (a * input.material.strength), a * 0.55));"""
+alpha_wgsl = ""
+vertex_wgsl = ""
+alpha = "blend"
+cutoff = 0.5
+double_sided = false
+color = "#8aa0b8"
+textures = []
+buffers = []
+registered = true
+shader_includes = []
+fragment_inputs = [
+    "normals",
+    "view_dir",
+]
+
+[[editor_materials.uniforms]]
+name = "glow"
+ty = "vec3<f32>"
+val = "1.0,1.0,1.0"
+debug = ""
+color_kind = "albedo"
+
+[[editor_materials.uniforms]]
+name = "strength"
+ty = "f32"
+val = "1.4"
+debug = ""
+color_kind = "albedo"
+
+[[editor_materials]]
+id = "00000000-0000-4000-8000-000000000025"
+name = "PBR Material 5"
+wgsl = """
+// Opaque material. Inputs arrive as fields on `input` (declare them in Pass
+// Dependencies): input.world_normal, input.surface_to_camera (normalized),
+// input.world_position, input.coords. Time: frame_globals_from_raw(frame_globals_raw).
+// `color` is linear HDR (tonemap is a later pass); it is UNLIT — to light it,
+// declare `light_access` and walk lights yourself (get_lights_info / get_light /
+// light_sample). Must end in `return OpaqueShadingOutput(color, ao)`.
+let n = normalize(input.world_normal);
+let v = input.surface_to_camera;          // already normalized (surface -> camera)
+let fresnel = pow(1.0 - max(dot(n, v), 0.0), 3.0);
+let base = vec3<f32>(0.1, 0.12, 0.2);
+let color = base + vec3<f32>(0.6, 0.7, 1.0) * fresnel;
+return OpaqueShadingOutput(color, 1.0);"""
+alpha_wgsl = ""
+vertex_wgsl = ""
+alpha = "opaque"
+cutoff = 0.5
+double_sided = false
+color = "#8aa0b8"
+uniforms = []
+textures = []
+buffers = []
+registered = true
+shader_includes = []
+fragment_inputs = [
+    "normals",
+    "view_dir",
+]
+
+[editor_materials.builtin]
+label = "arena-basewall"
+base_color = [
+    0.1599999964237213,
+    0.019999999552965164,
+    0.019999999552965164,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.6600000262260437
+emissive = [
+    0.6200000047683716,
+    0.054999999701976776,
+    0.04500000178813934,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = true
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[editor_materials.builtin.extensions.emissive_strength]
+strength = 2.4000000953674316
+
+[anim_mixer]
+layers = []
+
+[[nodes]]
+id = "1193ff5c-6747-4c13-b77f-e52d911ed9de"
+name = "Directional Light"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    0.0,
+    0.0,
+    0.0,
+]
+rotation = [
+    -0.41999998688697815,
+    0.1599999964237213,
+    0.07999999821186066,
+    0.8899999856948853,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.light.directional]
+color = [
+    0.7200000286102295,
+    0.7799999713897705,
+    1.0,
+]
+intensity = 0.800000011920929
+
+[nodes.kind.light.directional.shadow]
+cast = true
+depth_bias = 0.0010000000474974513
+normal_bias = 0.0
+resolution = 2048
+hardness = "soft"
+pcss_penumbra_scale = 1.0
+kernel_slack = 0.0
+shadow_samples = 16
+max_distance = 0.0
+cascade_count = 4
+cascade_split_lambda = 0.5
+evsm_cutoff = "last_cascade"
+far_cascade_update_rate = "every4_frames"
+cube_face_update_rate = "every_frame"
+
+[[nodes]]
+id = "00000000-0000-4000-8000-000000000001"
+name = "Arena_Floor"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    0.0,
+    0.0,
+    0.0,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-000000000001"
+selected_variant = "00000000-0000-4000-8000-000000000030"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-000000000030"
+name = "floor"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000020"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = "arena-floor"
+base_color = [
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+]
+metallic = 1.0
+roughness = 1.0
+emissive = [
+    1.0,
+    1.0,
+    1.0,
+]
+normal_scale = 0.800000011920929
+occlusion_strength = 1.0
+ssr_mask = 0.699999988079071
+double_sided = false
+vertex_colors_enabled = false
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.base_color_texture]
+asset = "00000000-0000-4000-8000-000000000010"
+
+[nodes.kind.mesh.material_variants.instance.inline.metallic_roughness_texture]
+asset = "00000000-0000-4000-8000-000000000013"
+
+[nodes.kind.mesh.material_variants.instance.inline.metallic_roughness_texture.transform]
+offset = [
+    0.0,
+    0.0,
+]
+rotation = 0.0
+scale = [
+    21.0,
+    21.0,
+]
+
+[nodes.kind.mesh.material_variants.instance.inline.metallic_roughness_texture.sampler]
+wrap_u = "repeat"
+wrap_v = "repeat"
+mag_filter = "linear"
+min_filter = "linear"
+mipmap_filter = "linear"
+
+[nodes.kind.mesh.material_variants.instance.inline.emissive_texture]
+asset = "00000000-0000-4000-8000-000000000011"
+
+[nodes.kind.mesh.material_variants.instance.inline.alpha_mode.mask]
+cutoff = 0.5
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions.emissive_strength]
+strength = 2.4000000953674316
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = true
+receive = true
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "00000000-0000-4000-8000-000000000040"
+name = "WallRing_1"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    0.0,
+    2.5999999046325684,
+    0.0,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-000000000040"
+selected_variant = "00000000-0000-4000-8000-000000000050"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-000000000050"
+name = "ring-1"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000021"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = "arena-neon"
+base_color = [
+    0.05882352963089943,
+    0.11764705926179886,
+    0.30000001192092896,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.6600000262260437
+emissive = [
+    0.21568627655506134,
+    0.4313725531101227,
+    1.100000023841858,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions.emissive_strength]
+strength = 2.4000000953674316
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = false
+receive = false
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "1fd0c633-c91a-4a02-a214-42bfcd18d843"
+name = "TopRim"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    0.0,
+    26.700000762939453,
+    0.0,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0199999809265137,
+    1.7000000476837158,
+    1.0199999809265137,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-000000000040"
+selected_variant = "00000000-0000-4000-8000-00000000005e"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-000000000050"
+name = "ring-1"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000021"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = "arena-neon"
+base_color = [
+    0.05882352963089943,
+    0.11764705926179886,
+    0.30000001192092896,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.6600000262260437
+emissive = [
+    0.21568627655506134,
+    0.4313725531101227,
+    1.100000023841858,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions.emissive_strength]
+strength = 2.4000000953674316
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-00000000005e"
+name = "top-rim"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000021"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = "arena-neon"
+base_color = [
+    0.8999999761581421,
+    0.9200000166893005,
+    1.0,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.6600000262260437
+emissive = [
+    1.2999999523162842,
+    1.2999999523162842,
+    1.2999999523162842,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions.emissive_strength]
+strength = 2.4000000953674316
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = false
+receive = false
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "ffa848aa-04fa-480d-8661-8ca78cb81436"
+name = "WallRing_8"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    0.0,
+    22.899999618530273,
+    0.0,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-000000000040"
+selected_variant = "00000000-0000-4000-8000-000000000057"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-000000000057"
+name = "ring-8"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000021"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = "arena-neon"
+base_color = [
+    0.19411765038967133,
+    0.0882352963089943,
+    0.30000001192092896,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.6600000262260437
+emissive = [
+    0.7117646932601929,
+    0.3235294222831726,
+    1.100000023841858,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions.emissive_strength]
+strength = 2.4000000953674316
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = false
+receive = false
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "3dfda8e2-1be4-452d-bedc-3f1155873e06"
+name = "WallRing_7"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    0.0,
+    20.0,
+    0.0,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-000000000040"
+selected_variant = "00000000-0000-4000-8000-000000000056"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-000000000056"
+name = "ring-7"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000021"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = "arena-neon"
+base_color = [
+    0.30000001192092896,
+    0.06470588594675064,
+    0.23529411852359772,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.6600000262260437
+emissive = [
+    1.100000023841858,
+    0.23725490272045135,
+    0.8627451062202454,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions.emissive_strength]
+strength = 2.4000000953674316
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = false
+receive = false
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "23a9cab9-91f2-4aa5-90f2-e99c84eebebf"
+name = "WallRing_6"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    0.0,
+    17.100000381469727,
+    0.0,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-000000000040"
+selected_variant = "00000000-0000-4000-8000-000000000055"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-000000000055"
+name = "ring-6"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000021"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = "arena-neon"
+base_color = [
+    0.30000001192092896,
+    0.07647059112787247,
+    0.08235294371843338,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.6600000262260437
+emissive = [
+    1.100000023841858,
+    0.2803921699523926,
+    0.3019607961177826,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions.emissive_strength]
+strength = 2.4000000953674316
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = false
+receive = false
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "ba282916-ab82-4365-9039-88e891036fef"
+name = "WallRing_5"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    0.0,
+    14.199999809265137,
+    0.0,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-000000000040"
+selected_variant = "00000000-0000-4000-8000-000000000054"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-000000000054"
+name = "ring-5"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000021"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = "arena-neon"
+base_color = [
+    0.30000001192092896,
+    0.14705882966518402,
+    0.0,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.6600000262260437
+emissive = [
+    1.100000023841858,
+    0.5392156839370728,
+    0.0,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions.emissive_strength]
+strength = 2.4000000953674316
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = false
+receive = false
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "38558bf1-6c57-4afd-b956-eb79e839dc98"
+name = "WallRing_4"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    0.0,
+    11.300000190734863,
+    0.0,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-000000000040"
+selected_variant = "00000000-0000-4000-8000-000000000053"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-000000000053"
+name = "ring-4"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000021"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = "arena-neon"
+base_color = [
+    0.30000001192092896,
+    0.25882354378700256,
+    0.03529411926865578,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.6600000262260437
+emissive = [
+    1.100000023841858,
+    0.9490196108818054,
+    0.12941177189350128,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions.emissive_strength]
+strength = 2.4000000953674316
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = false
+receive = false
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "e1ac96aa-8930-491c-a555-f875391de7e1"
+name = "WallRing_3"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    0.0,
+    8.399999618530273,
+    0.0,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-000000000040"
+selected_variant = "00000000-0000-4000-8000-000000000052"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-000000000052"
+name = "ring-3"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000021"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = "arena-neon"
+base_color = [
+    0.05882352963089943,
+    0.2764706015586853,
+    0.10588235408067703,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.6600000262260437
+emissive = [
+    0.21568627655506134,
+    1.0137255191802979,
+    0.38823530077934265,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions.emissive_strength]
+strength = 2.4000000953674316
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = false
+receive = false
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "02f660a1-e6db-4b7d-8846-5c9d4fce8395"
+name = "WallRing_2"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    0.0,
+    5.5,
+    0.0,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-000000000040"
+selected_variant = "00000000-0000-4000-8000-000000000051"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-000000000051"
+name = "ring-2"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000021"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = "arena-neon"
+base_color = [
+    0.0,
+    0.25882354378700256,
+    0.2764706015586853,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.6600000262260437
+emissive = [
+    0.0,
+    0.9490196108818054,
+    1.0137255191802979,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions.emissive_strength]
+strength = 2.4000000953674316
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = false
+receive = false
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "00000000-0000-4000-8000-0000000000a7"
+name = "HaloShell_1"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    0.0,
+    2.5999999046325684,
+    0.0,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-0000000000a7"
+selected_variant = "00000000-0000-4000-8000-000000000096"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-000000000096"
+name = "halo-1"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-0000000000a6"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = ""
+base_color = [
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.699999988079071
+emissive = [
+    0.0,
+    0.0,
+    0.0,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions]
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides.glow]
+kind = "vec3"
+value = [
+    0.19607843458652496,
+    0.3921568691730499,
+    1.0,
+]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = false
+receive = false
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "ae9b3771-79ca-432f-b2cf-5956d6865c47"
+name = "HaloShell_TopRim"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    0.0,
+    26.700000762939453,
+    0.0,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0199999809265137,
+    1.899999976158142,
+    1.0199999809265137,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-0000000000a7"
+selected_variant = "00000000-0000-4000-8000-00000000009e"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-00000000009e"
+name = "halo-top"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-0000000000a6"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = ""
+base_color = [
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.699999988079071
+emissive = [
+    0.0,
+    0.0,
+    0.0,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions]
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides.glow]
+kind = "vec3"
+value = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = false
+receive = false
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "fd94753b-3f6a-4637-aa77-b9940267fe93"
+name = "HaloShell_8"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    0.0,
+    22.899999618530273,
+    0.0,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-0000000000a7"
+selected_variant = "00000000-0000-4000-8000-00000000009d"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-00000000009d"
+name = "halo-8"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-0000000000a6"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = ""
+base_color = [
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.699999988079071
+emissive = [
+    0.0,
+    0.0,
+    0.0,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions]
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides.glow]
+kind = "vec3"
+value = [
+    0.6470588445663452,
+    0.29411765933036804,
+    1.0,
+]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = false
+receive = false
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "b358f29f-5b70-4034-beb1-f646ca36cceb"
+name = "HaloShell_7"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    0.0,
+    20.0,
+    0.0,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-0000000000a7"
+selected_variant = "00000000-0000-4000-8000-00000000009c"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-00000000009c"
+name = "halo-7"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-0000000000a6"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = ""
+base_color = [
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.699999988079071
+emissive = [
+    0.0,
+    0.0,
+    0.0,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions]
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides.glow]
+kind = "vec3"
+value = [
+    1.0,
+    0.21568627655506134,
+    0.7843137383460999,
+]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = false
+receive = false
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "6756866f-295c-44b4-8fa3-ad739dde1393"
+name = "HaloShell_6"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    0.0,
+    17.100000381469727,
+    0.0,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-0000000000a7"
+selected_variant = "00000000-0000-4000-8000-00000000009b"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-00000000009b"
+name = "halo-6"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-0000000000a6"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = ""
+base_color = [
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.699999988079071
+emissive = [
+    0.0,
+    0.0,
+    0.0,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions]
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides.glow]
+kind = "vec3"
+value = [
+    1.0,
+    0.2549019753932953,
+    0.27450981736183167,
+]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = false
+receive = false
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "ef87bc07-0b94-4c7b-bdfb-72772d784496"
+name = "HaloShell_5"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    0.0,
+    14.199999809265137,
+    0.0,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-0000000000a7"
+selected_variant = "00000000-0000-4000-8000-00000000009a"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-00000000009a"
+name = "halo-5"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-0000000000a6"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = ""
+base_color = [
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.699999988079071
+emissive = [
+    0.0,
+    0.0,
+    0.0,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions]
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides.glow]
+kind = "vec3"
+value = [
+    1.0,
+    0.4901960790157318,
+    0.0,
+]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = false
+receive = false
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "316548aa-8e94-4316-a7b2-9f4c1d3295c8"
+name = "HaloShell_4"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    0.0,
+    11.300000190734863,
+    0.0,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-0000000000a7"
+selected_variant = "00000000-0000-4000-8000-000000000099"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-000000000099"
+name = "halo-4"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-0000000000a6"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = ""
+base_color = [
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.699999988079071
+emissive = [
+    0.0,
+    0.0,
+    0.0,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions]
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides.glow]
+kind = "vec3"
+value = [
+    1.0,
+    0.8627451062202454,
+    0.11764705926179886,
+]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = false
+receive = false
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "f318dc17-e0f1-4250-b503-1e3ac604b82b"
+name = "HaloShell_3"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    0.0,
+    8.399999618530273,
+    0.0,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-0000000000a7"
+selected_variant = "00000000-0000-4000-8000-000000000098"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-000000000098"
+name = "halo-3"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-0000000000a6"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = ""
+base_color = [
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.699999988079071
+emissive = [
+    0.0,
+    0.0,
+    0.0,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions]
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides.glow]
+kind = "vec3"
+value = [
+    0.19607843458652496,
+    0.9215686321258545,
+    0.3529411852359772,
+]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = false
+receive = false
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "0e0b6c8a-63e6-4001-9f48-72e6ec825a0e"
+name = "HaloShell_2"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    0.0,
+    5.5,
+    0.0,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-0000000000a7"
+selected_variant = "00000000-0000-4000-8000-000000000097"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-000000000097"
+name = "halo-2"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-0000000000a6"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = ""
+base_color = [
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.699999988079071
+emissive = [
+    0.0,
+    0.0,
+    0.0,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions]
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides.glow]
+kind = "vec3"
+value = [
+    0.0,
+    0.8627451062202454,
+    0.9215686321258545,
+]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = false
+receive = false
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "00000000-0000-4000-8000-000000000060"
+name = "Rib_1"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    0.0,
+    13.5,
+    40.599998474121094,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-000000000060"
+selected_variant = "00000000-0000-4000-8000-000000000070"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-000000000070"
+name = "rib-1"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000021"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = "arena-neon"
+base_color = [
+    0.30000001192092896,
+    0.052941177040338516,
+    0.052941177040338516,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.6600000262260437
+emissive = [
+    0.8999999761581421,
+    0.15882353484630585,
+    0.15882353484630585,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions.emissive_strength]
+strength = 2.4000000953674316
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = false
+receive = false
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "05100a6d-32c0-481c-a8ba-99e6537895a5"
+name = "Rib_12"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    -20.299999237060547,
+    13.5,
+    35.1606330871582,
+]
+rotation = [
+    0.0,
+    0.258819043636322,
+    0.0,
+    -0.9659258127212524,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-000000000060"
+selected_variant = "00000000-0000-4000-8000-00000000007b"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-00000000007b"
+name = "rib-12"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000021"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = "arena-neon"
+base_color = [
+    0.12941177189350128,
+    0.05882352963089943,
+    0.30000001192092896,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.6600000262260437
+emissive = [
+    0.38823530077934265,
+    0.1764705926179886,
+    0.8999999761581421,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions.emissive_strength]
+strength = 2.4000000953674316
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = false
+receive = false
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "b1e766f3-577a-4389-bb88-1a8c2594e550"
+name = "Rib_11"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    -35.1606330871582,
+    13.5,
+    20.299999237060547,
+]
+rotation = [
+    0.0,
+    0.5,
+    0.0,
+    -0.8660253882408142,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-000000000060"
+selected_variant = "00000000-0000-4000-8000-00000000007a"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-00000000007a"
+name = "rib-11"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000021"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = "arena-neon"
+base_color = [
+    0.30000001192092896,
+    0.0941176488995552,
+    0.0,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.6600000262260437
+emissive = [
+    0.8999999761581421,
+    0.2823529541492462,
+    0.0,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions.emissive_strength]
+strength = 2.4000000953674316
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = false
+receive = false
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "d0615700-8485-4aec-ae4e-fccb1a498962"
+name = "Rib_10"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    -40.599998474121094,
+    13.5,
+    -0.00000000000000745809884255275,
+]
+rotation = [
+    0.0,
+    0.7071067690849304,
+    0.0,
+    -0.7071067690849304,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-000000000060"
+selected_variant = "00000000-0000-4000-8000-000000000079"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-000000000079"
+name = "rib-10"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000021"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = "arena-neon"
+base_color = [
+    0.30000001192092896,
+    0.0470588244497776,
+    0.23529411852359772,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.6600000262260437
+emissive = [
+    0.8999999761581421,
+    0.1411764770746231,
+    0.7058823704719543,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions.emissive_strength]
+strength = 2.4000000953674316
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = false
+receive = false
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "12cf5a87-fce8-4918-92b8-47bf1fb18d52"
+name = "Rib_9"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    -35.1606330871582,
+    13.5,
+    -20.299999237060547,
+]
+rotation = [
+    0.0,
+    0.8660253882408142,
+    0.0,
+    -0.5,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-000000000060"
+selected_variant = "00000000-0000-4000-8000-000000000078"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-000000000078"
+name = "rib-9"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000021"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = "arena-neon"
+base_color = [
+    0.0235294122248888,
+    0.2764706015586853,
+    0.11176470667123795,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.6600000262260437
+emissive = [
+    0.07058823853731155,
+    0.8294117450714111,
+    0.33529412746429443,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions.emissive_strength]
+strength = 2.4000000953674316
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = false
+receive = false
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "ef5c2780-306b-4558-b7f6-d0877628017f"
+name = "Rib_8"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    -20.299999237060547,
+    13.5,
+    -35.1606330871582,
+]
+rotation = [
+    0.0,
+    0.9659258127212524,
+    0.0,
+    -0.258819043636322,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-000000000060"
+selected_variant = "00000000-0000-4000-8000-000000000077"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-000000000077"
+name = "rib-8"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000021"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = "arena-neon"
+base_color = [
+    0.30000001192092896,
+    0.052941177040338516,
+    0.052941177040338516,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.6600000262260437
+emissive = [
+    0.8999999761581421,
+    0.15882353484630585,
+    0.15882353484630585,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions.emissive_strength]
+strength = 2.4000000953674316
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = false
+receive = false
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "97b7ad75-6f2b-4ab2-bed3-e2cf6899aae7"
+name = "Rib_7"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    0.000000000000004972066036207324,
+    13.5,
+    -40.599998474121094,
+]
+rotation = [
+    0.0,
+    1.0,
+    0.0,
+    0.00000000000000006123234262925839,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-000000000060"
+selected_variant = "00000000-0000-4000-8000-000000000076"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-000000000076"
+name = "rib-7"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000021"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = "arena-neon"
+base_color = [
+    0.1764705926179886,
+    0.30000001192092896,
+    0.04117647185921669,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.6600000262260437
+emissive = [
+    0.529411792755127,
+    0.8999999761581421,
+    0.12352941185235977,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions.emissive_strength]
+strength = 2.4000000953674316
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = false
+receive = false
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "add27c55-7ad5-4c36-8297-79de1b62f78d"
+name = "Rib_6"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    20.299999237060547,
+    13.5,
+    -35.1606330871582,
+]
+rotation = [
+    0.0,
+    0.9659258127212524,
+    0.0,
+    0.258819043636322,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-000000000060"
+selected_variant = "00000000-0000-4000-8000-000000000075"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-000000000075"
+name = "rib-6"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000021"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = "arena-neon"
+base_color = [
+    0.30000001192092896,
+    0.2647058963775635,
+    0.0,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.6600000262260437
+emissive = [
+    0.8999999761581421,
+    0.7941176295280457,
+    0.0,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions.emissive_strength]
+strength = 2.4000000953674316
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = false
+receive = false
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "57914873-b0a3-4666-85e6-b19f46ed5207"
+name = "Rib_5"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    35.1606330871582,
+    13.5,
+    -20.299999237060547,
+]
+rotation = [
+    0.0,
+    0.8660253882408142,
+    0.0,
+    0.5,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-000000000060"
+selected_variant = "00000000-0000-4000-8000-000000000074"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-000000000074"
+name = "rib-5"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000021"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = "arena-neon"
+base_color = [
+    0.12941177189350128,
+    0.05882352963089943,
+    0.30000001192092896,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.6600000262260437
+emissive = [
+    0.38823530077934265,
+    0.1764705926179886,
+    0.8999999761581421,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions.emissive_strength]
+strength = 2.4000000953674316
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = false
+receive = false
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "0a4de716-aa07-4e79-8b43-0781a94a66ae"
+name = "Rib_4"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    40.599998474121094,
+    13.5,
+    0.000000000000002486033018103662,
+]
+rotation = [
+    0.0,
+    0.7071067690849304,
+    0.0,
+    0.7071067690849304,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-000000000060"
+selected_variant = "00000000-0000-4000-8000-000000000073"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-000000000073"
+name = "rib-4"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000021"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = "arena-neon"
+base_color = [
+    0.30000001192092896,
+    0.0941176488995552,
+    0.0,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.6600000262260437
+emissive = [
+    0.8999999761581421,
+    0.2823529541492462,
+    0.0,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions.emissive_strength]
+strength = 2.4000000953674316
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = false
+receive = false
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "cfc8531b-903e-4c22-92b8-e48b07618265"
+name = "Rib_3"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    35.1606330871582,
+    13.5,
+    20.299999237060547,
+]
+rotation = [
+    0.0,
+    0.5,
+    0.0,
+    0.8660253882408142,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-000000000060"
+selected_variant = "00000000-0000-4000-8000-000000000072"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-000000000072"
+name = "rib-3"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000021"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = "arena-neon"
+base_color = [
+    0.30000001192092896,
+    0.0470588244497776,
+    0.23529411852359772,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.6600000262260437
+emissive = [
+    0.8999999761581421,
+    0.1411764770746231,
+    0.7058823704719543,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions.emissive_strength]
+strength = 2.4000000953674316
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = false
+receive = false
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "c8715554-8c39-417f-99ec-432a55301e7e"
+name = "Rib_2"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    20.299999237060547,
+    13.5,
+    35.1606330871582,
+]
+rotation = [
+    0.0,
+    0.258819043636322,
+    0.0,
+    0.9659258127212524,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-000000000060"
+selected_variant = "00000000-0000-4000-8000-000000000071"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-000000000071"
+name = "rib-2"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000021"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = "arena-neon"
+base_color = [
+    0.0235294122248888,
+    0.2764706015586853,
+    0.11176470667123795,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.6600000262260437
+emissive = [
+    0.07058823853731155,
+    0.8294117450714111,
+    0.33529412746429443,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions.emissive_strength]
+strength = 2.4000000953674316
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = false
+receive = false
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "00000000-0000-4000-8000-000000000080"
+name = "Platform_1"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    0.0,
+    7.0,
+    24.0,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-000000000080"
+selected_variant = "00000000-0000-4000-8000-000000000090"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-000000000090"
+name = "deck-1"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000022"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = "arena-deck"
+base_color = [
+    0.1599999964237213,
+    0.17000000178813934,
+    0.20999999344348907,
+    1.0,
+]
+metallic = 0.800000011920929
+roughness = 0.6499999761581421
+emissive = [
+    0.0,
+    0.0,
+    0.0,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions]
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = true
+receive = true
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "3a8cdc7a-65e0-4a48-a857-8fa229515bbe"
+name = "Platform_6"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    -22.516660690307617,
+    13.0,
+    13.0,
+]
+rotation = [
+    0.0,
+    0.5,
+    0.0,
+    -0.8660253882408142,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-000000000080"
+selected_variant = "00000000-0000-4000-8000-000000000095"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-000000000095"
+name = "deck-6"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000022"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = "arena-deck"
+base_color = [
+    0.1599999964237213,
+    0.17000000178813934,
+    0.20999999344348907,
+    1.0,
+]
+metallic = 0.800000011920929
+roughness = 0.6499999761581421
+emissive = [
+    0.0,
+    0.0,
+    0.0,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions]
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = true
+receive = true
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "1cd4afc4-167e-4bd4-a2b0-6fa172534f58"
+name = "Platform_5"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    -20.784608840942383,
+    18.0,
+    -12.0,
+]
+rotation = [
+    0.0,
+    0.8660253882408142,
+    0.0,
+    -0.5,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-000000000080"
+selected_variant = "00000000-0000-4000-8000-000000000094"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-000000000094"
+name = "deck-5"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000022"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = "arena-deck"
+base_color = [
+    0.1599999964237213,
+    0.17000000178813934,
+    0.20999999344348907,
+    1.0,
+]
+metallic = 0.800000011920929
+roughness = 0.6499999761581421
+emissive = [
+    0.0,
+    0.0,
+    0.0,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions]
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = true
+receive = true
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "987f4b95-c378-4b1f-a80b-096ac7bbad04"
+name = "Platform_4"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    0.0000000000000034290110813593516,
+    9.0,
+    -28.0,
+]
+rotation = [
+    0.0,
+    1.0,
+    0.0,
+    0.00000000000000006123234262925839,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-000000000080"
+selected_variant = "00000000-0000-4000-8000-000000000093"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-000000000093"
+name = "deck-4"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000022"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = "arena-deck"
+base_color = [
+    0.1599999964237213,
+    0.17000000178813934,
+    0.20999999344348907,
+    1.0,
+]
+metallic = 0.800000011920929
+roughness = 0.6499999761581421
+emissive = [
+    0.0,
+    0.0,
+    0.0,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions]
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = true
+receive = true
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "c92cac7b-afec-4d16-a325-2c3b71262c45"
+name = "Platform_3"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    19.05255889892578,
+    15.0,
+    -11.0,
+]
+rotation = [
+    0.0,
+    0.8660253882408142,
+    0.0,
+    0.5,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-000000000080"
+selected_variant = "00000000-0000-4000-8000-000000000092"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-000000000092"
+name = "deck-3"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000022"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = "arena-deck"
+base_color = [
+    0.1599999964237213,
+    0.17000000178813934,
+    0.20999999344348907,
+    1.0,
+]
+metallic = 0.800000011920929
+roughness = 0.6499999761581421
+emissive = [
+    0.0,
+    0.0,
+    0.0,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions]
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = true
+receive = true
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "7606096e-8eb2-4945-80ed-820c5faf1e82"
+name = "Platform_2"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    23.382686614990234,
+    11.0,
+    13.5,
+]
+rotation = [
+    0.0,
+    0.5,
+    0.0,
+    0.8660253882408142,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-000000000080"
+selected_variant = "00000000-0000-4000-8000-000000000091"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-000000000091"
+name = "deck-2"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000022"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = "arena-deck"
+base_color = [
+    0.1599999964237213,
+    0.17000000178813934,
+    0.20999999344348907,
+    1.0,
+]
+metallic = 0.800000011920929
+roughness = 0.6499999761581421
+emissive = [
+    0.0,
+    0.0,
+    0.0,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions]
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = true
+receive = true
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "00000000-0000-4000-8000-000000000081"
+name = "Platform_1_Trim"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    0.0,
+    7.150000095367432,
+    24.0,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-000000000081"
+selected_variant = "00000000-0000-4000-8000-0000000000a0"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-0000000000a0"
+name = "trim-1"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000021"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = "arena-neon"
+base_color = [
+    0.30000001192092896,
+    0.2647058963775635,
+    0.0,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.6600000262260437
+emissive = [
+    1.2000000476837158,
+    1.058823585510254,
+    0.0,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions.emissive_strength]
+strength = 2.4000000953674316
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = false
+receive = false
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "07871e11-6ab4-49fd-9622-5e250135d7d4"
+name = "Platform_6_Trim"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    -22.516660690307617,
+    13.149999618530273,
+    13.0,
+]
+rotation = [
+    0.0,
+    0.5,
+    0.0,
+    -0.8660253882408142,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-000000000081"
+selected_variant = "00000000-0000-4000-8000-0000000000a5"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-0000000000a5"
+name = "trim-6"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000021"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = "arena-neon"
+base_color = [
+    0.12941177189350128,
+    0.05882352963089943,
+    0.30000001192092896,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.6600000262260437
+emissive = [
+    0.5176470875740051,
+    0.23529411852359772,
+    1.2000000476837158,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions.emissive_strength]
+strength = 2.4000000953674316
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = false
+receive = false
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "da608723-c961-4225-b910-540ac5f5bda0"
+name = "Platform_5_Trim"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    -20.784608840942383,
+    18.149999618530273,
+    -12.0,
+]
+rotation = [
+    0.0,
+    0.8660253882408142,
+    0.0,
+    -0.5,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-000000000081"
+selected_variant = "00000000-0000-4000-8000-0000000000a4"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-0000000000a4"
+name = "trim-5"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000021"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = "arena-neon"
+base_color = [
+    0.30000001192092896,
+    0.052941177040338516,
+    0.052941177040338516,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.6600000262260437
+emissive = [
+    1.2000000476837158,
+    0.21176470816135406,
+    0.21176470816135406,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions.emissive_strength]
+strength = 2.4000000953674316
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = false
+receive = false
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "1eeb20df-7dd7-47dd-a09d-63d2802761f5"
+name = "Platform_4_Trim"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    0.0000000000000034290110813593516,
+    9.149999618530273,
+    -28.0,
+]
+rotation = [
+    0.0,
+    1.0,
+    0.0,
+    0.00000000000000006123234262925839,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-000000000081"
+selected_variant = "00000000-0000-4000-8000-0000000000a3"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-0000000000a3"
+name = "trim-4"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000021"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = "arena-neon"
+base_color = [
+    0.30000001192092896,
+    0.0941176488995552,
+    0.0,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.6600000262260437
+emissive = [
+    1.2000000476837158,
+    0.3764705955982208,
+    0.0,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions.emissive_strength]
+strength = 2.4000000953674316
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = false
+receive = false
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "03678387-5ce5-420b-b540-68a69769f929"
+name = "Platform_3_Trim"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    19.05255889892578,
+    15.149999618530273,
+    -11.0,
+]
+rotation = [
+    0.0,
+    0.8660253882408142,
+    0.0,
+    0.5,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-000000000081"
+selected_variant = "00000000-0000-4000-8000-0000000000a2"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-0000000000a2"
+name = "trim-3"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000021"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = "arena-neon"
+base_color = [
+    0.0235294122248888,
+    0.2764706015586853,
+    0.11176470667123795,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.6600000262260437
+emissive = [
+    0.0941176488995552,
+    1.1058824062347412,
+    0.4470588266849518,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions.emissive_strength]
+strength = 2.4000000953674316
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = false
+receive = false
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "07dca828-51ea-4d79-9fd6-1ca224dba102"
+name = "Platform_2_Trim"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    23.382686614990234,
+    11.149999618530273,
+    13.5,
+]
+rotation = [
+    0.0,
+    0.5,
+    0.0,
+    0.8660253882408142,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-000000000081"
+selected_variant = "00000000-0000-4000-8000-0000000000a1"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-0000000000a1"
+name = "trim-2"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000021"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = "arena-neon"
+base_color = [
+    0.30000001192092896,
+    0.0470588244497776,
+    0.23529411852359772,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.6600000262260437
+emissive = [
+    1.2000000476837158,
+    0.1882352977991104,
+    0.9411764740943909,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions.emissive_strength]
+strength = 2.4000000953674316
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = false
+receive = false
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "00000000-0000-4000-8000-0000000000b0"
+name = "Pad_1"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    3.5,
+    0.07000000029802322,
+    9.5,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-0000000000b0"
+selected_variant = "00000000-0000-4000-8000-0000000000c0"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-0000000000c0"
+name = "pad-1"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000021"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = "arena-neon"
+base_color = [
+    0.05999999865889549,
+    0.06499999761581421,
+    0.07999999821186066,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.6600000262260437
+emissive = [
+    0.05999999865889549,
+    0.010588235221803188,
+    0.010588235221803188,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions.emissive_strength]
+strength = 2.4000000953674316
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = false
+receive = false
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "a9087f8c-a8df-4a06-b96c-fd30ad809a33"
+name = "Pad_5"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    10.5,
+    0.07000000029802322,
+    14.5,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-0000000000b0"
+selected_variant = "00000000-0000-4000-8000-0000000000c4"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-0000000000c4"
+name = "pad-5"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000021"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = "arena-neon"
+base_color = [
+    0.05999999865889549,
+    0.06499999761581421,
+    0.07999999821186066,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.6600000262260437
+emissive = [
+    0.025882352143526077,
+    0.0117647061124444,
+    0.05999999865889549,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions.emissive_strength]
+strength = 2.4000000953674316
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = false
+receive = false
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "e4911bed-9c67-4397-adfa-3dac957fe160"
+name = "Pad_4"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    -5.599999904632568,
+    0.07000000029802322,
+    -12.300000190734863,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-0000000000b0"
+selected_variant = "00000000-0000-4000-8000-0000000000c3"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-0000000000c3"
+name = "pad-4"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000021"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = "arena-neon"
+base_color = [
+    0.05999999865889549,
+    0.06499999761581421,
+    0.07999999821186066,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.6600000262260437
+emissive = [
+    0.05999999865889549,
+    0.01882352866232395,
+    0.0,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions.emissive_strength]
+strength = 2.4000000953674316
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = false
+receive = false
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "7c6f5c0e-4d94-4a25-ab53-d81e7b9dbc1a"
+name = "Pad_3"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    12.800000190734863,
+    0.07000000029802322,
+    -3.0,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-0000000000b0"
+selected_variant = "00000000-0000-4000-8000-0000000000c2"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-0000000000c2"
+name = "pad-3"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000021"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = "arena-neon"
+base_color = [
+    0.05999999865889549,
+    0.06499999761581421,
+    0.07999999821186066,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.6600000262260437
+emissive = [
+    0.05999999865889549,
+    0.009411764331161976,
+    0.0470588244497776,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions.emissive_strength]
+strength = 2.4000000953674316
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = false
+receive = false
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "31aed3b6-644b-46a2-908a-3ff3c0b9c465"
+name = "Pad_2"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    -10.199999809265137,
+    0.07000000029802322,
+    5.400000095367432,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-0000000000b0"
+selected_variant = "00000000-0000-4000-8000-0000000000c1"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-0000000000c1"
+name = "pad-2"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000021"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = "arena-neon"
+base_color = [
+    0.05999999865889549,
+    0.06499999761581421,
+    0.07999999821186066,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.6600000262260437
+emissive = [
+    0.004705882165580988,
+    0.05529411882162094,
+    0.02235294133424759,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions.emissive_strength]
+strength = 2.4000000953674316
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = false
+receive = false
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "00000000-0000-4000-8000-0000000000b1"
+name = "Pad_1_Ring"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    3.5,
+    0.18000000715255737,
+    9.5,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-0000000000b1"
+selected_variant = "00000000-0000-4000-8000-0000000000d0"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-0000000000d0"
+name = "pad-ring-1"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000021"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = "arena-neon"
+base_color = [
+    0.30000001192092896,
+    0.052941177040338516,
+    0.052941177040338516,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.6600000262260437
+emissive = [
+    1.100000023841858,
+    0.19411765038967133,
+    0.19411765038967133,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions.emissive_strength]
+strength = 2.4000000953674316
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = false
+receive = false
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "c6882f5f-9367-4037-9bf7-b9199e2d1fb1"
+name = "Pad_5_Ring"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    10.5,
+    0.18000000715255737,
+    14.5,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-0000000000b1"
+selected_variant = "00000000-0000-4000-8000-0000000000d4"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-0000000000d4"
+name = "pad-ring-5"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000021"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = "arena-neon"
+base_color = [
+    0.12941177189350128,
+    0.05882352963089943,
+    0.30000001192092896,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.6600000262260437
+emissive = [
+    0.4745098054409027,
+    0.21568627655506134,
+    1.100000023841858,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions.emissive_strength]
+strength = 2.4000000953674316
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = false
+receive = false
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "210d2f74-d761-455a-b82d-7dc6af0fdf1b"
+name = "Pad_4_Ring"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    -5.599999904632568,
+    0.18000000715255737,
+    -12.300000190734863,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-0000000000b1"
+selected_variant = "00000000-0000-4000-8000-0000000000d3"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-0000000000d3"
+name = "pad-ring-4"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000021"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = "arena-neon"
+base_color = [
+    0.30000001192092896,
+    0.0941176488995552,
+    0.0,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.6600000262260437
+emissive = [
+    1.100000023841858,
+    0.3450980484485626,
+    0.0,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions.emissive_strength]
+strength = 2.4000000953674316
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = false
+receive = false
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "b7c95e25-b360-457b-9760-943547aed144"
+name = "Pad_3_Ring"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    12.800000190734863,
+    0.18000000715255737,
+    -3.0,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-0000000000b1"
+selected_variant = "00000000-0000-4000-8000-0000000000d2"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-0000000000d2"
+name = "pad-ring-3"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000021"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = "arena-neon"
+base_color = [
+    0.30000001192092896,
+    0.0470588244497776,
+    0.23529411852359772,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.6600000262260437
+emissive = [
+    1.100000023841858,
+    0.1725490242242813,
+    0.8627451062202454,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions.emissive_strength]
+strength = 2.4000000953674316
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = false
+receive = false
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "7a9b81fa-c205-4896-a762-e2782def4ea3"
+name = "Pad_2_Ring"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    -10.199999809265137,
+    0.18000000715255737,
+    5.400000095367432,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-0000000000b1"
+selected_variant = "00000000-0000-4000-8000-0000000000d1"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-0000000000d1"
+name = "pad-ring-2"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000021"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = "arena-neon"
+base_color = [
+    0.0235294122248888,
+    0.2764706015586853,
+    0.11176470667123795,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.6600000262260437
+emissive = [
+    0.08627451211214066,
+    1.0137255191802979,
+    0.40980392694473267,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions.emissive_strength]
+strength = 2.4000000953674316
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = false
+receive = false
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "00000000-0000-4000-8000-0000000000b3"
+name = "Pad_1_Inner"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    3.5,
+    0.12999999523162842,
+    9.5,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-0000000000b3"
+selected_variant = "00000000-0000-4000-8000-0000000000d8"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-0000000000d8"
+name = "pad-inner-1"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000021"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = "arena-neon"
+base_color = [
+    0.30000001192092896,
+    0.052941177040338516,
+    0.052941177040338516,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.6600000262260437
+emissive = [
+    0.550000011920929,
+    0.09705882519483566,
+    0.09705882519483566,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions.emissive_strength]
+strength = 2.4000000953674316
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = false
+receive = false
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "4b946559-d008-443f-a187-f505ea079a84"
+name = "Pad_5_Inner"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    10.5,
+    0.12999999523162842,
+    14.5,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-0000000000b3"
+selected_variant = "00000000-0000-4000-8000-0000000000dc"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-0000000000dc"
+name = "pad-inner-5"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000021"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = "arena-neon"
+base_color = [
+    0.12941177189350128,
+    0.05882352963089943,
+    0.30000001192092896,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.6600000262260437
+emissive = [
+    0.23725490272045135,
+    0.10784313827753067,
+    0.550000011920929,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions.emissive_strength]
+strength = 2.4000000953674316
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = false
+receive = false
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "c30f62ad-035f-4db3-b3de-7d88f5cbb932"
+name = "Pad_4_Inner"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    -5.599999904632568,
+    0.12999999523162842,
+    -12.300000190734863,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-0000000000b3"
+selected_variant = "00000000-0000-4000-8000-0000000000db"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-0000000000db"
+name = "pad-inner-4"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000021"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = "arena-neon"
+base_color = [
+    0.30000001192092896,
+    0.0941176488995552,
+    0.0,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.6600000262260437
+emissive = [
+    0.550000011920929,
+    0.1725490242242813,
+    0.0,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions.emissive_strength]
+strength = 2.4000000953674316
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = false
+receive = false
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "b0215a27-7336-41c0-a0a9-e62d7713b51d"
+name = "Pad_3_Inner"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    12.800000190734863,
+    0.12999999523162842,
+    -3.0,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-0000000000b3"
+selected_variant = "00000000-0000-4000-8000-0000000000da"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-0000000000da"
+name = "pad-inner-3"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000021"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = "arena-neon"
+base_color = [
+    0.30000001192092896,
+    0.0470588244497776,
+    0.23529411852359772,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.6600000262260437
+emissive = [
+    0.550000011920929,
+    0.08627451211214066,
+    0.4313725531101227,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions.emissive_strength]
+strength = 2.4000000953674316
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = false
+receive = false
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "c4fb75f4-3595-439d-8fe6-6e93b0d36dd7"
+name = "Pad_2_Inner"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    -10.199999809265137,
+    0.12999999523162842,
+    5.400000095367432,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-0000000000b3"
+selected_variant = "00000000-0000-4000-8000-0000000000d9"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-0000000000d9"
+name = "pad-inner-2"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000021"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = "arena-neon"
+base_color = [
+    0.0235294122248888,
+    0.2764706015586853,
+    0.11176470667123795,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.6600000262260437
+emissive = [
+    0.04313725605607033,
+    0.5068627595901489,
+    0.20490196347236633,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions.emissive_strength]
+strength = 2.4000000953674316
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = false
+receive = false
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "00000000-0000-4000-8000-0000000000b4"
+name = "Pad_1_Core"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    3.5,
+    0.11999999731779099,
+    9.5,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-0000000000b4"
+selected_variant = "00000000-0000-4000-8000-0000000000e8"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-0000000000e8"
+name = "pad-core-1"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000021"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = "arena-neon"
+base_color = [
+    0.03999999910593033,
+    0.03999999910593033,
+    0.05000000074505806,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.550000011920929
+emissive = [
+    2.799999952316284,
+    1.6470588445663452,
+    1.6470588445663452,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions.emissive_strength]
+strength = 2.4000000953674316
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = false
+receive = false
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "7924355d-4e50-4cad-bfad-b8ddfc3a486b"
+name = "Pad_5_Core"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    10.5,
+    0.11999999731779099,
+    14.5,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-0000000000b4"
+selected_variant = "00000000-0000-4000-8000-0000000000ec"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-0000000000ec"
+name = "pad-core-5"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000021"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = "arena-neon"
+base_color = [
+    0.03999999910593033,
+    0.03999999910593033,
+    0.05000000074505806,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.550000011920929
+emissive = [
+    2.0039215087890625,
+    1.6745097637176514,
+    2.799999952316284,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions.emissive_strength]
+strength = 2.4000000953674316
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = false
+receive = false
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "8ec1fab7-161d-4e57-9d36-a60bd8606807"
+name = "Pad_4_Core"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    -5.599999904632568,
+    0.11999999731779099,
+    -12.300000190734863,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-0000000000b4"
+selected_variant = "00000000-0000-4000-8000-0000000000eb"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-0000000000eb"
+name = "pad-core-4"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000021"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = "arena-neon"
+base_color = [
+    0.03999999910593033,
+    0.03999999910593033,
+    0.05000000074505806,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.550000011920929
+emissive = [
+    2.799999952316284,
+    1.839215636253357,
+    1.399999976158142,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions.emissive_strength]
+strength = 2.4000000953674316
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = false
+receive = false
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "96441cb9-6c16-4436-90e2-1690e0d66095"
+name = "Pad_3_Core"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    12.800000190734863,
+    0.11999999731779099,
+    -3.0,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-0000000000b4"
+selected_variant = "00000000-0000-4000-8000-0000000000ea"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-0000000000ea"
+name = "pad-core-3"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000021"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = "arena-neon"
+base_color = [
+    0.03999999910593033,
+    0.03999999910593033,
+    0.05000000074505806,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.550000011920929
+emissive = [
+    2.799999952316284,
+    1.6196078062057495,
+    2.4980392456054688,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions.emissive_strength]
+strength = 2.4000000953674316
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = false
+receive = false
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "9b9f249d-c7e3-4fa5-aa57-f4ff8d60d844"
+name = "Pad_2_Core"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    -10.199999809265137,
+    0.11999999731779099,
+    5.400000095367432,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-0000000000b4"
+selected_variant = "00000000-0000-4000-8000-0000000000e9"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-0000000000e9"
+name = "pad-core-2"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000021"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = "arena-neon"
+base_color = [
+    0.03999999910593033,
+    0.03999999910593033,
+    0.05000000074505806,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.550000011920929
+emissive = [
+    1.5098038911819458,
+    2.6901960372924805,
+    1.9215686321258545,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions.emissive_strength]
+strength = 2.4000000953674316
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = false
+receive = false
+
+[nodes.kind.mesh.lod]
+enabled = true
+
+[[nodes]]
+id = "00000000-0000-4000-8000-0000000000ba"
+name = "BaseWall"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    0.0,
+    0.0,
+    0.0,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-0000000000ba"
+selected_variant = "00000000-0000-4000-8000-0000000000cf"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-0000000000cf"
+name = "base-wall"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000025"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = "arena-basewall"
+base_color = [
+    0.1599999964237213,
+    0.019999999552965164,
+    0.019999999552965164,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.6600000262260437
+emissive = [
+    0.6200000047683716,
+    0.054999999701976776,
+    0.04500000178813934,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = true
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions.emissive_strength]
+strength = 2.4000000953674316
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = false
+receive = false
+
+[nodes.kind.mesh.lod]
+enabled = true

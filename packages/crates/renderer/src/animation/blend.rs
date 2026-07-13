@@ -35,17 +35,20 @@ fn vec3_lerp(acc: Vec3, layer: Vec3, w: f32) -> Vec3 {
     acc + (layer - acc) * w
 }
 
-/// Per-index lerp over the overlapping prefix of two weight vectors. Indices
-/// beyond `layer`'s length keep `acc`'s value (lengths are assumed equal in
-/// practice; this is the defensive path).
-fn weights_blend_replace(acc: &[f32], layer: &[f32], w: f32) -> Vec<f32> {
-    let mut out = acc.to_vec();
-    for (i, out_i) in out.iter_mut().enumerate() {
-        if let Some(&l) = layer.get(i) {
-            *out_i += (l - *out_i) * w;
+/// Per-index lerp toward `layer`, restricted to the indices `layer` drives
+/// (its `mask`; an unmasked layer drives its whole length). Undriven indices —
+/// masked out, or beyond `layer`'s length — keep `acc`'s value, so per-index
+/// morph tracks (the editor lowers one masked channel per track) compose on a
+/// shared accumulator instead of stomping each other's indices. `acc` keeps
+/// its own mask (the accumulator is rest-seeded, i.e. whole-vector).
+fn weights_blend_replace_into(acc: &mut VertexAnimation, layer: &VertexAnimation, w: f32) {
+    for (i, out_i) in acc.weights.iter_mut().enumerate() {
+        if let Some(&l) = layer.weights.get(i) {
+            if layer.drives(i) {
+                *out_i += (l - *out_i) * w;
+            }
         }
     }
-    out
 }
 
 /// The scaled shortest-path delta quaternion `Quat::IDENTITY.slerp(delta, w)`
@@ -60,153 +63,146 @@ fn quat_scaled_delta(layer: Quat, reference: Quat, w: f32) -> Quat {
 }
 
 /// Blend the per-field `Transform` accumulator toward `layer` (a
-/// [`Replace`](super::mixer::LayerMode::Replace) contribution). `acc` carries
-/// all three fields (seeded from rest); a `None` field on `layer` leaves that
-/// field of `acc` unchanged.
-fn transform_blend_replace(
-    acc: &TransformAnimation,
-    layer: &TransformAnimation,
-    w: f32,
-) -> TransformAnimation {
-    let translation = match (acc.translation, layer.translation) {
-        (Some(a), Some(l)) => Some(vec3_lerp(a, l, w)),
-        (a, _) => a,
-    };
-    let rotation = match (acc.rotation, layer.rotation) {
-        (Some(a), Some(l)) => Some(quat_blend_replace(a, l, w)),
-        (a, _) => a,
-    };
-    let scale = match (acc.scale, layer.scale) {
-        (Some(a), Some(l)) => Some(vec3_lerp(a, l, w)),
-        (a, _) => a,
-    };
-    TransformAnimation {
-        translation,
-        rotation,
-        scale,
+/// [`Replace`](super::mixer::LayerMode::Replace) contribution) in place. `acc`
+/// carries all three fields (seeded from rest); a `None` field on `layer`
+/// leaves that field of `acc` unchanged.
+fn transform_blend_replace_into(acc: &mut TransformAnimation, layer: &TransformAnimation, w: f32) {
+    if let (Some(a), Some(l)) = (acc.translation, layer.translation) {
+        acc.translation = Some(vec3_lerp(a, l, w));
+    }
+    if let (Some(a), Some(l)) = (acc.rotation, layer.rotation) {
+        acc.rotation = Some(quat_blend_replace(a, l, w));
+    }
+    if let (Some(a), Some(l)) = (acc.scale, layer.scale) {
+        acc.scale = Some(vec3_lerp(a, l, w));
     }
 }
 
-/// Move `acc` toward `layer` by weight `w` (a per-kind lerp / slerp).
+/// Move `acc` toward `layer` by weight `w` (a per-kind lerp / slerp),
+/// **in place** — the hot-path primitive (`Vertex` morph data is heap-backed;
+/// the mixer folds one of these per sampled channel per frame, so the
+/// by-value form would be a per-sample allocation).
 ///
 /// - `F32` / `F64` / `Vec3`: component lerp.
 /// - `Quat`: shortest-arc `slerp`.
-/// - `Vertex`: per-index lerp.
+/// - `Vertex`: per-index lerp, restricted to the layer's driven-index mask.
 /// - `Transform`: per-field, honoring layer-field `Option`-ness.
-/// - Mismatched variants: returns `acc.clone()`.
-pub fn blend_replace(acc: &AnimationData, layer: &AnimationData, w: f32) -> AnimationData {
+/// - Mismatched variants: `acc` is left unchanged.
+pub fn blend_replace_into(acc: &mut AnimationData, layer: &AnimationData, w: f32) {
     match (acc, layer) {
-        (AnimationData::F32(a), AnimationData::F32(l)) => AnimationData::F32(a + (l - a) * w),
-        (AnimationData::F64(a), AnimationData::F64(l)) => {
-            AnimationData::F64(a + (l - a) * w as f64)
-        }
-        (AnimationData::Vec2(a), AnimationData::Vec2(l)) => AnimationData::Vec2(*a + (*l - *a) * w),
-        (AnimationData::Vec3(a), AnimationData::Vec3(l)) => {
-            AnimationData::Vec3(vec3_lerp(*a, *l, w))
-        }
-        (AnimationData::Vec4(a), AnimationData::Vec4(l)) => AnimationData::Vec4(*a + (*l - *a) * w),
-        (AnimationData::Quat(a), AnimationData::Quat(l)) => {
-            AnimationData::Quat(quat_blend_replace(*a, *l, w))
-        }
-        (AnimationData::Vertex(a), AnimationData::Vertex(l)) => AnimationData::Vertex(
-            VertexAnimation::new(weights_blend_replace(&a.weights, &l.weights, w)),
-        ),
+        (AnimationData::F32(a), AnimationData::F32(l)) => *a += (l - *a) * w,
+        (AnimationData::F64(a), AnimationData::F64(l)) => *a += (l - *a) * w as f64,
+        (AnimationData::Vec2(a), AnimationData::Vec2(l)) => *a += (*l - *a) * w,
+        (AnimationData::Vec3(a), AnimationData::Vec3(l)) => *a = vec3_lerp(*a, *l, w),
+        (AnimationData::Vec4(a), AnimationData::Vec4(l)) => *a += (*l - *a) * w,
+        (AnimationData::Quat(a), AnimationData::Quat(l)) => *a = quat_blend_replace(*a, *l, w),
+        (AnimationData::Vertex(a), AnimationData::Vertex(l)) => weights_blend_replace_into(a, l, w),
         (AnimationData::Transform(a), AnimationData::Transform(l)) => {
-            AnimationData::Transform(transform_blend_replace(a, l, w))
+            transform_blend_replace_into(a, l, w)
         }
         // Defensive — editor lowering guarantees matching kinds.
-        _ => acc.clone(),
+        _ => {}
     }
+}
+
+/// By-value form of [`blend_replace_into`] (kept for tests/callers that want
+/// a fresh value; the mixer hot path uses the in-place form).
+pub fn blend_replace(acc: &AnimationData, layer: &AnimationData, w: f32) -> AnimationData {
+    let mut out = acc.clone();
+    blend_replace_into(&mut out, layer, w);
+    out
 }
 
 /// Add `w * (layer - reference)` onto a per-field `Transform` accumulator (an
-/// [`Additive`](super::mixer::LayerMode::Additive) contribution). A `None`
-/// field on `layer` contributes no delta to that field of `acc`; the
+/// [`Additive`](super::mixer::LayerMode::Additive) contribution) in place. A
+/// `None` field on `layer` contributes no delta to that field of `acc`; the
 /// `reference` field falls back to identity when absent so a present `layer`
 /// field still produces a well-defined delta.
-fn transform_blend_additive(
-    acc: &TransformAnimation,
+fn transform_blend_additive_into(
+    acc: &mut TransformAnimation,
     layer: &TransformAnimation,
     reference: &TransformAnimation,
     w: f32,
-) -> TransformAnimation {
-    let translation = match (acc.translation, layer.translation) {
-        (Some(a), Some(l)) => {
-            let r = reference.translation.unwrap_or(Vec3::ZERO);
-            Some(a + (l - r) * w)
-        }
-        (a, _) => a,
-    };
-    let rotation = match (acc.rotation, layer.rotation) {
-        (Some(a), Some(l)) => {
-            let r = reference.rotation.unwrap_or(Quat::IDENTITY);
-            Some((quat_scaled_delta(l, r, w) * a).normalize())
-        }
-        (a, _) => a,
-    };
-    let scale = match (acc.scale, layer.scale) {
-        (Some(a), Some(l)) => {
-            let r = reference.scale.unwrap_or(Vec3::ONE);
-            Some(a + (l - r) * w)
-        }
-        (a, _) => a,
-    };
-    TransformAnimation {
-        translation,
-        rotation,
-        scale,
+) {
+    if let (Some(a), Some(l)) = (acc.translation, layer.translation) {
+        let r = reference.translation.unwrap_or(Vec3::ZERO);
+        acc.translation = Some(a + (l - r) * w);
+    }
+    if let (Some(a), Some(l)) = (acc.rotation, layer.rotation) {
+        let r = reference.rotation.unwrap_or(Quat::IDENTITY);
+        acc.rotation = Some((quat_scaled_delta(l, r, w) * a).normalize());
+    }
+    if let (Some(a), Some(l)) = (acc.scale, layer.scale) {
+        let r = reference.scale.unwrap_or(Vec3::ONE);
+        acc.scale = Some(a + (l - r) * w);
     }
 }
 
-/// Add `w * (layer - reference)` onto `acc` (the additive-layer primitive).
+/// Add `w * (layer - reference)` onto `acc` **in place** (the additive-layer
+/// primitive; see [`blend_replace_into`] for why the hot path mutates).
 ///
 /// - `F32` / `F64` / `Vec3`: `acc + w * (layer - reference)`.
 /// - `Quat`: premultiply `acc` by the `w`-scaled shortest-path delta
 ///   `layer * reference.inverse()` (delta scaled via
 ///   `Quat::IDENTITY.slerp(delta, w)`), then normalize.
-/// - `Vertex`: per-index `acc + w * (layer - reference)`.
+/// - `Vertex`: per-index `acc + w * (layer - reference)`, restricted to the
+///   layer's driven-index mask.
 /// - `Transform`: per-field additive, honoring layer-field `Option`-ness.
-/// - Mismatched variants: returns `acc.clone()`.
+/// - Mismatched variants: `acc` is left unchanged.
+pub fn blend_additive_into(
+    acc: &mut AnimationData,
+    layer: &AnimationData,
+    reference: &AnimationData,
+    w: f32,
+) {
+    match (acc, layer, reference) {
+        (AnimationData::F32(a), AnimationData::F32(l), AnimationData::F32(r)) => *a += w * (l - r),
+        (AnimationData::F64(a), AnimationData::F64(l), AnimationData::F64(r)) => {
+            *a += w as f64 * (l - r)
+        }
+        (AnimationData::Vec2(a), AnimationData::Vec2(l), AnimationData::Vec2(r)) => {
+            *a += (*l - *r) * w
+        }
+        (AnimationData::Vec3(a), AnimationData::Vec3(l), AnimationData::Vec3(r)) => {
+            *a += (*l - *r) * w
+        }
+        (AnimationData::Vec4(a), AnimationData::Vec4(l), AnimationData::Vec4(r)) => {
+            *a += (*l - *r) * w
+        }
+        (AnimationData::Quat(a), AnimationData::Quat(l), AnimationData::Quat(r)) => {
+            *a = (quat_scaled_delta(*l, *r, w) * *a).normalize()
+        }
+        (AnimationData::Vertex(a), AnimationData::Vertex(l), AnimationData::Vertex(r)) => {
+            // Only the indices `layer` drives contribute a delta (see
+            // `weights_blend_replace_into` — same per-index mask semantics).
+            for (i, out_i) in a.weights.iter_mut().enumerate() {
+                if !l.drives(i) {
+                    continue;
+                }
+                let lv = l.weights.get(i).copied().unwrap_or(0.0);
+                let rv = r.weights.get(i).copied().unwrap_or(0.0);
+                *out_i += w * (lv - rv);
+            }
+        }
+        (AnimationData::Transform(a), AnimationData::Transform(l), AnimationData::Transform(r)) => {
+            transform_blend_additive_into(a, l, r, w)
+        }
+        // Defensive — editor lowering guarantees matching kinds.
+        _ => {}
+    }
+}
+
+/// By-value form of [`blend_additive_into`] (kept for tests/callers that want
+/// a fresh value; the mixer hot path uses the in-place form).
 pub fn blend_additive(
     acc: &AnimationData,
     layer: &AnimationData,
     reference: &AnimationData,
     w: f32,
 ) -> AnimationData {
-    match (acc, layer, reference) {
-        (AnimationData::F32(a), AnimationData::F32(l), AnimationData::F32(r)) => {
-            AnimationData::F32(a + w * (l - r))
-        }
-        (AnimationData::F64(a), AnimationData::F64(l), AnimationData::F64(r)) => {
-            AnimationData::F64(a + w as f64 * (l - r))
-        }
-        (AnimationData::Vec2(a), AnimationData::Vec2(l), AnimationData::Vec2(r)) => {
-            AnimationData::Vec2(*a + (*l - *r) * w)
-        }
-        (AnimationData::Vec3(a), AnimationData::Vec3(l), AnimationData::Vec3(r)) => {
-            AnimationData::Vec3(*a + (*l - *r) * w)
-        }
-        (AnimationData::Vec4(a), AnimationData::Vec4(l), AnimationData::Vec4(r)) => {
-            AnimationData::Vec4(*a + (*l - *r) * w)
-        }
-        (AnimationData::Quat(a), AnimationData::Quat(l), AnimationData::Quat(r)) => {
-            AnimationData::Quat((quat_scaled_delta(*l, *r, w) * *a).normalize())
-        }
-        (AnimationData::Vertex(a), AnimationData::Vertex(l), AnimationData::Vertex(r)) => {
-            let mut out = a.weights.clone();
-            for (i, out_i) in out.iter_mut().enumerate() {
-                let lv = l.weights.get(i).copied().unwrap_or(0.0);
-                let rv = r.weights.get(i).copied().unwrap_or(0.0);
-                *out_i += w * (lv - rv);
-            }
-            AnimationData::Vertex(VertexAnimation::new(out))
-        }
-        (AnimationData::Transform(a), AnimationData::Transform(l), AnimationData::Transform(r)) => {
-            AnimationData::Transform(transform_blend_additive(a, l, r, w))
-        }
-        // Defensive — editor lowering guarantees matching kinds.
-        _ => acc.clone(),
-    }
+    let mut out = acc.clone();
+    blend_additive_into(&mut out, layer, reference, w);
+    out
 }
 
 #[cfg(test)]
@@ -235,6 +231,12 @@ mod tests {
         match d {
             AnimationData::Transform(t) => t.clone(),
             other => panic!("expected Transform, got {other:?}"),
+        }
+    }
+    fn as_weights(d: &AnimationData) -> Vec<f32> {
+        match d {
+            AnimationData::Vertex(v) => v.weights.clone(),
+            other => panic!("expected Vertex, got {other:?}"),
         }
     }
 
@@ -506,5 +508,126 @@ mod tests {
                 }
             }
         }
+    }
+
+    // ---- per-index masked morph blending ---------------------------------
+
+    fn assert_weights(got: &[f32], expected: &[f32]) {
+        assert_eq!(
+            got.len(),
+            expected.len(),
+            "got={got:?} expected={expected:?}"
+        );
+        for (g, e) in got.iter().zip(expected) {
+            assert!((g - e).abs() < 1e-6, "got={got:?} expected={expected:?}");
+        }
+    }
+
+    /// A masked single-index layer replaces ONLY its driven index; every other
+    /// index of the accumulator holds — including indices its (shorter) weight
+    /// vector covers with padding zeros.
+    #[test]
+    fn replace_masked_vertex_drives_only_its_index() {
+        let acc = AnimationData::Vertex(VertexAnimation::new(vec![0.4, 0.5, 0.6]));
+        let layer = AnimationData::Vertex(VertexAnimation::new_single(1, 0.9));
+        let out = as_weights(&blend_replace(&acc, &layer, 1.0));
+        assert_weights(&out, &[0.4, 0.9, 0.6]);
+        // Half weight lerps only the driven index too.
+        let half = as_weights(&blend_replace(&acc, &layer, 0.5));
+        assert_weights(&half, &[0.4, 0.7, 0.6]);
+    }
+
+    /// An UNMASKED layer (the glTF whole-vector path) keeps its pre-mask
+    /// semantics: every index it carries is replaced, including zeros.
+    #[test]
+    fn replace_unmasked_vertex_replaces_whole_vector() {
+        let acc = AnimationData::Vertex(VertexAnimation::new(vec![0.4, 0.5, 0.6]));
+        let layer = AnimationData::Vertex(VertexAnimation::new(vec![0.0, 0.9]));
+        let out = as_weights(&blend_replace(&acc, &layer, 1.0));
+        // index 0 IS stomped to the layer's 0.0 (whole-vector), index 2 (beyond
+        // the layer's length) holds.
+        assert_weights(&out, &[0.0, 0.9, 0.6]);
+    }
+
+    /// A masked single-index layer contributes an additive delta ONLY at its
+    /// driven index.
+    #[test]
+    fn additive_masked_vertex_drives_only_its_index() {
+        let acc = AnimationData::Vertex(VertexAnimation::new(vec![0.4, 0.5, 0.6]));
+        let layer = AnimationData::Vertex(VertexAnimation::new_single(1, 0.9));
+        let reference = AnimationData::Vertex(VertexAnimation::new(vec![0.1, 0.1, 0.1]));
+        let out = as_weights(&blend_additive(&acc, &layer, &reference, 1.0));
+        // Only index 1 moves: 0.5 + (0.9 - 0.1) = 1.3. Indices 0/2 hold even
+        // though (layer - reference) would be non-zero there.
+        assert_weights(&out, &[0.4, 1.3, 0.6]);
+    }
+
+    /// End-to-end at the renderer layer: TWO morph tracks on ONE mesh,
+    /// targeting DIFFERENT morph indices — lowered the way the editor does
+    /// (one masked single-index channel per track, sharing one `Morph`
+    /// target) and composited the way `update_clip_mixer`'s fold does
+    /// (accumulator seeded from rest, `blend_replace` per sampled channel).
+    /// Advancing time animates both indices independently; the untargeted
+    /// index holds rest; channel order doesn't matter.
+    #[test]
+    fn morph_multi_track_per_index_masked_compose() {
+        use crate::animation::{
+            AnimationChannel, AnimationClipGroup, AnimationMorphKey, AnimationSampler,
+            AnimationTarget,
+        };
+        use crate::meshes::morphs::GeometryMorphKey;
+
+        let target =
+            AnimationTarget::Morph(AnimationMorphKey::Geometry(GeometryMorphKey::default()));
+
+        // Track A drives morph index 0: 0.0 → 1.0 over [0, 1].
+        let ch_a = AnimationChannel::new(
+            target,
+            AnimationSampler::new_linear(
+                vec![0.0, 1.0],
+                vec![
+                    AnimationData::Vertex(VertexAnimation::new_single(0, 0.0)),
+                    AnimationData::Vertex(VertexAnimation::new_single(0, 1.0)),
+                ],
+            ),
+        );
+        // Track B drives morph index 1: 0.0 → 0.5 over [0, 1].
+        let ch_b = AnimationChannel::new(
+            target,
+            AnimationSampler::new_linear(
+                vec![0.0, 1.0],
+                vec![
+                    AnimationData::Vertex(VertexAnimation::new_single(1, 0.0)),
+                    AnimationData::Vertex(VertexAnimation::new_single(1, 0.5)),
+                ],
+            ),
+        );
+
+        // Rest pose: index 2 is untargeted and non-zero — it must hold.
+        let rest = AnimationData::Vertex(VertexAnimation::new(vec![0.0, 0.0, 0.7]));
+
+        // The single-clip-fallback fold from `update_clip_mixer`: seed from
+        // rest, blend_replace each sampled channel at weight 1.
+        let composite = |group: &AnimationClipGroup| -> Vec<f32> {
+            let mut acc = rest.clone();
+            group.for_each_sample(|_, v| acc = blend_replace(&acc, &v, 1.0));
+            as_weights(&acc)
+        };
+
+        let mut group = AnimationClipGroup::new("morphs", 1.0, vec![ch_a.clone(), ch_b.clone()]);
+        group.loop_style = None; // clamp at the end
+
+        group.update(0.25);
+        assert_weights(&composite(&group), &[0.25, 0.125, 0.7]);
+
+        group.update(0.5); // t = 0.75
+        assert_weights(&composite(&group), &[0.75, 0.375, 0.7]);
+
+        // Order independence: the same channels in reverse order compose to
+        // the identical pose (disjoint masks — no last-write-wins stomp).
+        let mut reversed = AnimationClipGroup::new("morphs-rev", 1.0, vec![ch_b, ch_a]);
+        reversed.loop_style = None;
+        reversed.update(0.75);
+        assert_weights(&composite(&reversed), &[0.75, 0.375, 0.7]);
     }
 }

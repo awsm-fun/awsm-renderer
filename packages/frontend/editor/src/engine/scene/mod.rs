@@ -26,5 +26,5 @@ pub use node::{Node, NodeId};
 #[allow(unused_imports)]
 pub use types::{
     AssetStatus, CameraConfig, CameraProjection, ColliderShape, EnvSlot, EnvironmentConfig,
-    LightConfig, LightKind, NodeKind, Trs,
+    LightConfig, LightKind, NodeKind, ReflectionProbe, Trs,
 };

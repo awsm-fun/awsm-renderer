@@ -344,7 +344,12 @@ fn apply_sscs(world_pos: vec3<f32>, light_dir: vec3<f32>, max_darkening: f32) ->
             continue;
         }
         let scene_ndc_z = textureLoad(depth_tex, px, 0);
+        {% if reverse_z %}
+        // Reverse-Z (003): background carries the 0.0 clear value.
+        if scene_ndc_z <= 0.0 {
+        {% else %}
         if scene_ndc_z >= 1.0 {
+        {% endif %}
             // Background — no occluder to find here.
             continue;
         }
@@ -377,8 +382,10 @@ fn apply_sscs(world_pos: vec3<f32>, light_dir: vec3<f32>, max_darkening: f32) ->
 {% endif %}
 }
 
-// Cube near plane — MUST match the value used in `Mat4::perspective_rh`
-// for cube face generation in `Shadows::write_gpu`.
+// Cube near plane — MUST match the value fed to
+// `DepthConvention::perspective` for cube face generation in
+// `Shadows::write_gpu` (the SEMANTIC near distance; the convention
+// helper handles the reverse-Z near/far swap on both sides).
 const POINT_SHADOW_NEAR: f32 = 0.05;
 
 // Texel-quantization receiver-plane slack for the point-light soft/PCSS
@@ -434,6 +441,10 @@ const POINT_SHADOW_NEAR: f32 = 0.05;
 // For an orthographic projection (w-row = 0, clip.w constant) it collapses to a
 // constant, so the directional path keeps its existing distance-invariant
 // behaviour — now expressed, like every other path, in world metres.
+//
+// Returns a MAGNITUDE (`length`), so it is depth-convention-agnostic: under
+// reverse-Z the derivative flips sign but not size. Callers apply the
+// convention's bias DIRECTION themselves (− forward, + reverse).
 fn ndc_depth_gradient(vp: mat4x4<f32>, clip_z: f32, clip_w: f32) -> f32 {
     let row2 = vec3<f32>(vp[0][2], vp[1][2], vp[2][2]);
     let row3 = vec3<f32>(vp[0][3], vp[1][3], vp[2][3]);
@@ -455,11 +466,18 @@ fn ndc_depth_gradient(vp: mat4x4<f32>, clip_z: f32, clip_w: f32) -> f32 {
 // onto the *dominant* cube axis of the light-to-surface direction:
 //
 //     view_depth = distance(light, P) · |dir.major|
-//     ndc_z      = (far / (far - near)) · (1 - near / view_depth)
+//     forward:  ndc_z = (far / (far - near)) · (1 - near / view_depth)
+//     reverse:  ndc_z = (near / (far - near)) · (far / view_depth - 1)
 //
-// Same formula generates both the rasterized atlas value and the
-// receiver reference, so they compare directly — no linear-depth FS
-// override, no per-tap face recompute, no seam math.
+// (003 stage 7) The reverse arm is the same `perspective_rh` with
+// near/far swapped that `DepthConvention::perspective` builds on the
+// writer side (near → 1, far → 0). Same formula generates both the
+// rasterized atlas value and the receiver reference, so they compare
+// directly — no linear-depth FS override, no per-tap face recompute,
+// no seam math. Note |d(ndc_z)/d(view_depth)| is IDENTICAL under both
+// conventions (near·far / ((far−near)·d²)), so every `grad` below is
+// convention-agnostic; only the bias DIRECTION flips ("nearer to the
+// light" = smaller forward, larger reverse).
 fn sample_shadow_cube(desc: ShadowDescriptor, world_pos: vec3<f32>, world_normal: vec3<f32>) -> f32 {
     let light_pos = desc.atlas_rect.xyz;
     let range = max(desc.atlas_rect.w, 0.01);
@@ -489,9 +507,14 @@ fn sample_shadow_cube(desc: ShadowDescriptor, world_pos: vec3<f32>, world_normal
     let major = max(abs_d.x, max(abs_d.y, abs_d.z));
     let view_depth = dist * max(major, 1e-4);
 
-    // Same perspective NDC.z formula as the rasterizer.
+    // Same perspective NDC.z formula as the rasterizer (see the header
+    // comment above for the reverse-Z derivation).
     let near = POINT_SHADOW_NEAR;
+    {% if reverse_z %}
+    let ndc_z = (near / (range - near)) * (range / max(view_depth, near) - 1.0);
+    {% else %}
     let ndc_z = (range / (range - near)) * (1.0 - near / max(view_depth, near));
+    {% endif %}
 
     // Cube face resolution (square). World-size of one texel uses this both
     // here (central receiver bias) and in the Soft/PCSS tap loops.
@@ -511,6 +534,9 @@ fn sample_shadow_cube(desc: ShadowDescriptor, world_pos: vec3<f32>, world_normal
     // (grazing surfaces need more) without running away as `n_dot_dir → 0`.
     // The per-texel quantization slack (`texel_world * kernel_slack`) is folded
     // into the same world push-back — both are world distances through one `grad`.
+    // Gradient MAGNITUDE — identical under both depth conventions (the
+    // reverse-Z derivative only flips sign; the bias application below
+    // carries the direction).
     let grad = (range / (range - near)) * near
         / max(view_depth * view_depth, near * near);
     let texel_world = 2.0 * view_depth / cube_face_res;
@@ -530,7 +556,13 @@ fn sample_shadow_cube(desc: ShadowDescriptor, world_pos: vec3<f32>, world_normal
     let inc_tan = sqrt(max(1.0 - n_dot_dir * n_dot_dir, 0.0)) / max(n_dot_dir, 0.05);
     let world_bias = desc.bias_params.x * inc_tan
         + texel_world * desc.cascade_info.x * min(inc_tan, 1.0);
+    // Bias moves the reference depth NEARER to the light to dodge acne:
+    // nearer = smaller NDC.z forward, LARGER reverse — sign flips.
+    {% if reverse_z %}
+    let ref_depth = clamp(ndc_z, 0.0, 1.0) + world_bias * grad;
+    {% else %}
     let ref_depth = clamp(ndc_z, 0.0, 1.0) - world_bias * grad;
+    {% endif %}
     let hardness = desc.bias_params.z;
 
     if hardness < 0.5 {
@@ -591,8 +623,13 @@ fn sample_shadow_cube(desc: ShadowDescriptor, world_pos: vec3<f32>, world_normal
             let tap_abs = abs(tap_dir);
             let tap_major = max(tap_abs.x, max(tap_abs.y, tap_abs.z));
             let tap_view_depth = tap_dist * max(tap_major, 1e-4);
+            {% if reverse_z %}
+            let tap_ndc_z =
+                (near / (range - near)) * (range / max(tap_view_depth, near) - 1.0);
+            {% else %}
             let tap_ndc_z =
                 (range / (range - near)) * (1.0 - near / max(tap_view_depth, near));
+            {% endif %}
             let tap_n_dot_dir = abs(dot(tap_dir, world_normal));
             // World-space receiver push-back → NDC.z via the local perspective
             // gradient (see the central block above). `depth_bias` is metres and
@@ -608,7 +645,12 @@ fn sample_shadow_cube(desc: ShadowDescriptor, world_pos: vec3<f32>, world_normal
                 / max(tap_n_dot_dir, 0.05);
             let tap_world_bias = desc.bias_params.x * tap_inc_tan
                 + tap_texel_world * desc.cascade_info.x * min(tap_inc_tan, 1.0);
+            // "Nearer to the light" flips direction under reverse-Z.
+            {% if reverse_z %}
+            let tap_ref = clamp(tap_ndc_z, 0.0, 1.0) + tap_world_bias * tap_grad;
+            {% else %}
             let tap_ref = clamp(tap_ndc_z, 0.0, 1.0) - tap_world_bias * tap_grad;
+            {% endif %}
             sum += textureSampleCompareLevel(
                 shadow_cube_array,
                 shadow_cube_sampler,
@@ -634,10 +676,10 @@ fn sample_shadow_cube(desc: ShadowDescriptor, world_pos: vec3<f32>, world_normal
     // and re-sample with `textureSampleCompareLevel`, this time
     // through the cube sampler so we get hardware bilinear PCF.
     //
-    // The cube faces share a single NDC.z formula with the writer:
-    //   ndc_z = (range / (range - near)) * (1 - near / view_depth)
-    // so `textureLoad`-ed depths are directly comparable to the
-    // per-tap `ref_depth` we compute here.
+    // The cube faces share a single NDC.z formula with the writer
+    // (forward / reverse arms — see the function header comment), so
+    // `textureLoad`-ed depths are directly comparable to the per-tap
+    // `ref_depth` we compute here.
     let pcss_scale = max(desc.bias_params.w, 0.01);
     // Blocker-search disc: fixed 30 cm world radius scaled by
     // `pcss_penumbra_scale`. Bigger = fatter blocker estimate.
@@ -663,11 +705,19 @@ fn sample_shadow_cube(desc: ShadowDescriptor, world_pos: vec3<f32>, world_normal
         let tap_abs = abs(tap_dir);
         let tap_major = max(tap_abs.x, max(tap_abs.y, tap_abs.z));
         let tap_view_depth = tap_dist * max(tap_major, 1e-4);
+        {% if reverse_z %}
+        let tap_ndc_z = clamp(
+            (near / (range - near)) * (range / max(tap_view_depth, near) - 1.0),
+            0.0,
+            1.0,
+        );
+        {% else %}
         let tap_ndc_z = clamp(
             (range / (range - near)) * (1.0 - near / max(tap_view_depth, near)),
             0.0,
             1.0,
         );
+        {% endif %}
         // Inline cube-direction → (face, uv) projection. Standard
         // D3D cube convention; the writer's post-projection Y-flip is
         // already baked into the texel layout.
@@ -713,7 +763,13 @@ fn sample_shadow_cube(desc: ShadowDescriptor, world_pos: vec3<f32>, world_normal
         // and the `blocker_count == 0` early-out below returns 1.0 (fully lit) —
         // a lit "donut"/hole in the contact shadow directly under a mesh.
         // World-referencing keeps it a fixed small offset at any light distance.
+        // "Blocker in front of the receiver" = smaller depth forward,
+        // LARGER depth reverse — the compare + epsilon direction flip.
+        {% if reverse_z %}
+        if d > tap_ndc_z + 2.0 * texel_world * grad {
+        {% else %}
         if d < tap_ndc_z - 2.0 * texel_world * grad {
+        {% endif %}
             blocker_sum = blocker_sum + d;
             blocker_count = blocker_count + 1u;
         }
@@ -730,12 +786,23 @@ fn sample_shadow_cube(desc: ShadowDescriptor, world_pos: vec3<f32>, world_normal
     // receiver tangent plane by treating the receiver-to-light
     // distance as the projection distance — light_size in world
     // metres = `pcss_penumbra_scale × 1m × penumbra_ratio`.
+    // Under reverse-Z the depth axis is mirrored (1 − z is the
+    // forward-like "distance from the light" axis), so both the
+    // receiver−blocker gap and the blocker-distance divisor mirror.
     let recv_ndc_z = clamp(ndc_z, 0.0, 1.0);
+    {% if reverse_z %}
+    let penumbra_ratio = clamp(
+        (avg_blocker - recv_ndc_z) / max(1.0 - avg_blocker, 1e-4),
+        0.0,
+        4.0,
+    );
+    {% else %}
     let penumbra_ratio = clamp(
         (recv_ndc_z - avg_blocker) / max(avg_blocker, 1e-4),
         0.0,
         4.0,
     );
+    {% endif %}
     // Clamp to keep the kernel between "more than Soft" (10 cm) and
     // "still affordable" (1 m world disc — already huge at typical
     // point-light scales).
@@ -756,8 +823,13 @@ fn sample_shadow_cube(desc: ShadowDescriptor, world_pos: vec3<f32>, world_normal
         let tap_abs = abs(tap_dir);
         let tap_major = max(tap_abs.x, max(tap_abs.y, tap_abs.z));
         let tap_view_depth = tap_dist * max(tap_major, 1e-4);
+        {% if reverse_z %}
+        let tap_ndc_z =
+            (near / (range - near)) * (range / max(tap_view_depth, near) - 1.0);
+        {% else %}
         let tap_ndc_z =
             (range / (range - near)) * (1.0 - near / max(tap_view_depth, near));
+        {% endif %}
         let tap_n_dot_dir = abs(dot(tap_dir, world_normal));
         // World-space receiver push-back → NDC.z via the local perspective
         // gradient (see the central block + Soft path). `depth_bias` is metres
@@ -773,7 +845,12 @@ fn sample_shadow_cube(desc: ShadowDescriptor, world_pos: vec3<f32>, world_normal
             / max(tap_n_dot_dir, 0.05);
         let tap_world_bias = desc.bias_params.x * tap_inc_tan
             + tap_texel_world * desc.cascade_info.x * min(tap_inc_tan, 1.0);
+        // "Nearer to the light" flips direction under reverse-Z.
+        {% if reverse_z %}
+        let tap_ref = clamp(tap_ndc_z, 0.0, 1.0) + tap_world_bias * tap_grad;
+        {% else %}
         let tap_ref = clamp(tap_ndc_z, 0.0, 1.0) - tap_world_bias * tap_grad;
+        {% endif %}
         sum += textureSampleCompareLevel(
             shadow_cube_array,
             shadow_cube_sampler,
@@ -822,6 +899,9 @@ fn sample_shadow_evsm(
         return 1.0;
     }
     let ndc = clip.xyz / clip.w;
+    // NDC.z ∈ [0, 1] inside the light frustum under BOTH depth
+    // conventions (reverse-Z only mirrors within the range) —
+    // this bounds check is reverse-Z-safe as written.
     if ndc.x < -1.0 || ndc.x > 1.0 || ndc.y < -1.0 || ndc.y > 1.0 || ndc.z < 0.0 || ndc.z > 1.0 {
         return 1.0;
     }
@@ -854,8 +934,14 @@ fn sample_shadow_evsm(
     }
     let exponent = shadow_globals.evsm_sscs.x;
     // Map receiver depth [0,1] to the same [-1,1] space the writer
-    // used (see `shadows::evsm::MOMENT_WRITE_WGSL`).
+    // used (see `shadows::evsm::moment_write_wgsl` — the remap flips
+    // with the depth convention so "farther ⇒ larger warped value"
+    // holds under both, preserving the one-tailed Chebyshev).
+    {% if reverse_z %}
+    let z = 1.0 - 2.0 * ndc.z;
+    {% else %}
     let z = 2.0 * ndc.z - 1.0;
+    {% endif %}
     let pos_t = exp(exponent * z);
     let neg_t = -exp(-exponent * z);
     let v_pos = chebyshev_upper(moments.xy, pos_t);
@@ -884,6 +970,7 @@ fn sample_shadow_cascade_array(
         return 1.0;
     }
     let ndc = clip.xyz / clip.w;
+    // NDC.z ∈ [0, 1] under BOTH depth conventions — reverse-Z-safe as written.
     if ndc.x < -1.0 || ndc.x > 1.0 || ndc.y < -1.0 || ndc.y > 1.0 || ndc.z < 0.0 || ndc.z > 1.0 {
         return 1.0;
     }
@@ -895,9 +982,14 @@ fn sample_shadow_cascade_array(
     // World-referenced depth bias (metres → NDC.z via the projection gradient).
     // For the orthographic cascade projection this gradient is constant, so this
     // is the same distance-invariant bias as before, just in world units — see
-    // `ndc_depth_gradient`.
+    // `ndc_depth_gradient` (a magnitude — convention-agnostic). The bias
+    // DIRECTION flips: "nearer to the light" is smaller forward, larger reverse.
     let depth_grad = ndc_depth_gradient(desc.view_projection, clip.z, clip.w);
+    {% if reverse_z %}
+    let ref_depth = ndc.z + desc.bias_params.x * depth_grad;
+    {% else %}
     let ref_depth = ndc.z - desc.bias_params.x * depth_grad;
+    {% endif %}
     let hardness = desc.bias_params.z;
 
     let inv_atlas = vec2<f32>(
@@ -999,7 +1091,12 @@ fn sample_shadow_cascade_array(
         // metres and rejects genuine near-contact occluders, collapsing
         // `blocker_count` so the PCSS early-out holes the contact shadow out to
         // fully lit. (For the ortho cascade this evaluates to ≈ the old value.)
+        // "Blocker in front" = smaller depth forward, LARGER reverse.
+        {% if reverse_z %}
+        if d > ref_depth + 2.0 * world_per_texel_pcss * depth_grad {
+        {% else %}
         if d < ref_depth - 2.0 * world_per_texel_pcss * depth_grad {
+        {% endif %}
             blocker_sum = blocker_sum + d;
             blocker_count = blocker_count + 1u;
         }
@@ -1012,18 +1109,36 @@ fn sample_shadow_cascade_array(
     }
     let avg_blocker = blocker_sum / f32(blocker_count);
     let light_size_texels = pcss_light_world_radius / world_per_texel_pcss;
+    // Reverse-Z mirrors the depth axis: the receiver−blocker gap and the
+    // blocker-distance divisor both read through `1 − z`. For the ortho
+    // cascade the reverse depth is exactly 1 − forward, so this reproduces
+    // the forward penumbra bit-for-bit in mirrored coordinates.
+    {% if reverse_z %}
+    let penumbra_texels = clamp(
+        (avg_blocker - ref_depth) * light_size_texels / max(1.0 - avg_blocker, 1e-4),
+        2.0,
+        24.0,
+    );
+    {% else %}
     let penumbra_texels = clamp(
         (ref_depth - avg_blocker) * light_size_texels / max(avg_blocker, 1e-4),
         2.0,
         24.0,
     );
+    {% endif %}
     // Wide PCSS kernels sample texels far from the fragment; on a sloped /
     // curved receiver the depth stored there differs by the surface slope and
     // self-shadows into acne. Scale the comparison bias with the kernel width so
     // wider penumbras get proportional slack — the softness hides the extra
     // peter-panning a near-contact (narrow-kernel) fragment would otherwise show.
     // World-referenced (× depth_grad) for the same reason as the base bias.
+    // Kernel-width slack pushes the reference NEARER to the light —
+    // direction flips under reverse-Z like the base bias.
+    {% if reverse_z %}
+    let pcss_ref = ref_depth + desc.bias_params.x * penumbra_texels * 0.5 * depth_grad;
+    {% else %}
     let pcss_ref = ref_depth - desc.bias_params.x * penumbra_texels * 0.5 * depth_grad;
+    {% endif %}
     var pcf_sum = 0.0;
     for (var i = 0u; i < n; i = i + 1u) {
         let off = vogel_tap(i, pcf_rsqrt_n, sin_a, cos_a) * penumbra_texels;
@@ -1084,6 +1199,7 @@ fn sample_shadow_descriptor(
         return 1.0;
     }
     let ndc = clip.xyz / clip.w;
+    // NDC.z ∈ [0, 1] under BOTH depth conventions — reverse-Z-safe as written.
     if ndc.x < -1.0 || ndc.x > 1.0 || ndc.y < -1.0 || ndc.y > 1.0 || ndc.z < 0.0 || ndc.z > 1.0 {
         return 1.0;
     }
@@ -1092,9 +1208,14 @@ fn sample_shadow_descriptor(
     // World-referenced depth bias (metres → NDC.z via the projection gradient).
     // The spot projection is perspective, so this is what stops the authored
     // depth_bias from ballooning with distance and holing out contact shadows —
-    // see `ndc_depth_gradient`.
+    // see `ndc_depth_gradient` (a magnitude — convention-agnostic). The bias
+    // DIRECTION flips: "nearer to the light" is smaller forward, larger reverse.
     let depth_grad = ndc_depth_gradient(desc.view_projection, clip.z, clip.w);
+    {% if reverse_z %}
+    let ref_depth = ndc.z + desc.bias_params.x * depth_grad;
+    {% else %}
     let ref_depth = ndc.z - desc.bias_params.x * depth_grad;
+    {% endif %}
     let hardness = desc.bias_params.z;
 
     // PCF / PCSS taps must stay inside this cascade's tile of the
@@ -1244,7 +1365,12 @@ fn sample_shadow_descriptor(
         // see the matching cascade-array note. The old constant 0.0005 NDC grows
         // to ~10 cm of world depth at a few metres on this perspective path and
         // rejected near-contact occluders, holing the contact shadow.
+        // "Blocker in front" = smaller depth forward, LARGER reverse.
+        {% if reverse_z %}
+        if d > ref_depth + 2.0 * world_per_texel_pcss * depth_grad {
+        {% else %}
         if d < ref_depth - 2.0 * world_per_texel_pcss * depth_grad {
+        {% endif %}
             blocker_sum = blocker_sum + d;
             blocker_count = blocker_count + 1u;
         }
@@ -1266,11 +1392,21 @@ fn sample_shadow_descriptor(
     // than `Soft`" (4 texels) and "still affordable" (40 texels —
     // the 16-tap loop amortises hardware bilinear so this is fine).
     let light_size_texels = pcss_light_world_radius / world_per_texel_pcss;
+    // Reverse-Z mirrors the depth axis: gap + blocker-distance divisor
+    // read through `1 − z` (see the cascade-array PCSS note above).
+    {% if reverse_z %}
+    let penumbra_texels = clamp(
+        (avg_blocker - ref_depth) * light_size_texels / max(1.0 - avg_blocker, 1e-4),
+        2.0,
+        24.0,
+    );
+    {% else %}
     let penumbra_texels = clamp(
         (ref_depth - avg_blocker) * light_size_texels / max(avg_blocker, 1e-4),
         2.0,
         24.0,
     );
+    {% endif %}
     // Wide PCSS kernels sample texels far from the fragment; on a sloped /
     // curved receiver the depth stored there differs by the surface slope and
     // self-shadows into acne. Scale the comparison bias with the kernel width so
@@ -1279,7 +1415,13 @@ fn sample_shadow_descriptor(
     // The slack is the user's own `depth_bias` (bias_params.x) times the kernel
     // radius, so it inherits the per-light tuning instead of a fresh constant.
     // World-referenced (× depth_grad) for the same reason as the base bias.
+    // Kernel-width slack pushes the reference NEARER to the light —
+    // direction flips under reverse-Z like the base bias.
+    {% if reverse_z %}
+    let pcss_ref = ref_depth + desc.bias_params.x * penumbra_texels * 0.5 * depth_grad;
+    {% else %}
     let pcss_ref = ref_depth - desc.bias_params.x * penumbra_texels * 0.5 * depth_grad;
+    {% endif %}
     var pcf_sum = 0.0;
     for (var i = 0u; i < n; i = i + 1u) {
         let off = vogel_tap(i, pcf_rsqrt_n, sin_a, cos_a) * penumbra_texels;
@@ -1376,6 +1518,7 @@ fn sample_shadow_directional(
             continue;
         }
         let cand_ndc = cand_clip.xyz / cand_clip.w;
+        // NDC.z ∈ [0, 1] under BOTH depth conventions — reverse-Z-safe.
         if cand_ndc.x < -1.0 || cand_ndc.x > 1.0
             || cand_ndc.y < -1.0 || cand_ndc.y > 1.0
             || cand_ndc.z < 0.0 || cand_ndc.z > 1.0
@@ -1417,6 +1560,20 @@ fn sample_shadow_directional(
     return mix(primary, secondary, blend_t);
 }
 
+{% endif %}{# end needs_shadow_sampling — shadow sampling functions #}
+
+{% if needs_cascade_debug %}
+// ── Cascade-debug overlay ────────────────────────────────────────────────────
+// Deliberately OUTSIDE the `needs_shadow_sampling` block: the overlay is a
+// shading-time colour op that only reads the always-bound `shadow_globals` /
+// `shadow_descriptors` uniforms (ABI), never the sampler block. The opaque
+// pass compiles with `needs_shadow_sampling = false` (prep reads the shadow
+// buffer — Plan B stage 4/5b), so gating these on it compiled the overlay out
+// of every opaque module and `set_shadows { debug_cascade_colors }` changed
+// zero pixels. Gated on `needs_cascade_debug` (= `inc.apply_lighting`, the
+// only caller) instead, so lean modules (custom materials, prep, skybox)
+// don't regrow. Enabled-off costs one uniform branch per pixel.
+
 // DEBUG: returns the picked cascade index (0..3) as a float, or
 // 4.0 if no cascade was picked. Mirrors `sample_shadow_directional`'s
 // picker so the colour overlay matches what shadow sampling actually
@@ -1444,6 +1601,7 @@ fn debug_picked_cascade(
             continue;
         }
         let ndc = clip.xyz / clip.w;
+        // NDC.z ∈ [0, 1] under BOTH depth conventions — reverse-Z-safe.
         if ndc.x < -1.0 || ndc.x > 1.0 || ndc.y < -1.0 || ndc.y > 1.0 || ndc.z < 0.0 || ndc.z > 1.0 {
             continue;
         }
@@ -1500,4 +1658,4 @@ fn debug_cascade_tint(
     return mix(base_color, tint, 0.35);
 }
 
-{% endif %}{# end needs_shadow_sampling — shadow sampling functions #}
+{% endif %}{# end needs_cascade_debug — cascade-debug overlay #}

@@ -96,6 +96,7 @@ impl MaterialDecalPipelines {
         // (array_index, layer_index). The scene-loader packs with the SAME value
         // via `decals::decal_texture_index_stride` — single source of truth.
         let texture_pool_layers_per_array = crate::decals::decal_texture_index_stride(ctx.gpu);
+        let reverse_z = ctx.features.reverse_z;
 
         Ok(vec![
             DecalShaderDesc {
@@ -104,6 +105,7 @@ impl MaterialDecalPipelines {
                     texture_pool_arrays_len: bind_groups.texture_pool_arrays_len,
                     texture_pool_samplers_len: bind_groups.texture_pool_samplers_len,
                     texture_pool_layers_per_array,
+                    reverse_z,
                 }),
                 layout_key: singlesampled_pipeline_layout_key,
                 is_msaa: false,
@@ -114,11 +116,36 @@ impl MaterialDecalPipelines {
                     texture_pool_arrays_len: bind_groups.texture_pool_arrays_len,
                     texture_pool_samplers_len: bind_groups.texture_pool_samplers_len,
                     texture_pool_layers_per_array,
+                    reverse_z,
                 }),
                 layout_key: multisampled_pipeline_layout_key,
                 is_msaa: true,
             },
         ])
+    }
+
+    /// Sync descriptor build for the render-loop kick path
+    /// ([`MaterialDecalRenderPass::kick_compile`](crate::render_passes::material_decal::render_pass::MaterialDecalRenderPass::kick_compile)):
+    /// creates the two shader modules WITHOUT awaiting validation
+    /// (`ensure_keys_sync_skip_validate` — any error surfaces through the
+    /// pipeline-creation promises, same trade-off the boot pool takes) and
+    /// returns the compute pipeline cache keys + their MSAA slot flags.
+    pub fn build_cache_keys_sync(
+        ctx: &mut RenderPassInitContext<'_>,
+        bind_groups: &MaterialDecalBindGroups,
+    ) -> Result<(Vec<ComputePipelineCacheKey>, Vec<bool>)> {
+        let shader_descs = Self::shader_descs(ctx, bind_groups)?;
+        let shader_keys = ctx.shaders.ensure_keys_sync_skip_validate(
+            ctx.gpu,
+            shader_descs.iter().map(|d| d.shader_cache.clone()),
+        )?;
+        let mut cache_keys = Vec::with_capacity(shader_descs.len());
+        let mut is_msaa = Vec::with_capacity(shader_descs.len());
+        for (d, shader_key) in shader_descs.iter().zip(shader_keys) {
+            cache_keys.push(ComputePipelineCacheKey::new(shader_key, d.layout_key));
+            is_msaa.push(d.is_msaa);
+        }
+        Ok((cache_keys, is_msaa))
     }
 
     /// Shader cache keys this pass would compile.

@@ -37,6 +37,18 @@ pub struct ShaderCacheKeyMaterialOpaque {
     /// Baked as the `apply_sscs` loop bound so it's a compile-time constant
     /// (unroll-friendly, no per-fragment counter). Changing it recompiles.
     pub sscs_step_count: u32,
+    /// M2a: whether this kernel writes the material-owned SSR reflection
+    /// descriptor (`{ssr_mask, ssr_tint, ssr_spread}`). Sourced from
+    /// `post_processing.ssr.enabled`. When `false` (the default / SSR off) the
+    /// per-base reflectance code + the `reflection_descriptor_tex` store compile
+    /// out entirely — nothing computed or stored — so cold boot pays zero SSR
+    /// cost. Toggling SSR re-keys + recompiles the live opaque/edge modules,
+    /// exactly like the SSCS + MSAA axes above. (The bind-group *layout* keeps
+    /// the descriptor slot unconditionally — a valid layout-superset the SSR-off
+    /// shader simply doesn't reference — so no layout rebuild is needed here.)
+    pub write_ssr_descriptor: bool,
+    /// Depth convention (003).
+    pub reverse_z: bool,
     pub shader_id: MaterialShaderId,
     /// Which built-in shading family this bucket's template body comes
     /// from. Decoupled from `shader_id` so a per-feature-set PBR variant

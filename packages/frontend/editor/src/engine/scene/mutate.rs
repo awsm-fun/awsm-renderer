@@ -98,8 +98,15 @@ pub fn remove_by_id(scene: &Scene, id: NodeId) -> Option<Arc<Node>> {
 }
 
 /// Duplicate the node with `id`, giving the clone fresh UUIDs, and insert
-/// the clone as a sibling immediately after the original. Returns the new id.
-pub fn duplicate_by_id(scene: &Scene, id: NodeId, new_root_id: Option<NodeId>) -> Option<NodeId> {
+/// the clone as a sibling immediately after the original. Returns the new id
+/// plus the full `original → clone` [`NodeId`] map for the subtree, so the
+/// caller can retarget node-referencing satellites (animation-clip tracks —
+/// see the Duplicate handler in `controller::state`).
+pub fn duplicate_by_id(
+    scene: &Scene,
+    id: NodeId,
+    new_root_id: Option<NodeId>,
+) -> Option<(NodeId, std::collections::HashMap<NodeId, NodeId>)> {
     let original = find_by_id(scene, id)?;
     let clone = match new_root_id {
         Some(rid) => original.deep_clone_with_root_id(rid),
@@ -152,7 +159,7 @@ pub fn duplicate_by_id(scene: &Scene, id: NodeId, new_root_id: Option<NodeId>) -
         }
     }
 
-    Some(new_id)
+    Some((new_id, id_map))
 }
 
 /// Build the original→clone [`NodeId`] map by walking both trees in lockstep
@@ -359,4 +366,125 @@ pub fn flatten_visible_order(scene: &Scene) -> Vec<NodeId> {
     let nodes = scene.nodes.lock_ref();
     walk(nodes.as_slice(), &mut out);
     out
+}
+
+#[cfg(test)]
+mod duplicate_tests {
+    use super::*;
+    use crate::engine::scene::{NodeKind, Trs};
+    use awsm_renderer_editor_protocol::{AssetId, SkinJoint, SkinnedMeshRef};
+
+    fn group(name: &str) -> Arc<Node> {
+        Node::new_with_transform_and_kind(name, Trs::IDENTITY, NodeKind::Group)
+    }
+
+    fn skinned(name: &str, joints: Vec<SkinJoint>) -> Arc<Node> {
+        Node::new_with_transform_and_kind(
+            name,
+            Trs::IDENTITY,
+            NodeKind::SkinnedMesh {
+                skin: SkinnedMeshRef {
+                    source: AssetId::new(),
+                    node_index: 3,
+                    rig_node_index: 3,
+                    primitive_index: None,
+                    joints,
+                },
+                material_variants: Vec::new(),
+                selected_variant: None,
+                shadow: Default::default(),
+                lod: Default::default(),
+            },
+        )
+    }
+
+    /// Build [root → (bone_a → bone_b, skinned)] with the skinned node's
+    /// joints binding bone_a, bone_b, and one node OUTSIDE the subtree.
+    /// Returns (scene, root_id, bone ids, outside id).
+    fn skinned_scene() -> (
+        Arc<crate::engine::scene::Scene>,
+        NodeId,
+        [NodeId; 2],
+        NodeId,
+    ) {
+        let scene = crate::engine::scene::Scene::new();
+        let outside = group("outside");
+        let outside_id = outside.id;
+        let root = group("root");
+        let root_id = root.id;
+        let bone_a = group("bone_a");
+        let bone_b = group("bone_b");
+        let (a_id, b_id) = (bone_a.id, bone_b.id);
+        bone_a.children.lock_mut().push_cloned(bone_b);
+        let mesh = skinned(
+            "mesh",
+            vec![
+                SkinJoint {
+                    node: a_id,
+                    index: 1,
+                },
+                SkinJoint {
+                    node: b_id,
+                    index: 2,
+                },
+                SkinJoint {
+                    node: outside_id,
+                    index: 7,
+                },
+            ],
+        );
+        root.children.lock_mut().push_cloned(bone_a);
+        root.children.lock_mut().push_cloned(mesh);
+        scene.nodes.lock_mut().push_cloned(outside);
+        scene.nodes.lock_mut().push_cloned(root);
+        (scene, root_id, [a_id, b_id], outside_id)
+    }
+
+    // The id map covers the WHOLE duplicated subtree (root + every
+    // descendant), maps onto the clone's actual ids, and never maps a node
+    // onto itself.
+    #[test]
+    fn id_map_covers_the_subtree_with_fresh_ids() {
+        let (scene, root_id, [a_id, b_id], _) = skinned_scene();
+        let (new_id, map) = duplicate_by_id(&scene, root_id, None).expect("duplicate");
+        assert_eq!(map.len(), 4, "root + bone_a + bone_b + mesh");
+        assert_eq!(map[&root_id], new_id);
+        for old in [root_id, a_id, b_id] {
+            let new = map[&old];
+            assert_ne!(new, old, "clone must mint a fresh id");
+            assert!(find_by_id(&scene, new).is_some(), "mapped id must exist");
+        }
+    }
+
+    // Skin joint bindings inside the duplicated subtree are REMAPPED onto the
+    // cloned bones; a joint referencing a node outside the subtree keeps its
+    // original binding (shared, deliberately).
+    #[test]
+    fn skin_joints_remap_inside_the_subtree_only() {
+        let (scene, root_id, [a_id, b_id], outside_id) = skinned_scene();
+        let (new_id, map) = duplicate_by_id(&scene, root_id, None).expect("duplicate");
+        let clone_root = find_by_id(&scene, new_id).unwrap();
+        let clone_mesh = clone_root.children.lock_ref()[1].clone();
+        let NodeKind::SkinnedMesh { skin, .. } = clone_mesh.kind.get_cloned() else {
+            panic!("expected the cloned SkinnedMesh");
+        };
+        assert_eq!(skin.joints[0].node, map[&a_id]);
+        assert_eq!(skin.joints[1].node, map[&b_id]);
+        assert_eq!(skin.joints[2].node, outside_id, "outside ref preserved");
+        // Rig-glb indices are identity, not node ids — untouched.
+        assert_eq!(
+            skin.joints.iter().map(|j| j.index).collect::<Vec<_>>(),
+            vec![1, 2, 7]
+        );
+    }
+
+    // The clone lands as the sibling immediately after the original.
+    #[test]
+    fn clone_is_inserted_after_the_original() {
+        let (scene, root_id, _, _) = skinned_scene();
+        let (new_id, _) = duplicate_by_id(&scene, root_id, None).expect("duplicate");
+        let order: Vec<NodeId> = scene.nodes.lock_ref().iter().map(|n| n.id).collect();
+        let root_pos = order.iter().position(|id| *id == root_id).unwrap();
+        assert_eq!(order[root_pos + 1], new_id);
+    }
 }

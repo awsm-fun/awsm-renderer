@@ -37,14 +37,38 @@ thread_local! {
 pub async fn capture_scene_rgba() -> CapturedFrame {
     let slot: Mutable<Option<CapturedFrame>> = Mutable::new(None);
     CAPTURE_REQUESTS.with(|q| q.borrow_mut().push(slot.clone()));
+    // HIDDEN tab: rAF is paused, so no frame would ever fulfill the request.
+    // The request reached us over the WebSocket message task (not
+    // rAF/timer-throttled) — render one frame on demand right here, which runs
+    // `poll_scene_capture` and kicks off the GPU readback for our slot. See
+    // `render_once_for_capture` (plan 002 Part B).
+    if document_hidden() {
+        crate::engine::render_loop::render_once_for_capture();
+    }
     // Poll on a frame cadence; the render loop drives `poll_scene_capture`.
+    // (Hidden tabs clamp timers to ≥1s — acceptable latency; the GPU readback
+    // itself progresses via mapAsync independent of rAF.)
     for _ in 0..120 {
         gloo_timers::future::TimeoutFuture::new(16).await;
         if let Some(result) = slot.get_cloned() {
             return result;
         }
+        // Still hidden and unfulfilled (e.g. the renderer lock was contended on
+        // the first try): try another on-demand frame.
+        if document_hidden() && slot.get_cloned().is_none() {
+            crate::engine::render_loop::render_once_for_capture();
+        }
     }
     Err("scene capture timed out (no frame presented)".to_string())
+}
+
+/// Whether the document is hidden (backgrounded tab / display off) — the state
+/// in which rAF is paused and frames must be driven on demand.
+fn document_hidden() -> bool {
+    web_sys::window()
+        .and_then(|w| w.document())
+        .map(|d| d.hidden())
+        .unwrap_or(false)
 }
 
 /// Called by the render loop right AFTER `render()` (swapchain texture valid):
@@ -62,8 +86,11 @@ pub fn poll_scene_capture(renderer: &awsm_renderer::AwsmRenderer) {
     let format = renderer.gpu.current_context_format();
     wasm_bindgen_futures::spawn_local(async move {
         let result: CapturedFrame = match (texture, size) {
+            // Display variant: the swapchain is already sRGB-encoded by the
+            // display pass — the plain export double-gammas it (the pastel
+            // screenshot bug).
             (Ok(texture), Ok((w, h))) => gpu
-                .export_texture_as_rgba8(&texture, w, h, 0, format)
+                .export_display_texture_as_rgba8(&texture, w, h, 0, format)
                 .await
                 .map(|rgba| (rgba, w, h))
                 .map_err(|e| format!("{e}")),

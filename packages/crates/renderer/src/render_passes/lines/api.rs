@@ -239,6 +239,7 @@ impl AwsmRenderer {
                 &mut self.pipelines,
                 &mut self.shaders,
                 &self.render_textures.formats,
+                self.features.depth().compare_strict(),
             )
             .await
     }

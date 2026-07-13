@@ -11,6 +11,7 @@
 pub mod bind_group;
 pub mod buffers;
 pub mod pipeline;
+pub mod planner;
 pub mod render_pass;
 pub mod shader;
 

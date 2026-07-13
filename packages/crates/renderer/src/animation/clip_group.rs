@@ -131,6 +131,9 @@ pub enum BuiltinMaterialParam {
     NormalScale,
     /// Ambient-occlusion strength (`occlusion_strength`, PBR only).
     OcclusionStrength,
+    /// SSR participation mask (`ssr_mask`, PBR only) — animate a surface's
+    /// received screen-space reflections without touching its gloss.
+    SsrMask,
     /// Emissive-strength multiplier (`KHR_materials_emissive_strength`, PBR only).
     /// Applied only when the material already has emissive strength enabled (the
     /// feature is compiled in); a no-op otherwise (toggling it would recompile).

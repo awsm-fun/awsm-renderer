@@ -53,13 +53,27 @@ impl Camera {
         }
     }
 
+    /// The projection's clip planes — carried explicitly on the matrices
+    /// (003 stage 5) so downstream never recovers them from the matrix.
+    fn clip_planes(&self) -> (f32, f32) {
+        match &self.projection {
+            CameraProjection::Orthographic(camera) => (camera.near, camera.far),
+            CameraProjection::Perspective(camera) => (camera.near, camera.far),
+        }
+    }
+
     pub fn matrices(&self) -> CameraMatrices {
+        let (near, far) = self.clip_planes();
         CameraMatrices {
             view: self.view_matrix(),
             projection: self.projection_matrix(),
             position_world: self.position_world(),
             focus_distance: self.focus_distance,
             aperture: self.aperture,
+            // Model-tests stay forward-Z (features default; 003)
+            reverse_z: false,
+            near,
+            far,
         }
     }
 }

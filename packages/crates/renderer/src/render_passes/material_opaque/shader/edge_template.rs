@@ -26,6 +26,7 @@ pub struct ShaderTemplateMaterialFinalBlend {
 pub struct ShaderTemplateMaterialFinalBlendBindGroups {
     pub bucket_entries: Vec<BucketEntry>,
     pub color_format: String,
+    pub write_ssr_descriptor: bool,
 }
 
 #[derive(Template, Debug)]
@@ -37,6 +38,8 @@ pub struct ShaderTemplateMaterialFinalBlendCompute {
     /// §5 edge slot-map width (8/16); gates the slot_map read + the widened
     /// empty sentinel. Derived from the live bucket count.
     pub edge_slot_bits: u32,
+    /// SSR axis: resolve + store the per-pixel reflection descriptor.
+    pub write_ssr_descriptor: bool,
 }
 
 impl TryFrom<&ShaderCacheKeyMaterialFinalBlend> for ShaderTemplateMaterialFinalBlend {
@@ -48,8 +51,12 @@ impl TryFrom<&ShaderCacheKeyMaterialFinalBlend> for ShaderTemplateMaterialFinalB
             bind_groups: ShaderTemplateMaterialFinalBlendBindGroups {
                 bucket_entries: value.bucket_entries.clone(),
                 color_format: value.color_format.clone(),
+                write_ssr_descriptor: value.write_ssr_descriptor,
             },
-            compute: ShaderTemplateMaterialFinalBlendCompute { edge_slot_bits },
+            compute: ShaderTemplateMaterialFinalBlendCompute {
+                edge_slot_bits,
+                write_ssr_descriptor: value.write_ssr_descriptor,
+            },
         })
     }
 }

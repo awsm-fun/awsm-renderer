@@ -1,5 +1,9 @@
-//! Instance-along-curve schema: place copies of a source node along a curve.
+//! Instancing schemas: the curve-sampled placer (`InstancesAlongCurveDef`) and
+//! the explicit instancer (`InstancerDef`) — one node that owns N authored
+//! instance transforms.
 
+use super::primitive::MeshRef;
+use super::transform::Trs;
 use super::tree::{MeshLodConfig, MeshShadowConfig, NodeId};
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -32,6 +36,50 @@ impl Default for InstancesAlongCurveDef {
             side_offset: 0.0,
             orient_to_tangent: true,
             per_instance_colors: vec![],
+            shadow: MeshShadowConfig::default(),
+            lod: MeshLodConfig::default(),
+        }
+    }
+}
+
+/// Explicit GPU instancer: ONE node that references a mesh **asset** and OWNS
+/// its N instance transforms, so thousands of instances never become thousands
+/// of scene nodes. Unlike [`InstancesAlongCurveDef`] (which derives placement
+/// from a curve and references a *source node*), the instancer is fully
+/// self-contained: it references the mesh asset directly (the same
+/// [`MeshRef`] a `NodeKind::Mesh` carries) and stores the authored transform
+/// list verbatim. The renderer draws it as ONE geometry upload + one instance
+/// buffer (`enable_mesh_instancing_opaque`).
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub struct InstancerDef {
+    /// The instanced mesh asset (an `AssetSource::Mesh` entry, exactly like
+    /// `NodeKind::Mesh`'s ref). [`crate::AssetId::nil`] = not wired up yet —
+    /// the node renders empty until a mesh is picked.
+    pub mesh: MeshRef,
+    /// One local transform per instance (relative to this node's transform).
+    pub transforms: Vec<Trs>,
+    /// Per-instance color overrides applied in order; if shorter than
+    /// `transforms`, the last value is repeated (same semantics as
+    /// [`InstancesAlongCurveDef::per_instance_colors`]).
+    #[serde(default)]
+    pub per_instance_colors: Vec<[f32; 4]>,
+    /// Shadow cast / receive flags. Applies to every instance (instancing
+    /// shares one mesh, so this is a mesh-level flag).
+    #[serde(default)]
+    pub shadow: MeshShadowConfig,
+    /// LOD opt-out (default on). Applies to every instance.
+    #[serde(default)]
+    pub lod: MeshLodConfig,
+}
+
+impl Default for InstancerDef {
+    fn default() -> Self {
+        Self {
+            mesh: MeshRef(crate::AssetId::nil()),
+            transforms: Vec::new(),
+            per_instance_colors: Vec::new(),
             shadow: MeshShadowConfig::default(),
             lod: MeshLodConfig::default(),
         }

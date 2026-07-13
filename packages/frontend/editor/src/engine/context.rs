@@ -155,6 +155,9 @@ pub async fn create_context(canvas: web_sys::HtmlCanvasElement) -> EditorResult<
 
     let camera = {
         let mut cam = Camera::new_default_cube(16.0 / 9.0);
+        // Depth convention (003): the viewport camera's projections must match
+        // the renderer's reverse_z feature — same flag source as editor_features.
+        cam.set_reverse_z(reverse_z_flag());
         cam.set_aperture(super::config::CONFIG.camera_aperture);
         cam.set_focus_distance(super::config::CONFIG.camera_focus_distance);
         Arc::new(std::sync::Mutex::new(cam))
@@ -201,6 +204,16 @@ struct AppContext {
     _drop_tracker: Arc<AppContextDropTracker>,
 }
 
+/// Reverse-Z is the DEFAULT depth convention (003 rollout complete: all nine
+/// stages landed + browser-verified; the synthetic coplanar-plane repro
+/// z-fights under forward and renders clean under reverse). `?noreversez`
+/// forces the legacy forward-Z convention — kept for one release as the A/B
+/// and rollback lever. One source for the main viewport + the material
+/// preview renderer so the two can't diverge.
+pub fn reverse_z_flag() -> bool {
+    !url_has_flag("noreversez")
+}
+
 fn editor_features() -> RendererFeatures {
     use awsm_renderer::features::FeatureToggle;
     RendererFeatures {
@@ -233,6 +246,10 @@ fn editor_features() -> RendererFeatures {
         // a bounded VRAM budget in-editor. No-op (early-out) when no cluster mesh is
         // resident, so non-nanite scenes pay nothing per frame. `?nopaging` forces off.
         cluster_paging: !url_has_flag("nopaging"),
+        // Reverse-Z depth convention (plan 003, git history) — ON by
+        // default since the 003 rollout completed; `?noreversez` = forward-Z
+        // rollback/A-B for one release.
+        reverse_z: reverse_z_flag(),
         indirect_first_instance: FeatureToggle::Auto,
     }
 }

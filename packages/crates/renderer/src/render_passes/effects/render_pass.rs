@@ -7,8 +7,7 @@ use crate::{
     render::RenderContext,
     render_passes::{
         effects::{
-            bind_group::EffectsBindGroups,
-            pipeline::{EffectsPipelines, BLOOM_BLUR_PASSES},
+            bind_group::EffectsBindGroups, pipeline::EffectsPipelines,
             shader::cache_key::BloomPhase,
         },
         RenderPassInitContext,
@@ -60,23 +59,15 @@ impl EffectsRenderPass {
         );
 
         if ctx.post_processing.bloom {
-            // Multi-pass bloom
-            // Pass 0: Extract bright pixels (ping_pong=false, writes to effects_tex)
-            self.dispatch_pass(ctx, BloomPhase::Extract, false, workgroup_size)?;
-
-            // Passes 1..=BLOOM_BLUR_PASSES: Blur passes (alternating ping_pong)
-            for i in 0..BLOOM_BLUR_PASSES {
-                let ping_pong = (i + 1) % 2 == 1; // Pass 1 is ping_pong=true, pass 2 is false, etc.
-                self.dispatch_pass(ctx, BloomPhase::Blur, ping_pong, workgroup_size)?;
-            }
-
-            // Final pass: Blend with original
-            // ping_pong must match what we calculated in pipeline.rs
-            let blend_ping_pong = (1 + BLOOM_BLUR_PASSES) % 2 == 1;
-            self.dispatch_pass(ctx, BloomPhase::Blend, blend_ping_pong, workgroup_size)?;
+            // The wide bloom is built by the dedicated `BloomRenderPass`
+            // (COD-style mip pyramid) into `render_texture_views.bloom` BEFORE
+            // this pass runs. The effects pass only BLENDS it over the scene —
+            // it samples `bloom_tex` and writes `effects_tex`, which the
+            // display pass then reads.
+            self.dispatch_pass(ctx, BloomPhase::Blend, workgroup_size)?;
         } else {
             // Single pass for other effects only (SMAA, DoF)
-            self.dispatch_pass(ctx, BloomPhase::None, false, workgroup_size)?;
+            self.dispatch_pass(ctx, BloomPhase::None, workgroup_size)?;
         }
 
         Ok(())
@@ -86,16 +77,15 @@ impl EffectsRenderPass {
         &self,
         ctx: &RenderContext,
         phase: BloomPhase,
-        ping_pong: bool,
         workgroup_size: (u32, u32),
     ) -> Result<()> {
         let compute_pass = ctx.command_encoder.begin_compute_pass(Some(
             &ComputePassDescriptor::new(Some("Effects Pass")).into(),
         ));
 
-        compute_pass.set_bind_group(0, self.bind_groups.get_bind_group(ping_pong)?, None)?;
+        compute_pass.set_bind_group(0, self.bind_groups.get_bind_group()?, None)?;
 
-        if let Some(pipeline_key) = self.pipelines.get_bloom_pipeline(phase, ping_pong) {
+        if let Some(pipeline_key) = self.pipelines.get_bloom_pipeline(phase) {
             compute_pass.set_pipeline(ctx.pipelines.compute.get(pipeline_key)?);
             compute_pass.dispatch_workgroups(workgroup_size.0, Some(workgroup_size.1), Some(1));
         }

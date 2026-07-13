@@ -136,6 +136,11 @@ pub struct EditorController {
     /// served by [`EditorQuery::LastImportReport`] and returned inline by the
     /// MCP import tools. `None` until the first import of the session.
     pub last_import_report: Mutable<Option<serde_json::Value>>,
+    /// Report of the most recent `VerifyRoundtrip` self-test (before/after
+    /// save-census + equality flags) — served by
+    /// [`EditorQuery::VerifyRoundtripReport`] (mirrors
+    /// [`Self::last_import_report`]). `None` until the self-test first runs.
+    pub verify_roundtrip_report: Mutable<Option<serde_json::Value>>,
     /// The animation clips authored in Animation mode (mirrors `custom_materials`).
     /// Reactive — the studio edits their tracks/keys live.
     pub custom_animations: MutableVec<Arc<CA>>,
@@ -219,10 +224,11 @@ pub struct Settings {
     /// viewport toggle/keyboard shortcut and any MCP-driven change stay in sync.
     pub editor_ortho: Mutable<bool>,
     /// Editor-camera clip planes: `false` (default) = AUTO — near/far are
-    /// re-derived from the orbit distance every move (clips scenes bigger or
-    /// closer than the assumed framing bounds); `true` = pin them to
-    /// [`Self::cam_clip_near`]/[`Self::cam_clip_far`]. Session-only (the
-    /// editor camera isn't persisted).
+    /// re-derived from the orbit distance every move by a depth-precision-aware
+    /// formula (bounded ~5000:1 far:near ratio, and `far` can't clip the scene);
+    /// `true` = MANUAL, near/far pinned to
+    /// [`Self::cam_clip_near`]/[`Self::cam_clip_far`]. Session-only (the editor
+    /// camera isn't persisted).
     pub cam_clip_manual: Mutable<bool>,
     /// Manual near plane (metres). Applied only when [`Self::cam_clip_manual`].
     pub cam_clip_near: Mutable<f64>,
@@ -233,9 +239,12 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
-            grid: Mutable::new(true),
+            // Grid + light gizmos default OFF (David, 2026-07-12): they
+            // pollute screenshots/agent verification and lit scenes read
+            // better without them; toggle on per session when needed.
+            grid: Mutable::new(false),
             gizmo: Mutable::new(true),
-            light_gizmos: Mutable::new(true),
+            light_gizmos: Mutable::new(false),
             skeleton_viz: Mutable::new(true),
             auto_key: Mutable::new(true),
             msaa: Mutable::new(true),
@@ -247,9 +256,13 @@ impl Default for Settings {
             snap: Mutable::new(false),
             units: Mutable::new("meters".to_string()),
             editor_ortho: Mutable::new(false),
+            // AUTO by default — the robust orbit-distance formula (see
+            // `free_camera::auto_clip_planes`) eliminates the z-fighting the old
+            // manual 0.1/10000 (100,000:1) default caused. Manual stays an
+            // escape hatch with a saner starting pair.
             cam_clip_manual: Mutable::new(false),
-            cam_clip_near: Mutable::new(0.01),
-            cam_clip_far: Mutable::new(1000.0),
+            cam_clip_near: Mutable::new(1.0),
+            cam_clip_far: Mutable::new(5000.0),
         }
     }
 }
@@ -275,6 +288,7 @@ impl EditorController {
             custom_materials: MutableVec::new(),
             current_material: Mutable::new(None),
             last_import_report: Mutable::new(None),
+            verify_roundtrip_report: Mutable::new(None),
             custom_animations: MutableVec::new(),
             current_clip: Mutable::new(None),
             playhead: Mutable::new(0.0),
@@ -1001,6 +1015,37 @@ impl EditorController {
                 }))
                 .await
             }
+            EditorCommand::SetInstancerTransforms {
+                node,
+                transforms,
+                per_instance_colors,
+            } => {
+                let prev = match mutate::find_by_id(&self.scene, node) {
+                    Some(n) => n.kind.get_cloned(),
+                    None => {
+                        return Err(crate::error::EditorError::msg(
+                            "target id not found — command not applied (check ids against get_snapshot)",
+                        ))
+                    }
+                };
+                // Reject loudly if the node isn't an instancer (no silent no-op).
+                let NodeKind::Instancer(mut def) = prev else {
+                    return Err(crate::error::EditorError::msg("node is not an instancer"));
+                };
+                // REPLACE the transform list wholesale (the bulk authoring
+                // contract — mirrors SetTrackKeys). Colors only when provided.
+                def.transforms = transforms;
+                if let Some(colors) = per_instance_colors {
+                    def.per_instance_colors = colors;
+                }
+                // Delegate to SetKind for identical re-materialize + inverse
+                // (undo restores the ENTIRE prior kind = the prior list).
+                Box::pin(self.apply_inner(EditorCommand::SetKind {
+                    id: node,
+                    kind: Box::new(NodeKind::Instancer(def)),
+                }))
+                .await
+            }
             EditorCommand::SetTransform { id, mut transform } => {
                 match mutate::find_by_id(&self.scene, id) {
                     Some(node) => {
@@ -1112,10 +1157,57 @@ impl EditorController {
             },
             EditorCommand::Duplicate { id, new_id } => {
                 match mutate::duplicate_by_id(&self.scene, id, new_id) {
-                    Some(new_id) => {
+                    Some((new_id, id_map)) => {
                         self.scene.bump_revision();
                         self.selected.set(vec![new_id]);
-                        Ok(Some(EditorCommand::Delete { id: new_id }))
+                        // RETARGET animation onto the clone: any clip track that
+                        // targets a node inside the duplicated subtree gets a
+                        // duplicated track driving the cloned node — so playing
+                        // the clip animates the original AND the duplicate (a
+                        // duplicated walking character keeps walking). Model
+                        // choice (documented on `retarget_track_for_duplicate`):
+                        // EXTEND the same clip rather than mint a clip per clone,
+                        // so the one authored clip drives every instance. The
+                        // inverse batches `DeleteTrack`s (descending indices)
+                        // before the node `Delete`, keeping undo coherent.
+                        let mut inverse: Vec<EditorCommand> = Vec::new();
+                        for clip in self.custom_animations.lock_ref().iter() {
+                            let clones: Vec<_> = clip
+                                .tracks
+                                .lock_ref()
+                                .iter()
+                                .filter_map(|t| {
+                                    crate::controller::animation::retarget_track_for_duplicate(
+                                        t, &id_map,
+                                    )
+                                })
+                                .collect();
+                            if clones.is_empty() {
+                                continue;
+                            }
+                            let mut tracks = clip.tracks.lock_mut();
+                            for track in clones {
+                                inverse.push(EditorCommand::DeleteTrack {
+                                    clip: clip.id,
+                                    track: tracks.len(),
+                                });
+                                tracks.push_cloned(track);
+                            }
+                        }
+                        if inverse.is_empty() {
+                            return Ok(Some(EditorCommand::Delete { id: new_id }));
+                        }
+                        // `Duplicate` isn't in `affects_animation` (the common
+                        // case adds no tracks) — bump the relower signal here,
+                        // where tracks WERE added, so the clip lowers onto the
+                        // clone as soon as it materializes.
+                        self.anim_revision.replace_with(|v| v.wrapping_add(1));
+                        // Descending track indices so each `DeleteTrack` in the
+                        // batch still points at the right slot after the ones
+                        // behind it are removed.
+                        inverse.reverse();
+                        inverse.push(EditorCommand::Delete { id: new_id });
+                        Ok(Some(EditorCommand::Batch(inverse)))
                     }
                     None => Err(crate::error::EditorError::msg(
                     "target id not found — command not applied (check ids against get_snapshot)",
@@ -1174,6 +1266,7 @@ impl EditorController {
                 crate::engine::bridge::bridge().clear_templates();
                 crate::engine::bridge::skinned_bake_cache::clear();
                 crate::engine::bridge::texture_cache::clear();
+                crate::engine::bridge::material::clear_texture_keys();
                 crate::engine::bridge::buffer_cache::clear();
                 self.project_name.set("untitled.awsm".to_string());
                 self.missing_assets.set(Vec::new());
@@ -1212,6 +1305,13 @@ impl EditorController {
                 // left empty; reload the project to keep editing). An agent
                 // screenshots before/after to compare authored vs runtime render.
 
+                // Hold the `WaitRenderSettled` barrier for the WHOLE handler
+                // (created synchronously, before the first await): a driver
+                // dispatching through the fire-and-forget seam
+                // (`editor_dispatch_json` spawns the dispatch and returns
+                // immediately) must not observe "settled" while the bake +
+                // populate are still running. RAII — drops on every exit path.
+                let _load_guard = CompileGuard::new();
                 // 1. Bake the CURRENT project — must read it before we clear.
                 let files = crate::controller::export::bake_player_bundle(self)
                     .await
@@ -1259,6 +1359,7 @@ impl EditorController {
                 crate::engine::bridge::bridge().clear_templates();
                 crate::engine::bridge::skinned_bake_cache::clear();
                 crate::engine::bridge::texture_cache::clear();
+                crate::engine::bridge::material::clear_texture_keys();
                 crate::engine::bridge::buffer_cache::clear();
                 // Unregister the editor session's dynamic materials BEFORE the
                 // player populate: the round-trip shares this renderer, and the
@@ -1318,6 +1419,11 @@ impl EditorController {
             }
             EditorCommand::ReloadProjectInMemory => {
                 use crate::controller::persistence;
+                // Settle-visibility front guard (see LoadPlayerBundle): held
+                // synchronously from handler entry until the arm returns; the
+                // async materialization tail past `apply_inmem` is covered by
+                // the armed load barrier (`apply_project` → node_sync release).
+                let _load_guard = CompileGuard::new();
                 // Editor-path round-trip self-test (no dir picker). Serialize the
                 // open project to its persisted form BEFORE clearing anything.
                 let (toml, mesh_map) = persistence::serialize_inmem(self)?;
@@ -1334,6 +1440,7 @@ impl EditorController {
                 crate::engine::bridge::bridge().clear_templates();
                 crate::engine::bridge::skinned_bake_cache::clear();
                 crate::engine::bridge::texture_cache::clear();
+                crate::engine::bridge::material::clear_texture_keys();
                 crate::engine::bridge::buffer_cache::clear();
                 // View-only cluster ("nanite") DAGs live only in `cluster_cache`;
                 // drop it too so the round-trip exercises the real save→reload
@@ -1341,6 +1448,56 @@ impl EditorController {
                 crate::engine::bridge::cluster_cache::clear();
                 persistence::apply_inmem(self, toml, mesh_map).await?;
                 Toast::info("Round-trip: project reloaded in-memory (cold caches)");
+                Ok(None)
+            }
+            EditorCommand::VerifyRoundtrip => {
+                use crate::controller::persistence;
+                // Settle-visibility front guard (see LoadPlayerBundle).
+                let _load_guard = CompileGuard::new();
+                // End-to-end losslessness proof (destructive self-test, not
+                // undoable). Census FIRST — the ground truth the cold reload
+                // must reproduce — then serialize while every cache is warm.
+                let before = persistence::save_census(self);
+                let (toml, byte_map) = persistence::serialize_inmem(self)?;
+                // Clear EVERY byte cache the reload path could otherwise
+                // reuse — unlike `ReloadProjectInMemory`, which deliberately
+                // keeps `mesh_cache` warm (exactly where the historical
+                // byte-loss bug hid). If `apply_inmem` can rebuild the census
+                // from the serialized bytes ALONE, save→load drops nothing.
+                crate::engine::bridge::bridge().clear_skin_joints();
+                clear_untracked_renderer_resources().await;
+                crate::engine::bridge::bridge().clear_templates();
+                crate::engine::bridge::skinned_bake_cache::clear();
+                crate::engine::bridge::texture_cache::clear();
+                crate::engine::bridge::material::clear_texture_keys();
+                crate::engine::bridge::buffer_cache::clear();
+                crate::engine::bridge::cluster_cache::clear();
+                crate::engine::bridge::mesh_cache::clear();
+                crate::engine::bridge::env_sync::clear_ktx_stash();
+                persistence::apply_inmem(self, toml, byte_map).await?;
+                let after = persistence::save_census(self);
+                let equal = before == after;
+                // Lossless = the reload reproduced the census exactly AND the
+                // reloaded project is itself fully persistable (no cache went
+                // missing on the way back in).
+                let after_complete = after.is_complete();
+                let lossless = equal && after_complete;
+                let report = serde_json::json!({
+                    "before": before,
+                    "after": after,
+                    "equal": equal,
+                    "after_complete": after_complete,
+                    "lossless": lossless,
+                });
+                tracing::info!("verify_roundtrip: {report}");
+                self.verify_roundtrip_report.set(Some(report));
+                if lossless {
+                    Toast::info("Verify round-trip: LOSSLESS (census identical)");
+                } else {
+                    Toast::error(
+                        "Verify round-trip: census MISMATCH — see verify_roundtrip_report",
+                    );
+                }
                 Ok(None)
             }
             EditorCommand::Insert { id, spec, parent } => {
@@ -2868,34 +3025,37 @@ impl EditorController {
                             weights,
                         });
                     }
-                    // Write the new values.
-                    r.meshes
-                        .skins
-                        .update_joint_index_weights_with(skin_key, |buf| {
-                            for e in &entries {
-                                let v = e.vertex as usize;
-                                if v >= vertex_count {
-                                    continue;
-                                }
-                                let mut w = e.weights;
-                                if normalize {
-                                    let sum: f32 = w.iter().sum();
-                                    if sum > 1e-6 {
-                                        for x in &mut w {
-                                            *x /= sum;
-                                        }
+                    // Write the new values. `update_skin_weights` copies-on-
+                    // write when this node is a weight-sharing duplicate, so
+                    // the edit diverges only THIS instance (and re-patches its
+                    // meshes' geometry meta if the stream moved).
+                    let write_result = r.update_skin_weights(skin_key, |buf| {
+                        for e in &entries {
+                            let v = e.vertex as usize;
+                            if v >= vertex_count {
+                                continue;
+                            }
+                            let mut w = e.weights;
+                            if normalize {
+                                let sum: f32 = w.iter().sum();
+                                if sum > 1e-6 {
+                                    for x in &mut w {
+                                        *x /= sum;
                                     }
                                 }
-                                let off = v * stride;
-                                for (i, (joint, weight)) in
-                                    e.joints.iter().zip(w.iter()).enumerate()
-                                {
-                                    let p = off + i * 8;
-                                    buf[p..p + 4].copy_from_slice(&joint.to_le_bytes());
-                                    buf[p + 4..p + 8].copy_from_slice(&weight.to_le_bytes());
-                                }
                             }
-                        });
+                            let off = v * stride;
+                            for (i, (joint, weight)) in e.joints.iter().zip(w.iter()).enumerate() {
+                                let p = off + i * 8;
+                                buf[p..p + 4].copy_from_slice(&joint.to_le_bytes());
+                                buf[p + 4..p + 8].copy_from_slice(&weight.to_le_bytes());
+                            }
+                        }
+                    });
+                    if let Err(e) = write_result {
+                        tracing::warn!("set_skin_weights: copy-on-write failed: {e}");
+                        return None;
+                    }
                     Some(prior)
                 })
                 .await;
@@ -2998,6 +3158,7 @@ impl EditorController {
                 skybox,
                 specular,
                 irradiance,
+                probe,
             } => {
                 // Partial update: `None` slots PRESERVE the current config, so
                 // setting just one slot (skybox / specular / irradiance) doesn't
@@ -3009,10 +3170,24 @@ impl EditorController {
                     skybox: skybox.unwrap_or(prev.skybox),
                     specular: specular.unwrap_or(prev.specular),
                     irradiance: irradiance.unwrap_or(prev.irradiance),
+                    probe: probe.unwrap_or(prev.probe),
                 };
                 self.scene.environment.set(next);
                 self.scene.bump_revision();
                 Ok(Some(EditorCommand::SetEnvironment { env: prev }))
+            }
+            EditorCommand::SetShadows { patch } => {
+                // Patch semantics live in `ShadowsPatch::apply` (host-tested in
+                // editor-protocol): `None` preserves, `Some` sets clamped. The
+                // `settings_sync` observer pushes the new block into the
+                // renderer (SSCS enabled/step_count recompile; the resource-
+                // shape fields recreate their GPU textures next frame).
+                let prev = self.scene.shadows.get_cloned();
+                self.scene.shadows.set(patch.apply(prev.clone()));
+                self.scene.bump_revision();
+                Ok(Some(EditorCommand::SetShadows {
+                    patch: awsm_renderer_editor_protocol::ShadowsPatch::replace(&prev),
+                }))
             }
             EditorCommand::SetShadowsSscs {
                 enabled,
@@ -3059,6 +3234,22 @@ impl EditorController {
                 bloom,
                 dof,
                 exposure,
+                bloom_threshold,
+                bloom_knee,
+                bloom_intensity,
+                bloom_scatter,
+                ssr_enabled,
+                ssr_intensity,
+                ssr_max_distance,
+                ssr_thickness,
+                ssr_max_steps,
+                ssr_spread_cutoff,
+                ssr_edge_fade,
+                ssr_temporal,
+                ssr_resolution_scale,
+                ssr_temporal_weight,
+                ssr_debug,
+                ssr_bvh_reflections,
             } => {
                 let prev = self.scene.post_process.get_cloned();
                 let mut next = prev.clone();
@@ -3074,6 +3265,54 @@ impl EditorController {
                 if let Some(v) = exposure {
                     next.exposure = v;
                 }
+                if let Some(v) = bloom_threshold {
+                    next.bloom_threshold = v;
+                }
+                if let Some(v) = bloom_knee {
+                    next.bloom_knee = v;
+                }
+                if let Some(v) = bloom_intensity {
+                    next.bloom_intensity = v;
+                }
+                if let Some(v) = bloom_scatter {
+                    next.bloom_scatter = v;
+                }
+                if let Some(v) = ssr_enabled {
+                    next.ssr.enabled = v;
+                }
+                if let Some(v) = ssr_intensity {
+                    next.ssr.intensity = v;
+                }
+                if let Some(v) = ssr_max_distance {
+                    next.ssr.max_distance = v;
+                }
+                if let Some(v) = ssr_thickness {
+                    next.ssr.thickness = v;
+                }
+                if let Some(v) = ssr_max_steps {
+                    next.ssr.max_steps = v;
+                }
+                if let Some(v) = ssr_spread_cutoff {
+                    next.ssr.spread_cutoff = v;
+                }
+                if let Some(v) = ssr_edge_fade {
+                    next.ssr.edge_fade = v;
+                }
+                if let Some(v) = ssr_temporal {
+                    next.ssr.temporal = v;
+                }
+                if let Some(v) = ssr_resolution_scale {
+                    next.ssr.resolution_scale = v;
+                }
+                if let Some(v) = ssr_temporal_weight {
+                    next.ssr.temporal_weight = v;
+                }
+                if let Some(v) = ssr_bvh_reflections {
+                    next.ssr.bvh_reflections = v;
+                }
+                if let Some(v) = ssr_debug {
+                    next.ssr.debug = v;
+                }
                 self.scene.post_process.set(next);
                 self.scene.bump_revision();
                 self.dirty.set_neq(true);
@@ -3083,7 +3322,65 @@ impl EditorController {
                     bloom: Some(prev.bloom),
                     dof: Some(prev.dof),
                     exposure: Some(prev.exposure),
+                    bloom_threshold: Some(prev.bloom_threshold),
+                    bloom_knee: Some(prev.bloom_knee),
+                    bloom_intensity: Some(prev.bloom_intensity),
+                    bloom_scatter: Some(prev.bloom_scatter),
+                    ssr_enabled: Some(prev.ssr.enabled),
+                    ssr_intensity: Some(prev.ssr.intensity),
+                    ssr_max_distance: Some(prev.ssr.max_distance),
+                    ssr_thickness: Some(prev.ssr.thickness),
+                    ssr_max_steps: Some(prev.ssr.max_steps),
+                    ssr_spread_cutoff: Some(prev.ssr.spread_cutoff),
+                    ssr_edge_fade: Some(prev.ssr.edge_fade),
+                    ssr_temporal: Some(prev.ssr.temporal),
+                    ssr_resolution_scale: Some(prev.ssr.resolution_scale),
+                    ssr_temporal_weight: Some(prev.ssr.temporal_weight),
+                    ssr_debug: Some(prev.ssr.debug),
+                    ssr_bvh_reflections: Some(prev.ssr.bvh_reflections),
                 }))
+            }
+            EditorCommand::SetViewOptions {
+                grid,
+                gizmos,
+                light_gizmos,
+                skeleton_viz,
+                follow_agent,
+                activity_overlay,
+                mcp_notifications,
+                msaa,
+                smaa,
+            } => {
+                let s = &self.settings;
+                if let Some(v) = grid {
+                    s.grid.set_neq(v);
+                }
+                if let Some(v) = gizmos {
+                    s.gizmo.set_neq(v);
+                }
+                if let Some(v) = light_gizmos {
+                    s.light_gizmos.set_neq(v);
+                }
+                if let Some(v) = skeleton_viz {
+                    s.skeleton_viz.set_neq(v);
+                }
+                if let Some(v) = follow_agent {
+                    crate::engine::activity_feed::follow_enabled().set_neq(v);
+                }
+                if let Some(v) = activity_overlay {
+                    crate::engine::activity_feed::enabled().set_neq(v);
+                }
+                if let Some(v) = mcp_notifications {
+                    crate::remote::show_notifications().set_neq(v);
+                }
+                if let Some(v) = msaa {
+                    s.msaa.set_neq(v);
+                }
+                if let Some(v) = smaa {
+                    s.smaa.set_neq(v);
+                }
+                // Transient view state — no undo entry (same class as camera).
+                Ok(None)
             }
             EditorCommand::SnapCameraToAxis { axis } => {
                 use std::f32::consts::PI;
@@ -3130,6 +3427,21 @@ impl EditorController {
                 // Mirror into the reactive flag so the viewport toggle / shortcut
                 // reflect the current mode regardless of who changed it (incl. MCP).
                 self.settings.editor_ortho.set_neq(!perspective);
+                Ok(None)
+            }
+            EditorCommand::SetCameraClip { manual, near, far } => {
+                // Drive the reactive settings — `settings_sync` observes these and
+                // pushes the resulting clip override into the camera, so the Settings
+                // drawer toggle/fields and any MCP-driven change stay in sync.
+                if let Some(m) = manual {
+                    self.settings.cam_clip_manual.set_neq(m);
+                }
+                if let Some(n) = near {
+                    self.settings.cam_clip_near.set_neq(n);
+                }
+                if let Some(f) = far {
+                    self.settings.cam_clip_far.set_neq(f);
+                }
                 Ok(None)
             }
             EditorCommand::FrameNode { node, padding } => {
@@ -3228,6 +3540,19 @@ impl EditorController {
                 Ok(None)
             }
             EditorCommand::LoadProjectFromUrl { base_url } => {
+                // Settle-visibility FRONT guard: `editor_dispatch_json` (the
+                // headless/MCP fire-and-forget seam) spawns this dispatch and
+                // returns "ok" immediately, so a driver's `wait_render_settled`
+                // can land while this handler is still FETCHING project.toml —
+                // before `apply_project` arms the load barrier — and settle on
+                // an unpopulated scene (verified: settled in 79 ms, roots=1,
+                // tree populated ms later). Created synchronously at handler
+                // entry (the spawned task's first synchronous slice runs before
+                // the settle query's first 16 ms timer poll); RAII drop covers
+                // the fetch/parse ERROR paths, which now happen while guarded.
+                // The async tail past `apply_project` (Replace materialization
+                // → bulk commit) is covered by the armed barrier hand-off.
+                let _load_guard = CompileGuard::new();
                 match persistence::load_project_from_url(self, &base_url).await {
                     Ok(()) => {
                         self.undo.borrow_mut().clear();
@@ -3243,6 +3568,12 @@ impl EditorController {
                 Ok(None)
             }
             EditorCommand::ImportModelFromUrl { url } => {
+                // Settle-visibility front guard (see LoadProjectFromUrl): the
+                // fetch + glTF populate must hold the barrier for a driver
+                // dispatching through the fire-and-forget seam; the inserted
+                // subtree's async materialization is covered by the Replace
+                // arm's own guard in node_sync.
+                let _load_guard = CompileGuard::new();
                 let _activity =
                     crate::engine::activity::begin_activity("Inserting model — uploading to GPU…");
                 self.finish_model_import(crate::engine::bridge::gltf::import(&url).await)
@@ -3263,6 +3594,8 @@ impl EditorController {
                 Ok(None)
             }
             EditorCommand::ImportModelFromFile { name, url } => {
+                // Settle-visibility front guard (see ImportModelFromUrl).
+                let _load_guard = CompileGuard::new();
                 let _activity =
                     crate::engine::activity::begin_activity("Inserting model — uploading to GPU…");
                 let result = crate::engine::bridge::gltf::import_file(&name, &url).await;
@@ -4994,6 +5327,7 @@ impl EditorController {
             skybox: slot(&env.skybox),
             specular: slot(&env.specular),
             irradiance: slot(&env.irradiance),
+            probe: env.probe,
         }
     }
 
@@ -5715,14 +6049,18 @@ impl EditorController {
                 }
                 let edge_count = all_edges.len();
                 let start = offset.unwrap_or(0) as usize;
-                let page = match limit {
-                    Some(l) => all_edges
-                        .iter()
-                        .skip(start)
-                        .take(l as usize)
-                        .collect::<Vec<_>>(),
-                    None => all_edges.iter().skip(start).collect::<Vec<_>>(),
-                };
+                // Bounded DEFAULT: an omitted `limit` used to return the ENTIRE UV
+                // wireframe (7000+ edges on a dense mesh → a ~120 KB result that
+                // overflows a normal tool budget). Cap the default page so a naive
+                // call stays readable; callers paginate via offset/limit (and see
+                // `edge_count` vs the returned length to know there's more).
+                const DEFAULT_UV_EDGE_PAGE: usize = 1000;
+                let take_n = limit.map(|l| l as usize).unwrap_or(DEFAULT_UV_EDGE_PAGE);
+                let page = all_edges
+                    .iter()
+                    .skip(start)
+                    .take(take_n)
+                    .collect::<Vec<_>>();
                 let edges: Vec<serde_json::Value> = page
                     .iter()
                     .filter_map(|e| {
@@ -5784,11 +6122,42 @@ impl EditorController {
                 serde_json::to_string(&crate::controller::persistence::save_census(self))
                     .unwrap_or_default(),
             ),
+            EditorQuery::VerifyRoundtripReport => QueryResult::Text(
+                self.verify_roundtrip_report
+                    .get_cloned()
+                    .unwrap_or(serde_json::Value::Null)
+                    .to_string(),
+            ),
+            EditorQuery::PostProcess => QueryResult::Text(
+                serde_json::to_string(&self.scene.post_process.get_cloned()).unwrap_or_default(),
+            ),
+            EditorQuery::Shadows => QueryResult::Text(
+                serde_json::to_string(&self.scene.shadows.get_cloned()).unwrap_or_default(),
+            ),
+            EditorQuery::ViewOptions => {
+                use serde_json::json;
+                QueryResult::Text(
+                    json!({
+                        "grid": self.settings.grid.get(),
+                        "gizmos": self.settings.gizmo.get(),
+                        "light_gizmos": self.settings.light_gizmos.get(),
+                        "skeleton_viz": self.settings.skeleton_viz.get(),
+                        "follow_agent": crate::engine::activity_feed::follow_enabled().get(),
+                        "activity_overlay": crate::engine::activity_feed::enabled().get(),
+                        "mcp_notifications": crate::remote::show_notifications().get(),
+                        "msaa": self.settings.msaa.get(),
+                        "smaa": self.settings.smaa.get(),
+                    })
+                    .to_string(),
+                )
+            }
             EditorQuery::MemoryStats => {
                 use serde_json::json;
                 // Renderer-side object counts (under the renderer guard)…
                 let (
                     meshes,
+                    mesh_resources,
+                    mesh_geometry_bytes,
                     transforms,
                     materials,
                     lines,
@@ -5802,6 +6171,8 @@ impl EditorController {
                 ) = crate::engine::context::with_renderer_mut(|r| {
                     (
                         r.meshes.len(),
+                        r.meshes.resource_count(),
+                        r.meshes.geometry_pool_used_bytes(),
                         r.transforms.len(),
                         r.materials.len(),
                         r.line_count(),
@@ -5826,6 +6197,15 @@ impl EditorController {
                     .await;
                 let mut entries = std::collections::BTreeMap::new();
                 entries.insert("meshes".to_string(), json!(meshes));
+                // Shared-geometry census (axis 4): `meshes` counts INSTANCE
+                // records; `mesh_resources` counts deduped geometry uploads and
+                // `mesh_geometry_bytes` the pool bytes backing them. Prefab
+                // duplicates grow `meshes` but leave these two flat.
+                entries.insert("mesh_resources".to_string(), json!(mesh_resources));
+                entries.insert(
+                    "mesh_geometry_bytes".to_string(),
+                    json!(mesh_geometry_bytes),
+                );
                 entries.insert("transforms".to_string(), json!(transforms));
                 entries.insert("materials".to_string(), json!(materials));
                 entries.insert("lines".to_string(), json!(lines));
@@ -6783,6 +7163,21 @@ fn local_aabb(kind: &NodeKind) -> Aabb3 {
         // The shapes are centered on the node origin and Capsule/Cylinder/Cone are
         // Y-aligned in their local frame. (FIXES.md #1.)
         NodeKind::Collider(shape) => return collider_local_aabb(shape),
+        // An explicit instancer's bounds span ALL its authored instances — the
+        // def is self-contained (it owns the transform list), so the union of
+        // (instance transform × instanced-mesh AABB) is computable right here.
+        // Without this the fallback was a unit box, and framing / NodeBounds on
+        // a spread-out instancer under-measured whenever the renderer's live
+        // world AABB (which already unions instances) wasn't available.
+        // (`InstancesAlongCurve` still falls through to the unit box: its
+        // placement derives from ANOTHER node's curve, which this kind-only
+        // helper can't see — its live renderer AABB is exact, though.)
+        NodeKind::Instancer(def) => {
+            let base = crate::engine::bridge::mesh_cache::get_raw(def.mesh.0)
+                .and_then(|raw| aabb_from_positions(&raw.positions))
+                .unwrap_or(([-0.5, -0.5, -0.5], [0.5, 0.5, 0.5]));
+            return instancer_local_aabb(base, &def.transforms);
+        }
         _ => {}
     }
     // Lights / cameras / empties / un-baked meshes: a small unit box centered on
@@ -6816,6 +7211,43 @@ fn collider_local_aabb(shape: &ColliderShape) -> Aabb3 {
             radius,
         } => half(*radius, *half_height, *radius),
     }
+}
+
+/// Node-local AABB of an explicit instancer: the union of
+/// (instance transform × `base`) over every authored instance transform, where
+/// `base` is the instanced mesh's local AABB. Instance transforms are relative
+/// to the instancer node, so the union lives in the node's local frame — the
+/// caller composes it with the node's world matrix like any other local AABB.
+/// An empty transform list yields `base` unchanged (the "renders nothing"
+/// authored state still frames as a unit-ish box at the node). Pure, so it is
+/// unit-tested natively (see `instancer_aabb_tests`).
+fn instancer_local_aabb(base: Aabb3, transforms: &[awsm_renderer_editor_protocol::Trs]) -> Aabb3 {
+    let (bmin, bmax) = base;
+    let mut acc: Option<Aabb3> = None;
+    for trs in transforms {
+        let m = glam::Mat4::from_scale_rotation_translation(
+            glam::Vec3::from_array(trs.scale),
+            glam::Quat::from_array(trs.rotation),
+            glam::Vec3::from_array(trs.translation),
+        );
+        let (tmin, tmax) = transform_aabb(m, bmin, bmax);
+        acc = Some(match acc {
+            None => (tmin, tmax),
+            Some((amin, amax)) => (
+                [
+                    amin[0].min(tmin[0]),
+                    amin[1].min(tmin[1]),
+                    amin[2].min(tmin[2]),
+                ],
+                [
+                    amax[0].max(tmax[0]),
+                    amax[1].max(tmax[1]),
+                    amax[2].max(tmax[2]),
+                ],
+            ),
+        });
+    }
+    acc.unwrap_or(base)
 }
 
 /// Transform a local AABB by a world matrix and return the enclosing world AABB.
@@ -7157,6 +7589,10 @@ fn read_readback_target(
                 },
                 P::Metallic => match m {
                     Material::Pbr(p) => json!(p.metallic_factor),
+                    _ => serde_json::Value::Null,
+                },
+                P::SsrMask => match m {
+                    Material::Pbr(p) => json!(p.ssr_mask),
                     _ => serde_json::Value::Null,
                 },
                 P::Roughness => match m {
@@ -7586,6 +8022,10 @@ fn patch_builtin_param(
         },
         P::OcclusionStrength => match value.first() {
             Some(&v) => inline.occlusion_strength = v,
+            None => return false,
+        },
+        P::SsrMask => match value.first() {
+            Some(&v) => inline.ssr_mask = v.clamp(0.0, 1.0),
             None => return false,
         },
         P::EmissiveStrength => match value.first() {
@@ -9128,6 +9568,168 @@ mod unassigned_material_tests {
     #[test]
     fn non_geometry_is_none() {
         assert_eq!(unassigned_material_kind(&NodeKind::Group), "none");
+    }
+}
+
+#[cfg(test)]
+mod instancer_tests {
+    use super::*;
+    use awsm_renderer_editor_protocol::{InsertSpec, InstancerDef, Trs};
+    use futures::executor::block_on;
+
+    fn trs(t: [f32; 3]) -> Trs {
+        Trs {
+            translation: t,
+            ..Trs::IDENTITY
+        }
+    }
+
+    fn instancer_def(ctrl: &EditorController, node: NodeId) -> InstancerDef {
+        match crate::engine::scene::mutate::find_by_id(&ctrl.scene, node)
+            .expect("node exists")
+            .kind
+            .get_cloned()
+        {
+            NodeKind::Instancer(def) => def,
+            other => panic!("expected Instancer, got {other:?}"),
+        }
+    }
+
+    /// `SetInstancerTransforms` REPLACES the list wholesale, and applying the
+    /// returned inverse restores the prior list exactly (the bulk-set undo
+    /// contract, mirroring `SetTrackKeys`).
+    #[test]
+    fn set_instancer_transforms_replaces_and_undoes() {
+        let ctrl = EditorController::new();
+        let node = NodeId::new();
+        block_on(ctrl.apply(EditorCommand::Insert {
+            id: node,
+            spec: InsertSpec::Instancer,
+            parent: None,
+        }))
+        .unwrap();
+        assert!(instancer_def(&ctrl, node).transforms.is_empty());
+
+        // First bulk set: 3 transforms + colors.
+        let first = vec![
+            trs([1.0, 0.0, 0.0]),
+            trs([2.0, 0.0, 0.0]),
+            trs([3.0, 0.0, 0.0]),
+        ];
+        block_on(ctrl.apply(EditorCommand::SetInstancerTransforms {
+            node,
+            transforms: first.clone(),
+            per_instance_colors: Some(vec![[1.0, 0.0, 0.0, 1.0]]),
+        }))
+        .unwrap();
+        let def = instancer_def(&ctrl, node);
+        assert_eq!(def.transforms, first);
+        assert_eq!(def.per_instance_colors, vec![[1.0, 0.0, 0.0, 1.0]]);
+
+        // Second bulk set REPLACES (not appends); colors=None keeps current.
+        let second = vec![trs([9.0, 9.0, 9.0])];
+        let inverse = block_on(ctrl.apply(EditorCommand::SetInstancerTransforms {
+            node,
+            transforms: second.clone(),
+            per_instance_colors: None,
+        }))
+        .unwrap()
+        .expect("undoable");
+        let def = instancer_def(&ctrl, node);
+        assert_eq!(def.transforms, second, "list replaced wholesale");
+        assert_eq!(
+            def.per_instance_colors,
+            vec![[1.0, 0.0, 0.0, 1.0]],
+            "colors untouched when None"
+        );
+
+        // Undo (apply the inverse) restores the prior list exactly.
+        block_on(ctrl.apply(inverse)).unwrap();
+        let def = instancer_def(&ctrl, node);
+        assert_eq!(def.transforms, first, "undo restored the prior transforms");
+    }
+
+    /// The command rejects loudly on a non-instancer node (no silent no-op).
+    #[test]
+    fn set_instancer_transforms_rejects_wrong_kind() {
+        let ctrl = EditorController::new();
+        let node = NodeId::new();
+        block_on(ctrl.apply(EditorCommand::Insert {
+            id: node,
+            spec: InsertSpec::Empty,
+            parent: None,
+        }))
+        .unwrap();
+        let r = block_on(ctrl.apply(EditorCommand::SetInstancerTransforms {
+            node,
+            transforms: vec![],
+            per_instance_colors: None,
+        }));
+        assert!(r.is_err(), "group node must be rejected");
+    }
+}
+
+#[cfg(test)]
+mod instancer_aabb_tests {
+    //! Native tests for the pure instancer-bounds fold used by `local_aabb`
+    //! (frame_node / NodeBounds fallback): the node-local AABB of an explicit
+    //! instancer is the UNION of (instance transform × instanced-mesh AABB)
+    //! over all authored instances — not just one copy at the origin.
+    use super::instancer_local_aabb;
+    use awsm_renderer_editor_protocol::Trs;
+
+    const UNIT: ([f32; 3], [f32; 3]) = ([-0.5, -0.5, -0.5], [0.5, 0.5, 0.5]);
+
+    fn trs(t: [f32; 3]) -> Trs {
+        Trs {
+            translation: t,
+            ..Trs::IDENTITY
+        }
+    }
+
+    fn close(a: [f32; 3], b: [f32; 3]) -> bool {
+        (0..3).all(|i| (a[i] - b[i]).abs() < 1e-5)
+    }
+
+    #[test]
+    fn empty_transforms_yield_base() {
+        assert_eq!(instancer_local_aabb(UNIT, &[]), UNIT);
+    }
+
+    #[test]
+    fn spread_instances_union_their_extents() {
+        // Two unit boxes 10 apart on X: the union spans [-10.5, 10.5] on X and
+        // stays [-0.5, 0.5] on Y/Z — the exact under-measure the unit-box
+        // fallback had.
+        let (min, max) =
+            instancer_local_aabb(UNIT, &[trs([-10.0, 0.0, 0.0]), trs([10.0, 0.0, 0.0])]);
+        assert!(close(min, [-10.5, -0.5, -0.5]), "min {min:?}");
+        assert!(close(max, [10.5, 0.5, 0.5]), "max {max:?}");
+    }
+
+    #[test]
+    fn instance_scale_expands_its_copy() {
+        let big = Trs {
+            translation: [0.0, 4.0, 0.0],
+            scale: [3.0, 3.0, 3.0],
+            ..Trs::IDENTITY
+        };
+        let (min, max) = instancer_local_aabb(UNIT, &[trs([0.0, 0.0, 0.0]), big]);
+        assert!(close(min, [-1.5, -0.5, -1.5]), "min {min:?}");
+        assert!(close(max, [1.5, 5.5, 1.5]), "max {max:?}");
+    }
+
+    #[test]
+    fn rotation_encloses_the_rotated_box() {
+        // A unit box rotated 45° about Y encloses within ±(√2/2) on X/Z.
+        let rot = Trs {
+            rotation: glam::Quat::from_rotation_y(std::f32::consts::FRAC_PI_4).to_array(),
+            ..Trs::IDENTITY
+        };
+        let (min, max) = instancer_local_aabb(UNIT, &[rot]);
+        let r = std::f32::consts::SQRT_2 / 2.0;
+        assert!(close(min, [-r, -0.5, -r]), "min {min:?}");
+        assert!(close(max, [r, 0.5, r]), "max {max:?}");
     }
 }
 

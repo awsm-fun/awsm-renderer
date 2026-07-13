@@ -69,11 +69,12 @@ static OVERFLOW_WARN_GUARD: Mutex<bool> = Mutex::new(false);
 /// One-shot info log announcing the active edge budget. Called from
 /// [`MaterialEdgeBuffers::new_with_budget`]; subsequent calls are no-ops
 /// for the rest of the session.
-fn note_edge_budget_initialized(bucket_count: u32, max_edge_budget: u32) {
+fn note_edge_budget_initialized(bucket_count: u32, max_edge_budget: u32, wide_slots: bool) {
     if let Ok(mut guard) = BUDGET_LOG_GUARD.lock() {
         if !*guard {
             *guard = true;
-            let accumulator_mb = (accumulator_bytes(max_edge_budget) as f64) / (1024.0 * 1024.0);
+            let accumulator_mb =
+                (accumulator_bytes(max_edge_budget, wide_slots) as f64) / (1024.0 * 1024.0);
             tracing::info!(
                 target: "awsm_renderer::edge_resolve",
                 bucket_count,
@@ -177,8 +178,23 @@ pub fn unpack_xy(packed: u32) -> (u32, u32) {
 /// MSAA sample), so 4 slots per edge is exact.
 pub const ACCUMULATOR_SLOTS_PER_EDGE: u32 = 4;
 
-/// Bytes per accumulator slot (`vec4<f32>`).
-pub const ACCUMULATOR_SLOT_BYTES: u32 = 16;
+/// Bytes per accumulator slot, by SSR state. WIDE (SSR on) = TWO
+/// `vec4<f32>`s: words 0..4 hold the Karis-weighted color sum + weight sum,
+/// words 4..8 hold the SSR-descriptor accumulation (reflectivity-rgb sum +
+/// reflectivity-weighted spread sum) that final_blend resolves into the
+/// per-pixel reflection descriptor. NARROW (SSR off) = just the color slot:
+/// the descriptor half is not allocated at all — at the desktop edge budget
+/// the always-wide layout cost ~32 MB of idle VRAM with SSR disabled. The
+/// stride is a template axis in the three shaders that index this region
+/// (classify clear / opaque accumulate / final_blend resolve), all keyed on
+/// the same `ssr.enabled` condition; flipping SSR recreates the buffers.
+pub fn accumulator_slot_bytes(wide_slots: bool) -> u32 {
+    if wide_slots {
+        32
+    } else {
+        16
+    }
+}
 
 // ─────────────────────────────────────────────────────────────────
 // args_buffer layout (Indirect | CopyDst).
@@ -277,10 +293,10 @@ pub fn accumulator_offset(bucket_count: u32, max_edge_budget: u32) -> u32 {
 }
 
 /// Total size of the accumulator array, in bytes.
-pub fn accumulator_bytes(max_edge_budget: u32) -> u32 {
+pub fn accumulator_bytes(max_edge_budget: u32, wide_slots: bool) -> u32 {
     max_edge_budget
         .saturating_mul(ACCUMULATOR_SLOTS_PER_EDGE)
-        .saturating_mul(ACCUMULATOR_SLOT_BYTES)
+        .saturating_mul(accumulator_slot_bytes(wide_slots))
 }
 
 /// Total bytes for `data_buffer` (counter-mirror header + per-edge arrays:
@@ -294,8 +310,9 @@ pub fn accumulator_bytes(max_edge_budget: u32) -> u32 {
 /// matching `EdgeBufferLayout` uniform fields are now dead (they address
 /// offsets past the end of this shorter buffer, but nothing reads them since
 /// `append_edge_sample` is gone) and are removed in U3 along with the toggle.
-pub fn data_buffer_bytes(bucket_count: u32, max_edge_budget: u32) -> u32 {
-    accumulator_offset(bucket_count, max_edge_budget) + accumulator_bytes(max_edge_budget)
+pub fn data_buffer_bytes(bucket_count: u32, max_edge_budget: u32, wide_slots: bool) -> u32 {
+    accumulator_offset(bucket_count, max_edge_budget)
+        + accumulator_bytes(max_edge_budget, wide_slots)
 }
 
 /// Composite GPU buffers for the MSAA edge-resolve flow.
@@ -333,6 +350,9 @@ pub struct MaterialEdgeBuffers {
     pub overflow_readback_buffer: web_sys::GpuBuffer,
     pub bucket_count: u32,
     pub max_edge_budget: u32,
+    /// Wide (SSR-descriptor-carrying, 32 B) vs narrow (16 B) accumulator
+    /// slots — must match the compiled shaders' stride axis (`ssr.enabled`).
+    pub wide_slots: bool,
     pub args_size_bytes: u32,
     pub data_size_bytes: u32,
     /// CPU staging vec sized to `args_buffer_bytes(bucket_count)`.
@@ -358,8 +378,17 @@ pub const EDGE_OVERFLOW_READBACK_BYTES: u32 = 8;
 impl MaterialEdgeBuffers {
     /// Creates the edge buffers with the default desktop-profile
     /// budget. Use [`Self::new_with_budget`] for explicit control.
-    pub fn new(gpu: &AwsmRendererWebGpu, bucket_count: u32) -> Result<Self, AwsmCoreError> {
-        Self::new_with_budget(gpu, bucket_count, DEFAULT_MAX_EDGE_BUDGET_DESKTOP)
+    pub fn new(
+        gpu: &AwsmRendererWebGpu,
+        bucket_count: u32,
+        wide_slots: bool,
+    ) -> Result<Self, AwsmCoreError> {
+        Self::new_with_budget(
+            gpu,
+            bucket_count,
+            DEFAULT_MAX_EDGE_BUDGET_DESKTOP,
+            wide_slots,
+        )
     }
 
     /// Creates the edge buffers with an explicit budget. The runtime
@@ -371,11 +400,12 @@ impl MaterialEdgeBuffers {
         gpu: &AwsmRendererWebGpu,
         bucket_count: u32,
         max_edge_budget: u32,
+        wide_slots: bool,
     ) -> Result<Self, AwsmCoreError> {
         let bucket_count = bucket_count.max(1);
         let max_edge_budget = max_edge_budget.max(1);
         let args_size_bytes = args_buffer_bytes(bucket_count);
-        let data_size_bytes = data_buffer_bytes(bucket_count, max_edge_budget);
+        let data_size_bytes = data_buffer_bytes(bucket_count, max_edge_budget, wide_slots);
 
         // §4e budget boot-log: total sample memory is now O(edge_budget),
         // not O(buckets × edge_budget). Surface the data-buffer size so an
@@ -446,13 +476,14 @@ impl MaterialEdgeBuffers {
         // are allocated.
         let data_header_scratch = vec![0u8; data_header_bytes(bucket_count) as usize];
 
-        note_edge_budget_initialized(bucket_count, max_edge_budget);
+        note_edge_budget_initialized(bucket_count, max_edge_budget, wide_slots);
 
         Ok(Self {
             args_buffer,
             data_buffer,
             overflow_readback_buffer,
             bucket_count,
+            wide_slots,
             max_edge_budget,
             args_size_bytes,
             data_size_bytes,
@@ -472,7 +503,12 @@ impl MaterialEdgeBuffers {
         if needed_bucket_count <= self.bucket_count {
             return Ok(false);
         }
-        *self = Self::new_with_budget(gpu, needed_bucket_count, self.max_edge_budget)?;
+        *self = Self::new_with_budget(
+            gpu,
+            needed_bucket_count,
+            self.max_edge_budget,
+            self.wide_slots,
+        )?;
         Ok(true)
     }
 
@@ -507,7 +543,22 @@ impl MaterialEdgeBuffers {
         if new_budget == self.max_edge_budget {
             return Ok(false);
         }
-        *self = Self::new_with_budget(gpu, self.bucket_count, new_budget)?;
+        *self = Self::new_with_budget(gpu, self.bucket_count, new_budget, self.wide_slots)?;
+        Ok(true)
+    }
+
+    /// Switch between wide (SSR on) and narrow (SSR off) accumulator slots,
+    /// recreating the data buffer at the same budget. Returns whether a
+    /// recreate happened (callers mark the classify-buffer bind groups).
+    pub fn set_wide_slots(
+        &mut self,
+        gpu: &AwsmRendererWebGpu,
+        wide_slots: bool,
+    ) -> Result<bool, AwsmCoreError> {
+        if wide_slots == self.wide_slots {
+            return Ok(false);
+        }
+        *self = Self::new_with_budget(gpu, self.bucket_count, self.max_edge_budget, wide_slots)?;
         Ok(true)
     }
 
@@ -669,7 +720,7 @@ mod tests {
         ] {
             // The supported target range (≤1024) fits the guaranteed floor.
             for &bucket_count in &[16u32, 254, 1024] {
-                let bytes = data_buffer_bytes(bucket_count, budget);
+                let bytes = data_buffer_bytes(bucket_count, budget, true);
                 assert!(
                     bytes <= WEBGPU_MIN_BINDING,
                     "data_buffer {bytes} B at {bucket_count} buckets / {budget} budget exceeds the 128 MiB floor"
@@ -679,8 +730,8 @@ mod tests {
             // buffer ~64×. The sample-list pool is shared, so the only
             // growth is the tiny per-bucket header/args region. Allow a
             // generous 2× envelope.
-            let at_16 = data_buffer_bytes(16, budget) as u64;
-            let at_1024 = data_buffer_bytes(1024, budget) as u64;
+            let at_16 = data_buffer_bytes(16, budget, true) as u64;
+            let at_1024 = data_buffer_bytes(1024, budget, true) as u64;
             assert!(
                 at_1024 <= at_16 * 2,
                 "data_buffer grew {at_16}→{at_1024} (>2×) from 16→1024 buckets — sample memory is not O(edge_budget)"

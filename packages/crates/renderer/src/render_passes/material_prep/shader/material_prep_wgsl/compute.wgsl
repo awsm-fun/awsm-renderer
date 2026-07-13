@@ -57,7 +57,7 @@ fn compute_shadow_visibility_packed(
                 shadow_normal_toward_light(normal, ls.light_dir),
                 view_z,
             );
-            v = v * apply_sscs(world_pos, normalize(-light.direction), shadow_globals.sscs_params.z);
+            v = v * apply_sscs(world_pos, -light.direction, shadow_globals.sscs_params.z);
             layers[slot / 4u][slot % 4u] = v;
             slot = slot + 1u;
         }

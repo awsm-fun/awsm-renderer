@@ -517,7 +517,10 @@ impl AppScene {
                 return Ok(loader);
             }
 
-            let loader = GltfLoader::load(&gltf_id.url(), None).await?;
+            // bypass_http_cache = false: the model tester loads stable published
+            // model URLs and keeps its own in-memory cache above — normal browser
+            // HTTP caching is fine (and desirable) here.
+            let loader = GltfLoader::load(&gltf_id.url(), None, false).await?;
 
             scene
                 .gltf_cache

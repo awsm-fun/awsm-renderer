@@ -161,7 +161,8 @@ impl GeometryRenderPass {
         let depth_stencil_attachment = DepthStencilAttachment::new(depth_view)
             .with_depth_load_op(LoadOp::Clear)
             .with_depth_store_op(StoreOp::Store)
-            .with_depth_clear_value(1.0);
+            // Main-camera depth convention (003): far plane = clear value.
+            .with_depth_clear_value(ctx.features.depth().clear_value());
 
         let render_pass = ctx.command_encoder.begin_render_pass(
             &RenderPassDescriptor {

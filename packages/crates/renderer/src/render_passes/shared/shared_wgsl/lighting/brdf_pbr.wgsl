@@ -4,6 +4,25 @@
 // (which MUST be included before this file). NEVER reachable by a Custom material —
 // emitted only for the PBR base. See the taxonomy in awsm-materials::shader_includes.
 // -------------------------------------------------------------
+{% if write_ssr_descriptor %}
+// ssr-spread-gate: spread at-or-above this keeps FULL IBL specular; below it
+// SSR owns the reflection (trace hit OR skybox env fallback on miss) and the
+// IBL specular is suppressed in proportion to the reflectivity handed to SSR,
+// so environment reflections aren't counted twice. Keep in sync with the
+// same-named constant in ssr_wgsl/resolve.wgsl (travel-blur ramp) and
+// ssr_wgsl/temporal.wgsl (history-blend ramp) — grep "ssr-spread-gate".
+// Compiled ONLY when the material writes the SSR descriptor
+// (write_ssr_descriptor), so SSR-off builds are byte-identical.
+const SSR_SPREAD_GATE: f32 = 0.15;
+// ssr-spread-cutoff: where the SSR->IBL crossfade ENDS — above this spread
+// the surface is pure IBL specular; below SSR_SPREAD_GATE it is pure SSR;
+// between them the two crossfade COMPLEMENTARILY (the trace scales its
+// output by the inverse ramp — grep "ssr-spread-cutoff" in ssr_wgsl/
+// trace.wgsl). Suppressing IBL only below the GATE while SSR ran to the
+// runtime cutoff double-counted reflection energy across the whole
+// mid-gloss band and visibly washed out floors.
+const SSR_SPREAD_CUTOFF: f32 = 0.6;
+{% endif %}
 // Direct Lighting BRDF (Cook-Torrance)
 // With clearcoat and sheen extensions
 // -------------------------------------------------------------
@@ -174,6 +193,10 @@ fn brdf_ibl_with_transmission(
     color: PbrMaterialColor,
     normal: vec3<f32>,
     surface_to_camera: vec3<f32>,
+    // World-space surface position — feeds the reflection-probe box
+    // projection (ibl_info.probe_center_enabled); unused when no probe is
+    // enabled (the runtime gate inside box_project_env_dir).
+    world_position: vec3<f32>,
     ibl_filtered_env_tex: texture_cube<f32>,
     ibl_filtered_env_sampler: sampler,
     ibl_irradiance_tex: texture_cube<f32>,
@@ -302,10 +325,39 @@ fn brdf_ibl_with_transmission(
         ibl_roughness = mix(roughness, 1.0, aniso_strength * aniso_strength * (1.0 - n_dot_v));
     }
     {% endif %}
-    let prefiltered = samplePrefilteredEnv(R, ibl_roughness, ibl_filtered_env_tex, ibl_filtered_env_sampler, ibl_info);
+    // Reflection-probe box projection (parallax correction): when a probe is
+    // enabled, aim the prefiltered-env lookup at the box intersection instead
+    // of the raw direction, so env reflections track the surface's position
+    // inside the probe volume (grep box-projected-probe in wgsl_validation).
+    let R_env = box_project_env_dir(R, world_position, ibl_info.probe_center_enabled, ibl_info.probe_half);
+    let prefiltered = samplePrefilteredEnv(R_env, ibl_roughness, ibl_filtered_env_tex, ibl_filtered_env_sampler, ibl_info);
     let brdf_lut = sampleBRDFLUT(n_dot_v, roughness, brdf_lut_tex, brdf_lut_sampler);
+    {% if write_ssr_descriptor %}
+    // ssr-spread-gate (wgsl_validation pins this term): SSR is on and this
+    // surface writes the reflection descriptor, so for low-spread (near-
+    // mirror) pixels SSR supplies the reflection — scene geometry on a hit,
+    // the skybox env fallback on a miss. Adding the prefiltered-env IBL
+    // specular on top would double-count the environment (washed-out mirror
+    // images), so scale it down by the reflectivity actually handed to SSR.
+    // `ssr_fresnel`/`ssr_spread` mirror `ssr_pbr_descriptor` in compute.wgsl
+    // (the exact value the descriptor stores): Schlick fresnel at the shading
+    // n·v times the material's ssr_mask; spread = raw GGX roughness (NOT the
+    // 0.04-floored `roughness` above — a mirror's spread is exactly 0).
+    // The mask MUST be in this factor: suppression tracks what SSR actually
+    // adds, and an unmasked factor would kill IBL specular on ssr_mask=0
+    // mirrors that SSR no longer covers (black-mirror bug). Mirrors (spread
+    // 0, fresnel→1) fully suppress; by spread ≥ SSR_SPREAD_GATE the IBL
+    // specular is fully back (matching the resolve/temporal ramps); diffuse
+    // IBL is untouched.
+    let ssr_f0 = mix(vec3<f32>(0.04), base_color, metallic);
+    let ssr_fresnel = (ssr_f0 + (vec3<f32>(1.0) - ssr_f0) * pow(1.0 - n_dot_v, 5.0))
+        * clamp(color.ssr_mask, 0.0, 1.0);
+    let ssr_mask_factor = max(ssr_fresnel.r, max(ssr_fresnel.g, ssr_fresnel.b));
+    let ssr_spread = saturate(color.metallic_roughness.y);
+    let ssr_ibl_keep = 1.0 - ssr_mask_factor * (1.0 - smoothstep(SSR_SPREAD_GATE, SSR_SPREAD_CUTOFF, ssr_spread));
+    {% endif %}
     // Apply occlusion to specular with reduced strength to avoid over-darkening reflections
-    let specular = prefiltered * (F0 * brdf_lut.x + vec3<f32>(f90) * brdf_lut.y) * mix(1.0, color.occlusion, 0.5);
+    let specular = prefiltered * (F0 * brdf_lut.x + vec3<f32>(f90) * brdf_lut.y) * mix(1.0, color.occlusion, 0.5){% if write_ssr_descriptor %} * ssr_ibl_keep{% endif %};
 
     // Sheen contribution for IBL (approximate) — compile-time gated; the
     // else keeps the unscaled base (sheen-absent scaling == 1).
@@ -327,7 +379,7 @@ fn brdf_ibl_with_transmission(
     {% if pbr_features.clearcoat %}
     let cc_n = safe_normalize(color.clearcoat_normal);
     let cc_n_dot_v = saturate(dot(cc_n, v));
-    let cc_R = reflect(-v, cc_n);
+    let cc_R = box_project_env_dir(reflect(-v, cc_n), world_position, ibl_info.probe_center_enabled, ibl_info.probe_half);
     let cc_roughness = max(color.clearcoat_roughness, 0.04);
     // Sample prefiltered environment for clearcoat reflection
     let cc_prefiltered = samplePrefilteredEnv(cc_R, cc_roughness, ibl_filtered_env_tex, ibl_filtered_env_sampler, ibl_info);
@@ -352,6 +404,7 @@ fn brdf_ibl(
     color: PbrMaterialColor,
     normal: vec3<f32>,
     surface_to_camera: vec3<f32>,
+    world_position: vec3<f32>,
     ibl_filtered_env_tex: texture_cube<f32>,
     ibl_filtered_env_sampler: sampler,
     ibl_irradiance_tex: texture_cube<f32>,
@@ -431,6 +484,7 @@ fn brdf_ibl(
         color,
         normal,
         surface_to_camera,
+        world_position,
         ibl_filtered_env_tex,
         ibl_filtered_env_sampler,
         ibl_irradiance_tex,

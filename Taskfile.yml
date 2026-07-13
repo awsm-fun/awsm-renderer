@@ -16,6 +16,8 @@ includes:
     taskfile: ./taskfiles/mcp.yml
   mt:
     taskfile: ./taskfiles/examples/multithreaded.yml
+  pt:
+    taskfile: ./taskfiles/examples/player-tests.yml
   debug-mobile:
     taskfile: ./taskfiles/debugging/mobile.yml
 
@@ -41,12 +43,18 @@ tasks:
       - media-additional-assets
 
   mcp-dev:
-    desc: "Editor + MCP server (+ media). Then open http://localhost:9085/?mcp=http://127.0.0.1:9086 to attach the editor to the MCP server."
+    desc: "Editor + MCP server (+ media) for LOCAL renderer/MCP dev. The MCP server runs on a dedicated dev port (9186), NOT the prod default (9086) that deployed editors dial into — so it never conflicts with a live production MCP server. This editor's connect button defaults straight to the dev port, so plain http://localhost:9085 attaches (no ?mcp= needed). Pass a custom port with `task mcp-dev -- <port>`."
+    vars:
+      MCP_PORT: '{{.CLI_ARGS | default .PORT_MCP_HTTP_LOCAL_DEV}}'
     deps:
-      - editor:dev
+      - task: editor:dev
+        vars:
+          MCP_ORIGIN: "http://127.0.0.1:{{.MCP_PORT}}"
       - media-local
       - media-additional-assets
-      - mcp:serve
+      - task: mcp:serve
+        vars:
+          MCP_PORT: "{{.MCP_PORT}}"
 
   model-tests-dev:
     desc: "Run model-tests dev server in parallel plus the media servers"
@@ -88,6 +96,18 @@ tasks:
       - >
         cd {{.PATH_MEDIA_ADDITIONAL_ASSETS}} &&
         http-server --cors -p {{.PORT_MEDIA_ADDITIONAL_ASSETS_DEV}}
+
+  test-scenes:
+    desc: "Serve examples/test-scenes (the permanent verification suite: saved projects + baked bundles + goldens) on :{{.PORT_TEST_SCENES_DEV}}. Load a project in the editor via load_project_from_url http://localhost:{{.PORT_TEST_SCENES_DEV}}/<scene>/project; player bundles live at /<scene>/bundle."
+    cmds:
+      - >
+        cd {{joinPath .PATH_REPO_ROOT "examples/test-scenes"}} &&
+        http-server --cors -p {{.PORT_TEST_SCENES_DEV}}
+
+  player-tests:
+    desc: "Player-runtime test harness (plan 007). Start `task test-scenes` (:{{.PORT_TEST_SCENES_DEV}}) FIRST — the harness loads the baked player bundles from http://localhost:{{.PORT_TEST_SCENES_DEV}}/<scene>/bundle through the player loader — then this serves the wasm harness on :{{.PORT_PLAYER_TESTS_DEV}}. Open http://localhost:{{.PORT_PLAYER_TESTS_DEV}} and read the console: one `PLAYER-TEST <name>: PASS/FAIL — <detail>` line per check, ending with `PLAYER-TESTS COMPLETE: <pass>/<total>`."
+    deps:
+      - pt:dev
 
   lint:
     desc: "Run the exact lints CI runs (rustfmt + clippy with -D warnings, all features, tests). Mirrors .github/workflows/test.yml."

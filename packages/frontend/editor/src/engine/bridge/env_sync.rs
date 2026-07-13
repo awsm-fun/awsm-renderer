@@ -66,6 +66,14 @@ pub fn has_ktx(id: AssetId) -> bool {
     KTX_BYTES.with(|m| m.borrow().contains_key(&id))
 }
 
+/// Drop every stashed KTX payload. Only the `VerifyRoundtrip` self-test calls
+/// this: it models a truly cold load, where `restore_ktx` (re-reading the
+/// serialized `assets/<id>.ktx2` bytes) is the ONLY way an HDR environment
+/// comes back.
+pub fn clear_ktx_stash() {
+    KTX_BYTES.with(|m| m.borrow_mut().clear());
+}
+
 /// Apply the current `scene.environment` (skybox + IBL) ONCE, awaited — call at
 /// boot AFTER the renderer is ready but BEFORE the render loop starts.
 ///
@@ -86,6 +94,7 @@ pub async fn apply_initial() {
     if let Err(err) = apply_ibl(&env.specular, &env.irradiance).await {
         tracing::error!("initial ibl apply failed: {err}");
     }
+    apply_probe(&env.probe).await;
 }
 
 /// Begin mirroring `scene.environment` onto the renderer. Call once at boot
@@ -110,6 +119,10 @@ pub fn start() {
                     .as_ref()
                     .map(|p| p.specular != env.specular || p.irradiance != env.irradiance)
                     .unwrap_or(true);
+                let probe_changed = previous
+                    .as_ref()
+                    .map(|p| p.probe != env.probe)
+                    .unwrap_or(true);
                 previous = Some(env.clone());
                 async move {
                     if sky_changed {
@@ -123,6 +136,9 @@ pub fn start() {
                             tracing::error!("ibl apply failed: {err}");
                             Toast::error(format!("IBL failed: {err}"));
                         }
+                    }
+                    if probe_changed {
+                        apply_probe(&env.probe).await;
                     }
                 }
             })
@@ -142,6 +158,23 @@ async fn apply_skybox(slot: &EnvSlot) -> anyhow::Result<()> {
     let handle = renderer_handle();
     let mut renderer = handle.lock().await;
     set_skybox_on_renderer(&mut renderer, image).await
+}
+
+/// Push the box-projected reflection probe into the renderer (a pure uniform
+/// update — infallible, no assets involved).
+async fn apply_probe(probe: &crate::engine::scene::ReflectionProbe) {
+    let handle = renderer_handle();
+    let mut renderer = handle.lock().await;
+    renderer
+        .lights
+        .set_reflection_probe(
+            probe
+                .enabled
+                .then_some(awsm_renderer::lights::ReflectionProbeBox {
+                    center: probe.center,
+                    half_extents: probe.half_extents,
+                }),
+        );
 }
 
 async fn apply_ibl(specular: &EnvSlot, irradiance: &EnvSlot) -> anyhow::Result<()> {

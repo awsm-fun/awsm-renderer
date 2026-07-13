@@ -22,6 +22,7 @@ impl AwsmRenderer {
             &self.render_textures,
             current_width as f32,
             current_height as f32,
+            self.features.depth(),
         )?;
 
         Ok(())
@@ -48,6 +49,20 @@ pub struct CameraMatrices {
     pub focus_distance: f32,
     /// Aperture f-stop for depth of field. Lower = more blur. Default: 5.6
     pub aperture: f32,
+    /// Depth convention the `projection` was built under (003). Consumers that
+    /// derive convention-dependent data from these matrices (frustum-plane
+    /// extraction, near/far recovery) read this instead of guessing from the
+    /// matrix. MUST match the renderer's `features.reverse_z`.
+    pub reverse_z: bool,
+    /// Near clip plane in world units — carried EXPLICITLY (003 stage 5) so
+    /// froxel z-slicing / cascade fitting never recover it from the matrix
+    /// (that algebra breaks under reverse-Z and outright fails under
+    /// infinite-far, where `proj[2][2] == 0`).
+    pub near: f32,
+    /// Far clip plane in world units. May be `f32::INFINITY` under the
+    /// stage-8 infinite-far projection — consumers that need a finite bound
+    /// (froxel slicing, cascade fitting) clamp it themselves.
+    pub far: f32,
 }
 
 impl CameraMatrices {
@@ -55,7 +70,10 @@ impl CameraMatrices {
     /// common case, so a consumer doesn't hand-roll glam matrices. `fov_y` is in
     /// radians; `aspect` = width / height. Depth-of-field defaults to focusing on
     /// `target` at f/16 (tweak `focus_distance` / `aperture` afterward if needed).
+    /// `convention` MUST match the renderer's `features.depth()` — a forward-Z
+    /// projection on a reverse-Z renderer inverts every depth test.
     pub fn perspective(
+        convention: crate::depth_convention::DepthConvention,
         eye: Vec3,
         target: Vec3,
         up: Vec3,
@@ -66,7 +84,10 @@ impl CameraMatrices {
     ) -> Self {
         Self {
             view: Mat4::look_at_rh(eye, target, up),
-            projection: Mat4::perspective_rh(fov_y, aspect, near, far),
+            projection: convention.perspective(fov_y, aspect, near, far),
+            reverse_z: convention.reverse_z,
+            near,
+            far,
             position_world: eye,
             focus_distance: (target - eye).length().max(0.001),
             aperture: 16.0,
@@ -104,7 +125,16 @@ impl CameraBuffer {
     //  frustum corner rays (4 * vec4) 64 bytes
     //  viewport (vec4) 16 bytes
     //  dof_params (vec4: focus_distance, aperture, unused, unused) 16 bytes
-    // Total = 496 bytes (all members 16-byte aligned, no implicit gaps)
+    //  prev_view_projection (mat4)  64 bytes  (M3 SSR temporal reprojection)
+    // Total = 560 bytes (all members 16-byte aligned, no implicit gaps)
+    //
+    // `prev_view_projection` is END-APPENDED (M3): it carries the PRIOR frame's
+    // unjittered view-projection so the SSR temporal variant can depth-reproject
+    // this frame's world positions into last frame's screen space. Appending at
+    // the end preserves every existing field offset — the 17 shaders that share
+    // `CameraRaw` (`shared_wgsl/camera.wgsl`) ignore the trailing field unless
+    // they opt in, and none hardcode the struct size (a bound uniform buffer may
+    // be larger than the WGSL struct that reads it).
     //
     // A `vec4<u32>` slot used to live between `position` and
     // `frustum_rays` carrying `render_textures.frame_count()` as
@@ -113,7 +143,7 @@ impl CameraBuffer {
     // `crates/renderer/src/frame_globals`). The slot was removed —
     // Camera is 16 bytes slimmer.
     /// Byte size of the camera uniform buffer.
-    pub const BYTE_SIZE: usize = 496;
+    pub const BYTE_SIZE: usize = 560;
 
     /// Creates a camera buffer on the GPU.
     pub fn new(gpu: &AwsmRendererWebGpu) -> Result<Self> {
@@ -149,6 +179,7 @@ impl CameraBuffer {
         render_textures: &RenderTextures,
         screen_width: f32,
         screen_height: f32,
+        convention: crate::depth_convention::DepthConvention,
     ) -> Result<()> {
         let mut camera_matrices = camera_matrices_orig.clone();
 
@@ -195,7 +226,7 @@ impl CameraBuffer {
         let inv_projection = camera_matrices.projection.inverse();
         let inv_view_projection = camera_matrices.inv_view_projection();
         let inv_view = camera_matrices.view.inverse();
-        let frustum_rays = compute_view_frustum_rays(inv_projection);
+        let frustum_rays = compute_view_frustum_rays(inv_projection, convention.near_ndc_z());
 
         // let s = format!("CameraBuffer Update, inv_projection: {inv_projection:?} inv_view_projection: {inv_view_projection:?} inv_view: {inv_view:?} frustum rays: {frustum_rays:?}");
 
@@ -243,6 +274,24 @@ impl CameraBuffer {
                 0.0,
                 0.0,
             ],
+        );
+
+        // M3 SSR temporal: the PRIOR frame's unjittered view-projection, for
+        // depth reprojection in the temporal SSR variant. `self.last_matrices`
+        // still holds the previous frame's matrices here — it is overwritten
+        // with THIS frame's below. Frame 0 (no history) → the current
+        // view-projection, i.e. zero camera motion so the first temporal frame
+        // reprojects onto itself. Non-temporal shaders ignore this trailing
+        // field (see `BYTE_SIZE`'s rationale).
+        let prev_view_projection = self
+            .last_matrices
+            .as_ref()
+            .map(|m| m.view_projection())
+            .unwrap_or_else(|| camera_matrices_orig.view_projection());
+        write_f32_slice(
+            &mut self.raw_data,
+            &mut offset,
+            &prev_view_projection.to_cols_array(),
         );
 
         debug_assert_eq!(offset, Self::BYTE_SIZE, "Buffer layout mismatch!");
@@ -317,15 +366,17 @@ fn halton(mut index: u32, base: u32) -> f32 {
 /// **NOT for frustum culling** - culling needs 6 frustum planes extracted from view-proj matrix.
 ///
 /// Order: [0]=bottom-left, [1]=bottom-right, [2]=top-left, [3]=top-right
-fn compute_view_frustum_rays(inv_projection: Mat4) -> [Vec4; 4] {
-    // Reproject the clip-space corners of the near plane back into view space. These serve as
+fn compute_view_frustum_rays(inv_projection: Mat4, near_ndc_z: f32) -> [Vec4; 4] {
+    // Reproject the clip-space corners of the NEAR plane back into view space. These serve as
     // canonical ray directions that the compute shader can bilinearly interpolate per pixel.
-    // Use z=0 (near plane in WebGPU NDC), not z=1 (far plane) to avoid infinities
+    // The near plane's NDC z is convention-dependent (forward-Z 0, reverse-Z 1) — the FAR
+    // plane must never be used: it sits at infinity under infinite-far reverse-Z, where
+    // unprojection yields w=0 → NaN rays.
     let ndc_corners = [
-        Vec4::new(-1.0, -1.0, 0.0, 1.0),
-        Vec4::new(1.0, -1.0, 0.0, 1.0),
-        Vec4::new(-1.0, 1.0, 0.0, 1.0),
-        Vec4::new(1.0, 1.0, 0.0, 1.0),
+        Vec4::new(-1.0, -1.0, near_ndc_z, 1.0),
+        Vec4::new(1.0, -1.0, near_ndc_z, 1.0),
+        Vec4::new(-1.0, 1.0, near_ndc_z, 1.0),
+        Vec4::new(1.0, 1.0, near_ndc_z, 1.0),
     ];
 
     let mut rays = [Vec4::ZERO; 4];

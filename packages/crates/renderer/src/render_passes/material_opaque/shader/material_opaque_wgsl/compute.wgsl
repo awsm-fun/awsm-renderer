@@ -192,6 +192,16 @@ fn cs_opaque(
     var color: vec3<f32>;
     var base_alpha: f32;
 
+    {% if write_ssr_descriptor %}
+    // M2a: material-owned SSR reflection descriptor. RGB = reflectivity color
+    // (Schlick fresnel × ssr_mask; 0 = this surface opts out of SSR), A = ssr_spread
+    // (0 mirror … 1 diffuse). Defaults to "no reflection"; the PBR arm below
+    // opts in. Stored once per pixel at sample 0 beside the HDR write. Compiled
+    // out entirely when SSR is off (write_ssr_descriptor = false).
+    var ssr_reflectivity: vec3<f32> = vec3<f32>(0.0);
+    var ssr_spread: f32 = 0.0;
+    {% endif %}
+
     {% if base == ShadingBase::Unlit %}
         // Unlit material path
         let unlit_material = unlit_get_material(material_offset);
@@ -301,6 +311,20 @@ fn cs_opaque(
             );
         {% endif %}
         base_alpha = material_color.base.a;
+        {% if write_ssr_descriptor %}
+        // M2a/M2b: PBR opts into SSR by writing its fresnel-weighted
+        // reflectivity (Schlick at the geometry n·v — the same normal/view
+        // the trace reconstructs — times ssr_mask; see ssr_pbr_descriptor).
+        let ssr_desc = ssr_pbr_descriptor(
+            material_color.base.rgb,
+            material_color.metallic_roughness.x,
+            material_color.metallic_roughness.y,
+            pbr_material.ssr_mask,
+            saturate(dot(world_normal, standard_coordinates.surface_to_camera)),
+        );
+        ssr_reflectivity = ssr_desc.rgb;
+        ssr_spread = ssr_desc.a;
+        {% endif %}
     {% else if base == ShadingBase::Flipbook %}
         // FlipBook: grid-uniform sprite-sheet, sampled per
         // `frame_globals.time + time_offset`. Tints by `material.tint`.
@@ -415,6 +439,13 @@ fn cs_opaque(
 
     // Write to output texture for non-edge pixel
     textureStore(opaque_tex, coords, vec4<f32>(color, base_alpha));
+    {% if write_ssr_descriptor %}
+    // M2a: material-owned SSR reflection descriptor, once per pixel at
+    // sample 0 — reflectivity scaled by the material's MSAA sample coverage
+    // (see ssr_descriptor_coverage).
+    let ssr_cov = ssr_descriptor_coverage(coords, material_meta_offset);
+    textureStore(reflection_descriptor_tex, coords, vec4<f32>(ssr_reflectivity * ssr_cov, ssr_spread));
+    {% endif %}
 }
 {% endif %}
 
@@ -426,6 +457,65 @@ fn get_triangle_indices(attribute_indices_offset: u32, triangle_index: u32) -> v
         bitcast<u32>(visibility_data[base + 2u]),
     );
 }
+
+{% if write_ssr_descriptor %}
+// Fraction of this pixel's MSAA samples covered by the SAME material as the
+// sample whose evaluated descriptor is stored (sample 0 by convention). The
+// COLOR target gets a proper per-sample edge resolve, but the descriptor is
+// single-sample: storing it un-scaled makes the SSR composite add
+// all-or-nothing reflection along silhouettes over reflective surfaces —
+// alternating bright/dark serration that visibly undoes MSAA (wgsl_validation
+// pins this helper). Scaling reflectivity by the writing material's actual
+// sample coverage makes the added reflection energy track the same coverage
+// the resolved color already encodes: SSR can never add more reflection than
+// the reflective surface's share of the pixel.
+fn ssr_descriptor_coverage(coords: vec2<i32>, mat_offset: u32) -> f32 {
+    {% if multisampled_geometry %}
+    var covered = 0u;
+    for (var s = 0u; s < {{ msaa_sample_count }}u; s++) {
+        var vis_s: vec4<u32>;
+        switch(s) {
+            case 0u: { vis_s = textureLoad(visibility_data_tex, coords, 0); }
+            case 1u: { vis_s = textureLoad(visibility_data_tex, coords, 1); }
+            case 2u: { vis_s = textureLoad(visibility_data_tex, coords, 2); }
+            case 3u, default: { vis_s = textureLoad(visibility_data_tex, coords, 3); }
+        }
+        if (join32(vis_s.z, vis_s.w) == mat_offset) {
+            covered += 1u;
+        }
+    }
+    return f32(covered) / f32({{ msaa_sample_count }}u);
+    {% else %}
+    return 1.0;
+    {% endif %}
+}
+
+// M2a/M2b: the PBR SSR reflection descriptor — RGB = the FULL per-pixel
+// reflectivity the SSR pass multiplies its reflection by: Schlick fresnel
+// (F0 = mix(0.04, base, metallic) at the shading n·v) times the material's
+// ssr_mask. Fresnel is baked HERE, not in the trace: a mask applied to F0
+// alone is invisible at grazing (Schlick's (1-F0) term dominates and is
+// unmasked), so fractional ssr_mask must scale the finished fresnel to damp
+// the reflection uniformly at every angle. 0 = fully opted out (trace + bvh
+// skip the pixel; brdf_pbr keeps IBL specular because its suppression reads
+// the same masked value). A = GGX roughness mapped to reflection spread
+// (0 mirror … 1 diffuse). Single source of truth for the three shading arms
+// (cs_opaque / shade_sample / cs_shade interior).
+fn ssr_pbr_descriptor(
+    base_rgb: vec3<f32>,
+    metallic: f32,
+    roughness: f32,
+    ssr_mask: f32,
+    n_dot_v: f32,
+) -> vec4<f32> {
+    let f0 = mix(vec3<f32>(0.04), base_rgb, metallic);
+    let fresnel = f0 + (vec3<f32>(1.0) - f0) * pow(1.0 - saturate(n_dot_v), 5.0);
+    return vec4<f32>(
+        fresnel * clamp(ssr_mask, 0.0, 1.0),
+        roughness,
+    );
+}
+{% endif %}
 
 {% if multisampled_geometry %}
 // ════════════════════════════════════════════════════════════════════
@@ -447,11 +537,23 @@ fn get_triangle_indices(attribute_indices_offset: u32, triangle_index: u32) -> v
 // See https://github.com/dakom/awsm-renderer/pull/99 § Pass structure step 4.
 // ════════════════════════════════════════════════════════════════════
 
+// Per-sample shade output: the shaded color+alpha, plus this sample's SSR
+// reflection descriptor (reflectivity rgb + spread; zero when the
+// write_ssr_descriptor axis is off, on bails, and for non-reflective
+// materials). The caller accumulates the descriptor per-sample so
+// final_blend can resolve a COVERAGE-correct per-pixel descriptor — a
+// single-sample descriptor makes the SSR composite add all-or-nothing
+// reflection along silhouettes, visibly undoing MSAA.
+struct ShadeSampleOut {
+    color: vec4<f32>,
+    ssr_desc: vec4<f32>,
+};
+
 // Shade a single MSAA sample for this shader_id and return
-// (color, alpha). Reads visibility/barycentric/normal textures at the
-// given (coords, sample_index). Returns a sentinel zero on samples
-// that don't belong to this shader_id (the caller's mask gate filters
-// these out upstream, but we keep the bail for robustness).
+// (color+alpha, ssr descriptor). Reads visibility/barycentric/normal
+// textures at the given (coords, sample_index). Returns a sentinel zero on
+// samples that don't belong to this shader_id (the caller's mask gate
+// filters these out upstream, but we keep the bail for robustness).
 fn shade_sample(
     coords: vec2<i32>,
     sample_index: u32,
@@ -461,7 +563,7 @@ fn shade_sample(
     {% if inc.light_access %}
     lights_info: LightsInfo,
     {% endif %}
-) -> vec4<f32> {
+) -> ShadeSampleOut {
     let textures = msaa_load_sample_textures(coords, sample_index);
     let tri_id = join32(textures.vis_data.x, textures.vis_data.y);
     let mat_meta_off = join32(textures.vis_data.z, textures.vis_data.w);
@@ -469,11 +571,11 @@ fn shade_sample(
     // Skybox / no geometry — caller's mask should never put us here
     // for a non-skybox shader_id, but bail safely.
     if (tri_id == U32_MAX) {
-        return vec4<f32>(0.0);
+        return ShadeSampleOut(vec4<f32>(0.0), vec4<f32>(0.0));
     }
     let sample_mesh_meta = material_mesh_metas[mat_meta_off / META_SIZE_IN_BYTES];
     if (sample_mesh_meta.is_hud == 1u) {
-        return vec4<f32>(0.0);
+        return ShadeSampleOut(vec4<f32>(0.0), vec4<f32>(0.0));
     }
 
     let bary_xy = vec2<f32>(f32(textures.bary.x), f32(textures.bary.y)) / 65535.0;
@@ -511,10 +613,20 @@ fn shade_sample(
     // pipeline.
     let sample_shader_id = material_load_shader_id(sample_mat_offset);
     // Guard on the numeric (registry-allocated) id regardless of `base`.
-    if (sample_shader_id != {{ shader_id.as_u32() }}u) { return vec4<f32>(0.0); }
+    if (sample_shader_id != {{ shader_id.as_u32() }}u) { return ShadeSampleOut(vec4<f32>(0.0), vec4<f32>(0.0)); }
 
     var color: vec3<f32>;
     var base_alpha: f32;
+
+    {% if write_ssr_descriptor %}
+    // M2a: material-owned SSR reflection descriptor. RGB = reflectivity color
+    // (Schlick fresnel × ssr_mask; 0 = this surface opts out of SSR), A = ssr_spread
+    // (0 mirror … 1 diffuse). Defaults to "no reflection"; the PBR arm below
+    // opts in. Stored once per pixel at sample 0 beside the HDR write. Compiled
+    // out entirely when SSR is off (write_ssr_descriptor = false).
+    var ssr_reflectivity: vec3<f32> = vec3<f32>(0.0);
+    var ssr_spread: f32 = 0.0;
+    {% endif %}
 
     {% if base == ShadingBase::Unlit %}
         let unlit_material = unlit_get_material(sample_mat_offset);
@@ -606,6 +718,20 @@ fn shade_sample(
             );
         {% endif %}
         base_alpha = material_color.base.a;
+        {% if write_ssr_descriptor %}
+        // M2a/M2b: PBR opts into SSR by writing its fresnel-weighted
+        // reflectivity (Schlick at this SAMPLE's geometry n·v times ssr_mask;
+        // see ssr_pbr_descriptor).
+        let ssr_desc = ssr_pbr_descriptor(
+            material_color.base.rgb,
+            material_color.metallic_roughness.x,
+            material_color.metallic_roughness.y,
+            pbr_material.ssr_mask,
+            saturate(dot(sample_normal, standard_coordinates.surface_to_camera)),
+        );
+        ssr_reflectivity = ssr_desc.rgb;
+        ssr_spread = ssr_desc.a;
+        {% endif %}
     {% else if base == ShadingBase::Flipbook %}
         let flipbook_material = flipbook_get_material(sample_mat_offset);
         var flipbook_sampled: vec4<f32> = vec4<f32>(1.0);
@@ -694,7 +820,15 @@ fn shade_sample(
     }
     {% endif %}
 
-    return vec4<f32>(color, base_alpha);
+    {% if write_ssr_descriptor %}
+    // M2a: this sample's SSR descriptor rides back to the edge arm, which
+    // accumulates it into the slot's descriptor words; final_blend resolves
+    // the pixel's coverage-correct descriptor from all samples (edge pixels'
+    // primary-pass sample-0 store gets overwritten there).
+    return ShadeSampleOut(vec4<f32>(color, base_alpha), vec4<f32>(ssr_reflectivity, ssr_spread));
+    {% else %}
+    return ShadeSampleOut(vec4<f32>(color, base_alpha), vec4<f32>(0.0));
+    {% endif %}
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -829,6 +963,11 @@ fn cs_shade(
 
         var color: vec3<f32>;
         var base_alpha: f32;
+        {% if write_ssr_descriptor %}
+        // M2a: SSR reflection descriptor (interior arm). See cs_opaque.
+        var ssr_reflectivity: vec3<f32> = vec3<f32>(0.0);
+        var ssr_spread: f32 = 0.0;
+        {% endif %}
 
         {% if base == ShadingBase::Unlit %}
             let unlit_material = unlit_get_material(material_offset);
@@ -928,6 +1067,18 @@ fn cs_shade(
                 );
             {% endif %}
             base_alpha = material_color.base.a;
+            {% if write_ssr_descriptor %}
+            // M2a: PBR opts into SSR (interior arm). See ssr_pbr_descriptor.
+            let ssr_desc = ssr_pbr_descriptor(
+                material_color.base.rgb,
+                material_color.metallic_roughness.x,
+                material_color.metallic_roughness.y,
+                pbr_material.ssr_mask,
+                saturate(dot(world_normal, standard_coordinates.surface_to_camera)),
+            );
+            ssr_reflectivity = ssr_desc.rgb;
+            ssr_spread = ssr_desc.a;
+            {% endif %}
         {% else if base == ShadingBase::Flipbook %}
             let flipbook_material = flipbook_get_material(material_offset);
             var flipbook_sampled: vec4<f32> = vec4<f32>(1.0);
@@ -1016,6 +1167,12 @@ fn cs_shade(
         {% endif %}
 
         textureStore(opaque_tex, coords, vec4<f32>(color, base_alpha));
+        {% if write_ssr_descriptor %}
+        // M2a: material-owned SSR reflection descriptor (cs_shade interior arm,
+        // MSAA sample 0). Mirrors the cs_opaque store, coverage-scaled.
+        let ssr_cov = ssr_descriptor_coverage(coords, material_meta_offset);
+        textureStore(reflection_descriptor_tex, coords, vec4<f32>(ssr_reflectivity * ssr_cov, ssr_spread));
+        {% endif %}
         return;
     }
 
@@ -1068,6 +1225,11 @@ fn cs_shade(
     var color_sum = vec3<f32>(0.0);
     var alpha_sum: f32 = 0.0;
     var sample_count: u32 = 0u;
+    var weight_sum: f32 = 0.0;
+    {% if write_ssr_descriptor %}
+    var desc_rgb_sum = vec3<f32>(0.0);
+    var desc_spread_wsum: f32 = 0.0;
+    {% endif %}
 
     for (var s = 0u; s < 4u; s++) {
         // Per-sample ownership: the same shader_id gate `shade_sample`
@@ -1098,10 +1260,21 @@ fn cs_shade(
             {% if prep_present %}
             g_prep_ctx.edge_shadow_xy = prep_edge_shadow_xy(edge_pixel_id, s);
             {% endif %}
-            let shaded = shade_sample(coords, s, edge_camera, edge_screen_dims, edge_screen_dims_f32{% if inc.light_access %}, lights_info{% endif %});
-            color_sum += shaded.rgb;
+            let ss = shade_sample(coords, s, edge_camera, edge_screen_dims, edge_screen_dims_f32{% if inc.light_access %}, lights_info{% endif %});
+            let shaded = ss.color;
+            // Karis (tonemap-weighted) resolve; rationale in final_blend.wgsl.
+            let karis_w = 1.0 / (1.0 + max(shaded.r, max(shaded.g, shaded.b)));
+            color_sum += shaded.rgb * karis_w;
             alpha_sum += shaded.a;
             sample_count += 1u;
+            weight_sum += karis_w;
+            {% if write_ssr_descriptor %}
+            // SSR descriptor accumulation — RAW sums (final_blend divides by
+            // the 4 MSAA samples); spread weighted by its own reflectivity.
+            desc_rgb_sum += ss.ssr_desc.rgb;
+            desc_spread_wsum += ss.ssr_desc.a
+                * max(ss.ssr_desc.r, max(ss.ssr_desc.g, ss.ssr_desc.b));
+            {% endif %}
         }
     }
 
@@ -1111,10 +1284,21 @@ fn cs_shade(
 
     // Accumulate into accumulator[edge_pixel_id × 4 + slot_index] (IDENTICAL
     // to cs_edge — same format the unchanged final_blend resolves).
-    let accum_word_index = edge_layout.accumulator_base + (edge_pixel_id * 4u + slot_index) * 4u;
+    // SSR on: 8 words per slot (0..4 Karis color sum + weight, 4..8 SSR
+    // descriptor sums). SSR off: 4 words — the descriptor half is not
+    // ALLOCATED (see ACCUMULATOR_SLOT_BYTES in edge_buffers.rs: the wide
+    // stride cost ~32 MB of idle VRAM at the desktop edge budget).
+    let accum_word_index = edge_layout.accumulator_base + (edge_pixel_id * 4u + slot_index) * {% if write_ssr_descriptor %}8u{% else %}4u{% endif %};
     edge_data[accum_word_index + 0u] = bitcast<u32>(color_sum.x);
     edge_data[accum_word_index + 1u] = bitcast<u32>(color_sum.y);
     edge_data[accum_word_index + 2u] = bitcast<u32>(color_sum.z);
-    edge_data[accum_word_index + 3u] = bitcast<u32>(f32(sample_count));
+    // Karis WEIGHT sum, not the raw sample count.
+    edge_data[accum_word_index + 3u] = bitcast<u32>(weight_sum);
+    {% if write_ssr_descriptor %}
+    edge_data[accum_word_index + 4u] = bitcast<u32>(desc_rgb_sum.x);
+    edge_data[accum_word_index + 5u] = bitcast<u32>(desc_rgb_sum.y);
+    edge_data[accum_word_index + 6u] = bitcast<u32>(desc_rgb_sum.z);
+    edge_data[accum_word_index + 7u] = bitcast<u32>(desc_spread_wsum);
+    {% endif %}
 }
 {% endif %}

@@ -126,8 +126,8 @@ use awsm_renderer_gltf::loader::GltfLoader;
 use awsm_renderer_gltf::{AwsmRendererGltfExt, GltfMaterialSource, PopulateGltfOpts};
 use awsm_renderer_scene::{
     mesh_glb_filename, AssetId, AssetSource, CameraConfig, CurveDef, DecalConfig, EditorNode,
-    InstancesAlongCurveDef, LightConfig, LineDef, MaterialInstance, MaterialShading, NodeId,
-    NodeKind, ParticleEmitterDef, RuntimeMesh, Scene, SpriteDef, Trs, ASSETS_DIR,
+    InstancerDef, InstancesAlongCurveDef, LightConfig, LineDef, MaterialInstance, MaterialShading,
+    NodeId, NodeKind, ParticleEmitterDef, RuntimeMesh, Scene, SpriteDef, Trs, ASSETS_DIR,
 };
 use glam::{Mat4, Quat, Vec3, Vec4};
 
@@ -230,6 +230,12 @@ pub struct LoadedScene {
     /// for direct "the node's current material" addressing when a game
     /// drives per-node material params (uniforms, emissive) at runtime.
     pub node_materials: HashMap<NodeId, MaterialKey>,
+    /// Every [`TransformKey`] under which the load minted GPU **instance rows**
+    /// (`enable_mesh_instancing_opaque` transform lists + per-instance colour
+    /// attributes) — one per materialized `InstancesAlongCurve` / `Instancer`
+    /// node. The rows live in `renderer.instances`, outside the mesh/transform
+    /// stores, so [`teardown`](Self::teardown) frees them explicitly.
+    pub instanced_transforms: Vec<TransformKey>,
 }
 
 /// One pre-built entry of a mesh's material palette — see
@@ -267,7 +273,9 @@ pub struct LoadedMaterialVariant {
 /// the decal texture index is resolved at capture; an emitter rebuilds its instanced
 /// billboard; an `InstancesAlongCurve` bakes its curve placement at capture and a
 /// second pass in `instantiate` enables instancing on the instance's own duplicated
-/// source mesh). A **nested** prefab child is captured as its own template in
+/// source mesh; an explicit `Instancer` builds its referenced mesh ASSET as its
+/// own hidden template mesh at capture and the same second pass enables
+/// instancing on the instance's own duplicate). A **nested** prefab child is captured as its own template in
 /// [`LoadedScene::prefabs`] — never inlined into its parent.
 #[derive(Debug)]
 pub struct PrefabTemplate {
@@ -341,6 +349,19 @@ enum PrefabReplay {
         source_node: NodeId,
         per_instance_colors: Vec<[f32; 4]>,
     },
+    /// An explicit `Instancer` — self-contained (unlike
+    /// [`Self::InstancesAlongCurve`] it references no other node): the referenced
+    /// mesh ASSET is built as this node's own hidden template mesh at capture
+    /// (see the `Instancer` arm of [`build_node_meshes`]), so `instantiate`
+    /// (asset-free) just duplicates it like any mesh node. The same second pass
+    /// then enables instancing on the instance's OWN duplicated mesh with the
+    /// authored transforms + colours — mirroring [`materialize_instancer`].
+    /// The def's `shadow`/`lod` flags are carried on the scene node but not
+    /// applied here, exactly matching the live path (documented follow-on).
+    Instancer {
+        transforms: Vec<Transform>,
+        per_instance_colors: Vec<[f32; 4]>,
+    },
 }
 
 /// Replay a prefab node's non-mesh renderable into a fresh per-instance resource
@@ -351,6 +372,50 @@ enum PrefabReplay {
 /// other nodes still materialize). Async pipeline warm-ups the live arms perform
 /// are intentionally omitted — `instantiate` is sync and the renderer's normal
 /// per-frame drive compiles line/shadow pipelines (or a prior load already did).
+/// Clone a skinned prefab node's joint skeleton into a fresh per-instance copy
+/// so the instance deforms independently of the template (whose skeleton is a
+/// single shared glb loaded once at capture — see the `SkinnedMesh` arm of
+/// [`build_node_meshes`]). Returns `template_joint_TransformKey → fresh_TransformKey`.
+///
+/// Each fresh joint copies its template joint's LOCAL transform. Parent wiring:
+/// a joint whose template parent is ALSO a template joint → parented to that
+/// parent's clone (preserving the skeleton hierarchy); a skeleton-**root** joint
+/// (template parent is the glb root / an armature above the joints, i.e. NOT in
+/// the joint set) → parented under `instance_root`, so driving the instance's
+/// placement transform moves the whole rig and its skinned mesh. Assumes any
+/// armature node between the root joint and the glb root is identity (true for
+/// the rigs this ships) — a non-identity intermediate would drop its offset.
+fn clone_skin_skeleton(
+    renderer: &mut AwsmRenderer,
+    template_joints: &[TransformKey],
+    instance_root: TransformKey,
+) -> HashMap<TransformKey, TransformKey> {
+    let joint_set: std::collections::HashSet<TransformKey> =
+        template_joints.iter().copied().collect();
+    let mut fresh: HashMap<TransformKey, TransformKey> =
+        HashMap::with_capacity(template_joints.len());
+    // Pass 1: mint a fresh transform per joint (local copied; parent fixed next).
+    for &jt in template_joints {
+        let local = renderer
+            .transforms
+            .get_local(jt)
+            .cloned()
+            .unwrap_or_default();
+        let new_tk = renderer.transforms.insert(local, Some(instance_root));
+        fresh.insert(jt, new_tk);
+    }
+    // Pass 2: rewire parents now that every clone exists.
+    for &jt in template_joints {
+        let new_tk = fresh[&jt];
+        let new_parent = match renderer.transforms.get_parent(jt).ok() {
+            Some(p) if joint_set.contains(&p) => fresh.get(&p).copied(),
+            _ => Some(instance_root),
+        };
+        renderer.transforms.set_parent(new_tk, new_parent);
+    }
+    fresh
+}
+
 fn replay_prefab_node(
     renderer: &mut AwsmRenderer,
     replay: &PrefabReplay,
@@ -362,7 +427,7 @@ fn replay_prefab_node(
         PrefabReplay::None => {}
         // Applied in `instantiate`'s post-loop second pass (needs the source node's
         // duplicated mesh, which only exists once the whole forest is duplicated).
-        PrefabReplay::InstancesAlongCurve { .. } => {}
+        PrefabReplay::InstancesAlongCurve { .. } | PrefabReplay::Instancer { .. } => {}
         PrefabReplay::ParticleEmitter(def) => {
             // Rebuild the instanced billboard for this instance — the same sync
             // builder the main path uses (no simulation). The game drives it via the
@@ -475,6 +540,16 @@ impl PrefabTemplate {
         let mut world_for: HashMap<NodeId, Mat4> = HashMap::with_capacity(self.nodes.len());
         let mut nodes: HashMap<NodeId, NodeHandles> = HashMap::with_capacity(self.nodes.len());
         let mut root_tk: Option<TransformKey> = None;
+        // ONE cloned skeleton shared across every skinned part-node of this
+        // instance (template joint TransformKey → instance clone). A multi-part
+        // rig (e.g. BodyShell/Accent/JointDark/Visor) skins all its parts to the
+        // SAME template skeleton, so we clone it ONCE (not per part) — otherwise
+        // each part gets its own parallel skeleton (4× the joints) and the
+        // authored clips, which target ONE skeleton, can't drive them coherently.
+        let mut shared_skeleton: HashMap<TransformKey, TransformKey> = HashMap::new();
+        // Flattened per-instance cloned skin joints (see
+        // `PrefabInstance::skin_joints`) — the host's handle for posing/animation.
+        let mut skin_joints: Vec<TransformKey> = Vec::new();
 
         for pn in &self.nodes {
             // Root anchors at world_trs (replacing its authored local); others keep
@@ -498,9 +573,73 @@ impl PrefabTemplate {
 
             // Duplicate the hidden template meshes under the fresh transform and
             // un-hide each duplicate (it inherits the template's hidden flag).
+            //
+            // SKINNED meshes can't be plainly duplicated: `duplicate_mesh_with_
+            // transform` shares the source resource + its single `skin_key`, so
+            // every instance would bind to the ONE template skeleton and render
+            // collapsed. For a skinned node we instead clone its skeleton ONCE
+            // (shared across the node's skinned primitives), register a fresh
+            // per-instance skin over the clones, and duplicate each primitive
+            // onto that skin — so the instance deforms + moves independently.
             let mut mesh_keys = Vec::with_capacity(pn.template_meshes.len());
+            let skinned: Vec<_> = pn
+                .template_meshes
+                .iter()
+                .filter_map(|&mk| {
+                    let sk = renderer.meshes.mesh_skin_key(mk).flatten()?;
+                    let joints = renderer.meshes.mesh_skin_joint_transforms(mk)?;
+                    Some((mk, sk, joints))
+                })
+                .collect();
+            if !skinned.is_empty() {
+                // Union of this node's skinned-primitive joints.
+                let mut union: Vec<TransformKey> = Vec::new();
+                let mut seen = std::collections::HashSet::new();
+                for (_, _, joints) in &skinned {
+                    for &j in joints {
+                        if seen.insert(j) {
+                            union.push(j);
+                        }
+                    }
+                }
+                // Clone only the joints NOT already in the instance's shared
+                // skeleton (the first skinned part clones the whole rig; sibling
+                // parts that skin to the SAME joints reuse it → one skeleton per
+                // instance). A genuinely distinct skeleton (different joints) still
+                // gets cloned and merged in. Parent the clones under the instance
+                // ROOT so driving `root` moves the whole rig; a skinned mesh's own
+                // node transform doesn't affect its skin (the joints do).
+                let missing: Vec<TransformKey> = union
+                    .iter()
+                    .copied()
+                    .filter(|j| !shared_skeleton.contains_key(j))
+                    .collect();
+                if !missing.is_empty() {
+                    let anchor = root_tk.unwrap_or(tk);
+                    let clones = clone_skin_skeleton(renderer, &missing, anchor);
+                    for (t, c) in clones {
+                        shared_skeleton.insert(t, c);
+                        skin_joints.push(c);
+                    }
+                }
+            }
             for &template_key in &pn.template_meshes {
-                let new_key = renderer.duplicate_mesh_with_transform(template_key, tk)?;
+                let new_key = match skinned.iter().find(|(mk, _, _)| *mk == template_key) {
+                    Some((_, tsk, joints)) => {
+                        let instance_joints: Vec<TransformKey> = joints
+                            .iter()
+                            .filter_map(|jt| shared_skeleton.get(jt).copied())
+                            .collect();
+                        let instance_skin =
+                            renderer.clone_skin_for_joints(*tsk, instance_joints)?;
+                        renderer.duplicate_skinned_mesh_with_skin(
+                            template_key,
+                            tk,
+                            instance_skin,
+                        )?
+                    }
+                    None => renderer.duplicate_mesh_with_transform(template_key, tk)?,
+                };
                 renderer.set_mesh_hidden(new_key, false)?;
                 mesh_keys.push(new_key);
             }
@@ -520,27 +659,37 @@ impl PrefabTemplate {
             nodes.insert(pn.id, handles);
         }
 
-        // SECOND PASS — InstancesAlongCurve: now that every node's mesh is duplicated,
-        // enable instancing on each instance's OWN source-mesh copy (a curve + source +
-        // instances trio captured inside the prefab). Best-effort: a missing source is
-        // warned + skipped (just that row doesn't appear); the rest still instantiate.
+        // SECOND PASS — instancing replays: now that every node's mesh is duplicated,
+        // enable instancing on each instance's OWN mesh copy. An
+        // `InstancesAlongCurve` targets its captured SOURCE node's duplicate (a
+        // curve + source + instances trio inside the prefab); an explicit
+        // `Instancer` targets its own node's duplicate (its referenced mesh asset
+        // was built as its template mesh at capture). Best-effort: a missing
+        // source is warned + skipped (just that row doesn't appear); the rest
+        // still instantiate. Every minted instance row's `TransformKey` is
+        // recorded in `instanced_transforms` so `teardown` frees the rows.
+        let mut instanced_transforms: Vec<TransformKey> = Vec::new();
         for pn in &self.nodes {
-            let PrefabReplay::InstancesAlongCurve {
-                transforms,
-                source_node,
-                per_instance_colors,
-            } = &pn.replay
-            else {
-                continue;
+            let (mesh_node, transforms, per_instance_colors) = match &pn.replay {
+                PrefabReplay::InstancesAlongCurve {
+                    transforms,
+                    source_node,
+                    per_instance_colors,
+                } => (*source_node, transforms, per_instance_colors),
+                PrefabReplay::Instancer {
+                    transforms,
+                    per_instance_colors,
+                } => (pn.id, transforms, per_instance_colors),
+                _ => continue,
             };
             if transforms.is_empty() {
                 continue;
             }
-            let Some(&source_mesh) = nodes.get(source_node).and_then(|h| h.meshes.first()) else {
+            let Some(&source_mesh) = nodes.get(&mesh_node).and_then(|h| h.meshes.first()) else {
                 tracing::warn!(
-                    "prefab: InstancesAlongCurve source {:?} has no duplicated mesh in this \
+                    "prefab: instancing node {:?} has no duplicated mesh in this \
                      instance — instancing skipped",
-                    source_node
+                    mesh_node
                 );
                 continue;
             };
@@ -552,6 +701,7 @@ impl PrefabTemplate {
                 tracing::warn!("prefab: enable_mesh_instancing_opaque failed: {err}");
                 continue;
             }
+            instanced_transforms.push(transform_key);
             if !per_instance_colors.is_empty() {
                 let attrs: Vec<awsm_renderer::instances::InstanceAttr> =
                     expand_instance_colors(per_instance_colors, transforms.len())
@@ -563,13 +713,19 @@ impl PrefabTemplate {
                         })
                         .collect();
                 if let Err(err) = renderer.set_mesh_instance_attrs(transform_key, &attrs) {
-                    tracing::warn!("prefab: curve per-instance colours failed: {err}");
+                    tracing::warn!("prefab: per-instance colours failed: {err}");
                 }
             }
         }
 
         let root = root_tk.ok_or_else(|| anyhow!("prefab template has no root node"))?;
-        Ok(PrefabInstance { root, nodes })
+        Ok(PrefabInstance {
+            root,
+            nodes,
+            skin_joints,
+            joint_remap: shared_skeleton,
+            instanced_transforms,
+        })
     }
 }
 
@@ -592,6 +748,26 @@ pub struct PrefabInstance {
     /// mesh keys; non-mesh nodes carry only their transform (see
     /// [`PrefabTemplate`] coverage notes).
     pub nodes: HashMap<NodeId, NodeHandles>,
+    /// Every per-instance **cloned skin joint** [`TransformKey`] — ONE shared
+    /// skeleton per instance (a multi-part rig skins all its parts to it). A host
+    /// can pose the instance by writing these joints' locals and reading their
+    /// bind pose via `get_local` / `get_world`. Empty for a non-skinned prefab.
+    pub skin_joints: Vec<TransformKey>,
+    /// **Template joint `TransformKey` → this instance's cloned joint.** The
+    /// authored clips target the TEMPLATE's joints (bound in the loader's skinned
+    /// arm); this map lets a host RETARGET a clip onto THIS instance — clone the
+    /// clip's channels remapping each `AnimationTarget::Transform(templateTK)`
+    /// through this map — so the scene's animations play per-instance. Empty for
+    /// a non-skinned prefab.
+    pub joint_remap: HashMap<TransformKey, TransformKey>,
+    /// Every [`TransformKey`] under which `instantiate`'s second pass minted GPU
+    /// **instance rows** (`enable_mesh_instancing_opaque` transform lists +
+    /// per-instance colour attributes) — one entry per replayed
+    /// `InstancesAlongCurve` / `Instancer` node. Tracked so
+    /// [`teardown`](Self::teardown) frees the rows (they live in
+    /// `renderer.instances`, outside the mesh/transform stores). Empty for a
+    /// prefab without instancing nodes.
+    pub instanced_transforms: Vec<TransformKey>,
 }
 
 impl LoadedScene {
@@ -632,6 +808,14 @@ impl LoadedScene {
         for decal in self.decals {
             renderer.remove_decal(decal);
         }
+        // Instance rows minted by InstancesAlongCurve / Instancer nodes live in
+        // `renderer.instances`, keyed by the instanced mesh's TransformKey —
+        // `remove_mesh` above does not free them, so a load/teardown cycle
+        // would leak one transform-list + attribute slice per instancing node.
+        for tk in self.instanced_transforms {
+            renderer.instances.transform_remove(tk);
+            renderer.instances.attribute_remove(tk);
+        }
         // Transforms last — meshes/lights bound to them are already gone.
         for tk in self.transforms {
             renderer.transforms.remove(tk);
@@ -646,7 +830,11 @@ impl PrefabInstance {
     ///
     /// Removes every duplicated [`MeshKey`] across the instance's nodes, then the
     /// replayed [`LightKey`] / [`LineKey`] / [`DecalKey`] / emitter billboard (A.3), then every per-node
-    /// [`TransformKey`] (meshes/lights/lines/decals first, transforms last). The
+    /// [`TransformKey`] **and** every cloned skeleton joint in
+    /// [`skin_joints`](Self::skin_joints) (meshes/lights/lines/decals first, transforms last),
+    /// **and** every GPU instance row in
+    /// [`instanced_transforms`](Self::instanced_transforms) (transform lists +
+    /// colour attributes minted by the instancing second pass). The
     /// shared template GPU buffers stay alive — they belong to the still-loaded
     /// template (freed by [`LoadedScene::teardown`]); only this instance's
     /// duplicates + replayed resources + transform slots are released. (Replayed
@@ -674,6 +862,22 @@ impl PrefabInstance {
         }
         for handles in self.nodes.values() {
             renderer.transforms.remove(handles.transform);
+        }
+        // The cloned skeleton is per-instance too: `instantiate` minted a fresh
+        // TransformKey per joint (see `clone_skeleton`), and those live outside
+        // `nodes` — freeing only the node transforms leaks a full skeleton per
+        // spawn/despawn cycle.
+        for jt in self.skin_joints {
+            renderer.transforms.remove(jt);
+        }
+        // Instance rows minted by the second pass (InstancesAlongCurve /
+        // Instancer replays) live in `renderer.instances`, keyed by the
+        // instanced mesh's TransformKey — removing the mesh + transform above
+        // does NOT free them, so a spawn/despawn cycle would leak one
+        // transform-list + attribute slice per instancing node.
+        for tk in self.instanced_transforms {
+            renderer.instances.transform_remove(tk);
+            renderer.instances.attribute_remove(tk);
         }
     }
 }
@@ -713,6 +917,24 @@ pub fn post_process_to_renderer(
         bloom: pp.bloom,
         dof: pp.dof,
         exposure: pp.exposure,
+        bloom_threshold: pp.bloom_threshold,
+        bloom_knee: pp.bloom_knee,
+        bloom_intensity: pp.bloom_intensity,
+        bloom_scatter: pp.bloom_scatter,
+        ssr: awsm_renderer::post_process::Ssr {
+            enabled: pp.ssr.enabled,
+            intensity: pp.ssr.intensity,
+            max_distance: pp.ssr.max_distance,
+            thickness: pp.ssr.thickness,
+            max_steps: pp.ssr.max_steps,
+            spread_cutoff: pp.ssr.spread_cutoff,
+            edge_fade: pp.ssr.edge_fade,
+            resolution_scale: pp.ssr.resolution_scale,
+            temporal: pp.ssr.temporal,
+            temporal_weight: pp.ssr.temporal_weight,
+            debug: pp.ssr.debug,
+            bvh_reflections: pp.ssr.bvh_reflections,
+        },
     }
 }
 
@@ -1081,6 +1303,15 @@ fn collect_prefetch_paths(nodes: &[EditorNode], scene: &Scene, paths: &mut Vec<S
                     paths.push(manifest_path(skin.source.to_string()));
                 }
             }
+            // An explicit instancer fetches its mesh asset's glb exactly like a
+            // Mesh node (same derivation as `materialize_instancer`).
+            NodeKind::Instancer(def) => {
+                if let Some(entry) = scene.assets.get(def.mesh.0) {
+                    if matches!(entry.source, AssetSource::Mesh(RuntimeMesh::Glb)) {
+                        paths.push(format!("{ASSETS_DIR}/{}", mesh_glb_filename(def.mesh.0)));
+                    }
+                }
+            }
             _ => {}
         }
         collect_prefetch_paths(&node.children, scene, paths);
@@ -1168,7 +1399,7 @@ async fn materialize(
             node,
             None,
             assets,
-            &maps.node_materials,
+            maps,
             placeholder,
             loaded,
         )
@@ -1476,7 +1707,25 @@ async fn materialize(
             }
         }
         NodeKind::InstancesAlongCurve(def) => {
-            materialize_instances_along_curve(renderer, scene, def, maps)?;
+            materialize_instances_along_curve(renderer, scene, def, maps, loaded)?;
+        }
+        // Explicit instancer: upload the referenced mesh ASSET once (same
+        // acquisition as the `Mesh` arm) and instance it with the node's
+        // authored transform list — one geometry upload, one instance buffer.
+        NodeKind::Instancer(def) => {
+            materialize_instancer(
+                renderer,
+                cache,
+                scene,
+                assets,
+                def,
+                node.id,
+                tk,
+                placeholder,
+                maps,
+                loaded,
+            )
+            .await?;
         }
         // A bare `Curve` is data-only: it emits no renderer node. It's consumed
         // by `InstancesAlongCurve` (and sweeps at bake time), which look the curve
@@ -1562,7 +1811,7 @@ async fn materialize(
 /// recursion stops at it (its descendants belong to the nested template).
 ///
 /// **Non-mesh replay (A.3):** `Light` / `Camera` / `Line` / `Decal` /
-/// `ParticleEmitter` / `InstancesAlongCurve` nodes capture a [`PrefabReplay`]
+/// `ParticleEmitter` / `InstancesAlongCurve` / `Instancer` nodes capture a [`PrefabReplay`]
 /// alongside their transform (the decal texture resolved to a pool index here, the
 /// curve placement baked here — both while assets / the scene are available), so
 /// [`PrefabTemplate::instantiate`] re-creates each as a fresh per-instance resource
@@ -1575,7 +1824,10 @@ async fn capture_prefab(
     node: &EditorNode,
     parent: Option<NodeId>,
     assets: &impl SceneAssets,
-    node_materials: &HashMap<NodeId, MaterialKey>,
+    // The shared resolve maps — capture binds skinned prefabs' bones into
+    // `maps.skin_joints` (so the scene's clips, lowered AFTER capture, resolve to
+    // the template's joints) and shares the rig via `maps.rig_cache`.
+    maps: &mut AnimResolveMaps,
     placeholder: MaterialKey,
     loaded: &mut LoadedScene,
 ) -> Result<PrefabTemplate> {
@@ -1603,7 +1855,7 @@ async fn capture_prefab(
                 n,
                 None,
                 assets,
-                node_materials,
+                &mut *maps,
                 placeholder,
                 loaded,
             ))
@@ -1611,11 +1863,41 @@ async fn capture_prefab(
             loaded.prefabs.insert(n.id, tmpl);
             continue;
         }
-        let mat = node_materials.get(&n.id).copied().unwrap_or(placeholder);
+        // An `Instancer` node isn't in Phase-1 `collect_renderables` (it carries
+        // no material palette), so `node_materials` has no entry for it — build
+        // the same flat-default material the live `materialize_instancer` uses
+        // instead of falling through to the magenta placeholder.
+        let mat = match &n.kind {
+            NodeKind::Instancer(_) => {
+                instancer_default_material(
+                    renderer,
+                    cache,
+                    assets,
+                    placeholder,
+                    &maps.custom_shaders,
+                )
+                .await
+            }
+            _ => maps
+                .node_materials
+                .get(&n.id)
+                .copied()
+                .unwrap_or(placeholder),
+        };
         // Build this node's meshes (hidden) under the scratch transform; non-mesh
         // kinds yield an empty vec (their transform is still recorded).
-        let template_meshes =
-            build_node_meshes(renderer, cache, scene, n, scratch, mat, assets, true).await?;
+        let template_meshes = build_node_meshes(
+            renderer,
+            cache,
+            scene,
+            n,
+            scratch,
+            mat,
+            assets,
+            Some(&mut *maps),
+            true,
+        )
+        .await?;
         // A.3: capture the non-mesh renderable to replay per instance. The decal
         // texture is resolved NOW (assets are available here; `instantiate` is
         // asset-free). Light/Camera/Line carry their authored config verbatim.
@@ -1638,6 +1920,11 @@ async fn capture_prefab(
                 },
                 None => PrefabReplay::None,
             },
+            // Explicit instancer: the referenced mesh asset was built as this
+            // node's own hidden template mesh above (`build_node_meshes`
+            // Instancer arm); capture the authored placements verbatim so
+            // `instantiate`'s second pass wires instancing onto the duplicate.
+            NodeKind::Instancer(def) => instancer_prefab_replay(def),
             _ => PrefabReplay::None,
         };
         nodes.push(PrefabNode {
@@ -1712,7 +1999,9 @@ fn prefab_subtree_layout(root: &EditorNode) -> Vec<PrefabLayoutStep<'_>> {
 /// Build the renderer meshes for one node under `tk` with material `mat`, the
 /// shared mesh-construction path used by both the live `materialize` arms and
 /// prefab [`capture_prefab`]. Covers `Mesh` (primitive + bare-geometry glb),
-/// `SkinnedMesh` (rig glb), and `Sprite`; every other [`NodeKind`] yields no mesh
+/// `SkinnedMesh` (rig glb), `Sprite`, and `Instancer` (its referenced mesh
+/// ASSET, built once — placements are the prefab replay's job); every other
+/// [`NodeKind`] yields no mesh
 /// (an empty vec). When `hidden` is set, each produced mesh is hidden immediately
 /// (the prefab-template case) — the caller's instances un-hide their duplicates.
 ///
@@ -1730,6 +2019,10 @@ async fn build_node_meshes(
     tk: TransformKey,
     mat: MaterialKey,
     assets: &impl SceneAssets,
+    // `Some` from prefab capture (needs the rig cache + skin-joint binding so a
+    // skinned prefab shares ONE skeleton and its clips find their joints); `None`
+    // from the standalone public `materialize_node_mesh` path (no anim context).
+    maps: Option<&mut AnimResolveMaps>,
     hidden: bool,
 ) -> Result<Vec<MeshKey>> {
     let mut keys: Vec<MeshKey> = Vec::new();
@@ -1758,17 +2051,124 @@ async fn build_node_meshes(
             }
         }
         NodeKind::SkinnedMesh { skin, .. } => {
-            // Self-placing rig glb (rooted at None, like the live arm). For a
-            // prefab template the joint binding is omitted (skin-correspondence is
-            // a follow-on even outside prefabs); the rig poses at bind pose.
-            let (glb_keys, _, _) =
-                load_glb_under(renderer, assets, &mesh_glb_filename(skin.source), None, mat)
-                    .await?;
-            keys.extend(glb_keys);
+            // Mirror the live `materialize` SkinnedMesh arm so a skinned PREFAB
+            // shares ONE skeleton across its sibling part-nodes and binds its
+            // bones so the authored clips find their joints. Several sibling
+            // `SkinnedMesh` nodes share one rig glb (same `skin.source` + joints):
+            // load it ONCE (keyed in `rig_cache` by glb leaf + first joint node),
+            // bind each bone `NodeId → baked joint TransformKey`, and select each
+            // node's OWN primitive via `skin.primitive_index`. Loading per-node
+            // (the old path) minted a duplicate skeleton per part AND bound no
+            // joints → the clips had no targets and the rig sat at bind pose.
+            if let Some(maps) = maps {
+                let rig_key = (
+                    mesh_glb_filename(skin.source),
+                    skin.joints.first().map(|j| j.node).unwrap_or(node.id),
+                );
+                if !maps.rig_cache.contains_key(&rig_key) {
+                    let (all_keys, node_index_transforms, node_index_meshes) =
+                        load_glb_under(renderer, assets, &rig_key.0, Some(tk), mat).await?;
+                    // Bind each skeleton bone (scene NodeId) → this rig's baked
+                    // joint transform (by the joint's clean-glb node index), so a
+                    // bone's Transform track resolves to the joint the skin reads.
+                    let mut joints_resolved = 0usize;
+                    for j in &skin.joints {
+                        if let Some(&jtk) = node_index_transforms.get(&(j.index as usize)) {
+                            maps.skin_joints.insert(j.node, jtk);
+                            joints_resolved += 1;
+                        }
+                    }
+                    if joints_resolved < skin.joints.len() {
+                        tracing::warn!(
+                            "skinned prefab `{}`: only {}/{} skin joints resolved",
+                            node.name,
+                            joints_resolved,
+                            skin.joints.len(),
+                        );
+                    }
+                    // Hidden template meshes: `all_keys` are set hidden by the
+                    // caller's post-loop pass (they land in the returned `keys`).
+                    let _ = all_keys;
+                    maps.rig_cache
+                        .insert(rig_key.clone(), (node_index_transforms, node_index_meshes));
+                }
+                let (_node_index_transforms, node_index_meshes) = maps
+                    .rig_cache
+                    .get(&rig_key)
+                    .cloned()
+                    .expect("rig cache entry just ensured");
+                // `node_index_meshes` is keyed by glTF MESH index (a multi-part
+                // rig is one glTF mesh, one primitive per part): flatten in key
+                // order and select this node's primitive.
+                let flat: Vec<MeshKey> = {
+                    let mut mesh_indices: Vec<usize> = node_index_meshes.keys().copied().collect();
+                    mesh_indices.sort_unstable();
+                    mesh_indices
+                        .iter()
+                        .flat_map(|i| node_index_meshes[i].iter().copied())
+                        .collect()
+                };
+                let selected: Vec<MeshKey> = match skin.primitive_index {
+                    Some(pi) => flat.get(pi as usize).map(|k| vec![*k]).unwrap_or_default(),
+                    None => flat.clone(),
+                };
+                if selected.is_empty() {
+                    tracing::warn!(
+                        "skinned prefab `{}`: primitive {:?} not found (rig has {} primitives)",
+                        node.name,
+                        skin.primitive_index,
+                        flat.len()
+                    );
+                }
+                // The rig loaded with the FIRST sibling's material — rebind this
+                // node's own onto its selected primitive.
+                for &k in &selected {
+                    let _ = renderer.set_mesh_material(k, mat);
+                }
+                keys.extend(selected);
+            } else {
+                // No anim context (public `materialize_node_mesh`): naive load.
+                let (glb_keys, _, _) =
+                    load_glb_under(renderer, assets, &mesh_glb_filename(skin.source), None, mat)
+                        .await?;
+                keys.extend(glb_keys);
+            }
         }
         NodeKind::Sprite(def) => {
             let key = build_sprite_mesh(renderer, cache, assets, def, tk).await?;
             keys.push(key);
+        }
+        // Explicit instancer: build the referenced mesh ASSET under `tk`,
+        // exactly like the `Mesh` arm — the same geometry acquisition as the
+        // live [`materialize_instancer`] (a procedural primitive regenerates
+        // from params; a baked asset loads its single-mesh glb). The authored
+        // instance placements are NOT applied here — the prefab path captures
+        // them as a [`PrefabReplay::Instancer`] and wires instancing onto the
+        // duplicate of THIS mesh in `instantiate`'s second pass. A nil mesh ref
+        // builds nothing (a valid, not-yet-wired authored state; `assets.get`
+        // on the nil id misses).
+        NodeKind::Instancer(def) => {
+            if let Some(entry) = scene.assets.get(def.mesh.0) {
+                match &entry.source {
+                    AssetSource::Mesh(RuntimeMesh::Primitive(shape)) => {
+                        let md = awsm_renderer_meshgen::primitive_mesh(shape);
+                        let key = renderer.add_raw_mesh(mesh_data_to_raw(md), tk, mat)?;
+                        keys.push(key);
+                    }
+                    AssetSource::Mesh(RuntimeMesh::Glb) => {
+                        let (glb_keys, _, _) = load_glb_under(
+                            renderer,
+                            assets,
+                            &mesh_glb_filename(def.mesh.0),
+                            Some(tk),
+                            mat,
+                        )
+                        .await?;
+                        keys.extend(glb_keys);
+                    }
+                    _ => {}
+                }
+            }
         }
         // Non-mesh kinds: no geometry to share. Their transform is still recorded
         // by the caller; `Light`/`Camera`/`Line`/`Decal` replay per instance is
@@ -2047,6 +2447,7 @@ fn materialize_instances_along_curve(
     scene: &Scene,
     def: &InstancesAlongCurveDef,
     maps: &mut AnimResolveMaps,
+    loaded: &mut LoadedScene,
 ) -> Result<()> {
     let Some(curve) = find_curve(&scene.nodes, def.curve_node) else {
         tracing::warn!(
@@ -2077,6 +2478,8 @@ fn materialize_instances_along_curve(
         tracing::warn!("scene-loader: enable_mesh_instancing_opaque failed: {err}");
         return Ok(());
     }
+    // Track the minted instance rows so `LoadedScene::teardown` frees them.
+    loaded.instanced_transforms.push(transform_key);
     // A.2: apply per-instance colour overrides via the same per-instance attribute
     // path the particle emitter uses. `set_mesh_instance_attrs` requires exactly one
     // attr per placed transform, so expand `per_instance_colors` to the placed count,
@@ -2093,6 +2496,150 @@ fn materialize_instances_along_curve(
         }
     }
     Ok(())
+}
+
+/// Materialize a [`NodeKind::Instancer`]: upload the referenced mesh **asset**
+/// once and draw it with the node's authored per-instance transforms via GPU
+/// instancing — ONE geometry upload + one instance buffer
+/// ([`AwsmRenderer::enable_mesh_instancing_opaque`]).
+///
+/// Geometry acquisition mirrors the `Mesh` arm exactly (a procedural primitive
+/// regenerates from params; a baked asset loads `assets/<id>.glb` — prefetched
+/// by [`collect_prefetch_paths`]). Unlike [`materialize_instances_along_curve`]
+/// (which reuses a *source node's* already-materialized mesh), the instancer is
+/// self-contained: it references the asset directly, so it needs no other node
+/// in the scene. Instances render with a default material (matching the
+/// editor's bridge, which uploads the instancer flat-default); per-instance
+/// **colors** apply via [`AwsmRenderer::set_mesh_instance_attrs`], expanded to
+/// the instance count with the last value repeated (the def's documented
+/// semantics). A nil mesh ref or an empty transform list renders nothing (a
+/// valid, not-yet-wired authored state).
+#[allow(clippy::too_many_arguments)]
+async fn materialize_instancer(
+    renderer: &mut AwsmRenderer,
+    cache: &mut texture::TextureCache,
+    scene: &Scene,
+    assets: &impl SceneAssets,
+    def: &InstancerDef,
+    node_id: NodeId,
+    tk: TransformKey,
+    placeholder: MaterialKey,
+    maps: &mut AnimResolveMaps,
+    loaded: &mut LoadedScene,
+) -> Result<()> {
+    if def.mesh.0.is_nil() || def.transforms.is_empty() {
+        return Ok(());
+    }
+    let Some(entry) = scene.assets.get(def.mesh.0) else {
+        tracing::warn!(
+            "scene-loader: Instancer references missing mesh asset {} — skipped",
+            def.mesh.0
+        );
+        return Ok(());
+    };
+    let mat =
+        instancer_default_material(renderer, cache, assets, placeholder, &maps.custom_shaders)
+            .await;
+
+    // Same geometry acquisition as the `Mesh` arm (minus the LOD/cluster
+    // chains — the instanced draw is one mesh by design).
+    let mesh_key = match &entry.source {
+        AssetSource::Mesh(RuntimeMesh::Primitive(shape)) => {
+            let md = awsm_renderer_meshgen::primitive_mesh(shape);
+            Some(renderer.add_raw_mesh(mesh_data_to_raw(md), tk, mat)?)
+        }
+        AssetSource::Mesh(RuntimeMesh::Glb) => {
+            let (keys, _, _) = load_glb_under(
+                renderer,
+                assets,
+                &mesh_glb_filename(def.mesh.0),
+                Some(tk),
+                mat,
+            )
+            .await?;
+            // A baked mesh asset is a single-mesh glb (one asset = one glb,
+            // written by the bundle bake); instance its first (only) key.
+            keys.first().copied()
+        }
+        // An Instancer always references an AssetSource::Mesh; other source
+        // kinds can't be a mesh asset — ignore defensively (mirrors `Mesh`).
+        _ => None,
+    };
+    let Some(key) = mesh_key else {
+        return Ok(());
+    };
+    maps.meshes.entry(node_id).or_insert(key);
+    maps.node_meshes.entry(node_id).or_default().push(key);
+    loaded.meshes.push(key);
+
+    let transforms: Vec<Transform> = def.transforms.iter().map(trs_to_transform).collect();
+    // The per-instance attribute key (also read by `set_mesh_instance_attrs`).
+    let transform_key = renderer.meshes.get(key)?.transform_key;
+    if let Err(err) = renderer.enable_mesh_instancing_opaque(key, &transforms) {
+        tracing::warn!("scene-loader: instancer enable_mesh_instancing_opaque failed: {err}");
+        return Ok(());
+    }
+    // Track the minted instance rows so `LoadedScene::teardown` frees them.
+    loaded.instanced_transforms.push(transform_key);
+    if !def.per_instance_colors.is_empty() {
+        let attrs: Vec<awsm_renderer::instances::InstanceAttr> =
+            expand_instance_colors(&def.per_instance_colors, transforms.len())
+                .into_iter()
+                .map(|c| awsm_renderer::instances::InstanceAttr::from_rgba_alpha_size(c, 1.0, 1.0))
+                .collect();
+        if let Err(err) = renderer.set_mesh_instance_attrs(transform_key, &attrs) {
+            tracing::warn!("scene-loader: instancer per-instance colours failed: {err}");
+        }
+    }
+    Ok(())
+}
+
+/// Capture an explicit `Instancer` node's [`PrefabReplay`]: the authored
+/// placements + colours verbatim (its mesh asset becomes the node's own hidden
+/// template mesh via `build_node_meshes`, so `instantiate` needs no assets).
+/// A nil mesh ref or an empty transform list is a valid "not wired up yet"
+/// authored state — nothing to replay ([`PrefabReplay::None`]), matching
+/// [`materialize_instancer`]'s live guard. Pure, so it is unit-tested natively
+/// (see `prefab_tests`).
+fn instancer_prefab_replay(def: &InstancerDef) -> PrefabReplay {
+    if def.mesh.0.is_nil() || def.transforms.is_empty() {
+        return PrefabReplay::None;
+    }
+    PrefabReplay::Instancer {
+        transforms: def.transforms.iter().map(trs_to_transform).collect(),
+        per_instance_colors: def.per_instance_colors.clone(),
+    }
+}
+
+/// The flat-default material an explicit `Instancer` renders with (the editor's
+/// instancer bridge renders flat-default too; the kind carries no material
+/// palette). Built through the same resolve path as node materials so its
+/// pipeline compiles in the Phase-4 batch. Shared by [`materialize_instancer`]
+/// (the live load) and [`capture_prefab`] (prefab templates) so an instancer
+/// inside a prefab renders identically to a top-level one.
+async fn instancer_default_material(
+    renderer: &mut AwsmRenderer,
+    cache: &mut texture::TextureCache,
+    assets: &impl SceneAssets,
+    placeholder: MaterialKey,
+    custom_shaders: &HashMap<AssetId, awsm_renderer_materials::MaterialShaderId>,
+) -> MaterialKey {
+    let default_inst = MaterialInstance {
+        asset: AssetId::new(),
+        inline: Default::default(),
+        uniform_overrides: Default::default(),
+        texture_overrides: Default::default(),
+        buffer_overrides: Default::default(),
+    };
+    resolve_material(
+        renderer,
+        cache,
+        Some(&default_inst),
+        placeholder,
+        assets,
+        custom_shaders,
+    )
+    .await
 }
 
 /// Expand authored `per_instance_colors` to exactly `count` entries, repeating the
@@ -3256,7 +3803,7 @@ pub async fn materialize_node_mesh(
     // and on-demand-fetches within this node's own slots.
     let mut cache = texture::TextureCache::new(scene);
     build_node_meshes(
-        renderer, &mut cache, scene, node, tk, material, assets, false,
+        renderer, &mut cache, scene, node, tk, material, assets, None, false,
     )
     .await
 }
@@ -3572,6 +4119,68 @@ mod prefab_tests {
         assert_eq!(nested_step.parent, Some(root));
         // The root is never itself a nested boundary.
         assert!(!layout[0].nested_prefab);
+    }
+
+    // The explicit-instancer replay capture (`instancer_prefab_replay`): authored
+    // placements + colours are carried verbatim (Trs → renderer Transform), and
+    // the two valid "not wired up yet" authored states — nil mesh ref / empty
+    // transform list — capture nothing (PrefabReplay::None), matching the live
+    // `materialize_instancer` guard.
+    #[test]
+    fn instancer_replay_captures_placements_and_skips_unwired_defs() {
+        use super::{instancer_prefab_replay, PrefabReplay};
+        use awsm_renderer_scene::{
+            instances::InstancerDef, primitive::MeshRef, transform::Trs, AssetId,
+        };
+
+        let wired = InstancerDef {
+            mesh: MeshRef(AssetId::new()),
+            transforms: vec![
+                Trs {
+                    translation: [1.0, 2.0, 3.0],
+                    ..Trs::IDENTITY
+                },
+                Trs {
+                    translation: [-4.0, 0.0, 0.0],
+                    scale: [2.0, 2.0, 2.0],
+                    ..Trs::IDENTITY
+                },
+            ],
+            per_instance_colors: vec![[1.0, 0.0, 0.0, 1.0]],
+            ..Default::default()
+        };
+        match instancer_prefab_replay(&wired) {
+            PrefabReplay::Instancer {
+                transforms,
+                per_instance_colors,
+            } => {
+                assert_eq!(transforms.len(), 2);
+                assert_eq!(transforms[0].translation.to_array(), [1.0, 2.0, 3.0]);
+                assert_eq!(transforms[1].scale.to_array(), [2.0, 2.0, 2.0]);
+                assert_eq!(per_instance_colors, vec![[1.0, 0.0, 0.0, 1.0]]);
+            }
+            other => panic!("expected PrefabReplay::Instancer, got {other:?}"),
+        }
+
+        // Nil mesh ref → nothing to replay.
+        let nil_mesh = InstancerDef {
+            transforms: wired.transforms.clone(),
+            ..Default::default()
+        };
+        assert!(matches!(
+            instancer_prefab_replay(&nil_mesh),
+            PrefabReplay::None
+        ));
+
+        // Empty transform list → nothing to replay.
+        let no_placements = InstancerDef {
+            mesh: wired.mesh,
+            ..Default::default()
+        };
+        assert!(matches!(
+            instancer_prefab_replay(&no_placements),
+            PrefabReplay::None
+        ));
     }
 }
 

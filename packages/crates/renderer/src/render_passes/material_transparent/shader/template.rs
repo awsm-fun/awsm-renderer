@@ -96,6 +96,11 @@ pub struct ShaderTemplateTransparentMaterialIncludes {
     /// Auto-generated `material_data_load` accessor for the hook (same non-Custom
     /// gating as the struct decl). Empty unless `has_custom_vertex`.
     pub dynamic_vertex_loader_decl: String,
+    /// Always `false` on the transparent pass: transparent surfaces never
+    /// write the SSR reflection descriptor, so their IBL specular must stay
+    /// untouched. The field exists because the shared `brdf_pbr.wgsl` gates
+    /// the SSR IBL-specular suppression (`ssr-spread-gate`) on it.
+    pub write_ssr_descriptor: bool,
 }
 impl ShaderTemplateTransparentMaterialIncludes {
     /// Creates include template data from the cache key.
@@ -166,6 +171,9 @@ impl ShaderTemplateTransparentMaterialIncludes {
                 .as_ref()
                 .map(|d| d.loader_decl.clone())
                 .unwrap_or_default(),
+            // Transparent never writes the SSR descriptor — SSR is an opaque
+            // feature; keep the IBL specular suppression compiled out.
+            write_ssr_descriptor: false,
         }
     }
 
@@ -215,6 +223,16 @@ pub struct ShaderTemplateTransparentMaterialBindGroups {
     /// `sample_shadow_*`. Custom materials force it off. The shadow bind
     /// group + structs stay (ABI). Parity with the opaque path.
     pub needs_shadow_sampling: bool,
+    /// Emit the cascade-debug overlay (`debug_cascade_tint`). Same
+    /// `inc.apply_lighting` gate as `needs_shadow_sampling` here (transparent
+    /// always inline-samples when it lights); a separate flag because the
+    /// opaque path drops the sampler block but keeps the overlay.
+    pub needs_cascade_debug: bool,
+    /// Depth convention (003) — read by the shared SSCS body in
+    /// `shared_wgsl/shadow/bind_groups.wgsl` (inert here: `sscs_available`
+    /// is always `false` on the transparent pass, but the shared template
+    /// references the field, so it must exist).
+    pub reverse_z: bool,
 }
 
 impl ShaderTemplateTransparentMaterialBindGroups {
@@ -235,6 +253,8 @@ impl ShaderTemplateTransparentMaterialBindGroups {
             sscs_available: false,
             sscs_step_count: 1,
             needs_shadow_sampling: inc.apply_lighting,
+            needs_cascade_debug: inc.apply_lighting,
+            reverse_z: cache_key.reverse_z,
         }
     }
 }

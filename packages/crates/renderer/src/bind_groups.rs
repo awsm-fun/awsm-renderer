@@ -134,6 +134,9 @@ pub enum BindGroupCreate {
     /// Occlusion-cull instance / visibility buffers were reallocated.
     /// Only the cull pass's bind group binds them.
     OcclusionBuffersResize,
+    /// Software-BVH BLAS/TLAS storage buffers were reallocated — the SSR
+    /// bvh_trace bind group binds them and must rebuild.
+    SsrBvhBuffers,
     /// Decal classify buckets were reallocated (viewport tile-count
     /// grew). The classify pass + decal shading pass both rebind.
     DecalClassifyBuffersResize,
@@ -248,6 +251,8 @@ impl BindGroups {
             TransparentTextures,
             TransparentShadows,
             LightCulling,
+            Bloom,
+            Ssr,
             Effects,
             Display,
             Picker,
@@ -327,6 +332,13 @@ impl BindGroups {
                     functions_to_call.insert(FunctionToCall::MaterialDecalClassify);
                     functions_to_call.insert(FunctionToCall::Display);
                     functions_to_call.insert(FunctionToCall::Effects);
+                    // Bloom pyramid pass binds composite (read) + the full-res
+                    // bloom texture (write) + its per-mip pyramid views — all
+                    // recreated on resize.
+                    functions_to_call.insert(FunctionToCall::Bloom);
+                    // SSR binds depth + normal + transparent (read) + the ssr
+                    // target (write); all recreated on resize.
+                    functions_to_call.insert(FunctionToCall::Ssr);
                     functions_to_call.insert(FunctionToCall::OpaqueMain);
                     functions_to_call.insert(FunctionToCall::TransparentMain);
                     functions_to_call.insert(FunctionToCall::Picker);
@@ -355,13 +367,24 @@ impl BindGroups {
                     functions_to_call.insert(FunctionToCall::OpaqueMain);
                     functions_to_call.insert(FunctionToCall::TransparentLights);
                 }
+                BindGroupCreate::SsrBvhBuffers => {
+                    functions_to_call.insert(FunctionToCall::Ssr);
+                }
                 BindGroupCreate::IblTextures => {
                     functions_to_call.insert(FunctionToCall::OpaqueMain);
                     functions_to_call.insert(FunctionToCall::TransparentLights);
+                    // The SSR trace binds the prefiltered specular env as its
+                    // miss-path fallback; a specular-slot swap must rebind
+                    // the trace group or it samples a stale view.
+                    functions_to_call.insert(FunctionToCall::Ssr);
                 }
                 BindGroupCreate::EnvironmentSkyboxCreate => {
                     functions_to_call.insert(FunctionToCall::OpaqueMain);
                     functions_to_call.insert(FunctionToCall::TransparentLights);
+                    // The SSR trace binds the skybox cubemap + sampler as its
+                    // miss-path environment fallback; a skybox swap must
+                    // rebind the trace group or it samples a stale view.
+                    functions_to_call.insert(FunctionToCall::Ssr);
                 }
                 BindGroupCreate::MaterialMorphTargetWeightsResize => {
                     functions_to_call.insert(FunctionToCall::OpaqueMain);
@@ -685,6 +708,36 @@ impl BindGroups {
                         .expect("Decal pass missing despite decals feature on")
                         .bind_groups
                         .recreate_texture_pool(&ctx)?;
+                }
+                FunctionToCall::Bloom => {
+                    // Lazy pass: `None` until bloom is first enabled — its
+                    // eventual construction marks `TextureViewRecreate`, so
+                    // this arm runs against the live views right after.
+                    if let Some(bloom) = render_passes.bloom.as_mut() {
+                        // Split-borrow: bind_groups (mut) vs texture/params (shared).
+                        let crate::render_passes::bloom::render_pass::BloomRenderPass {
+                            bind_groups,
+                            texture,
+                            params,
+                            ..
+                        } = bloom;
+                        bind_groups.recreate(&ctx, texture, &params.gpu_buffer)?;
+                    }
+                }
+                FunctionToCall::Ssr => {
+                    // Lazy pass: `None` until SSR is first enabled (same flow
+                    // as bloom above).
+                    if let Some(ssr) = render_passes.ssr.as_mut() {
+                        let crate::render_passes::ssr::render_pass::SsrRenderPass {
+                            bind_groups,
+                            params,
+                            composite,
+                            tlas,
+                            ..
+                        } = ssr;
+                        bind_groups.recreate(&ctx, &params.gpu_buffer, &tlas.gpu_buffer)?;
+                        composite.recreate(&ctx)?;
+                    }
                 }
                 FunctionToCall::Effects => {
                     render_passes.effects.bind_groups.recreate(&ctx)?;

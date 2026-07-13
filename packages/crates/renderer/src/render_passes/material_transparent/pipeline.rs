@@ -103,6 +103,8 @@ impl MaterialTransparentPipelines {
         anti_aliasing: &AntiAliasing,
         textures: &Textures,
         render_texture_formats: &RenderTextureFormats,
+        depth_compare: CompareFunction,
+        reverse_z: bool,
         material_writes_depth: bool,
         material_base: crate::dynamic_materials::ShadingBase,
         material_pbr_features: u32,
@@ -136,6 +138,8 @@ impl MaterialTransparentPipelines {
                 anti_aliasing,
                 textures,
                 render_texture_formats,
+                depth_compare,
+                reverse_z,
             )
             .await?;
         Ok(keys[0])
@@ -172,6 +176,7 @@ impl MaterialTransparentPipelines {
         material_bind_groups: &MaterialTransparentBindGroups,
         mesh_buffer_infos: &MeshBufferInfos,
         anti_aliasing: &AntiAliasing,
+        reverse_z: bool,
     ) -> Result<Vec<ShaderCacheKeyMaterialTransparent>>
     where
         I: IntoIterator<Item = &'a TransparentMeshPipelineRequest<'a>>,
@@ -187,6 +192,7 @@ impl MaterialTransparentPipelines {
                 texture_pool_samplers_len,
                 msaa_sample_count: anti_aliasing.msaa_sample_count,
                 mipmaps: anti_aliasing.mipmap,
+                reverse_z,
                 base: req.base,
                 pbr_features: req.pbr_features,
                 dispatch_hash: 0,
@@ -216,6 +222,8 @@ impl MaterialTransparentPipelines {
         mesh_buffer_infos: &MeshBufferInfos,
         anti_aliasing: &AntiAliasing,
         render_texture_formats: &RenderTextureFormats,
+        depth_compare: CompareFunction,
+        reverse_z: bool,
     ) -> Result<Vec<RenderPipelineCacheKey>>
     where
         I: IntoIterator<Item = &'a TransparentMeshPipelineRequest<'a>>,
@@ -245,6 +253,7 @@ impl MaterialTransparentPipelines {
                 texture_pool_samplers_len,
                 msaa_sample_count: anti_aliasing.msaa_sample_count,
                 mipmaps: anti_aliasing.mipmap,
+                reverse_z,
                 base: req.base,
                 pbr_features: req.pbr_features,
                 dispatch_hash: 0,
@@ -270,6 +279,7 @@ impl MaterialTransparentPipelines {
                 anti_aliasing.msaa_sample_count,
                 cull_mode,
                 req.writes_depth,
+                depth_compare,
             ));
         }
         Ok(out)
@@ -312,6 +322,8 @@ impl MaterialTransparentPipelines {
         anti_aliasing: &AntiAliasing,
         _textures: &Textures,
         render_texture_formats: &RenderTextureFormats,
+        depth_compare: CompareFunction,
+        reverse_z: bool,
     ) -> Result<Vec<RenderPipelineKey>>
     where
         I: IntoIterator<Item = TransparentMeshPipelineRequest<'a>>,
@@ -336,6 +348,7 @@ impl MaterialTransparentPipelines {
                 texture_pool_samplers_len,
                 msaa_sample_count: anti_aliasing.msaa_sample_count,
                 mipmaps: anti_aliasing.mipmap,
+                reverse_z,
                 base: req.base,
                 pbr_features: req.pbr_features,
                 dispatch_hash: 0,
@@ -391,6 +404,7 @@ impl MaterialTransparentPipelines {
                 anti_aliasing.msaa_sample_count,
                 cull_mode,
                 req.writes_depth,
+                depth_compare,
             ));
         }
 
@@ -453,6 +467,7 @@ fn build_transparent_pipeline_cache_key(
     msaa_sample_count: Option<u32>,
     cull_mode: CullMode,
     writes_depth: bool,
+    depth_compare: CompareFunction,
 ) -> RenderPipelineCacheKey {
     let primitive_state = PrimitiveState::new()
         .with_topology(PrimitiveTopology::TriangleList)
@@ -488,7 +503,8 @@ fn build_transparent_pipeline_cache_key(
     //     dome combo end up culled instead of composited.
     let depth_stencil = DepthStencilState::new(depth_texture_format)
         .with_depth_write_enabled(writes_depth)
-        .with_depth_compare(CompareFunction::LessEqual);
+        // Main-camera depth convention (003).
+        .with_depth_compare(depth_compare);
 
     let mut pipeline_cache_key = RenderPipelineCacheKey::new(shader_key, pipeline_layout_key)
         .with_primitive(primitive_state)

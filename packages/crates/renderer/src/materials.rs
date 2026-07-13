@@ -816,6 +816,7 @@ impl Materials {
                     self.buffer.raw_slice(),
                     &ranges,
                 )?;
+                self.buffer.recycle_dirty_ranges(ranges);
             }
 
             self.gpu_dirty = false;

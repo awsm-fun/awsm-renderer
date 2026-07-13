@@ -155,6 +155,7 @@ impl GeometryMaskedCustomVertexPipelines {
                 &color_targets,
                 msaa_samples,
                 cull_mode,
+                ctx.features.depth().compare(),
             ));
             slots.push(MaskedCustomVertexPipelineKeyId {
                 msaa_sample_count: msaa_samples,
@@ -267,6 +268,7 @@ fn build_cache_key(
     color_targets: &[ColorTargetState],
     msaa_samples: Option<u32>,
     cull_mode: CullMode,
+    depth_compare: CompareFunction,
 ) -> RenderPipelineCacheKey {
     let primitive_state = PrimitiveState::new()
         .with_topology(PrimitiveTopology::TriangleList)
@@ -275,7 +277,8 @@ fn build_cache_key(
 
     let depth_stencil = DepthStencilState::new(depth_format)
         .with_depth_write_enabled(true)
-        .with_depth_compare(CompareFunction::LessEqual);
+        // Main-camera depth convention (003).
+        .with_depth_compare(depth_compare);
 
     // Slot 0: plain visibility geometry. Final slot: the uv0 buffer (location
     // 10). Non-instanced only (no instancing slot) — matches the plain

@@ -32,7 +32,12 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Skybox skip — depth == 1.0 means no geometry. Decals only
     // apply to opaque geometry; sky pixels stay untouched.
     let depth = textureLoad(depth_tex, coords, 0);
+    {% if reverse_z %}
+    // Reverse-Z (003): background carries the 0.0 clear value.
+    if depth <= 0.0 {
+    {% else %}
     if depth >= 1.0 {
+    {% endif %}
         textureStore(transparent_tex_out, coords, vec4<f32>(0.0));
         return;
     }

@@ -574,17 +574,22 @@ fn cs_main(
                 atomicStore(&edge_data[edge_layout.edge_slot_map_base + edge_id], slot_map);
                 {% endif %}
 
-                // Clear this edge pixel's 4 accumulator slots (4 vec4<f32>
-                // = 16 u32 words) so a bucket whose per-shader edge_resolve
-                // pipeline isn't resident this frame leaves count==0 — which
-                // final_blend skips — instead of reading a stale value left
-                // at the same slot index by a previous frame's edge pixel.
-                // This is what makes the resolve per-bucket-independent
-                // (render_pass.rs dropped the all-or-nothing gate). Bounded
-                // by the live edge count: only freshly-allocated edge pixels
-                // are cleared, never the full MAX_EDGE_BUDGET accumulator.
-                let accum_clear_base = edge_layout.accumulator_base + edge_id * 16u;
-                for (var ci: u32 = 0u; ci < 16u; ci = ci + 1u) {
+                // Clear this edge pixel's 4 accumulator slots (4 slots x
+                // 8 u32 words — color+weight plus the SSR-descriptor half;
+                // see ACCUMULATOR_SLOT_BYTES in edge_buffers.rs) so a bucket
+                // whose per-shader edge_resolve pipeline isn't resident this
+                // frame leaves count==0 — which final_blend skips — instead
+                // of reading a stale value left at the same slot index by a
+                // previous frame's edge pixel. This is what makes the
+                // resolve per-bucket-independent. Bounded by the live edge
+                // count: only freshly-allocated edge pixels are cleared.
+                // STRIDE BUG (fixed): when the slots widened 16->32 bytes
+                // for the per-sample SSR descriptor, this clear kept the old
+                // 16-word math — half the span at half the stride — so edge
+                // pixels in the upper half of the id range were NEVER
+                // cleared and could resolve a stale prior-frame value.
+                let accum_clear_base = edge_layout.accumulator_base + edge_id * {% if wide_edge_slots %}32u{% else %}16u{% endif %};
+                for (var ci: u32 = 0u; ci < {% if wide_edge_slots %}32u{% else %}16u{% endif %}; ci = ci + 1u) {
                     atomicStore(&edge_data[accum_clear_base + ci], 0u);
                 }
 

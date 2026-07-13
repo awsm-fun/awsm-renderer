@@ -283,7 +283,8 @@ where
 {
     use awsm_renderer_editor_protocol::TextureColorKind;
     use awsm_renderer_glb_export::ImageMime;
-    let mut items: Vec<(AssetId, Vec<u8>, String, TextureColorKind)> = Vec::new();
+    // Pass 1: collect every restorable texture's metadata (pure table walk).
+    let mut metas: Vec<(AssetId, String, &'static str, ImageMime, TextureColorKind)> = Vec::new();
     for (id, entry) in project.assets.entries.iter() {
         let AssetSource::Texture(TextureDef::Raster {
             display_name,
@@ -306,9 +307,25 @@ where
         // slot's semantics AND writes the role back onto the asset
         // (`record_asset_color_kind`), so the next save persists it.
         let kind = color_kind.unwrap_or_default();
-        if let Ok(bytes) = read(format!("assets/{name}")).await {
-            crate::engine::bridge::texture_cache::store(*id, bytes.clone(), mime);
-            items.push((*id, bytes, mime_str.to_string(), kind));
+        metas.push((*id, format!("assets/{name}"), mime_str, mime, kind));
+    }
+    // Pass 2: read ALL side files CONCURRENTLY — over HTTP (`?load=` project) the
+    // per-texture fetches previously serialized on the await chain. Each `read`
+    // call mints an independent future (created sequentially, awaited jointly);
+    // `join_all` preserves order, so the cache stores + upload batch below stay
+    // deterministic. Missing files are skipped, as before.
+    let reads: Vec<Fut> = metas
+        .iter()
+        .map(|(_, path, ..)| read(path.clone()))
+        .collect();
+    let mut items: Vec<(AssetId, Vec<u8>, String, TextureColorKind)> = Vec::new();
+    for ((id, _path, mime_str, mime, kind), res) in metas
+        .into_iter()
+        .zip(futures::future::join_all(reads).await)
+    {
+        if let Ok(bytes) = res {
+            crate::engine::bridge::texture_cache::store(id, bytes.clone(), mime);
+            items.push((id, bytes, mime_str.to_string(), kind));
         }
     }
     crate::engine::bridge::material::restore_raster_textures(items).await;
@@ -739,9 +756,15 @@ where
     F: FnMut(String) -> Fut,
     Fut: std::future::Future<Output = Result<Vec<u8>, String>>,
 {
-    for id in project.environment.ktx_asset_ids() {
-        let path = awsm_renderer_editor_protocol::env_ktx_path(id);
-        if let Ok(bytes) = read(path).await {
+    // Concurrent reads (up to 3 slots — skybox/specular/irradiance KTX2 files
+    // are the largest side files a project carries); stash order preserved.
+    let ids = project.environment.ktx_asset_ids();
+    let reads: Vec<Fut> = ids
+        .iter()
+        .map(|id| read(awsm_renderer_editor_protocol::env_ktx_path(*id)))
+        .collect();
+    for (id, res) in ids.into_iter().zip(futures::future::join_all(reads).await) {
+        if let Ok(bytes) = res {
             crate::engine::bridge::env_sync::stash_ktx(id, bytes);
         }
     }
@@ -816,6 +839,15 @@ pub fn apply_project(ctrl: &EditorController, project: EditorProject) {
         .iter()
         .map(|n| node_from_spec(&NodeSpec::from_editor_node(n)))
         .collect();
+    // ⭐ Make the whole load settle-visible: raise the `WaitRenderSettled`
+    // barrier NOW — synchronously, inside the load command — and hand its
+    // release to the node_sync root-Replace arm, which drops it after the
+    // single bulk-load commit. A driver doing `load_project →
+    // wait_render_settled` then observes the FULLY populated scene instead of
+    // settling before the async Replace materialization starts. (Load errors
+    // happen before this point, so a failed load never arms; the Replace diff
+    // below is always delivered, so the barrier always releases.)
+    crate::engine::bridge::node_sync::arm_load_settle_barrier();
     ctrl.scene.nodes.lock_mut().replace_cloned(new_nodes);
 
     // Re-bake any Mesh asset whose `.mesh.bin` cache wasn't restored (missing
@@ -876,17 +908,33 @@ pub fn apply_project(ctrl: &EditorController, project: EditorProject) {
 /// table; `*_missing_cache` = how many lack their bytes in the session cache (so a
 /// save would drop them); `texture_unhashed` = raster textures whose import never
 /// captured a content_hash (can't be addressed/persisted at all).
-#[derive(Debug, Clone, Default, serde::Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 pub struct SaveCensus {
     pub mesh_assets: usize,
     pub mesh_missing_cache: usize,
+    /// Captured-base mesh assets whose cache bytes are present AND non-empty
+    /// (the persisted-byte population — procedural bases re-bake and are
+    /// exempt). With `mesh_missing_cache == 0`, this is the count a lossless
+    /// round-trip must reproduce exactly.
+    pub mesh_with_bytes: usize,
     pub texture_assets: usize,
     pub texture_missing_cache: usize,
     pub texture_unhashed: usize,
+    /// Raster texture assets with non-empty encoded bytes in the session cache.
+    pub texture_with_bytes: usize,
     pub buffer_assets: usize,
     pub buffer_missing_cache: usize,
     pub env_ktx_assets: usize,
     pub env_ktx_missing_stash: usize,
+    /// Material assets in the Studio list (custom WGSL + built-in variants) —
+    /// persisted inline in `project.toml`, so the count must survive a reload.
+    pub material_count: usize,
+    /// Animation clips authored in the project (persisted as side TOMLs).
+    pub clip_count: usize,
+    /// Total tracks across every clip.
+    pub track_count: usize,
+    /// Total keyframes across every track of every clip.
+    pub keyframe_count: usize,
 }
 
 impl SaveCensus {
@@ -917,6 +965,10 @@ pub fn save_census(ctrl: &EditorController) -> SaveCensus {
                         || (snap != *id && mesh_cache::get_captured(snap).is_none())
                     {
                         c.mesh_missing_cache += 1;
+                    } else if mesh_cache::has_captured_bytes(*id)
+                        && (snap == *id || mesh_cache::has_captured_bytes(snap))
+                    {
+                        c.mesh_with_bytes += 1;
                     }
                 }
             }
@@ -929,6 +981,8 @@ pub fn save_census(ctrl: &EditorController) -> SaveCensus {
                     c.texture_unhashed += 1;
                 } else if texture_cache::get(*id).is_none() {
                     c.texture_missing_cache += 1;
+                } else if texture_cache::has_bytes(*id) {
+                    c.texture_with_bytes += 1;
                 }
             }
             // Custom-material buffer data: the words are the only copy (the
@@ -952,6 +1006,18 @@ pub fn save_census(ctrl: &EditorController) -> SaveCensus {
         c.env_ktx_assets += 1;
         if !crate::engine::bridge::env_sync::has_ktx(id) {
             c.env_ktx_missing_stash += 1;
+        }
+    }
+    // Authoring-side counts (materials / clips / tracks / keyframes) — all
+    // persisted inline in `project.toml` + side TOMLs, so a lossless
+    // save→reload must reproduce every one. The `VerifyRoundtrip` self-test
+    // compares this whole census before/after its cold in-memory reload.
+    c.material_count = ctrl.custom_materials.lock_ref().len();
+    for clip in ctrl.custom_animations.lock_ref().iter() {
+        c.clip_count += 1;
+        for track in clip.tracks.lock_ref().iter() {
+            c.track_count += 1;
+            c.keyframe_count += track.keys.lock_ref().len();
         }
     }
     c

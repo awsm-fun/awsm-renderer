@@ -33,6 +33,7 @@ mod mesh_def;
 mod node_spec;
 mod project;
 mod query;
+mod shadows_patch;
 mod transport;
 
 pub use anim_ui::{AnimSel, AnimView, StepKind};
@@ -55,6 +56,7 @@ pub use query::{
     ProjectSnapshot, QueryResult, ReadbackTarget, SettledResult, StatsResult, TextureSnapshot,
     TimeseriesFrame, TimeseriesResult, TrackSnapshot, VertexPredicate,
 };
+pub use shadows_patch::ShadowsPatch;
 pub use transport::{
     BundleFileMeta, BundleHandle, EditorEvent, GlbHandle, PngHandle, Request, Response,
     WsClientMsg, WsServerMsg,

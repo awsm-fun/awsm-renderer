@@ -143,6 +143,7 @@ fn cs_shade(
     var color_sum = vec3<f32>(0.0);
     var alpha_sum: f32 = 0.0;
     var sample_count: u32 = 0u;
+    var weight_sum: f32 = 0.0;
     for (var s = 0u; s < 4u; s++) {
         var vis_s: vec4<u32>;
         switch(s) {
@@ -160,9 +161,14 @@ fn cs_shade(
         }
         if (is_sky) {
             let sky_col = sample_skybox(coords, sky_screen_dims_f32, camera, skybox_tex, skybox_sampler);
-            color_sum += sky_col.rgb;
+            // Karis weighting — MUST match the material edge arm (both
+            // writers feed the same accumulator; mixing weighted and
+            // unweighted slots would bias the final_blend division).
+            let karis_w = 1.0 / (1.0 + max(sky_col.r, max(sky_col.g, sky_col.b)));
+            color_sum += sky_col.rgb * karis_w;
             alpha_sum += sky_col.a;
             sample_count += 1u;
+            weight_sum += karis_w;
         }
     }
 
@@ -170,10 +176,18 @@ fn cs_shade(
         return;
     }
 
-    let accum_word_index = edge_layout.accumulator_base + (edge_pixel_id * 4u + slot_index) * 4u;
+    // 8 words per slot (see ACCUMULATOR_SLOT_BYTES): sky samples carry ZERO
+    // SSR reflectivity — write the descriptor words fresh so final_blend
+    // never reads a stale prior-frame sum from this slot.
+    let accum_word_index = edge_layout.accumulator_base + (edge_pixel_id * 4u + slot_index) * 8u;
     edge_data[accum_word_index + 0u] = bitcast<u32>(color_sum.x);
     edge_data[accum_word_index + 1u] = bitcast<u32>(color_sum.y);
     edge_data[accum_word_index + 2u] = bitcast<u32>(color_sum.z);
-    edge_data[accum_word_index + 3u] = bitcast<u32>(f32(sample_count));
+    // Karis WEIGHT sum, not the raw sample count (matches the material arm).
+    edge_data[accum_word_index + 3u] = bitcast<u32>(weight_sum);
+    edge_data[accum_word_index + 4u] = 0u;
+    edge_data[accum_word_index + 5u] = 0u;
+    edge_data[accum_word_index + 6u] = 0u;
+    edge_data[accum_word_index + 7u] = 0u;
 }
 {% endif %}

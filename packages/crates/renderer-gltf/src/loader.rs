@@ -90,37 +90,52 @@ pub fn get_type_from_filename(url: &str) -> Option<GltfFileType> {
 
 impl GltfLoader {
     /// Loads a glTF asset from a URL.
-    pub async fn load(url: &str, file_type: Option<GltfFileType>) -> anyhow::Result<Self> {
+    /// `bypass_http_cache`: when true, the top-level model fetch is issued with
+    /// the `no-store` cache mode so the browser HTTP cache is skipped. This crate
+    /// sets NO policy — it only exposes the mechanism; the CALLER decides. The
+    /// editor passes `true` for URL imports (a local-MCP DEV workflow: you re-bake
+    /// to the SAME filename and re-import to iterate, where a cache hit would
+    /// silently return the STALE prior bake). Runtime/player callers pass `false`
+    /// to keep normal HTTP caching for load performance.
+    pub async fn load(
+        url: &str,
+        file_type: Option<GltfFileType>,
+        bypass_http_cache: bool,
+    ) -> anyhow::Result<Self> {
         let url = url.to_owned();
-        let file_type = match file_type {
-            Some(file_type) => file_type,
-            None => get_type_from_filename(&url).unwrap_or(GltfFileType::Json),
-        };
+
+        // Auto-detect GLB (binary, "glTF" magic) vs glTF (JSON) from the fetched
+        // CONTENT, not the URL extension. The old code chose the fetch mode purely
+        // from the filename and defaulted to JSON when there was no `.glb`/`.gltf`
+        // extension — so a GLB served at an extensionless or query-suffixed URL
+        // (`/glb/arena88`, `model.glb?v=1` — `rsplit('.')` yields `glb?v=1`) was
+        // fetched as text and mis-parsed as JSON, failing with a cryptic
+        // "could not completely read the object". `Gltf::from_slice` (via
+        // `parse_gltf_lenient`) sniffs the container form itself, so one binary
+        // fetch is correct for both — a `.gltf` JSON body is just its UTF-8 bytes.
+        //
+        // Draco (`.drc`) is a distinct compressed container the parser can't sniff;
+        // honour an explicit/extension hint for it and reject (unchanged — this
+        // loader never supported a raw-Draco path).
+        let hint = file_type.or_else(|| get_type_from_filename(&url));
+        if matches!(hint, Some(GltfFileType::Draco)) {
+            return Err(AwsmGltfError::Load.into());
+        }
+
+        // Bypass the browser HTTP cache via the fetch `no-store` mode when the
+        // caller asked for it (see `bypass_http_cache` above) — done through the
+        // cache mode rather than a `?cb=<ts>` URL cachebuster so the URL / cache
+        // key stays clean.
+        let mut req = gloo_net::http::Request::get(&url);
+        if bypass_http_cache {
+            req = req.cache(web_sys::RequestCache::NoStore);
+        }
+        let bytes = req.send().await?.binary().await?;
 
         let Gltf {
             document: doc,
             blob,
-        } = match file_type {
-            GltfFileType::Json => {
-                let text = gloo_net::http::Request::get(&url)
-                    .send()
-                    .await?
-                    .text()
-                    .await?;
-
-                let bytes: &[u8] = text.as_bytes();
-                parse_gltf_lenient(bytes)
-            }
-            GltfFileType::Glb => {
-                let bytes = gloo_net::http::Request::get(&url)
-                    .send()
-                    .await?
-                    .binary()
-                    .await?;
-                parse_gltf_lenient(&bytes)
-            }
-            _ => return Err(AwsmGltfError::Load.into()),
-        }?;
+        } = parse_gltf_lenient(&bytes)?;
 
         let base_path = get_base_path(&url);
         let buffers = import_buffer_data(&doc, base_path, blob).await?;
@@ -353,5 +368,45 @@ fn get_url(base: &str, uri: &str) -> anyhow::Result<String> {
     } else {
         //relative
         Ok(format!("{base}{uri}"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_gltf_lenient;
+
+    const MIN_JSON: &str = r#"{"asset":{"version":"2.0"}}"#;
+
+    /// Build a minimal valid GLB container around `MIN_JSON` (header + one
+    /// 4-byte-aligned JSON chunk), per the glTF 2.0 binary container spec.
+    fn min_glb() -> Vec<u8> {
+        let mut json = MIN_JSON.as_bytes().to_vec();
+        while json.len() % 4 != 0 {
+            json.push(b' ');
+        }
+        let mut out = Vec::new();
+        out.extend_from_slice(b"glTF"); // magic
+        out.extend_from_slice(&2u32.to_le_bytes()); // version
+        out.extend_from_slice(&((12 + 8 + json.len()) as u32).to_le_bytes()); // total length
+        out.extend_from_slice(&(json.len() as u32).to_le_bytes()); // chunk length
+        out.extend_from_slice(b"JSON"); // chunk type
+        out.extend_from_slice(&json);
+        out
+    }
+
+    /// The loader decides GLB-vs-JSON from the CONTENT (the "glTF" magic), not
+    /// the URL extension — the regression that made extensionless or
+    /// query-suffixed URLs (`…/glb/arena88`, `model.glb?v=1`) fetch as text and
+    /// fail with "could not completely read the object" (MCP-BUGS 2026-07-08).
+    #[test]
+    fn content_sniff_parses_glb_and_json_bytes() {
+        // Binary GLB bytes → sniffed as GLB.
+        let glb = min_glb();
+        let parsed = parse_gltf_lenient(&glb).expect("glb bytes parse");
+        assert_eq!(parsed.document.nodes().len(), 0);
+
+        // Raw JSON bytes (what a .gltf fetch yields) → sniffed as JSON.
+        let parsed = parse_gltf_lenient(MIN_JSON.as_bytes()).expect("json bytes parse");
+        assert_eq!(parsed.document.nodes().len(), 0);
     }
 }

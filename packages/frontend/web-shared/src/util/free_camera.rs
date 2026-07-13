@@ -78,6 +78,10 @@ pub struct FreeCamera {
     /// assumed bounds. `Some` pins both planes; the auto refresh still runs
     /// underneath but is masked at matrix build.
     clip_override: Option<(f32, f32)>,
+    /// Depth convention for the projection matrices — MUST match the
+    /// renderer's `features.reverse_z` (003). Set via [`Self::set_reverse_z`]
+    /// right after construction; defaults to forward-Z.
+    reverse_z: bool,
 }
 
 impl FreeCamera {
@@ -98,6 +102,7 @@ impl FreeCamera {
             aperture: 5.6,
             focus_distance: 10.0,
             clip_override: None,
+            reverse_z: false,
         }
     }
 
@@ -111,15 +116,24 @@ impl FreeCamera {
         Self::new_aabb(Aabb::new_cube(40.0, 40.0), aspect, 1.1)
     }
 
+    /// Set the depth convention (003) — call right after construction, matching
+    /// the renderer's `features.reverse_z`.
+    pub fn set_reverse_z(&mut self, reverse_z: bool) {
+        self.reverse_z = reverse_z;
+    }
+
     pub fn matrices(&self) -> CameraMatrices {
-        let projection = match self.mode {
+        let convention = awsm_renderer::depth_convention::DepthConvention {
+            reverse_z: self.reverse_z,
+        };
+        let (projection, near, far) = match self.mode {
             ProjectionMode::Perspective => {
                 let mut p = self.perspective.clone();
                 if let Some((near, far)) = self.clip_override {
                     p.near = near;
                     p.far = far;
                 }
-                p.projection_matrix()
+                (p.projection_matrix(convention), p.near, p.far)
             }
             ProjectionMode::Orthographic => {
                 let mut p = self.orthographic.clone();
@@ -127,7 +141,7 @@ impl FreeCamera {
                     p.near = near;
                     p.far = far;
                 }
-                p.projection_matrix()
+                (p.projection_matrix(convention), p.near, p.far)
             }
         };
         CameraMatrices {
@@ -136,6 +150,9 @@ impl FreeCamera {
             position_world: self.view.get_position(),
             aperture: self.aperture,
             focus_distance: self.focus_distance,
+            reverse_z: self.reverse_z,
+            near,
+            far,
         }
     }
 
@@ -169,9 +186,9 @@ impl FreeCamera {
     pub fn set_projection_mode(&mut self, mode: ProjectionMode) {
         self.mode = mode;
         self.perspective
-            .refresh_clip_planes(&self.view, &self.aabb, self.margin);
+            .refresh_clip_planes(&self.view, &self.aabb, self.margin, self.reverse_z);
         self.orthographic
-            .refresh_clip_planes(&self.view, &self.aabb, self.margin);
+            .refresh_clip_planes(&self.view, &self.aabb, self.margin, self.reverse_z);
     }
 
     /// Snap the orbit to an explicit yaw/pitch (radians), preserving the current
@@ -189,9 +206,9 @@ impl FreeCamera {
     pub fn set_orbit(&mut self, yaw: f32, pitch: f32, radius: f32, look_at: Vec3) {
         self.view = CameraView::new(yaw, pitch, look_at, radius);
         self.perspective
-            .refresh_clip_planes(&self.view, &self.aabb, self.margin);
+            .refresh_clip_planes(&self.view, &self.aabb, self.margin, self.reverse_z);
         self.orthographic
-            .refresh_clip_planes(&self.view, &self.aabb, self.margin);
+            .refresh_clip_planes(&self.view, &self.aabb, self.margin, self.reverse_z);
     }
 
     /// Set the perspective vertical field-of-view (radians).
@@ -219,9 +236,9 @@ impl FreeCamera {
         self.view
             .set_radius((fit_distance * margin).max(bounding_radius * 1.05));
         self.perspective
-            .refresh_clip_planes(&self.view, &self.aabb, self.margin);
+            .refresh_clip_planes(&self.view, &self.aabb, self.margin, self.reverse_z);
         self.orthographic
-            .refresh_clip_planes(&self.view, &self.aabb, self.margin);
+            .refresh_clip_planes(&self.view, &self.aabb, self.margin, self.reverse_z);
     }
 
     /// Reset the orbit to the default framing (the `new_default_cube` pose) —
@@ -232,15 +249,15 @@ impl FreeCamera {
         self.margin = 1.1;
         self.view = CameraView::new_aabb(&self.aabb, self.margin);
         self.perspective
-            .refresh_clip_planes(&self.view, &self.aabb, self.margin);
+            .refresh_clip_planes(&self.view, &self.aabb, self.margin, self.reverse_z);
         self.orthographic
-            .refresh_clip_planes(&self.view, &self.aabb, self.margin);
+            .refresh_clip_planes(&self.view, &self.aabb, self.margin, self.reverse_z);
     }
 
     pub fn set_aspect(&mut self, aspect: f32) {
         self.perspective.on_resize(aspect);
         self.orthographic
-            .on_resize(&self.view, &self.aabb, self.margin, aspect);
+            .on_resize(&self.view, &self.aabb, self.margin, aspect, self.reverse_z);
     }
 
     pub fn on_pointer_down(&mut self) {
@@ -260,9 +277,14 @@ impl FreeCamera {
         // Keep both projections current — a mid-zoom mode-switch
         // shouldn't have to wait for the next wheel tick.
         self.perspective
-            .on_wheel(&self.view, &self.aabb, self.margin);
-        self.orthographic
-            .on_wheel(&self.view, &self.aabb, self.margin, delta as f32);
+            .on_wheel(&self.view, &self.aabb, self.margin, self.reverse_z);
+        self.orthographic.on_wheel(
+            &self.view,
+            &self.aabb,
+            self.margin,
+            delta as f32,
+            self.reverse_z,
+        );
     }
 }
 
@@ -404,33 +426,55 @@ impl CameraOrthographicProjection {
             near: 0.01,
             far: 100.0,
         };
-        this.on_resize(view, aabb, margin, aspect);
+        this.on_resize(view, aabb, margin, aspect, false);
         this
     }
 
-    pub fn on_wheel(&mut self, view: &CameraView, aabb: &Aabb, margin: f32, delta: f32) {
+    pub fn on_wheel(
+        &mut self,
+        view: &CameraView,
+        aabb: &Aabb,
+        margin: f32,
+        delta: f32,
+        reverse_z: bool,
+    ) {
         self.zoom(1.0 + delta * 0.001);
-        self.refresh_clip_planes(view, aabb, margin);
+        self.refresh_clip_planes(view, aabb, margin, reverse_z);
     }
 
-    pub fn refresh_clip_planes(&mut self, view: &CameraView, aabb: &Aabb, margin: f32) {
-        let bounding_radius = aabb.size().length() * 0.5;
-        let distance = view.get_position().distance(view.look_at);
-        self.near = (distance - bounding_radius * margin * 2.0).max(0.01);
-        self.far = distance + bounding_radius * margin * 2.0;
+    pub fn refresh_clip_planes(
+        &mut self,
+        view: &CameraView,
+        aabb: &Aabb,
+        margin: f32,
+        reverse_z: bool,
+    ) {
+        let (near, far) = auto_clip_planes(view, aabb, margin, reverse_z);
+        self.near = near;
+        self.far = far;
     }
 
-    pub fn on_resize(&mut self, view: &CameraView, aabb: &Aabb, margin: f32, aspect: f32) {
+    pub fn on_resize(
+        &mut self,
+        view: &CameraView,
+        aabb: &Aabb,
+        margin: f32,
+        aspect: f32,
+        reverse_z: bool,
+    ) {
         let cx = (self.left + self.right) * 0.5;
         let half_h = (self.top - self.bottom) * 0.5;
         let half_w = half_h * aspect;
         self.left = cx - half_w;
         self.right = cx + half_w;
-        self.refresh_clip_planes(view, aabb, margin);
+        self.refresh_clip_planes(view, aabb, margin, reverse_z);
     }
 
-    pub fn projection_matrix(&self) -> Mat4 {
-        Mat4::orthographic_rh(
+    pub fn projection_matrix(
+        &self,
+        convention: awsm_renderer::depth_convention::DepthConvention,
+    ) -> Mat4 {
+        convention.orthographic(
             self.left,
             self.right,
             self.bottom,
@@ -470,7 +514,7 @@ impl CameraPerspectiveProjection {
             near: 0.01,
             far: 100.0,
         };
-        this.refresh_clip_planes(view, aabb, margin);
+        this.refresh_clip_planes(view, aabb, margin, false);
         this
     }
 
@@ -478,18 +522,63 @@ impl CameraPerspectiveProjection {
         self.aspect = new_aspect;
     }
 
-    pub fn on_wheel(&mut self, view: &CameraView, aabb: &Aabb, margin: f32) {
-        self.refresh_clip_planes(view, aabb, margin);
+    pub fn on_wheel(&mut self, view: &CameraView, aabb: &Aabb, margin: f32, reverse_z: bool) {
+        self.refresh_clip_planes(view, aabb, margin, reverse_z);
     }
 
-    pub fn refresh_clip_planes(&mut self, view: &CameraView, aabb: &Aabb, margin: f32) {
-        let bounding_radius = aabb.size().length() * 0.5;
-        let distance = view.get_position().distance(view.look_at);
-        self.near = (distance - bounding_radius * margin * 2.0).max(0.01);
-        self.far = distance + bounding_radius * margin * 2.0;
+    pub fn refresh_clip_planes(
+        &mut self,
+        view: &CameraView,
+        aabb: &Aabb,
+        margin: f32,
+        reverse_z: bool,
+    ) {
+        let (near, far) = auto_clip_planes(view, aabb, margin, reverse_z);
+        self.near = near;
+        self.far = far;
     }
 
-    pub fn projection_matrix(&self) -> Mat4 {
-        Mat4::perspective_rh(self.fov_y, self.aspect, self.near, self.far)
+    pub fn projection_matrix(
+        &self,
+        convention: awsm_renderer::depth_convention::DepthConvention,
+    ) -> Mat4 {
+        convention.perspective(self.fov_y, self.aspect, self.near, self.far)
     }
+}
+
+/// Depth-precision-aware auto near/far for the orbit/free camera.
+///
+/// The old formula floored `near` at `0.01` while `far` tracked
+/// `2·boundingRadius`, so any time the eye sat closer than ~2× the scene radius
+/// (i.e. almost always) the far:near ratio blew past 100,000:1 and the
+/// `Depth32Float` buffer z-fought badly; a too-small/stale AABB additionally
+/// let `far` clip large scenes. This instead:
+///
+/// * makes `far` cover the whole scene from this viewpoint **and** stay a few ×
+///   the orbit distance and the scene radius, so a stale or too-small AABB can
+///   never clip near/far geometry, and
+/// * derives `near` from `far` at a **bounded ~5000:1 ratio** (well within
+///   float32 depth's comfort zone → no z-fighting), while capping it at half the
+///   orbit distance so it can never clip the geometry being framed.
+///
+/// Shared by the perspective and orthographic projections (the ratio only
+/// matters for perspective's non-linear depth, but a robust, clip-free `far`
+/// helps both).
+fn auto_clip_planes(view: &CameraView, aabb: &Aabb, margin: f32, reverse_z: bool) -> (f32, f32) {
+    let radius = (aabb.size().length() * 0.5 * margin).max(1.0);
+    let distance = view.get_position().distance(view.look_at);
+    let far = ((distance + radius) * 2.0)
+        .max(distance * 4.0)
+        .max(radius * 4.0);
+    let near = if reverse_z {
+        // Reverse-Z (003 stage 9): float depth precision is near-uniform, so
+        // the bounded ~5000:1 far:near ratio that forward-Z needed to avoid
+        // z-fighting is unnecessary — near no longer scales with far. Keep a
+        // small floor (clipping, not precision) and stay proportional to the
+        // orbit distance so extreme close-ups don't clip.
+        (distance * 0.002).clamp(0.05, (distance * 0.5).max(0.05))
+    } else {
+        (far / 5000.0).clamp(0.05, (distance * 0.5).max(0.05))
+    };
+    (near, far)
 }

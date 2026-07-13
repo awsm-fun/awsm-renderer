@@ -146,7 +146,10 @@ impl AwsmRenderer {
                 .copy_texture_for_readback(&texture, width, height, 0, format)
         })();
         Box::pin(async move {
-            let bytes = readback?.finish_png_opaque().await?;
+            // Swapchain bytes are already display-encoded (the display pass
+            // hand-encodes sRGB into the non-sRGB canvas format) — mark them
+            // so the readback doesn't double-gamma the capture.
+            let bytes = readback?.mark_display_encoded().finish_png_opaque().await?;
             Ok::<Vec<u8>, AwsmError>(bytes)
         })
     }
@@ -202,8 +205,18 @@ impl AwsmRenderer {
             &mut self.bind_group_layouts,
             &mut self.pipeline_layouts,
             &self.render_textures.formats,
+            self.features.depth().compare_strict(),
         )?;
         self.lines.poll_compile(&mut self.pipelines.render)?;
+
+        // Content-lazy decal pipelines (axis 1): same kick/poll auto-drive as
+        // the lines above. Covers the LIVE `insert_decal` path (editor node
+        // observer — no `commit_load` afterwards, §5b pending); the
+        // scene-load path compiles at commit via `ensure_config_pipelines`.
+        // Both are boolean-check no-ops when no decal exists or everything
+        // is compiled, so decal-free projects pay effectively nothing.
+        self.kick_decal_pipelines_compile()?;
+        self.poll_decal_pipelines_compile()?;
 
         // HUD meshes (editor gizmos, in-game HUD primitives) draw
         // through the transparent pipeline, which is per-mesh and
@@ -424,8 +437,22 @@ impl AwsmRenderer {
             self.bind_groups
                 .mark_create(BindGroupCreate::LightCullingFroxelsResize);
         }
-        let (z_near_for_cull, z_far_for_cull) =
-            camera_near_far_from_projection(&self.camera.last_matrices);
+        // 003 stage 5: read the EXPLICIT near/far carried on the matrices —
+        // matrix recovery breaks under reverse-Z / infinite-far. Clamp an
+        // infinite far to a large finite bound for the exponential froxel
+        // slicing (lights beyond it land in the last slice, still correct).
+        let (z_near_for_cull, z_far_for_cull) = match &self.camera.last_matrices {
+            Some(m) => {
+                let near = m.near.max(1e-4);
+                let far = if m.far.is_finite() {
+                    m.far.max(near + 1e-3)
+                } else {
+                    (near * 100_000.0).max(10_000.0)
+                };
+                (near, far)
+            }
+            None => (0.1, 1000.0),
+        };
         self.light_culling_buffers.write_params(
             &self.gpu,
             z_near_for_cull,
@@ -545,6 +572,16 @@ impl AwsmRenderer {
             // T2.6: lazy HUD depth allocation. False until the first
             // HUD-flagged mesh enters the registry.
             self.meshes.has_seen_hud(),
+            // Lazy SSR-target allocation: full-res only when SSR is enabled.
+            self.post_processing.ssr.enabled,
+            // Half-res SSR trace target when resolution_scale < 1.0. Must match
+            // the picker's `views()` value to avoid rebuild thrash.
+            self.post_processing.ssr.resolution_scale < 1.0,
+            // M3 temporal-SSR history pair allocation. Must match the picker's
+            // `views()` value to avoid rebuild thrash.
+            self.post_processing.ssr.temporal,
+            // Software-BVH hit target. Must match the picker's `views()` too.
+            self.post_processing.ssr.bvh_reflections,
         )?;
 
         if render_texture_views.views_recreated {
@@ -566,6 +603,97 @@ impl AwsmRenderer {
             )? {
                 self.bind_groups
                     .mark_create(BindGroupCreate::TextureViewRecreate);
+            }
+        }
+
+        // Bloom pyramid upkeep — only when bloom is enabled (matches the
+        // dispatch gate below), so a disabled bloom costs no memory or work.
+        // Both the resize and the live-param upload happen HERE, before the
+        // `RenderContext` borrows `&self.render_passes` for the frame (the
+        // param upload needs `&mut`). Recreating the pyramid invalidates its
+        // per-mip views, so its bind groups rebuild via `TextureViewRecreate`
+        // (the Bloom recreate arm rebinds pyramid + composite + full-res bloom
+        // target + params uniform).
+        // Lazy pass: `None` until the first `bloom: true` (set_post_processing
+        // builds it awaited, so enabled ⇒ `Some` by the next frame).
+        if self.post_processing.bloom {
+            if let Some(bloom) = self.render_passes.bloom.as_mut() {
+                if bloom.ensure_size(
+                    &self.gpu,
+                    render_texture_views.width,
+                    render_texture_views.height,
+                )? {
+                    self.bind_groups
+                        .mark_create(BindGroupCreate::TextureViewRecreate);
+                }
+                bloom.params.write(
+                    &self.gpu,
+                    self.post_processing.bloom_threshold,
+                    self.post_processing.bloom_knee,
+                    self.post_processing.bloom_intensity,
+                    self.post_processing.bloom_scatter,
+                )?;
+            }
+        }
+
+        // SSR live-tuning uniforms (no ensure_size — the ssr target lives in
+        // RenderTextures and resizes with the rest). Only written when enabled.
+        if self.post_processing.ssr.enabled {
+            // Software-BVH: flush any BLAS dirt to the GPU + rebuild this
+            // frame's TLAS instance array BEFORE borrowing the pass (the
+            // BLAS store lives on `meshes`). Buffer reallocation fires the
+            // SsrBvhBuffers event so the bvh_trace bind group rebinds.
+            let mut bvh_instances: u32 = 0;
+            let mut bvh_buffers_recreated = false;
+            if self.post_processing.ssr.bvh_reflections {
+                self.meshes.bvh.write_gpu(&self.gpu)?;
+                bvh_buffers_recreated = self.meshes.bvh.buffers_recreated;
+            }
+            // Lazy pass: enabled ⇒ `Some` (set_post_processing builds it
+            // awaited on the first enable).
+            if let Some(ssr) = self.render_passes.ssr.as_mut() {
+                if self.post_processing.ssr.bvh_reflections {
+                    // Rebuild + upload only when something the TLAS depends
+                    // on actually changed (transforms, mesh set, hidden
+                    // flips, BLAS store) — a static scene skips ALL of it.
+                    if ssr.tlas.built_revision != self.meshes.bvh_tlas_revision {
+                        ssr.tlas.instance_count = self.meshes.build_bvh_tlas(
+                            &self.transforms,
+                            &self.materials,
+                            &mut ssr.tlas.scratch,
+                        );
+                        ssr.tlas.write(&self.gpu)?;
+                        ssr.tlas.built_revision = self.meshes.bvh_tlas_revision;
+                        bvh_buffers_recreated |= ssr.tlas.recreated;
+                    }
+                    bvh_instances = ssr.tlas.instance_count;
+                }
+                let s = &self.post_processing.ssr;
+                // The uniform's temporal_weight doubles as the trace's RUNTIME
+                // "will a temporal pass average my jitter?" gate — it must be
+                // 0 whenever the structural `temporal` axis is off, or the
+                // trace rotates its march phase per frame (the glossy IGN
+                // rotation AND the mirror supersampling phase) with nothing
+                // accumulating it: visible shimmer.
+                let temporal_weight = if s.temporal { s.temporal_weight } else { 0.0 };
+                ssr.params.write(
+                    &self.gpu,
+                    s.intensity,
+                    s.max_distance,
+                    s.thickness,
+                    s.max_steps as f32,
+                    s.spread_cutoff,
+                    s.edge_fade,
+                    temporal_weight,
+                    // Mirror the lights' reflection probe so the SSR miss
+                    // fallback box-projects identically to the IBL path.
+                    self.lights.reflection_probe(),
+                    bvh_instances,
+                )?;
+            }
+            if bvh_buffers_recreated {
+                self.bind_groups
+                    .mark_create(crate::bind_groups::BindGroupCreate::SsrBvhBuffers);
             }
         }
 
@@ -820,6 +948,7 @@ impl AwsmRenderer {
         let frame_opts_stats = crate::optimization_policy::FrameOptimizationStats {
             features_gpu_culling: self.features.gpu_culling,
             features_decals: self.features.decals,
+            ssr_enabled: self.post_processing.ssr.enabled && self.render_passes.ssr.is_some(),
             opaque_count: renderables.opaque.len() as u32,
             non_instanced_with_aabb_count: opaque_snapshots.len() as u32,
             decals_count: self.decals.as_ref().map(|d| d.len() as u32).unwrap_or(0),
@@ -895,7 +1024,7 @@ impl AwsmRenderer {
                                 cam.position_world,
                                 1.0 / proj_yy,
                                 vh as f32,
-                                Self::LOD_ERROR_THRESHOLD_PX,
+                                self.lod_error_threshold_px,
                             )?;
                         }
                     }
@@ -1544,6 +1673,50 @@ impl AwsmRenderer {
             )?;
         }
 
+        // Screen-space reflections — runs on the RESOLVED single-sample
+        // `composite` HDR (populated above by the AA-off blit, or by the MSAA
+        // transparent-pass resolve), reflecting on-screen geometry via depth +
+        // normals and compositing back over `composite` before bloom. Placed
+        // here (not before the transparent pass) so the color source is always
+        // single-sample — a compute pass can't storage-write / single-sample-
+        // blit a multisampled `transparent`. Records nothing when disabled.
+        if ctx.post_processing.ssr.enabled {
+            // Lazy pass: enabled ⇒ `Some` (built awaited on the first enable).
+            if let Some(ssr) = self.render_passes.ssr.as_ref() {
+                let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
+                    Some(tracing::span!(tracing::Level::INFO, "SSR RenderPass").entered())
+                } else {
+                    None
+                };
+                ssr.render(
+                    &ctx,
+                    ctx.render_texture_views.width,
+                    ctx.render_texture_views.height,
+                    ctx.post_processing.ssr.resolution_scale < 1.0,
+                )?;
+            }
+        }
+
+        // Bloom mip-pyramid pass — builds a wide, soft bloom from the composite
+        // into `render_texture_views.bloom`, which the effects pass then blends
+        // over the scene. Only when bloom is enabled (matches the effects pass
+        // gate); skipped otherwise so the pyramid dispatches cost nothing.
+        if ctx.post_processing.bloom {
+            // Lazy pass: enabled ⇒ `Some` (built awaited on the first enable).
+            if let Some(bloom) = self.render_passes.bloom.as_ref() {
+                let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
+                    Some(tracing::span!(tracing::Level::INFO, "Bloom RenderPass").entered())
+                } else {
+                    None
+                };
+                bloom.render(
+                    &ctx,
+                    ctx.render_texture_views.width,
+                    ctx.render_texture_views.height,
+                )?;
+            }
+        }
+
         {
             let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
                 Some(tracing::span!(tracing::Level::INFO, "Effects RenderPass").entered())
@@ -1928,6 +2101,7 @@ impl AwsmRenderer {
             bind_groups,
             &self.meshes.buffer_infos,
             &self.anti_aliasing,
+            self.features.reverse_z,
         )?;
         self.shaders.ensure_keys_sync_skip_validate(
             &self.gpu,
@@ -1952,6 +2126,8 @@ impl AwsmRenderer {
                 &self.meshes.buffer_infos,
                 &self.anti_aliasing,
                 &self.render_textures.formats,
+                self.features.depth().compare(),
+                self.features.reverse_z,
             )
             .now_or_never()
         {
@@ -2354,7 +2530,7 @@ impl<'a> RenderContext<'a> {
                     depth_stencil_attachment: Some(
                         DepthStencilAttachment::new(hud_depth_view)
                             .with_depth_load_op(LoadOp::Clear)
-                            .with_depth_clear_value(1.0)
+                            .with_depth_clear_value(self.features.depth().clear_value())
                             .with_depth_store_op(StoreOp::Store),
                     ),
                     ..Default::default()
@@ -2389,45 +2565,6 @@ impl<'a> RenderContext<'a> {
     }
 }
 
-/// Derives view-space `(near, far)` from a perspective projection
-/// matrix. The renderer doesn't separately track near/far — they're
-/// derived from `proj` so the camera buffer stays the single source
-/// of truth. Returns sensible defaults (`(0.1, 1000.0)`) when no
-/// camera matrices have been uploaded yet (first-frame race).
-///
-/// Recovery (right-handed glam / WebGPU NDC `z ∈ [0, 1]`):
-///   `proj[2][2] = far / (near - far)`
-///   `proj[3][2] = far * near / (near - far)`
-/// solved as
-///   `near = proj[3][2] / proj[2][2]`
-///   `far  = proj[3][2] / (proj[2][2] + 1)`
-fn camera_near_far_from_projection(
-    last_matrices: &Option<crate::camera::CameraMatrices>,
-) -> (f32, f32) {
-    let Some(matrices) = last_matrices else {
-        return (0.1, 1000.0);
-    };
-    if matrices.is_orthographic() {
-        // Orthographic: no perspective divide; near/far come from
-        // `proj[2][2]` and `proj[3][2]` differently. The exponential
-        // froxel mapping assumes perspective; for ortho we just hand
-        // back something safe and let the cull pass cover the whole
-        // depth range coarsely.
-        return (0.1, 1000.0);
-    }
-    let p22 = matrices.projection.z_axis.z;
-    let p32 = matrices.projection.w_axis.z;
-    // Guard against degenerate matrices.
-    if p22.abs() < f32::EPSILON || (p22 + 1.0).abs() < f32::EPSILON {
-        return (0.1, 1000.0);
-    }
-    let near = p32 / p22;
-    let far = p32 / (p22 + 1.0);
-    let near = near.abs().max(1e-4);
-    let far = far.abs().max(near + 1e-3);
-    (near, far)
-}
-
 /// Largest world-space axis scale of an object→world transform — used to project
 /// a mesh's object-space LOD error to world (and thence screen) size.
 #[cfg(feature = "lod")]
@@ -2440,8 +2577,43 @@ fn lod_max_axis_scale(m: &glam::Mat4) -> f32 {
 
 #[cfg(feature = "lod")]
 impl AwsmRenderer {
-    /// Geometric-error budget for discrete-LOD level selection, in screen pixels.
-    const LOD_ERROR_THRESHOLD_PX: f32 = 1.0;
+    /// Geometric-error budget for discrete-LOD level selection, in screen
+    /// pixels. Default for [`Self::lod_error_threshold_px`]; tune at runtime
+    /// via [`Self::set_lod_error_calibration`].
+    pub const LOD_ERROR_THRESHOLD_PX: f32 = 1.0;
+
+    /// Calibration factor applied to the baked per-level error during
+    /// selection. Default for [`Self::lod_error_conservatism`]; tune at
+    /// runtime via [`Self::set_lod_error_calibration`].
+    ///
+    /// The bake stores the RAW simplification metric — sqrt of the max
+    /// accumulated QEM cost (lod-bake `simplify.rs`), which behaves like an
+    /// RMS vertex deviation. Perceptual/silhouette error tracks the MAX
+    /// deviation plus interior shading error (normals, UVs, specular), which
+    /// is empirically about an order of magnitude larger than the RMS number.
+    /// Projecting the raw metric straight against the pixel budget therefore
+    /// switched to coarse levels far too early: the DamagedHelmet bake
+    /// (radius 1.27u, 15,452 tris, level errors 3.97e-4/1.37e-3/4.61e-3) got
+    /// switch distances of 0.29u/1.0u/3.3u at 600px/45° — LOD0/LOD1 were
+    /// unreachable from ANY exterior camera and the base mesh never drew.
+    ///
+    /// Multiplying the baked error by this factor before projection makes the
+    /// projected error conservative. 16.0 puts the helmet's switches at
+    /// 4.6u/16u/53u ≈ 3.6/12.6/42 object radii — the base mesh owns the
+    /// inspect range and coarser levels step outward in sensible bands
+    /// (pinned by `lod::tests::helmet_switch_distances_pin_the_calibration`).
+    /// Bakes stay raw on disk; recalibrating is a selection-time policy
+    /// change, never a rebake.
+    pub const LOD_ERROR_CONSERVATISM: f32 = 16.0;
+
+    /// Runtime override of [`Self::LOD_ERROR_THRESHOLD_PX`] /
+    /// [`Self::LOD_ERROR_CONSERVATISM`] for calibration passes. The pair is
+    /// read once per selection/cut update — no per-frame cost beyond two f32
+    /// loads already in the loop.
+    pub fn set_lod_error_calibration(&mut self, threshold_px: f32, conservatism: f32) {
+        self.lod_error_threshold_px = threshold_px;
+        self.lod_error_conservatism = conservatism;
+    }
 
     /// Per-frame Gap-B dynamic-paging update (CPU-driven). No-op unless
     /// `cluster_paging` armed the manager at load. Reads the live camera, then runs
@@ -2467,6 +2639,7 @@ impl AwsmRenderer {
             Err(_) => return,
         };
         // Disjoint inline field borrows: gpu + meshes (shared) vs render_passes (mut).
+        let error_threshold_px = self.lod_error_threshold_px;
         let gpu = &self.gpu;
         let meshes = &self.meshes;
         if let Some(pass) = self.render_passes.cluster_lod.as_mut() {
@@ -2476,7 +2649,7 @@ impl AwsmRenderer {
                 cam_pos,
                 tan_half_fov_y,
                 viewport_h,
-                Self::LOD_ERROR_THRESHOLD_PX,
+                error_threshold_px,
             ) {
                 tracing::warn!("cluster paging stream_paging failed: {e:?}");
             }
@@ -2509,6 +2682,10 @@ impl AwsmRenderer {
             Err(_) => return,
         };
 
+        // The runtime calibration pair (defaults: the consts above).
+        let error_threshold_px = self.lod_error_threshold_px;
+        let error_conservatism = self.lod_error_conservatism;
+
         // Move the registry out so the loop can call `&mut self` methods without
         // aliasing `self.lod`. `take` swaps in an empty map — no allocation.
         let mut reg = std::mem::take(&mut self.lod);
@@ -2534,8 +2711,13 @@ impl AwsmRenderer {
             let distance = (center - cam_pos).length();
             let px_per_unit =
                 crate::lod::projected_px_per_unit(distance, tan_half_fov_y, viewport_h);
-            let selected =
-                crate::lod::select_level(chain, px_per_unit, scale, Self::LOD_ERROR_THRESHOLD_PX);
+            let selected = crate::lod::select_level(
+                chain,
+                px_per_unit,
+                scale,
+                error_threshold_px,
+                error_conservatism,
+            );
             if selected != chain.current_level {
                 let prev_key = chain.key_for_level(base_key, chain.current_level);
                 let sel_key = chain.key_for_level(base_key, selected);

@@ -129,6 +129,12 @@ impl AwsmRenderer {
             viewport_size,
             self.materials.has_seen_transmission(),
             self.meshes.has_seen_hud(),
+            // Must match the render-loop `views()` value so the SSR targets
+            // don't thrash-rebuild between pick and render.
+            self.post_processing.ssr.enabled,
+            self.post_processing.ssr.resolution_scale < 1.0,
+            self.post_processing.ssr.temporal,
+            self.post_processing.ssr.bvh_reflections,
         )?;
         let ctx = crate::bind_groups::BindGroupRecreateContext {
             gpu: &self.gpu,

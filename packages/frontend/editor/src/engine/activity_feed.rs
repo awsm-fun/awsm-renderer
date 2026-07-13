@@ -65,7 +65,14 @@ thread_local! {
     /// User toggle: when `false`, [`narrate`] is a no-op (no new entries, no
     /// spotlight) so the feed never crowds the screen. Bound to a Settings
     /// toggle; defaults on. Session-only (editor chrome, not project state).
-    static ENABLED: Mutable<bool> = Mutable::new(true);
+    // Default OFF: the narration overlay contaminates agent screenshots and
+    // surprised users; a human opts in via Settings ("Agent activity overlay")
+    // or an agent via SetViewOptions.
+    static ENABLED: Mutable<bool> = Mutable::new(false);
+    // "Follow the agent" (auto-switch workspace to the mode a remote command
+    // edits). Separate from the overlay so each can be toggled alone; default
+    // OFF for the same reason.
+    static FOLLOW: Mutable<bool> = Mutable::new(false);
     /// The agent's CURRENT action phrase (the latest narration) — shown on the 🤖
     /// chip while the agent works ("added a box" beats a bare "working…").
     /// `None` = nothing narrated yet / idle.
@@ -86,6 +93,12 @@ pub fn feed() -> MutableVec<FeedEntry> {
 /// The reactive spotlight target for the app shell to pulse.
 pub fn focus() -> Mutable<Option<FocusTarget>> {
     FOCUS.with(|f| f.clone())
+}
+
+/// The reactive "follow the agent" toggle: auto-switch the workspace to the
+/// mode a remote command edits. Default OFF; Settings checkbox + SetViewOptions.
+pub fn follow_enabled() -> Mutable<bool> {
+    FOLLOW.with(|f| f.clone())
 }
 
 /// The reactive "narrate agent activity" toggle, for a Settings checkbox. When
@@ -476,6 +489,7 @@ fn describe(cmd: &EditorCommand) -> Option<(FocusTarget, String)> {
         | EditorCommand::ResetCamera
         | EditorCommand::SetCameraOrbit { .. }
         | EditorCommand::SetCameraProjection { .. }
+        | EditorCommand::SetCameraClip { .. }
         | EditorCommand::FrameNode { .. }
         | EditorCommand::SetFrameTime { .. }
         | EditorCommand::ClearFrameTime
@@ -526,6 +540,7 @@ fn insert_label(spec: &InsertSpec) -> &'static str {
         InsertSpec::Decal => "decal",
         InsertSpec::Sweep => "sweep",
         InsertSpec::Instances => "instances",
+        InsertSpec::Instancer => "instancer",
         InsertSpec::Mesh => "mesh",
     }
 }

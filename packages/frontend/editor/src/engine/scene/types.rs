@@ -9,7 +9,7 @@
 
 pub use awsm_renderer_editor_protocol::{
     CameraConfig, CameraProjection, ColliderShape, EnvSlot, EnvironmentConfig, LightConfig,
-    LightKind, NodeKind, Trs,
+    LightKind, NodeKind, ReflectionProbe, Trs,
 };
 
 /// Load state of the renderer-side asset (glb/gltf) for a `Model` node.

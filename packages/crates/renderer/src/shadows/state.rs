@@ -12,7 +12,6 @@ use awsm_renderer_core::{
         BufferBindingLayout, BufferBindingType,
     },
     buffers::{BufferBinding, BufferDescriptor, BufferUsage},
-    compare::CompareFunction,
     error::AwsmCoreError,
     renderer::AwsmRendererWebGpu,
     sampler::{FilterMode, SamplerDescriptor},
@@ -51,10 +50,9 @@ use crate::{
         helpers::{
             build_cascade_layer_views, build_cube_face_views, build_evsm_blur_bind_group,
             build_evsm_moment_write_bind_group, create_cascade_array_view,
-            create_cube_2d_array_view, create_cube_array_view, extract_near_far,
-            shadow_pipeline_cache_key, view_projection_drift,
-            write_shadow_cascade_array_descriptor, write_shadow_descriptor, write_shadow_view_slot,
-            SHADOW_DESCRIPTOR_UNIFORM_BYTES,
+            create_cube_2d_array_view, create_cube_array_view, shadow_pipeline_cache_key,
+            view_projection_drift, write_shadow_cascade_array_descriptor, write_shadow_descriptor,
+            write_shadow_view_slot, SHADOW_DESCRIPTOR_UNIFORM_BYTES,
         },
         light_shadow::{EvsmCutoff, LightShadowParams},
         record::{
@@ -68,6 +66,15 @@ use crate::{
 pub struct Shadows {
     /// Renderer-wide configuration. Replace via [`Shadows::set_config`].
     pub config: ShadowsConfig,
+    /// Active depth convention (003 stage 7) — the SAME
+    /// `features.depth()` the main camera uses. Every shadow depth
+    /// site derives from it in lockstep: writer projections
+    /// (cascade ortho, spot/cube perspective), the comparison sampler,
+    /// caster pipeline compare + rasterizer bias, the depth clear, and
+    /// (via the shared `reverse_z` template axis) the receiver WGSL +
+    /// EVSM remap. Set at construction; a runtime flip would require
+    /// rebuilding pipelines + samplers.
+    pub depth: crate::depth_convention::DepthConvention,
     /// Depth atlas used for PCF and PCSS sampling.
     pub atlas_texture: web_sys::GpuTexture,
     /// Default view of the atlas.
@@ -365,6 +372,9 @@ impl PendingResourceRecreate {
 /// off shape.
 pub struct ShadowsDescriptors {
     pub config: ShadowsConfig,
+    /// Depth convention baked into the sampler + caster pipeline cache
+    /// keys at build time; carried through to [`Shadows::depth`].
+    pub depth: crate::depth_convention::DepthConvention,
     // ── GPU resources ────────────────────────────────────────────────
     pub atlas_texture: web_sys::GpuTexture,
     pub atlas_view: web_sys::GpuTextureView,
@@ -450,6 +460,7 @@ impl Shadows {
         geometry_bind_groups: &GeometryBindGroups,
         render_texture_formats: &RenderTextureFormats,
         config: ShadowsConfig,
+        depth: crate::depth_convention::DepthConvention,
     ) -> Result<Self, AwsmShadowError> {
         let descs = Self::build_descriptors(
             gpu,
@@ -459,6 +470,7 @@ impl Shadows {
             geometry_bind_groups,
             render_texture_formats,
             config,
+            depth,
         )
         .await?;
 
@@ -522,6 +534,7 @@ impl Shadows {
         geometry_bind_groups: &GeometryBindGroups,
         _render_texture_formats: &RenderTextureFormats,
         config: ShadowsConfig,
+        depth: crate::depth_convention::DepthConvention,
     ) -> Result<ShadowsDescriptors, AwsmShadowError> {
         warn_view_budget(&config);
         let atlas_size = config.atlas_size.max(1);
@@ -686,10 +699,13 @@ impl Shadows {
         // policy. Without this, bilinear taps at a cube face edge can
         // read from the opposite face's coordinate space and produce
         // ghost shadows at the seam.
+        // 003 stage 7: the comparison direction follows the depth
+        // convention — "lit when the receiver is closer-or-equal to the
+        // stored caster depth" is LessEqual forward, GreaterEqual reverse.
         let sampler_comparison = gpu.create_sampler(Some(
             &SamplerDescriptor {
                 label: Some("Shadow Comparison Sampler"),
-                compare: Some(CompareFunction::LessEqual),
+                compare: Some(depth.compare()),
                 mag_filter: Some(FilterMode::Linear),
                 min_filter: Some(FilterMode::Linear),
                 address_mode_u: Some(awsm_renderer_core::sampler::AddressMode::ClampToEdge),
@@ -802,6 +818,7 @@ impl Shadows {
                 false,
                 false,
                 false,
+                depth,
             ),
             shadow_pipeline_cache_key(
                 shader_instancing,
@@ -809,6 +826,7 @@ impl Shadows {
                 true,
                 false,
                 false,
+                depth,
             ),
             shadow_pipeline_cache_key(
                 shader_no_instancing,
@@ -816,6 +834,7 @@ impl Shadows {
                 false,
                 true,
                 false,
+                depth,
             ),
             shadow_pipeline_cache_key(
                 shader_instancing,
@@ -823,6 +842,7 @@ impl Shadows {
                 true,
                 true,
                 false,
+                depth,
             ),
             shadow_pipeline_cache_key(
                 shader_no_instancing,
@@ -830,6 +850,7 @@ impl Shadows {
                 false,
                 false,
                 true,
+                depth,
             ),
             shadow_pipeline_cache_key(
                 shader_instancing,
@@ -837,6 +858,7 @@ impl Shadows {
                 true,
                 false,
                 true,
+                depth,
             ),
             shadow_pipeline_cache_key(
                 shader_no_instancing,
@@ -844,6 +866,7 @@ impl Shadows {
                 false,
                 true,
                 true,
+                depth,
             ),
             shadow_pipeline_cache_key(
                 shader_instancing,
@@ -851,13 +874,15 @@ impl Shadows {
                 true,
                 true,
                 true,
+                depth,
             ),
         ];
 
-        let evsm = EvsmPass::build_descriptors(gpu, bind_group_layouts, pipeline_layouts)?;
+        let evsm = EvsmPass::build_descriptors(gpu, bind_group_layouts, pipeline_layouts, depth)?;
 
         Ok(ShadowsDescriptors {
             config,
+            depth,
             atlas_texture,
             atlas_view,
             atlas_size,
@@ -936,6 +961,7 @@ impl Shadows {
         );
         let ShadowsDescriptors {
             config,
+            depth,
             atlas_texture,
             atlas_view,
             atlas_size,
@@ -1004,6 +1030,7 @@ impl Shadows {
 
         Ok(Self {
             config,
+            depth,
             atlas_texture,
             atlas_view,
             atlas_size,
@@ -1767,11 +1794,15 @@ impl Shadows {
         // Approximate the camera's near/far in world-space depth.
         // The actual values live on the camera but aren't exposed
         // directly here; reconstruct from the projection's column.
-        // For a standard RH perspective with `Mat4::perspective_rh`
-        // (which glam uses): proj[2][3] is `-2*near*far/(far-near)`
-        // and proj[2][2] is `-(far+near)/(far-near)`; solving gives
-        // the planes. Falls back to (0.1, 100.0) for orthographic.
-        let (camera_near, camera_far) = extract_near_far(&camera_matrices.projection);
+        // 003 stage 5: explicit near/far from the matrices — matrix recovery
+        // breaks under reverse-Z / infinite-far. Cascade fitting needs a
+        // finite far; clamp an infinite one to a generous shadow range.
+        let camera_near = camera_matrices.near.max(1e-4);
+        let camera_far = if camera_matrices.far.is_finite() {
+            camera_matrices.far.max(camera_near + 1e-3)
+        } else {
+            (camera_near * 10_000.0).max(1_000.0)
+        };
 
         // Per-mesh shadow-caster AABBs. `fit_cascades` clips each one
         // to the cascade's world footprint per-cascade, so we hand it
@@ -1898,6 +1929,7 @@ impl Shadows {
                         params.resolution.max(16),
                         16,
                         caster_world_aabbs,
+                        self.depth,
                     );
 
                     let mut landed: u32 = 0;
@@ -2189,7 +2221,10 @@ impl Shadows {
                     let eff_range = crate::lights::Light::influence_radius(*intensity, *range);
                     let near = 0.05_f32.min(eff_range * 0.01).max(0.005);
                     let far = eff_range.max(near + 0.1);
-                    let projection = glam::Mat4::perspective_rh(fov, 1.0, near, far);
+                    // 003 stage 7: the spot projection follows the depth
+                    // convention (finite reverse = near/far swapped, near→1 /
+                    // far→0), in lockstep with the compare/clear + receiver.
+                    let projection = self.depth.perspective_finite(fov, 1.0, near, far);
                     let view_projection = projection * view;
                     // Approximate world-per-texel for the spot cone at
                     // its far plane: the perspective frustum's footprint
@@ -2335,8 +2370,16 @@ impl Shadows {
                     // cube shadow pipeline restores winding (and
                     // therefore front-face culling).
                     let y_flip = glam::Mat4::from_scale(glam::Vec3::new(1.0, -1.0, 1.0));
-                    let projection =
-                        y_flip * glam::Mat4::perspective_rh(cube_fov, 1.0, POINT_SHADOW_NEAR, r);
+                    // 003 stage 7: cube-face projection through the depth
+                    // convention. The receiver's analytic NDC.z formula in
+                    // `shared_wgsl/shadow/bind_groups.wgsl` mirrors this via
+                    // the `reverse_z` template axis — they MUST flip together.
+                    // The Y-flip only touches NDC.y, so it composes the same
+                    // way under both conventions.
+                    let projection = y_flip
+                        * self
+                            .depth
+                            .perspective_finite(cube_fov, 1.0, POINT_SHADOW_NEAR, r);
                     // glTF cube-map face conventions, in the order
                     // WebGPU lays out cube layers: +X, -X, +Y, -Y, +Z, -Z.
                     let face_dirs = [
@@ -2741,7 +2784,10 @@ impl Shadows {
             // recompute below always fires for them.
             entries.resize_with(record.views.len(), || ViewCasterCache {
                 view_projection: Mat4::IDENTITY,
-                frustum: crate::frustum::Frustum::from_view_projection(Mat4::IDENTITY),
+                // Placeholder frustum for a fresh slot (identity vp, never
+                // queried — `dirty: true` forces the recompute below), so the
+                // convention flag is irrelevant here.
+                frustum: crate::frustum::Frustum::from_view_projection(Mat4::IDENTITY, false),
                 casters: Vec::new(),
                 dirty: true,
             });
@@ -2752,7 +2798,13 @@ impl Shadows {
                 if !entry.dirty && entry.view_projection == view.view_projection {
                     continue;
                 }
-                let frustum = crate::frustum::Frustum::from_view_projection(view.view_projection);
+                // 003 stage 7: shadow view-projections follow the renderer's
+                // depth convention, so the extractor's near/far-row swap must
+                // track the same flag.
+                let frustum = crate::frustum::Frustum::from_view_projection(
+                    view.view_projection,
+                    self.depth.reverse_z,
+                );
                 entry.casters.clear();
                 entry.casters.extend(
                     spatial

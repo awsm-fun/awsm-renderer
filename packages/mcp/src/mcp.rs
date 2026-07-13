@@ -31,11 +31,12 @@ use serde_json::Value;
 
 use awsm_renderer_editor_protocol::{
     CameraAxis, CompileError, CustomAlphaMode, EditorCommand, EditorMode, EditorQuery, InsertSpec,
-    ProceduralKind, QueryResult, Request, Response, SlotSpec, StepKind,
+    ProceduralKind, QueryResult, Request, Response, ShadowsPatch, SlotSpec, StepKind,
+    TextureExport,
 };
 use awsm_renderer_scene::animation::{
-    BuiltinParamKind, ClipLoop, Interp, LightParamKind, SamplerKind, TexSlot, TexTransformProp,
-    TrackTarget, TrackValue, TransformProp,
+    BuiltinParamKind, ClipDirection, ClipLoop, Interp, LightParamKind, SamplerKind, TexSlot,
+    TexTransformProp, TrackTarget, TrackValue, TransformProp,
 };
 use awsm_renderer_scene::{
     AssetId, EnvSlot, EnvironmentConfig, LightKind, MaterialShading, MeshLodConfig,
@@ -766,6 +767,7 @@ pub enum BuiltinParamArg {
     Emissive,
     NormalScale,
     OcclusionStrength,
+    SsrMask,
     EmissiveStrength,
     AlphaCutoff,
     ToonDiffuseBands,
@@ -873,6 +875,13 @@ pub struct KindSchemaParams {
     /// `"modifier"` for the `ModifierStack` (mesh base + modifiers) schema.
     #[serde(default)]
     pub schema: Option<String>,
+    /// Optional: a single NodeKind VARIANT name (snake_case, e.g. `"collider"`,
+    /// `"light"`, `"particle_emitter"`) — returns just that variant's schema with
+    /// only the `$defs` it references, instead of the full multi-hundred-KB
+    /// `NodeKind` schema. Only applies to `schema: "node"`. An unknown name errors
+    /// with the list of available variants.
+    #[serde(default)]
+    pub variant: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -926,6 +935,18 @@ pub enum ProceduralArg {
 pub struct AddTextureParams {
     /// Procedural generator: checker | gradient | noise.
     pub proc: ProceduralArg,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct SetTextureExportParams {
+    /// Texture asset UUID (from get_snapshot's `textures`).
+    pub texture: String,
+    /// webp_lossless | webp_lossy | source | default (clears the per-texture
+    /// override back to the lossless-WebP default).
+    pub mode: String,
+    /// Lossy quality 0.0..=1.0 (higher = larger, closer to lossless). Required
+    /// when mode = webp_lossy; ignored otherwise.
+    pub quality: Option<f64>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -1059,6 +1080,16 @@ pub struct EnvironmentParams {
     /// colors, no hosted `.ktx2` needed.
     #[serde(default)]
     pub zenith: Option<[f32; 3]>,
+    /// Box-projected reflection probe: `{enabled, center: [x,y,z], half_extents:
+    /// [x,y,z]}`. When enabled, specular env lookups (IBL + the SSR miss
+    /// fallback) are parallax-corrected against this world-space box, so
+    /// fallback reflections anchor to the scene's actual bounds (set it to the
+    /// room/arena interior box; center should match where the specular cubemap
+    /// was authored/captured from). Omit to keep the current probe; pass
+    /// `{"enabled": false}` to turn it off. Requires a meaningful `specular`
+    /// cubemap to look right (the probe re-aims lookups INTO that map).
+    #[serde(default)]
+    pub probe: Option<awsm_renderer_scene::ReflectionProbe>,
     /// Agent-authored sky-gradient nadir (ground) color, linear-RGB `[r,g,b]`.
     /// Pairs with `zenith`.
     #[serde(default)]
@@ -1095,6 +1126,57 @@ pub struct SscsParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ShadowsParams {
+    /// Master enable for screen-space contact shadows. Compile-time — flipping
+    /// recompiles the shadow pipelines.
+    #[serde(default)]
+    pub sscs_enabled: Option<bool>,
+    /// SSCS ray-march step count (clamped >= 1). Compile-time loop bound.
+    #[serde(default)]
+    pub sscs_step_count: Option<u32>,
+    /// World-space length of each SSCS step, in metres. Live uniform.
+    #[serde(default)]
+    pub sscs_step_world: Option<f32>,
+    /// SSCS occluder-slab thickness in metres. Live uniform.
+    #[serde(default)]
+    pub sscs_thickness: Option<f32>,
+    /// Max SSCS darkening (0..1) for the DIRECTIONAL shadow term. Live uniform.
+    #[serde(default)]
+    pub sscs_directional_darkening: Option<f32>,
+    /// Max SSCS darkening (0..1) for PUNCTUAL (point/spot) terms. Live uniform.
+    #[serde(default)]
+    pub sscs_punctual_darkening: Option<f32>,
+    /// 2D PCF/spot shadow atlas size in texels (square; rounded up to a power
+    /// of two, clamped 64..8192). STRUCTURAL — recreates the atlas texture.
+    #[serde(default)]
+    pub atlas_size: Option<u32>,
+    /// EVSM moments atlas size in texels (square pow2, 1..8192; RGBA16F costs
+    /// 8 bytes/texel — 2048 is ~32 MB; 1 = "never uses EVSM"). STRUCTURAL.
+    #[serde(default)]
+    pub evsm_atlas_size: Option<u32>,
+    /// EVSM depth-warp exponent (clamped 0.5..18 — above ~18 the fp16 moments
+    /// saturate into a hard binary mask). Higher = crisper contact hardening.
+    /// Live uniform.
+    #[serde(default)]
+    pub evsm_exponent: Option<f32>,
+    /// EVSM Gaussian blur half-width in texels (clamped 0..8). Live uniform.
+    #[serde(default)]
+    pub evsm_blur_radius: Option<u32>,
+    /// Max simultaneous point-light shadow casters (clamped 1..32) — sizes the
+    /// cube-map pool at ~24*resolution^2 bytes per light. STRUCTURAL.
+    #[serde(default)]
+    pub max_point_shadows: Option<u32>,
+    /// Per-face point-shadow cube resolution in texels (square pow2, 64..8192;
+    /// default 1024 costs ~24 MB at 8 lights). STRUCTURAL.
+    #[serde(default)]
+    pub point_shadow_resolution: Option<u32>,
+    /// Tint each directional cascade range so split boundaries are visible
+    /// (authoring aid). Live uniform.
+    #[serde(default)]
+    pub debug_cascade_colors: Option<bool>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct PostProcessParams {
     /// Tonemapping operator: "none" (linear, HDR clips), "khronos_neutral_pbr"
     /// (default — color-preserving), or "aces" (filmic). Omit to leave unchanged.
@@ -1111,6 +1193,111 @@ pub struct PostProcessParams {
     /// uniform. Omit to leave unchanged.
     #[serde(default)]
     pub exposure: Option<f32>,
+    /// Bloom bright-pass threshold in pre-exposure HDR luminance — pixels
+    /// brighter than this glow (default 1.0). Live uniform. Omit to leave
+    /// unchanged.
+    #[serde(default)]
+    pub bloom_threshold: Option<f32>,
+    /// Bloom soft-knee width below the threshold, for a smooth fade-in
+    /// (default 0.5). Live uniform. Omit to leave unchanged.
+    #[serde(default)]
+    pub bloom_knee: Option<f32>,
+    /// Bloom mix strength over the scene (default 1.0). Live uniform. Omit to
+    /// leave unchanged.
+    #[serde(default)]
+    pub bloom_intensity: Option<f32>,
+    /// Bloom scatter — higher biases the glow toward wider, softer mips
+    /// (default 1.0). Live uniform. Omit to leave unchanged.
+    #[serde(default)]
+    pub bloom_scatter: Option<f32>,
+    /// Screen-space reflections on/off. Off records + allocates nothing. Omit
+    /// to leave unchanged.
+    #[serde(default)]
+    pub ssr_enabled: Option<bool>,
+    /// SSR reflection strength (~0..2, default 1.0). Live uniform. Omit to leave
+    /// unchanged.
+    #[serde(default)]
+    pub ssr_intensity: Option<f32>,
+    /// SSR maximum ray length in world units (default 100). Live uniform. Omit
+    /// to leave unchanged.
+    #[serde(default)]
+    pub ssr_max_distance: Option<f32>,
+    /// SSR hit thickness in world units — the depth band a ray must cross to
+    /// register a hit (default 1.0). Live uniform. Omit to leave unchanged.
+    #[serde(default)]
+    pub ssr_thickness: Option<f32>,
+    /// SSR linear-march step budget (default 96). Live uniform. Omit to leave
+    /// unchanged.
+    #[serde(default)]
+    pub ssr_max_steps: Option<u32>,
+    /// SSR reflection-spread cutoff (0 mirror … 1 diffuse) above which SSR hands
+    /// off to IBL (default 0.6). Live uniform. Omit to leave unchanged.
+    #[serde(default)]
+    pub ssr_spread_cutoff: Option<f32>,
+    /// SSR screen-border fade width 0..1 (default 0.1). Live uniform. Omit to
+    /// leave unchanged.
+    #[serde(default)]
+    pub ssr_edge_fade: Option<f32>,
+    /// SSR temporal reprojection on/off (default off). STRUCTURAL — toggling
+    /// recompiles the SSR pass. Omit to leave unchanged.
+    #[serde(default)]
+    pub ssr_temporal: Option<bool>,
+    /// SSR resolution scale: 0.5 = half-res trace (default), 1.0 = full-res.
+    /// STRUCTURAL — changing it recompiles. Omit to leave unchanged.
+    #[serde(default)]
+    pub ssr_resolution_scale: Option<f32>,
+    /// SSR temporal history blend weight 0..1 (default 0.9) — fraction of the
+    /// previous frame's accumulated reflection kept each frame (higher =
+    /// smoother, more ghosting). Live uniform; only meaningful when
+    /// ssr_temporal is on. Omit to leave unchanged.
+    #[serde(default)]
+    pub ssr_temporal_weight: Option<f32>,
+    /// SSR debug view: 0 off, 1 confidence, 2 travel, 3 source, 4 steps.
+    /// Dev-only, transient (never persisted). STRUCTURAL (recompiles).
+    #[serde(default)]
+    pub ssr_debug: Option<u32>,
+    /// Software-BVH reflections (high-end tier, default off): real
+    /// off-screen geometry hits replace the probe/env fallback for SSR
+    /// misses on polished pixels (spread < 0.25). Structural — toggling
+    /// rebuilds the SSR pass. Requires ssr_enabled.
+    #[serde(default)]
+    pub ssr_bvh_reflections: Option<bool>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ViewOptionsParams {
+    /// Ground grid visibility. Omit to leave unchanged.
+    #[serde(default)]
+    pub grid: Option<bool>,
+    /// Transform gizmo visibility. Omit to leave unchanged.
+    #[serde(default)]
+    pub gizmos: Option<bool>,
+    /// Pickable light-icon HUD markers. Omit to leave unchanged.
+    #[serde(default)]
+    pub light_gizmos: Option<bool>,
+    /// Skeleton bone-line overlay on skinned rigs. Omit to leave unchanged.
+    #[serde(default)]
+    pub skeleton_viz: Option<bool>,
+    /// Auto-switch the editor workspace to the mode a remote command edits
+    /// (default off). Omit to leave unchanged.
+    #[serde(default)]
+    pub follow_agent: Option<bool>,
+    /// The agent-activity narration overlay + panel spotlight (default off).
+    /// Omit to leave unchanged.
+    #[serde(default)]
+    pub activity_overlay: Option<bool>,
+    /// MCP info/error toasts in the viewport (default off). Omit to leave
+    /// unchanged.
+    #[serde(default)]
+    pub mcp_notifications: Option<bool>,
+    /// Viewport MSAA (4x, default on). STRUCTURAL — recompiles AA-variant
+    /// pipelines; call wait_render_settled after. Omit to leave unchanged.
+    #[serde(default)]
+    pub msaa: Option<bool>,
+    /// SMAA post-process AA (default off; independent of MSAA). Omit to leave
+    /// unchanged.
+    #[serde(default)]
+    pub smaa: Option<bool>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -1161,6 +1348,20 @@ pub struct CameraProjectionParams {
     /// Optional perspective vertical FOV (radians).
     #[serde(default)]
     pub fov_y: Option<f32>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct CameraClipParams {
+    /// true = manual (pin near/far); false = auto (planes track the orbit
+    /// distance every move). Omit to leave the mode unchanged.
+    #[serde(default)]
+    pub manual: Option<bool>,
+    /// Near clip plane in metres (applied when manual). Omit to leave unchanged.
+    #[serde(default)]
+    pub near: Option<f64>,
+    /// Far clip plane in metres (applied when manual). Omit to leave unchanged.
+    #[serde(default)]
+    pub far: Option<f64>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -1269,6 +1470,44 @@ pub struct SetTrackKeysParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct InsertInstancerParams {
+    /// Optional parent node UUID.
+    #[serde(default)]
+    pub parent: Option<String>,
+    /// Optional mesh ASSET UUID to instance (an `AssetSource::Mesh` entry — a
+    /// Mesh node's `mesh` ref from `get_node_details`). Omit to wire one up
+    /// later via `patch_kind` (`{"instancer":{"mesh":"<uuid>"}}`).
+    #[serde(default)]
+    pub mesh: Option<String>,
+}
+
+/// One instance placement for `set_instancer_transforms`. Rotation / scale are
+/// optional so a plain scatter is just a translation list.
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct InstancerTransformArg {
+    /// Local translation `[x, y, z]` (relative to the instancer node).
+    pub translation: [f32; 3],
+    /// Local rotation quaternion `[x, y, z, w]` (default identity).
+    #[serde(default)]
+    pub rotation: Option<[f32; 4]>,
+    /// Per-axis scale `[x, y, z]` (default `[1, 1, 1]`).
+    #[serde(default)]
+    pub scale: Option<[f32; 3]>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct SetInstancerTransformsParams {
+    /// Target Instancer node UUID.
+    pub node: String,
+    /// One entry per instance — REPLACES the node's entire transform list.
+    pub transforms: Vec<InstancerTransformArg>,
+    /// Optional replacement per-instance RGBA color list (shorter than
+    /// `transforms` repeats its last value). Omit to keep the current colors.
+    #[serde(default)]
+    pub per_instance_colors: Option<Vec<[f32; 4]>>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ListCommandsParams {
     /// Exact command tag (e.g. "reparent") for that command's full JSON Schema;
     /// omit for the compact list of all commands.
@@ -1364,6 +1603,13 @@ pub struct ClipLoopParams {
     pub clip: String,
     /// once | loop | ping_pong.
     pub loop_style: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ClipDirectionParams {
+    pub clip: String,
+    /// forward | reverse.
+    pub direction: String,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -1773,6 +2019,41 @@ impl EditorMcp {
 
     #[tool(
         annotations(read_only_hint = true),
+        description = "Save the open project's persisted form (project.toml + assets/* side files) to a temp directory on the MCP server's filesystem and return the path + manifest. The same bytes a directory Save writes — load it back with load_project_from_url or copy it into a versioned scenes dir. Files transfer over the /bundle side-channel; only the manifest crosses the control link."
+    )]
+    async fn save_project(&self) -> Result<CallToolResult, McpError> {
+        match self.req(Request::SaveProject).await? {
+            Response::Bundle(handle) => {
+                let dir = crate::http::bundle_dir(&handle.id);
+                // Confirm the uploads actually landed before reporting success.
+                if !dir.exists() {
+                    return Err(McpError::internal_error(
+                        format!("save {} not found at {}", handle.id, dir.display()),
+                        None,
+                    ));
+                }
+                let total: usize = handle.files.iter().map(|f| f.byte_len).sum();
+                let files: Vec<serde_json::Value> = handle
+                    .files
+                    .iter()
+                    .map(|f| serde_json::json!({ "path": f.path, "byte_len": f.byte_len }))
+                    .collect();
+                Ok(text(
+                    serde_json::json!({
+                        "save_dir": dir.display().to_string(),
+                        "files": files,
+                        "total_bytes": total,
+                    })
+                    .to_string(),
+                ))
+            }
+            Response::Err(e) => Err(McpError::internal_error(e, None)),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    #[tool(
+        annotations(read_only_hint = true),
         description = "Mean/min/max luma over a canvas region (or the whole canvas)."
     )]
     async fn canvas_stats(
@@ -1812,7 +2093,7 @@ impl EditorMcp {
 
     #[tool(
         annotations(read_only_hint = true),
-        description = "PNG screenshot of the scene viewport (through the active camera). Optional width/height scale the output (one given preserves aspect). Frame a subject first with frame_node / set_camera_orbit."
+        description = "PNG screenshot of the scene viewport (through the active camera). Optional width/height scale the output (one given preserves aspect). Frame a subject first with frame_node / set_camera_orbit. FOR CLEAN FEATURE VERIFICATION: call set_view_options {grid:false, gizmos:false, light_gizmos:false, skeleton_viz:false} first so viewport chrome does not contaminate the pixels, and restore the options after."
     )]
     async fn screenshot_scene(
         &self,
@@ -1854,7 +2135,7 @@ impl EditorMcp {
     // ── scene / nodes ───────────────────────────────────────────────────────
 
     #[tool(
-        description = "Insert a primitive (plane/box/sphere/cylinder/cone/torus) under an optional parent."
+        description = "Insert a primitive (plane/box/sphere/cylinder/cone/torus) under an optional parent. Raw dispatch_command form: {\"cmd\":\"insert\",\"spec\":...} — UNIT-variant specs (\"empty\"/\"camera\"/\"instancer\"/…) are the bare string or {\"<tag>\":{}}; inlining fields into a unit variant errors with 'expected unit'."
     )]
     async fn insert_primitive(
         &self,
@@ -1911,6 +2192,69 @@ impl EditorMcp {
         Parameters(p): Parameters<InsertParams>,
     ) -> Result<CallToolResult, McpError> {
         self.insert(InsertSpec::Decal, p.parent).await
+    }
+
+    #[tool(
+        description = "Insert an explicit INSTANCER node: one node that references a mesh ASSET and owns N instance transforms, drawn as ONE GPU-instanced mesh (thousands of instances never become thousands of nodes). Optionally pass `mesh` (a mesh asset UUID — e.g. a Mesh node's `mesh` ref from get_node_details) to wire the source in the same undo step; then author the placements with set_instancer_transforms. Returns the new node id."
+    )]
+    async fn insert_instancer(
+        &self,
+        Parameters(p): Parameters<InsertInstancerParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let Some(mesh) = &p.mesh else {
+            return self.insert(InsertSpec::Instancer, p.parent).await;
+        };
+        // Insert + wire the mesh ref in ONE undo step, echoing the
+        // caller-minted node id back like the plain `insert` helper.
+        //
+        // Rides `Request::DispatchBatch` (same atomic single-undo semantics as
+        // the `dispatch_batch` tool) — NOT `Request::Dispatch(EditorCommand::
+        // Batch(..))`: `EditorCommand` is internally tagged (`tag = "cmd"`) and
+        // serde cannot serialize a tagged newtype variant holding a sequence,
+        // so a wire `Batch` frame is silently dropped by the ws writer and the
+        // call burns the full request timeout (see tests/wire.rs).
+        let id = NodeId::new();
+        let mesh = parse_asset(mesh)?;
+        let cmds = vec![
+            EditorCommand::Insert {
+                id,
+                spec: InsertSpec::Instancer,
+                parent: parse_node_opt(&p.parent)?,
+            },
+            EditorCommand::PatchKind {
+                id,
+                patch: serde_json::json!({ "instancer": { "mesh": mesh } }),
+            },
+        ];
+        match self.req(Request::DispatchBatch(cmds)).await? {
+            Response::Ok => Ok(text(id.to_string())),
+            Response::Err(e) => Err(McpError::internal_error(e, None)),
+            other => Err(unexpected(other)),
+        }
+    }
+
+    #[tool(
+        description = "REPLACE an Instancer node's entire instance-transform list in one call — the bulk authoring path (mirrors set_track_keys). Each entry is {translation, rotation?, scale?} (rotation defaults to identity, scale to [1,1,1]); `per_instance_colors` optionally replaces the RGBA tint list (shorter repeats its last value; omit to keep current). Single-step undoable (undo restores the prior list exactly)."
+    )]
+    async fn set_instancer_transforms(
+        &self,
+        Parameters(p): Parameters<SetInstancerTransformsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let transforms: Vec<Trs> = p
+            .transforms
+            .iter()
+            .map(|t| Trs {
+                translation: t.translation,
+                rotation: t.rotation.unwrap_or([0.0, 0.0, 0.0, 1.0]),
+                scale: t.scale.unwrap_or([1.0, 1.0, 1.0]),
+            })
+            .collect();
+        self.dispatch(EditorCommand::SetInstancerTransforms {
+            node: parse_node(&p.node)?,
+            transforms,
+            per_instance_colors: p.per_instance_colors,
+        })
+        .await
     }
 
     #[tool(description = "Delete a node and its subtree.")]
@@ -2318,13 +2662,26 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Round-trip self-test: bake the CURRENT project to an in-memory player bundle (scene.toml + assets/), reset to empty, then reload it through populate_awsm_scene (the runtime/player path). DESTRUCTIVE: the viewport ends up showing the reload and the scene tree is left empty (reload your project to keep editing). Workflow: screenshot_scene (authored) → load_player_bundle → wait_render_settled → screenshot_scene (runtime reload), and compare. Geometry/built-in-materials/lights load today; textures, custom-WGSL, glb-mesh materials, cameras + clips are follow-ons."
+        description = "Round-trip self-test: bake the CURRENT project to an in-memory player bundle (scene.toml + assets/), reset to empty, then reload it through populate_awsm_scene (the runtime/player path). DESTRUCTIVE: the viewport ends up showing the reload and the scene tree is left empty (reload your project to keep editing). Workflow: screenshot_scene (authored) → load_player_bundle → wait_render_settled → screenshot_scene (runtime reload), and compare — the load is SETTLE-VISIBLE (that single wait_render_settled observes the fully-reloaded scene; no polling). Geometry/built-in-materials/lights load today; textures, custom-WGSL, glb-mesh materials, cameras + clips are follow-ons."
     )]
     async fn load_player_bundle(&self) -> Result<CallToolResult, McpError> {
         self.dispatch(EditorCommand::LoadPlayerBundle).await
     }
 
-    #[tool(description = "Load a project from a base URL (fetches <base>/project.toml).")]
+    #[tool(
+        description = "Round-trip regression self-test: prove project save→load is lossless END TO END. Serializes the open project to its persisted form, clears EVERY session byte cache (captured meshes, textures, buffers, skinned rigs/bind poses, nanite cluster DAGs, env KTX), reloads through the same path as a directory Load, and returns a JSON report comparing a full save-census before vs after ({ before, after, equal, after_complete, lossless }). DESTRUCTIVE: replaces the open project with the reloaded one; not undoable. Stricter than reload_project_in_memory (which keeps the mesh cache warm). Re-read the report later via editor_query_json({\"query\":\"verify_roundtrip_report\"})."
+    )]
+    async fn verify_roundtrip(&self) -> Result<CallToolResult, McpError> {
+        // Dispatch (errors — e.g. a serialize failure — propagate here), then
+        // return the stored report instead of a bare "ok" (mirrors
+        // import_model_from_url's dispatch-then-query pattern).
+        self.dispatch(EditorCommand::VerifyRoundtrip).await?;
+        self.query(EditorQuery::VerifyRoundtripReport).await
+    }
+
+    #[tool(
+        description = "Load a project from a base URL (fetches <base>/project.toml). SETTLE-VISIBLE: one wait_render_settled after this call observes the fully-loaded scene — no get_snapshot polling loop needed."
+    )]
     async fn load_project_from_url(
         &self,
         Parameters(p): Parameters<BaseUrlParams>,
@@ -2336,7 +2693,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Import a glTF/glb model from a URL and return the import report (created root node ids/names, node/material/skin-joint/clip counts, source asset id). Fails with the load error when the fetch/parse fails — note the URL's server must send CORS headers (`Access-Control-Allow-Origin`): the editor is a browser app, and e.g. plain `python3 -m http.server` will fail."
+        description = "Import a glTF/glb model from a URL and return the import report (created root node ids/names, node/material/skin-joint/clip counts, source asset id). SETTLE-VISIBLE: one wait_render_settled after this call observes the fully-populated scene — no get_snapshot polling loop needed. Fails with the load error when the fetch/parse fails — note the URL's server must send CORS headers (`Access-Control-Allow-Origin`): the editor is a browser app, and e.g. plain `python3 -m http.server` will fail."
     )]
     async fn import_model_from_url(
         &self,
@@ -2799,7 +3156,7 @@ impl EditorMcp {
 
     #[tool(
         annotations(read_only_hint = true),
-        description = "UV-layout overlay of a node's resolved mesh (UV set `uv_set`, default 0): `{ has_uv, uv_set, island_count, bounds:{min,max}, islands:[{count,min,max}], edge_count, edges:[[[u,v],[u,v]],…] }`. Diagnoses 'atlas vs strip' in ONE read — a continuous strip UV is ONE island spanning ~[0,1] (good for scrolling/tiling); a baked atlas is MANY small islands (scrolling slides samples onto unrelated content). `edges` is the UV wireframe for drawing the overlay, paged by `offset`/`limit` (can be large); the island summaries are always full. `has_uv:false` means the mesh carries no such UV set."
+        description = "UV-layout overlay of a node's resolved mesh (UV set `uv_set`, default 0): `{ has_uv, uv_set, island_count, bounds:{min,max}, islands:[{count,min,max}], edge_count, edges:[[[u,v],[u,v]],…] }`. Diagnoses 'atlas vs strip' in ONE read — a continuous strip UV is ONE island spanning ~[0,1] (good for scrolling/tiling); a baked atlas is MANY small islands (scrolling slides samples onto unrelated content). `edges` is the UV wireframe for drawing the overlay, paged by `offset`/`limit` (DEFAULT 1000 edges/page when `limit` is omitted, so a naive call stays small — `edge_count` is the full total and `returned` the page length; page via `offset` for the rest); the island summaries are always full. `has_uv:false` means the mesh carries no such UV set."
     )]
     async fn get_uv_layout(
         &self,
@@ -2859,7 +3216,9 @@ impl EditorMcp {
         .await
     }
 
-    #[tool(description = "Register (compile to a renderer bucket) a custom material by id.")]
+    #[tool(
+        description = "Register (compile to a renderer bucket) a custom material by id. Returns ok IMMEDIATELY — that is only 'request accepted', not 'compiled': the debounced compile lands later, so poll get_material_diagnostics until {ok:true, registered:true} (that query is the actual compile gate) before trusting screenshots."
+    )]
     async fn register_material(
         &self,
         Parameters(p): Parameters<AssetArg>,
@@ -3128,7 +3487,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Replace a custom material's declared slot layout (uniforms / textures / buffers). Send the FULL lists. Each slot is { name, ty, val?, debug? }. Re-registers the material."
+        description = "Replace a custom material's declared slot layout (uniforms / textures / buffers). Send the FULL lists. Each slot is { name, ty, val?, debug? }. GOTCHA: `ty` must be a WGSL TYPE STRING (\"f32\", \"vec3<f32>\", \"vec4<f32>\", \"texture_2d<f32>\", \"array<vec4<f32>>\") — friendly names like \"color3\"/\"vec3\" are accepted silently but fall back to f32, and registration then fails later with confusing naga compose errors. Re-registers the material; check get_material_diagnostics after."
     )]
     async fn set_material_layout(
         &self,
@@ -3144,7 +3503,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Set the ShaderIncludes (generic helper modules) a custom material's WGSL needs (`keys`). Legal (Tier-A generic): math, camera, color_space, textures, vertex_color, light_access, shadows, skybox, extras, ibl. `ibl` exposes sample_ibl(albedo, normal, surface_to_camera, roughness, metallic) (+ sample_ibl_diffuse/_specular) — the SAME environment ambient + reflection first-party PBR gets, so a custom material matches the scene IBL instead of hand-faking a sky gradient (fixes black custom materials in IBL-only scenes; pair with normals + view_dir fragment_inputs). The PBR-internal modules (apply_lighting, brdf, material_color_calc) are NOT available to custom materials — they're welded to the built-in PbrMaterial types and are ignored on the custom path; write your own shading (you can build on light_access + ibl). Unknown keys are dropped. Call material_helper_catalog for descriptions."
+        description = "Set the ShaderIncludes (generic helper modules) a custom material's WGSL needs (`keys`). Legal (Tier-A generic): math, camera, color_space, textures, vertex_color, light_access, shadows, skybox, extras, ibl. `ibl` exposes sample_ibl(albedo, normal, surface_to_camera, roughness, metallic) (+ sample_ibl_diffuse/_specular) — the SAME environment ambient + reflection first-party PBR gets, so a custom material matches the scene IBL instead of hand-faking a sky gradient (fixes black custom materials in IBL-only scenes; pair with normals + view_dir fragment_inputs). The PBR-internal modules (apply_lighting, brdf, material_color_calc) are NOT available to custom materials — they're welded to the built-in PbrMaterial types and are ignored on the custom path; write your own shading (you can build on light_access + ibl). Unknown keys are dropped. Per-key descriptions: get_material_contract (or the awsm://docs/material-contract-opaque resource)."
     )]
     async fn set_material_includes(
         &self,
@@ -3268,7 +3627,53 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Set a built-in material factor on a mesh node's inline material. param: base_color (value = 3 floats RGB, OR 4 floats RGBA where the 4th is the base-color ALPHA — pair with set_builtin_alpha_mode blend for glass) | emissive (3 floats) | metallic | roughness | normal_scale | occlusion_strength (1 float). For KHR extension PARAMS (clearcoat, sheen, transmission, ior, ...) use patch_kind on mesh.material.inline.extensions — e.g. {\"mesh\":{\"material\":{\"inline\":{\"extensions\":{\"clearcoat\":{\"factor\":1.0,\"roughness_factor\":0.0}}}}}}. Extension ENABLES are owned by the library material (update_builtin_material) — inline params only take effect when the material enables the extension; an inline-only extension is dropped."
+        description = "Set a texture asset's PER-TEXTURE bundle-export encoding (mode: webp_lossless | webp_lossy | source | default). Authoring preference persisted in the project; takes effect on the NEXT bundle export (export_player_bundle), not on the live scene. webp_lossless is the pixel-identical DEFAULT every raster texture already gets (smaller than PNG); `default` clears the per-texture override back to it. webp_lossy re-encodes at `quality` (0.0..=1.0, required for this mode) for a smaller file at visible-quality cost — ONLY appropriate for color/albedo-like images. WARNING: lossy is NEVER safe for data maps (normal / metallic-roughness / occlusion) — it corrupts the encoded vectors/values (e.g. a visible fresnel sheen from tilted normals) and neither this tool nor the bake guards against it, so keep data maps lossless. `source` ships the original bytes verbatim (already-optimal formats). Undoable. NO query reads this back (get_snapshot's textures list omits it) — the persisted record is the asset entry in project.toml after save_project."
+    )]
+    async fn set_texture_export(
+        &self,
+        Parameters(p): Parameters<SetTextureExportParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let export = match p.mode.as_str() {
+            "default" => None,
+            "webp_lossless" => Some(TextureExport::WebpLossless),
+            "source" => Some(TextureExport::Source),
+            "webp_lossy" => {
+                let quality = p.quality.ok_or_else(|| {
+                    McpError::invalid_params(
+                        "mode \"webp_lossy\" requires `quality` (0.0..=1.0; higher = larger, \
+                         closer to lossless)",
+                        None,
+                    )
+                })?;
+                if !(0.0..=1.0).contains(&quality) {
+                    return Err(McpError::invalid_params(
+                        format!("quality {quality} out of range — expected 0.0..=1.0"),
+                        None,
+                    ));
+                }
+                Some(TextureExport::WebpLossy {
+                    quality: quality as f32,
+                })
+            }
+            other => {
+                return Err(McpError::invalid_params(
+                    format!(
+                        "unknown texture-export mode `{other}` — expected webp_lossless | \
+                         webp_lossy | source | default"
+                    ),
+                    None,
+                ))
+            }
+        };
+        self.dispatch(EditorCommand::SetTextureExport {
+            id: parse_asset(&p.texture)?,
+            export,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Set a built-in material factor on a mesh node's inline material. param: base_color (value = 3 floats RGB, OR 4 floats RGBA where the 4th is the base-color ALPHA — pair with set_builtin_alpha_mode blend for glass) | emissive (3 floats) | metallic | roughness | normal_scale | occlusion_strength | ssr_mask (1 float; ssr_mask 0..1 scales how strongly the surface RECEIVES screen-space reflections — 0 fully opts the material out of SSR, IBL specular stays). For KHR extension PARAMS (clearcoat, sheen, transmission, ior, ...) use patch_kind on mesh.material.inline.extensions — e.g. {\"mesh\":{\"material\":{\"inline\":{\"extensions\":{\"clearcoat\":{\"factor\":1.0,\"roughness_factor\":0.0}}}}}}. Extension ENABLES are owned by the library material (update_builtin_material) — inline params only take effect when the material enables the extension; an inline-only extension is dropped."
     )]
     async fn set_builtin_param(
         &self,
@@ -3281,6 +3686,7 @@ impl EditorMcp {
             BuiltinParamArg::Emissive => BuiltinParamKind::Emissive,
             BuiltinParamArg::NormalScale => BuiltinParamKind::NormalScale,
             BuiltinParamArg::OcclusionStrength => BuiltinParamKind::OcclusionStrength,
+            BuiltinParamArg::SsrMask => BuiltinParamKind::SsrMask,
             BuiltinParamArg::EmissiveStrength => BuiltinParamKind::EmissiveStrength,
             BuiltinParamArg::AlphaCutoff => BuiltinParamKind::AlphaCutoff,
             BuiltinParamArg::ToonDiffuseBands => BuiltinParamKind::ToonDiffuseBands,
@@ -3351,26 +3757,69 @@ impl EditorMcp {
 
     #[tool(
         annotations(read_only_hint = true),
-        description = "§3: the machine-readable JSON Schema for a node's `kind` config — the EXACT field shape + enum options of every NodeKind variant, so you can author a fresh kind via set_kind / patch_kind without guessing (the complement to get_node_details, which only shows an existing instance). Default (`schema: \"node\"`) returns the full `NodeKind` schema: every variant under `oneOf`, and every referenced sub-type (LightConfig, CameraConfig, MaterialInstance, ParticleEmitterDef, the KHR PBR extensions, …) fully expanded under `$defs`. `schema: \"modifier\"` returns the `ModifierStack` schema (mesh base + every modifier) for set_mesh_modifiers. Static metadata — no scene state. Returns a JSON Schema (draft 2020-12)."
+        description = "§3: the machine-readable JSON Schema for a node's `kind` config — the EXACT field shape + enum options of every NodeKind variant, so you can author a fresh kind via set_kind / patch_kind without guessing (the complement to get_node_details, which only shows an existing instance). `schema: \"node\"` (default) returns the full `NodeKind` schema: every variant under `oneOf`, and every referenced sub-type (LightConfig, CameraConfig, MaterialInstance, ParticleEmitterDef, the KHR PBR extensions, …) expanded under `$defs` — this is LARGE (hundreds of KB); prefer `variant` to scope it. `variant: \"<snake_case>\"` (e.g. `\"collider\"`, `\"light\"`, `\"particle_emitter\"`) returns JUST that one variant's schema plus only the `$defs` it references — small and targeted. `schema: \"modifier\"` returns the `ModifierStack` schema (mesh base + every modifier) for set_mesh_modifiers. Static metadata — no scene state. Returns a JSON Schema (draft 2020-12)."
     )]
     async fn get_kind_schema(
         &self,
         Parameters(p): Parameters<KindSchemaParams>,
     ) -> Result<CallToolResult, McpError> {
-        let json = match p.schema.as_deref() {
+        match p.schema.as_deref() {
             Some("modifier") | Some("modifier_stack") | Some("modifiers") => {
-                serde_json::to_string_pretty(&schemars::schema_for!(
+                let json = serde_json::to_string_pretty(&schemars::schema_for!(
                     awsm_renderer_editor_protocol::ModifierStack
                 ))
+                .map_err(|e| McpError::internal_error(format!("serialize schema: {e}"), None))?;
+                Ok(text(json))
             }
-            _ => serde_json::to_string_pretty(&schemars::schema_for!(NodeKind)),
+            None | Some("node") => {
+                let full = serde_json::to_value(schemars::schema_for!(NodeKind)).map_err(|e| {
+                    McpError::internal_error(format!("serialize schema: {e}"), None)
+                })?;
+                match p.variant.as_deref() {
+                    // Full NodeKind schema (large — the historical behaviour).
+                    None => Ok(text(
+                        serde_json::to_string_pretty(&full).unwrap_or_default(),
+                    )),
+                    // One variant + only its transitively-referenced $defs.
+                    Some(v) => {
+                        let scoped = filter_node_variant_schema(&full, v).ok_or_else(|| {
+                            McpError::invalid_params(
+                                format!(
+                                    "unknown NodeKind variant \"{v}\"; available: {}",
+                                    node_variant_names(&full).join(", ")
+                                ),
+                                None,
+                            )
+                        })?;
+                        Ok(text(
+                            serde_json::to_string_pretty(&scoped).unwrap_or_default(),
+                        ))
+                    }
+                }
+            }
+            // Previously an unrecognized `schema` (e.g. "environment") silently
+            // fell through to the full NodeKind schema — a confusing hundreds-of-KB
+            // dump for a value that isn't a valid selector. Reject it with guidance.
+            Some(other) => {
+                let full = serde_json::to_value(schemars::schema_for!(NodeKind)).ok();
+                let variants = full
+                    .as_ref()
+                    .map(node_variant_names)
+                    .unwrap_or_default()
+                    .join(", ");
+                Err(McpError::invalid_params(
+                    format!(
+                        "unknown schema \"{other}\"; valid: \"node\" | \"modifier\". For a SINGLE \
+                         node kind's (small) schema pass variant:<name>. NodeKind variants: {variants}"
+                    ),
+                    None,
+                ))
+            }
         }
-        .map_err(|e| McpError::internal_error(format!("serialize schema: {e}"), None))?;
-        Ok(text(json))
     }
 
     #[tool(
-        description = "Configure a ParticleEmitter node — the typed, patch-style companion to insert_particle. Every field is optional; send any subset and only those change. Knobs: spawn_rate, burst_count, max_alive, one_shot, space (world|local), shape ({point}|{sphere:{radius}}|{cone:{angle_radians,direction}} — cone direction is LOCAL space), initial_speed/lifetime/size ([min,max]), forces ([{gravity:{acceleration:[x,y,z]}} | {linear_drag:{coefficient_x1000}}]), color_over_life ({const:[rgba]}|{linear:{start,end}}), size_over_life ({const}|{linear:{start,end}}), blend (transparent-blend pass for true alpha fades vs cheap opaque-emissive), texture (billboard SPRITE asset id — a soft radial-alpha disc imported via import_texture_from_url gives soft-edged particles; pair with blend:true so the alpha fades the edges). Errors if the node isn't a particle emitter."
+        description = "Configure a ParticleEmitter node — the typed, patch-style companion to insert_particle. Every field is optional; send any subset and only those change. Knobs: spawn_rate, burst_count, max_alive, one_shot, space (world|local), shape ({point}|{sphere:{radius}}|{cone:{angle_radians,direction}} — cone direction is LOCAL space), initial_speed/lifetime/size ([min,max]), forces ([{gravity:{acceleration:[x,y,z]}} | {linear_drag:{coefficient_x1000}}]), color_over_life ({const:[rgba]}|{linear:{start,end}}), size_over_life ({const}|{linear:{start,end}}), blend (transparent-blend pass for true alpha fades vs cheap opaque-emissive), texture (billboard SPRITE asset id — a soft radial-alpha disc imported via import_texture_from_url gives soft-edged particles; pair with blend:true so the alpha fades the edges). GOTCHAS: the config fields are FLAT top-level params — a nested {\"emitter\":{...}} object is SILENTLY IGNORED (unknown fields don't error); and the gravity force's vector field is named `acceleration` (not gravity/force). Verify with get_node_details after setting. Errors if the node isn't a particle emitter."
     )]
     async fn set_particle_emitter(
         &self,
@@ -3682,7 +4131,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Set the scene environment. THREE INDEPENDENT slots — skybox (background), specular (the prefiltered/roughness-mipped IBL map that drives reflections), and irradiance (the diffuse-convolved IBL map that drives ambient light). Two ways: (1) `zenith` + `nadir` ([r,g,b] linear) sets ALL THREE to a two-color SKY GRADIENT — author dusk / overcast / night / studio from your own colors (no hosting needed). (2) Otherwise each of skybox / specular / irradiance accepts: 'builtin' for the built-in default sky, an existing KTX cubemap asset UUID, OR a https:// URL to a .ktx2 cubemap. PARTIAL UPDATE: an OMITTED slot keeps its current config (pass 'builtin' to explicitly reset one) — so e.g. keeping default-sky irradiance while overriding just specular is one call, and slots never silently reset each other across sequential calls. Slots are fully decoupled (unlike before, specular and irradiance are set separately). URL cubemaps are fetched AND parse-validated here — a non-cubemap/bad .ktx2 fails this call instead of silently keeping the previous environment. Precedence: zenith/nadir > per-slot args. A fresh scene already seeds the built-in environment. Use get_snapshot (project.environment) to read what is currently set."
+        description = "Set the scene environment. THREE INDEPENDENT slots — skybox (background), specular (the prefiltered/roughness-mipped IBL map that drives reflections), and irradiance (the diffuse-convolved IBL map that drives ambient light). Two ways: (1) `zenith` + `nadir` ([r,g,b] linear) sets ALL THREE to a two-color SKY GRADIENT — author dusk / overcast / night / studio from your own colors (no hosting needed). (2) Otherwise each of skybox / specular / irradiance accepts: 'builtin' for the built-in default sky, an existing KTX cubemap asset UUID, OR a https:// URL to a .ktx2 cubemap. PARTIAL UPDATE: an OMITTED slot keeps its current config (pass 'builtin' to explicitly reset one) — so e.g. keeping default-sky irradiance while overriding just specular is one call, and slots never silently reset each other across sequential calls. Slots are fully decoupled (unlike before, specular and irradiance are set separately). URL cubemaps are fetched AND parse-validated here — a non-cubemap/bad .ktx2 fails this call instead of silently keeping the previous environment. Precedence: zenith/nadir > per-slot args. `probe` sets the box-projected reflection probe ({enabled, center, half_extents} — parallax-anchors specular env lookups to the scene bounds; omit to preserve it). CAVEAT: the zenith/nadir gradient shortcut FULL-REPLACES the environment and resets an enabled probe to OFF unless the call also passes `probe`. A fresh scene already seeds the built-in environment. Use get_snapshot (project.environment, incl. environment.probe) to read what is currently set."
     )]
     async fn set_environment(
         &self,
@@ -3698,6 +4147,9 @@ impl EditorMcp {
                         skybox: grad,
                         specular: grad,
                         irradiance: grad,
+                        // Full-replace semantics: the gradient shortcut resets
+                        // the probe too unless the call carries one.
+                        probe: p.probe.unwrap_or_default(),
                     },
                 })
                 .await;
@@ -3731,7 +4183,14 @@ impl EditorMcp {
             ($arg:expr) => {
                 match $arg.as_deref() {
                     None => None,
-                    Some("builtin") | Some("builtin_default") => Some(EnvSlot::BuiltInDefault),
+                    // Accept every spelling of the built-in-default reset: the
+                    // canonical "builtin", plus "builtin_default" and the
+                    // "built_in_default" string the SCENE EXPORTER serializes into
+                    // `[environment] skybox/specular/irradiance` — so a value the
+                    // tool writes on export is a value it accepts back on input.
+                    Some("builtin") | Some("builtin_default") | Some("built_in_default") => {
+                        Some(EnvSlot::BuiltInDefault)
+                    }
                     Some(v) => Some(EnvSlot::Ktx {
                         asset_id: resolve_ktx!(v),
                     }),
@@ -3745,30 +4204,70 @@ impl EditorMcp {
             skybox,
             specular,
             irradiance,
+            probe: p.probe,
         })
         .await
     }
 
     #[tool(
-        description = "Set the global SSCS (screen-space contact shadows) settings — a short view-space ray-march that darkens contact gaps the shadow map leaves lit (e.g. the 'Peter-Pan' hole under a resting ball). Persisted on scene.shadows + carried in the player bundle; applied to the live renderer immediately. Every field is optional (patch semantics — only the ones you pass change). `enabled` + `step_count` are compile-time and recompile the shadow pipelines; the scalars are live uniforms. Off by default."
+        description = "Set the global SSCS (screen-space contact shadows) settings — a short view-space ray-march that darkens contact gaps the shadow map leaves lit (e.g. the 'Peter-Pan' hole under a resting ball). Persisted on scene.shadows + carried in the player bundle; applied to the live renderer immediately. Every field is optional (patch semantics — only the ones you pass change). `enabled` + `step_count` are compile-time and recompile the shadow pipelines; the scalars are live uniforms. Off by default. The SSCS-only subset of set_shadows (which also covers atlas sizes, EVSM tuning, the point-shadow pool, and debug cascade colors)."
     )]
     async fn set_sscs(
         &self,
         Parameters(p): Parameters<SscsParams>,
     ) -> Result<CallToolResult, McpError> {
-        self.dispatch(EditorCommand::SetShadowsSscs {
-            enabled: p.enabled,
-            step_count: p.step_count,
-            step_world: p.step_world,
-            thickness: p.thickness,
-            directional_darkening: p.directional_darkening,
-            punctual_darkening: p.punctual_darkening,
+        // The SSCS-only subset of `set_shadows` — one live path.
+        self.dispatch(EditorCommand::SetShadows {
+            patch: ShadowsPatch {
+                sscs_enabled: p.enabled,
+                sscs_step_count: p.step_count,
+                sscs_step_world: p.step_world,
+                sscs_thickness: p.thickness,
+                sscs_directional_darkening: p.directional_darkening,
+                sscs_punctual_darkening: p.punctual_darkening,
+                ..Default::default()
+            },
         })
         .await
     }
 
     #[tool(
-        description = "Set the global post-processing settings: tonemapping ('none' | 'khronos_neutral_pbr' | 'aces'), bloom (bool), dof (bool — depth of field, uses the active camera's focus/aperture), exposure (f32, EV stops pre-tonemap: 0 unity, +1 twice as bright). Persisted on scene.post_process + carried in the player bundle; applied to the live renderer immediately. Every field is optional (patch semantics — only the ones you pass change). tonemapping/bloom/dof recompile the effects+display pipelines (wait_render_settled after); exposure is a live uniform. Defaults: khronos_neutral_pbr, bloom off, dof off, exposure 0."
+        description = "Set the renderer-wide shadow config (the [shadows] block persisted in project.toml + carried in the player bundle; applied to the LIVE renderer immediately). Every field is optional — PATCH semantics, only the fields you pass change. Fields: sscs_enabled (bool) + sscs_step_count (u32, >=1) — screen-space contact shadows master toggle + ray-march step count, COMPILE-TIME (recompile the shadow pipelines; wait_render_settled after); sscs_step_world (f32, metres per step), sscs_thickness (f32, metres), sscs_directional_darkening / sscs_punctual_darkening (f32, 0..1 max darkening) — LIVE uniforms; atlas_size (u32 texels, square pow2 64..8192) — the 2D PCF/spot depth atlas, STRUCTURAL (texture + bind-group recreate next frame); evsm_atlas_size (u32 texels, square pow2 1..8192, RGBA16F ~8 B/texel, 1 = EVSM unused) — STRUCTURAL; evsm_exponent (f32, 0.5..18 fp16-safe depth-warp; higher = crisper contact hardening) and evsm_blur_radius (u32 texels, 0..8 Gaussian half-width; higher = softer) — LIVE; max_point_shadows (u32, 1..32 simultaneous point-light casters; VRAM ~24*res^2 bytes each) and point_shadow_resolution (u32 texels/cube face, pow2 64..8192) — STRUCTURAL; debug_cascade_colors (bool, tints each directional cascade range for authoring) — LIVE. Out-of-range values are clamped, sizes rounded up to a power of two. STRUCTURAL fields are cheap from authoring/level-load but don't poke them at frame rate. Read the current values back with get_shadows."
+    )]
+    async fn set_shadows(
+        &self,
+        Parameters(p): Parameters<ShadowsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::SetShadows {
+            patch: ShadowsPatch {
+                sscs_enabled: p.sscs_enabled,
+                sscs_step_count: p.sscs_step_count,
+                sscs_step_world: p.sscs_step_world,
+                sscs_thickness: p.sscs_thickness,
+                sscs_directional_darkening: p.sscs_directional_darkening,
+                sscs_punctual_darkening: p.sscs_punctual_darkening,
+                atlas_size: p.atlas_size,
+                evsm_atlas_size: p.evsm_atlas_size,
+                evsm_exponent: p.evsm_exponent,
+                evsm_blur_radius: p.evsm_blur_radius,
+                max_point_shadows: p.max_point_shadows,
+                point_shadow_resolution: p.point_shadow_resolution,
+                debug_cascade_colors: p.debug_cascade_colors,
+            },
+        })
+        .await
+    }
+
+    #[tool(
+        annotations(read_only_hint = true),
+        description = "Current renderer-wide shadow config as JSON (the read half of set_shadows): the sscs_* block, atlas_size, evsm_atlas_size, evsm_exponent, evsm_blur_radius, max_point_shadows, point_shadow_resolution, debug_cascade_colors. Pure read."
+    )]
+    async fn get_shadows(&self) -> Result<CallToolResult, McpError> {
+        self.query(EditorQuery::Shadows).await
+    }
+
+    #[tool(
+        description = "Set the global post-processing settings: tonemapping ('none' | 'khronos_neutral_pbr' | 'aces'), bloom (bool), dof (bool — depth of field, uses the active camera's focus/aperture), exposure (f32, EV stops pre-tonemap: 0 unity, +1 twice as bright), and the bloom tuning knobs bloom_threshold / bloom_knee / bloom_intensity / bloom_scatter (all f32). Bloom is a COD/Jimenez-style mip-pyramid glow: bloom_threshold (default 1.0) is the HDR luminance above which pixels glow, bloom_knee (0.5) softens the fade-in, bloom_intensity (1.0) is the mix strength, bloom_scatter (1.0) widens the halo toward coarser mips. Also SCREEN-SPACE REFLECTIONS via the ssr_* fields: ssr_enabled (bool, default off — zero cost when off), ssr_intensity / ssr_max_distance / ssr_thickness / ssr_max_steps / ssr_spread_cutoff / ssr_edge_fade / ssr_temporal_weight (LIVE uniforms), ssr_temporal + ssr_resolution_scale (0.5 half-res default / 1.0 full — STRUCTURAL, recompile the SSR pass). Glossy/metallic PBR surfaces reflect on-screen content; roughness beyond ssr_spread_cutoff falls back to IBL. Persisted on scene.post_process + carried in the player bundle; applied to the live renderer immediately. Every field is optional (patch semantics — only the ones you pass change). tonemapping/bloom/dof/ssr_enabled/ssr_temporal/ssr_resolution_scale recompile pipelines (wait_render_settled after); everything else is a LIVE uniform (no recompile). Defaults: khronos_neutral_pbr, bloom off, dof off, exposure 0, threshold 1.0, knee 0.5, intensity 1.0, scatter 1.0. Also structural: ssr_debug (0-4 trace debug views: confidence/travel/source/steps — TRANSIENT, never persisted, absent from get_post_process) and ssr_bvh_reflections (software-BVH off-screen reflection hits for polished pixels, spread < 0.25; default off, high-end tier). GOTCHA: the ssr_* params are FLAT top-level fields — a nested {\"ssr\":{...}} object is SILENTLY IGNORED (unknown fields don't error); verify with get_post_process after setting (except ssr_debug, which is transient and unreported). Read the current values back with get_post_process."
     )]
     async fn set_post_process(
         &self,
@@ -3796,8 +4295,61 @@ impl EditorMcp {
             bloom: p.bloom,
             dof: p.dof,
             exposure: p.exposure,
+            bloom_threshold: p.bloom_threshold,
+            bloom_knee: p.bloom_knee,
+            bloom_intensity: p.bloom_intensity,
+            bloom_scatter: p.bloom_scatter,
+            ssr_enabled: p.ssr_enabled,
+            ssr_intensity: p.ssr_intensity,
+            ssr_max_distance: p.ssr_max_distance,
+            ssr_thickness: p.ssr_thickness,
+            ssr_max_steps: p.ssr_max_steps,
+            ssr_spread_cutoff: p.ssr_spread_cutoff,
+            ssr_edge_fade: p.ssr_edge_fade,
+            ssr_temporal: p.ssr_temporal,
+            ssr_resolution_scale: p.ssr_resolution_scale,
+            ssr_temporal_weight: p.ssr_temporal_weight,
+            ssr_debug: p.ssr_debug,
+            ssr_bvh_reflections: p.ssr_bvh_reflections,
         })
         .await
+    }
+
+    #[tool(
+        annotations(read_only_hint = true),
+        description = "Current global post-processing settings as JSON (the read half of set_post_process): tonemapping, bloom, dof, exposure, bloom_threshold/knee/intensity/scatter, and the full ssr block (enabled, intensity, max_distance, thickness, max_steps, spread_cutoff, edge_fade, resolution_scale, temporal, temporal_weight, bvh_reflections). ssr debug views are transient and NOT reported. Pure read."
+    )]
+    async fn get_post_process(&self) -> Result<CallToolResult, McpError> {
+        self.query(EditorQuery::PostProcess).await
+    }
+
+    #[tool(
+        description = "Set editor viewport view options (partial update — only the fields you pass change; transient view state, never persisted): grid, gizmos, light_gizmos, skeleton_viz, follow_agent, activity_overlay, mcp_notifications, msaa, smaa (all bool; msaa is STRUCTURAL — wait_render_settled after flipping). FOR CLEAN VERIFICATION SCREENSHOTS: set {grid:false, gizmos:false, light_gizmos:false, skeleton_viz:false} before screenshot_scene so viewport chrome does not contaminate the pixels, and restore afterwards. follow_agent / activity_overlay / mcp_notifications default OFF and are human-courtesy toggles — leave them off during automated work. Read the current values back with get_view_options."
+    )]
+    async fn set_view_options(
+        &self,
+        Parameters(p): Parameters<ViewOptionsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::SetViewOptions {
+            grid: p.grid,
+            gizmos: p.gizmos,
+            light_gizmos: p.light_gizmos,
+            skeleton_viz: p.skeleton_viz,
+            follow_agent: p.follow_agent,
+            activity_overlay: p.activity_overlay,
+            mcp_notifications: p.mcp_notifications,
+            msaa: p.msaa,
+            smaa: p.smaa,
+        })
+        .await
+    }
+
+    #[tool(
+        annotations(read_only_hint = true),
+        description = "Current editor viewport view options as JSON booleans (grid, gizmos, light_gizmos, skeleton_viz, follow_agent, activity_overlay, mcp_notifications, msaa, smaa) — the read half of set_view_options. Pure read."
+    )]
+    async fn get_view_options(&self) -> Result<CallToolResult, McpError> {
+        self.query(EditorQuery::ViewOptions).await
     }
 
     // ── view / camera ───────────────────────────────────────────────────────
@@ -3863,6 +4415,21 @@ impl EditorMcp {
         self.dispatch(EditorCommand::SetCameraProjection {
             perspective: p.perspective,
             fov_y: p.fov_y,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Set the viewport camera near/far clip planes. `manual=true` pins the planes to `near`/`far` (metres); `manual=false` restores auto (planes track the orbit distance). Any omitted field is left unchanged. Editor default is AUTO (manual=false); manual-mode defaults are near 1.0, far 5000."
+    )]
+    async fn set_camera_clip(
+        &self,
+        Parameters(p): Parameters<CameraClipParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::SetCameraClip {
+            manual: p.manual,
+            near: p.near,
+            far: p.far,
         })
         .await
     }
@@ -4028,6 +4595,21 @@ impl EditorMcp {
         .await
     }
 
+    #[tool(
+        description = "Set an animation clip's default play direction: forward | reverse. Sibling of set_clip_speed / set_clip_loop / set_clip_duration (the clip-property family). Reverse plays the clip's keyframes backwards from its duration — e.g. flip an add_spin_track rotation without re-authoring keys or using a negative speed. Undoable (restores the prior direction)."
+    )]
+    async fn set_clip_direction(
+        &self,
+        Parameters(p): Parameters<ClipDirectionParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let direction: ClipDirection = parse_enum(&p.direction, "clip direction")?;
+        self.dispatch(EditorCommand::SetClipDirection {
+            id: parse_asset(&p.clip)?,
+            direction,
+        })
+        .await
+    }
+
     #[tool(description = "Set the clip Animation mode is editing (or clear).")]
     async fn set_current_clip(
         &self,
@@ -4040,7 +4622,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Pin the renderer's frame_globals.time to `seconds` so a temporal material (sin(time*f)) screenshots the same phase every call. Separate from the animation playhead. Clear with clear_frame_time."
+        description = "Pin the renderer's frame_globals.time to `seconds` so a temporal material (sin(time*f)) screenshots the same phase every call. Separate from the animation playhead. Raw dispatch_command form takes {\"seconds\":N} (this tool's param is `t`; set_playhead's raw form takes {\"t\":N}). Clear with clear_frame_time."
     )]
     async fn set_frame_time(
         &self,
@@ -4082,7 +4664,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Add an animation track to a clip, bound to a target. target.kind = transform (node+prop) | morph (node+index) | uniform (material+name) | builtin_param/light/camera (node+param) | texture_transform (node + slot[base_color|metallic_roughness|normal|occlusion|emissive] + prop[offset(vec2)|scale(vec2)|rotation(scalar)] — keyframe a built-in texture's UV offset/scale/rotation, e.g. a directional/reversible conveyor scroll). Tracks append; the new index is the prior track count."
+        description = "Add an animation track to a clip, bound to a target. target.kind = transform (node+prop) | morph (node+index) | uniform (material+name) | builtin_param/light/camera (node+param) | texture_transform (node + slot[base_color|metallic_roughness|normal|occlusion|emissive] + prop[offset(vec2)|scale(vec2)|rotation(scalar)] — keyframe a built-in texture's UV offset/scale/rotation, e.g. a directional/reversible conveyor scroll). Raw dispatch_command form: the morph target is {\"target\":\"morph\",\"node\":...,\"index\":N} (internally tagged by \"target\"). Tracks append; the new index is the prior track count."
     )]
     async fn add_track(
         &self,
@@ -4114,7 +4696,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Insert a keyframe at time `t` (seconds) with `value` on a track. value.kind = vec2 | vec3 | vec4 | quat (xyzw) | scalar. Optional `interp` = step | linear | cubic (omit to use the track's sampler). Replaces any existing key at `t`."
+        description = "Insert a keyframe at time `t` (seconds) with `value` on a track. `track` is the NUMERIC track index within the clip (0-based, the order get_snapshot/get_track_data list them), not an id. value.kind = vec2 | vec3 | vec4 | quat (xyzw) | scalar. Optional `interp` = step | linear | cubic (omit to use the track's sampler). Replaces any existing key at `t`."
     )]
     async fn add_keyframe(
         &self,
@@ -4262,7 +4844,7 @@ impl EditorMcp {
     // ── generic escape hatch ────────────────────────────────────────────────
 
     #[tool(
-        description = "Dispatch a raw EditorCommand (escape hatch for any command without a dedicated tool: keyframes, tracks, mixer, environment…). `command` is internally tagged by \"cmd\"."
+        description = "Dispatch a raw EditorCommand (escape hatch for any command without a dedicated tool: keyframes, tracks, mixer, environment…). `command` is internally tagged by \"cmd\". WARNING: unknown/misspelled fields in a command payload are SILENTLY IGNORED (serde skips them — a wrong field name becomes a partial or no-op edit that still returns ok), so check the exact shape with list_commands{cmd} first and ALWAYS verify the result via a query (get_node_details / get_post_process / run_query) after mutating."
     )]
     async fn dispatch_command(
         &self,
@@ -4832,6 +5414,105 @@ impl ServerHandler for EditorMcp {
 
 fn text(s: impl Into<String>) -> CallToolResult {
     CallToolResult::success(vec![Content::text(s.into())])
+}
+
+/// The externally-tagged variant name a `oneOf` schema entry represents — for a
+/// serde-external enum, either a `const`/single-`enum` string (unit variant) or
+/// the single `required`/`properties` key (data variant). `None` if the entry
+/// doesn't match that shape.
+fn oneof_variant_name(entry: &Value) -> Option<String> {
+    if let Some(c) = entry.get("const").and_then(Value::as_str) {
+        return Some(c.to_string());
+    }
+    if let Some(arr) = entry.get("enum").and_then(Value::as_array) {
+        if let [Value::String(s)] = arr.as_slice() {
+            return Some(s.clone());
+        }
+    }
+    if let Some(req) = entry.get("required").and_then(Value::as_array) {
+        if let [Value::String(s)] = req.as_slice() {
+            return Some(s.clone());
+        }
+    }
+    if let Some(props) = entry.get("properties").and_then(Value::as_object) {
+        if props.len() == 1 {
+            return props.keys().next().cloned();
+        }
+    }
+    None
+}
+
+/// Every NodeKind variant name (snake_case) from a schema's `oneOf`.
+fn node_variant_names(full: &Value) -> Vec<String> {
+    full.get("oneOf")
+        .and_then(Value::as_array)
+        .map(|arr| arr.iter().filter_map(oneof_variant_name).collect())
+        .unwrap_or_default()
+}
+
+/// Collect every `#/$defs/<Name>` referenced anywhere in `v`.
+fn collect_defs_refs(v: &Value, out: &mut Vec<String>) {
+    match v {
+        Value::Object(m) => {
+            for (k, val) in m {
+                if k == "$ref" {
+                    if let Some(name) = val.as_str().and_then(|s| s.strip_prefix("#/$defs/")) {
+                        out.push(name.to_string());
+                    }
+                } else {
+                    collect_defs_refs(val, out);
+                }
+            }
+        }
+        Value::Array(a) => a.iter().for_each(|x| collect_defs_refs(x, out)),
+        _ => {}
+    }
+}
+
+/// Scope a full `NodeKind` schema down to a single `variant`: the matching `oneOf`
+/// entry plus ONLY the `$defs` it references (transitively). `None` if no variant
+/// matches. Shrinks a hundreds-of-KB schema to just the relevant slice.
+fn filter_node_variant_schema(full: &Value, variant: &str) -> Option<Value> {
+    let one_of = full.get("oneOf").and_then(Value::as_array)?;
+    let entry = one_of
+        .iter()
+        .find(|e| oneof_variant_name(e).as_deref() == Some(variant))?
+        .clone();
+
+    // Transitive $defs closure reachable from the chosen variant.
+    let mut kept = serde_json::Map::new();
+    if let Some(defs) = full.get("$defs").and_then(Value::as_object) {
+        let mut stack = Vec::new();
+        collect_defs_refs(&entry, &mut stack);
+        let mut seen = std::collections::HashSet::new();
+        while let Some(name) = stack.pop() {
+            if !seen.insert(name.clone()) {
+                continue;
+            }
+            if let Some(def) = defs.get(&name) {
+                kept.insert(name.clone(), def.clone());
+                collect_defs_refs(def, &mut stack);
+            }
+        }
+    }
+
+    let mut out = serde_json::Map::new();
+    if let Some(s) = full.get("$schema") {
+        out.insert("$schema".to_string(), s.clone());
+    }
+    out.insert(
+        "title".to_string(),
+        Value::String(format!("NodeKind::{variant}")),
+    );
+    if let Some(obj) = entry.as_object() {
+        for (k, v) in obj {
+            out.insert(k.clone(), v.clone());
+        }
+    }
+    if !kept.is_empty() {
+        out.insert("$defs".to_string(), Value::Object(kept));
+    }
+    Some(Value::Object(out))
 }
 
 fn parse_node(s: &str) -> Result<NodeId, McpError> {

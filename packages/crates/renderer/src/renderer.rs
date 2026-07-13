@@ -233,6 +233,16 @@ pub struct AwsmRenderer {
     /// choose a level per instance. See [`crate::lod`].
     #[cfg(feature = "lod")]
     pub lod: crate::lod::LodRegistry,
+    /// Screen-space error budget (pixels) for LOD selection and the cluster
+    /// cut. Defaults to [`Self::LOD_ERROR_THRESHOLD_PX`]; runtime-tunable via
+    /// [`Self::set_lod_error_calibration`] for calibration passes.
+    #[cfg(feature = "lod")]
+    pub lod_error_threshold_px: f32,
+    /// Calibration factor applied to baked discrete-LOD errors at selection
+    /// time (the bake's sqrt-QEM metric under-reports perceptual error — see
+    /// [`Self::LOD_ERROR_CONSERVATISM`], the default).
+    #[cfg(feature = "lod")]
+    pub lod_error_conservatism: f32,
     /// GPU coverage producer buffers. The producer pass
     /// (`render_passes/coverage/`) atomic-adds per-pixel into
     /// `counts_buffer`; the renderer copies to `readback_buffer`
@@ -593,6 +603,8 @@ impl AwsmRenderer {
                     self.prep_config.clamped_k(),
                     self.prep_config.sscs_enabled,
                     self.prep_config.sscs_step_count,
+                    self.post_processing.ssr.enabled,
+                    self.features.reverse_z,
                 )
                 .await?;
         }
@@ -607,9 +619,13 @@ impl AwsmRenderer {
 
         // 5. Content-gated pipelines that used to compile at build:
         //    the transmission mipgen (only if a transmissive material is
-        //    actually attached) and the decal composite (feature-gated).
+        //    actually attached), the decal compute + classify + composite
+        //    (only when a decal is actually live), and the cluster-LOD cut +
+        //    compaction (only when a cluster mesh is resident).
         self.ensure_opaque_mipgen_compiled().await?;
-        self.ensure_decal_composite_compiled().await?;
+        self.ensure_decal_pipelines_compiled().await?;
+        #[cfg(feature = "lod")]
+        self.ensure_cluster_pipelines_compiled().await?;
 
         // 6. The eager pass groups registered Pending at build are real now.
         let eager_ids = std::mem::take(&mut self.eager_pass_ids);
@@ -692,15 +708,129 @@ impl AwsmRenderer {
         Ok(())
     }
 
-    /// Compile the decal composite's two inline-WGSL pipelines iff the decals
-    /// feature is on and they aren't compiled yet (moved out of build()).
-    async fn ensure_decal_composite_compiled(&mut self) -> crate::error::Result<()> {
-        let needs = self
+    /// Compile the decal pass's pipelines — the two MSAA-variant compute
+    /// kernels, the classify cull, and the composite's two inline-WGSL render
+    /// pipelines — iff the decals feature is on, **a decal is actually live**,
+    /// and they aren't compiled yet. Content-lazy (axis 1): a decals-enabled
+    /// build that never places a decal compiles none of them. Runs at every
+    /// `ensure_config_pipelines` (i.e. every `commit_load`), so both a scene
+    /// load's decals and a live editor insert (whose change lands via the
+    /// per-change commit) get their pipelines before the committed frame.
+    async fn ensure_decal_pipelines_compiled(&mut self) -> crate::error::Result<()> {
+        let any_decals = self.decals.as_ref().is_some_and(|d| !d.is_empty());
+        let needs = any_decals
+            && self.render_passes.material_decal.as_ref().is_some_and(|d| {
+                d.pipelines.is_none()
+                    || d.classify_pass.pipelines.is_none()
+                    || d.composite.is_none()
+            });
+        if !needs {
+            return Ok(());
+        }
+        // The render-loop kick (`kick_decal_pipelines_compile`) may have a
+        // compile in flight for the same pieces — cancel it so only THIS
+        // awaited path installs (the orphaned browser promises resolve into
+        // dropped futures, harmlessly).
+        if let Some(decal) = self.render_passes.material_decal.as_mut() {
+            decal.cancel_inflight();
+        }
+        let mut ctx = crate::render_passes::RenderPassInitContext {
+            gpu: &self.gpu,
+            bind_group_layouts: &mut self.bind_group_layouts,
+            pipeline_layouts: &mut self.pipeline_layouts,
+            pipelines: &mut self.pipelines,
+            shaders: &mut self.shaders,
+            render_texture_formats: &mut self.render_textures.formats,
+            textures: &mut self.textures,
+            features: &self.features,
+            anti_aliasing: &self.anti_aliasing,
+            post_processing: &self.post_processing,
+            prep_config: &self.prep_config,
+            max_edge_budget: self
+                .material_edge_buffers
+                .as_ref()
+                .map(|b| b.max_edge_budget)
+                .unwrap_or(
+                    crate::render_passes::material_opaque::edge_buffers::DEFAULT_MAX_EDGE_BUDGET_DESKTOP,
+                ),
+        };
+        // Disjoint field borrows: `ctx` holds `&mut` on cache fields only —
+        // `render_passes` is not part of it (same shape as
+        // `ensure_material_prep_pipelines`).
+        let decal = self
             .render_passes
             .material_decal
             .as_ref()
-            .is_some_and(|d| d.composite.is_none());
-        if !needs {
+            .expect("checked is_some_and above");
+        let pipelines = if decal.pipelines.is_none() {
+            Some(
+                crate::render_passes::material_decal::pipeline::MaterialDecalPipelines::new(
+                    &mut ctx,
+                    &decal.bind_groups,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
+        let classify_pipelines = if decal.classify_pass.pipelines.is_none() {
+            Some(
+                crate::render_passes::material_decal::classify::pipeline::DecalClassifyPipelines::new(
+                    &mut ctx,
+                    &decal.classify_pass.bind_groups,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
+        let composite = if decal.composite.is_none() {
+            Some(
+                crate::render_passes::material_decal::composite::MaterialDecalComposite::new(
+                    &mut ctx,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
+        let composite_installed = composite.is_some();
+        if let Some(decal) = self.render_passes.material_decal.as_mut() {
+            if let Some(p) = pipelines {
+                decal.pipelines = Some(p);
+            }
+            if let Some(p) = classify_pipelines {
+                decal.classify_pass.pipelines = Some(p);
+            }
+            if let Some(c) = composite {
+                decal.composite = Some(c);
+            }
+        }
+        if composite_installed {
+            // A fresh composite starts UNBOUND (its bind group is only built
+            // by the `MaterialDecalComposite` recreate arm on this event) and
+            // skip-renders until bound. Mark it so the next frame's recreate
+            // drain binds it before the decal dispatch.
+            self.bind_groups
+                .mark_create(crate::bind_groups::BindGroupCreate::TextureViewRecreate);
+        }
+        Ok(())
+    }
+
+    /// Compile the cluster-LOD cut + compaction pipelines iff a cluster mesh
+    /// is resident and they aren't compiled yet. Content-lazy (axis 1): a
+    /// `virtual_geometry` build that never loads a cluster mesh compiles
+    /// neither. The scene-loader's `upload_cluster_pages` runs inside the load
+    /// transaction, so the commit's `ensure_config_pipelines` lands here with
+    /// the states populated.
+    #[cfg(feature = "lod")]
+    async fn ensure_cluster_pipelines_compiled(&mut self) -> crate::error::Result<()> {
+        if self
+            .render_passes
+            .cluster_lod
+            .as_ref()
+            .is_none_or(|p| p.pipelines.is_some() || p.states.is_empty())
+        {
             return Ok(());
         }
         let mut ctx = crate::render_passes::RenderPassInitContext {
@@ -723,11 +853,8 @@ impl AwsmRenderer {
                     crate::render_passes::material_opaque::edge_buffers::DEFAULT_MAX_EDGE_BUDGET_DESKTOP,
                 ),
         };
-        let composite =
-            crate::render_passes::material_decal::composite::MaterialDecalComposite::new(&mut ctx)
-                .await?;
-        if let Some(decal) = self.render_passes.material_decal.as_mut() {
-            decal.composite = Some(composite);
+        if let Some(pass) = self.render_passes.cluster_lod.as_mut() {
+            pass.ensure_pipelines_compiled(&mut ctx).await?;
         }
         Ok(())
     }
@@ -773,7 +900,11 @@ impl AwsmRenderer {
         self.shaders
             .ensure_keys(
                 &self.gpu,
-                MaterialPrepPipelines::shader_cache_keys(multisampled, &self.prep_config),
+                MaterialPrepPipelines::shader_cache_keys(
+                    multisampled,
+                    &self.prep_config,
+                    self.features.reverse_z,
+                ),
             )
             .await?;
         let mut ctx = crate::render_passes::RenderPassInitContext {
@@ -991,8 +1122,13 @@ impl AwsmRenderer {
     /// - **Geometry render pipelines** — every (MSAA × instancing ×
     ///   storage-array × cull_mode) variant. See
     ///   `GeometryRenderPipelineKeys::new`.
-    /// - **Shadow / HZB / coverage / decal / classify / light-culling**
-    ///   passes — all built once during `RenderPasses::new`.
+    /// - **HZB / coverage / classify / light-culling** passes — built once
+    ///   during `RenderPasses::new`. Shadow caster + EVSM compile on the
+    ///   first shadow-casting light; decal (+ classify/composite) and the
+    ///   cluster-LOD cut compile at the first commit that actually has a
+    ///   decal / cluster mesh; bloom + SSR compile on their first
+    ///   `set_post_processing` enable (axis 1 — see the classification
+    ///   comment in `render_passes.rs::describe_shaders`).
     ///
     /// So this method is **mostly a labelling hook today** — its real
     /// payoff is the call-site UX: a consumer can advance their boot
@@ -1146,6 +1282,8 @@ impl AwsmRenderer {
                 &self.anti_aliasing,
                 &self.textures,
                 &self.render_textures.formats,
+                self.features.depth().compare(),
+                self.features.reverse_z,
             )
             .await?;
 
@@ -2138,10 +2276,13 @@ impl AwsmRendererBuilder {
             use render_passes::material_opaque::edge_buffers::{
                 build_edge_layout_uniform, MaterialEdgeBuffers,
             };
+            // Built with NARROW slots: post-processing defaults have SSR off
+            // at build time; enabling SSR recreates the buffers wide (see
+            // set_post_processing's edge-slot flip).
             let edge_buffers = if let Some(budget) = max_edge_budget {
-                MaterialEdgeBuffers::new_with_budget(&gpu, first_party_bucket_count, budget)?
+                MaterialEdgeBuffers::new_with_budget(&gpu, first_party_bucket_count, budget, false)?
             } else {
-                MaterialEdgeBuffers::new(&gpu, first_party_bucket_count)?
+                MaterialEdgeBuffers::new(&gpu, first_party_bucket_count, false)?
             };
             let max_edge_budget = edge_buffers.max_edge_budget;
             let (uniform, _bytes) =
@@ -2222,6 +2363,7 @@ impl AwsmRendererBuilder {
             render_passes::effects::pipeline::EffectsPipelines::shader_cache_keys_for(
                 &anti_aliasing,
                 &post_processing,
+                features.reverse_z,
             )?,
         );
         all_shader_keys.extend(
@@ -2275,6 +2417,10 @@ impl AwsmRendererBuilder {
             render_passes_plan.geometry_bind_groups(),
             &render_textures.formats,
             shadows_config.unwrap_or_default(),
+            // 003 stage 7: shadows follow the renderer-wide depth convention
+            // (writer projections + sampler + pipeline compare/bias + clear +
+            // receiver WGSL all flip together off this one value).
+            features.depth(),
         )
         .await?;
 
@@ -2329,7 +2475,13 @@ impl AwsmRendererBuilder {
 
         let effects_descs = render_passes_descs
             .effects_pipelines()
-            .build_descriptors(&anti_aliasing, &post_processing, &gpu, &mut shaders)
+            .build_descriptors(
+                &anti_aliasing,
+                &post_processing,
+                &gpu,
+                &mut shaders,
+                features.reverse_z,
+            )
             .await?;
         let display_descs = render_passes_descs
             .display_pipelines()
@@ -2464,6 +2616,10 @@ impl AwsmRendererBuilder {
             coverage: coverage::MeshCoverage::default(),
             #[cfg(feature = "lod")]
             lod: crate::lod::LodRegistry::default(),
+            #[cfg(feature = "lod")]
+            lod_error_threshold_px: AwsmRenderer::LOD_ERROR_THRESHOLD_PX,
+            #[cfg(feature = "lod")]
+            lod_error_conservatism: AwsmRenderer::LOD_ERROR_CONSERVATISM,
             coverage_buffers,
             coverage_readback_state: std::sync::Arc::new(std::sync::Mutex::new(
                 CoverageReadbackState::default(),
@@ -2888,6 +3044,8 @@ impl AwsmRenderer {
                     texture_pool_samplers_len: 1,
                     msaa_sample_count: None,
                     mipmaps: false,
+                    // Depth convention (003) — match the live feature set.
+                    reverse_z: self.features.reverse_z,
                     base: ShadingBase::Custom,
                     pbr_features: awsm_renderer_materials::pbr::PbrFeatures::default().bits(),
                     dispatch_hash: 0,
@@ -2919,6 +3077,12 @@ impl AwsmRenderer {
                 let key = ShaderCacheKeyMaterialOpaque {
                     texture_pool_arrays_len: 1,
                     texture_pool_samplers_len: 1,
+                    // Exercise the descriptor-store path in dynamic-material
+                    // WGSL validation (custom materials write the default 0
+                    // descriptor when SSR is on).
+                    write_ssr_descriptor: true,
+                    // Depth convention (003) — match the live feature set.
+                    reverse_z: self.features.reverse_z,
                     msaa_sample_count: None,
                     mipmaps: false,
                     max_shadow_casters: 4,

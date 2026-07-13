@@ -109,7 +109,11 @@ impl AwsmRenderer {
             use crate::render_passes::material_opaque::edge_buffers::{
                 build_edge_layout_uniform, MaterialEdgeBuffers,
             };
-            let edge_buffers = MaterialEdgeBuffers::new(&self.gpu, bucket_count)?;
+            let edge_buffers = MaterialEdgeBuffers::new(
+                &self.gpu,
+                bucket_count,
+                self.post_processing.ssr.enabled,
+            )?;
             let max_edge_budget = edge_buffers.max_edge_budget;
             let (uniform, _bytes) =
                 build_edge_layout_uniform(&self.gpu, bucket_count, max_edge_budget)?;
@@ -194,6 +198,7 @@ impl AwsmRenderer {
                     &mut self.shaders,
                     &hzb.bind_groups,
                     &self.anti_aliasing,
+                    self.features.reverse_z,
                 )
                 .await?,
             )
@@ -354,7 +359,11 @@ impl AwsmRenderer {
             self.shaders
                 .ensure_keys(
                     &self.gpu,
-                    MaterialPrepPipelines::shader_cache_keys(new_msaa_on, &self.prep_config),
+                    MaterialPrepPipelines::shader_cache_keys(
+                        new_msaa_on,
+                        &self.prep_config,
+                        self.features.reverse_z,
+                    ),
                 )
                 .await?;
 
@@ -456,6 +465,8 @@ impl AwsmRenderer {
                 &self.anti_aliasing,
                 &self.textures,
                 &self.render_textures.formats,
+                self.features.depth().compare(),
+                self.features.reverse_z,
             )
             .await?;
 
@@ -472,6 +483,7 @@ impl AwsmRenderer {
                 &mut self.pipelines,
                 &self.pipeline_layouts,
                 &self.render_textures.formats,
+                self.features.reverse_z,
             )
             .await?;
 
@@ -499,6 +511,41 @@ impl AwsmRenderer {
         //    pending compile if a shadow caster is registered and
         //    pipelines aren't yet compiled. No-op when nothing to do.
         self.ensure_shadow_pipelines_compiled().await?;
+
+        // ── Phase 10: SSR pass rebuild. The SSR trace + composite bake the
+        //    DEPTH binding's `multisampled` flag into their bind-group
+        //    LAYOUTS at construction (`ctx.anti_aliasing`), so an MSAA flip
+        //    leaves them binding the wrong depth-texture sample count —
+        //    invalid bind group → the whole frame's command buffer fails
+        //    (black screen; found by the 004 verification matrix). Rebuild
+        //    exactly like `set_post_processing` does for the structural SSR
+        //    axes. LAZY SSR (axis 1): skip entirely while the pass is `None`
+        //    (never enabled) — the eventual first enable constructs it
+        //    against the then-live AA, so nothing can go stale.
+        if self.render_passes.ssr.is_some() {
+            let mut ctx = crate::render_passes::RenderPassInitContext {
+                gpu: &self.gpu,
+                bind_group_layouts: &mut self.bind_group_layouts,
+                pipeline_layouts: &mut self.pipeline_layouts,
+                pipelines: &mut self.pipelines,
+                shaders: &mut self.shaders,
+                render_texture_formats: &mut self.render_textures.formats,
+                textures: &mut self.textures,
+                features: &self.features,
+                anti_aliasing: &self.anti_aliasing,
+                post_processing: &self.post_processing,
+                prep_config: &self.prep_config,
+                max_edge_budget: self
+                    .material_edge_buffers
+                    .as_ref()
+                    .map(|b| b.max_edge_budget)
+                    .unwrap_or(
+                        crate::render_passes::material_opaque::edge_buffers::DEFAULT_MAX_EDGE_BUDGET_DESKTOP,
+                    ),
+            };
+            let ssr = crate::render_passes::ssr::render_pass::SsrRenderPass::new(&mut ctx).await?;
+            self.render_passes.ssr = Some(ssr);
+        }
 
         Ok(())
     }

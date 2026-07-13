@@ -187,6 +187,7 @@ mod tests {
             irradiance: crate::EnvSlot::Ktx {
                 asset_id: irradiance,
             },
+            probe: Default::default(),
         };
         // The bake emits one file per env KTX id, at the shared convention path.
         let env_files: Vec<BundleFile> = scene
@@ -225,6 +226,7 @@ mod tests {
             skybox: grad,
             specular: grad,
             irradiance: grad,
+            probe: Default::default(),
         };
         let toml = scene_to_toml(&scene).unwrap();
         let loaded = scene_from_toml(&toml).unwrap();

@@ -456,6 +456,7 @@ impl crate::AwsmRenderer {
                 msaa_sample_count: active_msaa,
                 bucket_count: entries.len() as u32,
                 emit_edge_data: active_msaa.is_some() && crate::edge_resolve_supported(&self.gpu),
+                wide_edge_slots: self.post_processing.ssr.enabled,
             }
             .into(),
         );
@@ -490,6 +491,11 @@ impl crate::AwsmRenderer {
                     max_shadow_casters: self.prep_config.clamped_k(),
                     sscs_enabled: self.prep_config.sscs_enabled,
                     sscs_step_count: self.prep_config.sscs_step_count,
+                    // M2a: SSR-on ⇒ this kernel writes the reflection descriptor.
+                    // Flipping SSR re-keys → recompiles the live opaque modules.
+                    write_ssr_descriptor: self.post_processing.ssr.enabled,
+                    // Depth convention (003).
+                    reverse_z: self.features.reverse_z,
                     shader_id,
                     base,
                     owns_skybox,
@@ -734,6 +740,8 @@ impl crate::AwsmRenderer {
                 self.prep_config.clamped_k(),
                 self.prep_config.sscs_enabled,
                 self.prep_config.sscs_step_count,
+                self.post_processing.ssr.enabled,
+                self.features.reverse_z,
             )? {
             Some(d) => d,
             None => return Ok(()),

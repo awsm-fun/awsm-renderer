@@ -21,7 +21,9 @@ fn get_lights_info() -> LightsInfo {
         lights_info.data.x,
         IblInfo(
             lights_info.data.y,
-            lights_info.data.z
+            lights_info.data.z,
+            lights_info.probe_center_enabled,
+            lights_info.probe_half_pad.xyz
         )
     );
 }
@@ -91,7 +93,7 @@ fn light_sample(light:Light, normal: vec3<f32>, world_position: vec3<f32>) -> Li
             // no light, skip
         }
         case 1u: { // Directional
-            light_dir = normalize(-light.direction); // surface -> light
+            light_dir = -light.direction; // surface -> light (unit at pack boundary)
             radiance = light.color * light.intensity;
             n_dot_l = max(dot(normal, light_dir), 0.0);
         }
@@ -107,7 +109,7 @@ fn light_sample(light:Light, normal: vec3<f32>, world_position: vec3<f32>) -> Li
             let surface_to_light = light.position - world_position;
             let dist = length(surface_to_light);
             light_dir = surface_to_light / max(dist, 1e-6); // surface -> light (guard dist==0)
-            let cos_l = dot(light_dir, -normalize(light.direction));
+            let cos_l = dot(light_dir, -light.direction);
             let spot = spot_falloff(light.inner_cone, light.outer_cone, cos_l);
             let attenuation = inverse_square(light.range, dist) * spot;
             radiance = light.color * light.intensity * attenuation;

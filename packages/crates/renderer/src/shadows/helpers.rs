@@ -12,7 +12,6 @@ use std::sync::LazyLock;
 use awsm_renderer_core::{
     bind_groups::{BindGroupDescriptor, BindGroupEntry, BindGroupResource},
     buffers::BufferBinding,
-    compare::CompareFunction,
     error::AwsmCoreError,
     pipeline::{
         depth_stencil::DepthStencilState,
@@ -243,6 +242,7 @@ pub(crate) fn shadow_pipeline_cache_key(
     instancing: bool,
     cube_face: bool,
     double_sided: bool,
+    depth: crate::depth_convention::DepthConvention,
 ) -> RenderPipelineCacheKey {
     let mut vertex_buffer_layouts = vec![VERTEX_BUFFER_LAYOUT.clone()];
     if instancing {
@@ -284,11 +284,15 @@ pub(crate) fn shadow_pipeline_cache_key(
         .with_front_face(front_face)
         .with_cull_mode(cull_mode);
 
+    // 003 stage 7: compare + rasterizer bias follow the depth convention.
+    // Under reverse-Z "farther from the light" is a SMALLER depth value, so
+    // the constant + slope-scale bias (which push the stored caster depth
+    // away from the light to prevent acne) must flip sign with the compare.
     let depth_stencil = DepthStencilState::new(TextureFormat::Depth32float)
         .with_depth_write_enabled(true)
-        .with_depth_compare(CompareFunction::LessEqual)
-        .with_depth_bias(1)
-        .with_depth_bias_slope_scale(1.5);
+        .with_depth_compare(depth.compare())
+        .with_depth_bias(if depth.reverse_z { -1 } else { 1 })
+        .with_depth_bias_slope_scale(if depth.reverse_z { -1.5 } else { 1.5 });
 
     // Shadow atlas / cube faces are never multisampled — the depth
     // textures are single-sample. Pinning sample-count to 1 explicitly
@@ -342,27 +346,6 @@ pub(super) fn view_projection_drift(prev: &Mat4, current: &Mat4) -> f32 {
         acc += (a[i] - b[i]).abs();
     }
     acc
-}
-
-/// Extracts the world-space near + far planes from a projection
-/// matrix. Handles glam's right-handed perspective convention; falls
-/// back to `(0.1, 100.0)` for matrices we don't recognise
-/// (orthographic, custom).
-pub(super) fn extract_near_far(projection: &Mat4) -> (f32, f32) {
-    let m22 = projection.z_axis.z;
-    let m23 = projection.w_axis.z;
-    // Reverse the glam `Mat4::perspective_rh` formulation:
-    //   m22 = far / (near - far)
-    //   m23 = (near * far) / (near - far)
-    // → near = m23 / m22, far = m23 / (m22 + 1)
-    if m22.abs() > 1e-4 && (m22 + 1.0).abs() > 1e-4 {
-        let near = m23 / m22;
-        let far = m23 / (m22 + 1.0);
-        if near > 0.0 && far > near {
-            return (near, far);
-        }
-    }
-    (0.1, 100.0)
 }
 
 /// 2D-array sampling view of the cascade depth texture. Receivers

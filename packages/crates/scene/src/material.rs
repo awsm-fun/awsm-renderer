@@ -49,6 +49,14 @@ pub struct MaterialDef {
     /// when `occlusion_texture` is set. Defaults to 1.0.
     #[serde(default = "default_one")]
     pub occlusion_strength: f32,
+    /// SSR participation mask (0..1, default 1). Multiplies the reflection
+    /// descriptor's F0: 0 fully opts this material out of RECEIVING
+    /// screen-space/BVH/probe reflections (IBL specular is kept — the
+    /// SSR<->IBL crossfade reads the same masked value); fractional values
+    /// damp them artistically. Decouples "how glossy it looks" (roughness)
+    /// from "does SSR own its reflection". Per-mesh uniform, no recompile.
+    #[serde(default = "default_one")]
+    pub ssr_mask: f32,
     pub double_sided: bool,
     pub vertex_colors_enabled: bool,
     /// glTF-style alpha rendering mode. Defaults to `Opaque`, which — per
@@ -132,6 +140,7 @@ impl Default for MaterialDef {
             normal_scale: 1.0,
             occlusion_texture: None,
             occlusion_strength: 1.0,
+            ssr_mask: 1.0,
             double_sided: false,
             vertex_colors_enabled: false,
             alpha_mode: MaterialAlphaMode::Opaque,

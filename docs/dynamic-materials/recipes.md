@@ -26,7 +26,8 @@ set_material_layout { "material": <mat>,
 set_material_fragment_inputs { "material": <mat>, "keys": ["normals","view_dir"] }
 set_material_wgsl  { "material": <mat>, "wgsl": "<body below>" }
 get_material_diagnostics { "asset": <mat> }    // expect ok:true
-assign_material    { "node": <node>, "material": <mat> }
+add_material_variant    { "node": <node>, "material": <mat> }   // → <variant>
+select_material_variant { "node": <node>, "variant": <variant> } // render it
 set_material_texture { "node": <node>, "slot": "tex", "texture": <texId> }  // if textured
 ```
 

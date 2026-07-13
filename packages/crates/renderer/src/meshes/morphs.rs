@@ -126,6 +126,8 @@ impl<Key: slotmap::Key, Info: MorphInfo> MorphData<Key, Info> {
             weights_dirty: true,
             values_dirty: true,
             infos: SlotMap::with_key(),
+            values_alias: slotmap::SecondaryMap::new(),
+            values_alias_refs: slotmap::SecondaryMap::new(),
             gpu_buffer_weights,
             gpu_buffer_values,
             weights_uploader: crate::buffer::mapped_uploader::MappedUploader::new("Morph Weights"),
@@ -226,11 +228,83 @@ impl<Key: slotmap::Key, Info: MorphInfo> MorphData<Key, Info> {
         Ok(key)
     }
 
+    /// Register a PER-INSTANCE morph entry over `source`'s targets (prefab
+    /// clones): a fresh WEIGHTS slot seeded from `source`'s current weights —
+    /// so each clone's morph animation state is independent — while the big
+    /// target-delta stream is SHARED with `source`'s values slot (it's static
+    /// geometry data, identical across clones).
+    pub fn insert_instance(&mut self, source: Key) -> Result<Key> {
+        let info = self.get_info(source)?.clone();
+        // Snapshot [count, w_0, .. w_{n-1}] verbatim — the clone starts at the
+        // source's CURRENT weights (matching how a duplicated mesh visually
+        // matches its source at duplicate time).
+        let weights_with_count = self
+            .weights
+            .get(source)
+            .ok_or_else(|| AwsmMeshError::MorphNotFound(format!("{source:?}")))?
+            .to_vec();
+        // Collapse alias chains so every alias points at a real slot owner.
+        let owner = self.values_owner(source);
+
+        let key = self.infos.insert(info);
+        if let Err(e) = self
+            .weights
+            .update(key, &weights_with_count)
+            .map_err(|e| AwsmMeshError::BufferCapacityOverflow(format!("morph weights: {e}")))
+        {
+            self.infos.remove(key);
+            return Err(e);
+        }
+        self.values_alias.insert(key, owner);
+        *self.values_alias_refs.entry(owner).unwrap().or_insert(0) += 1;
+        self.weights_dirty = true;
+        Ok(key)
+    }
+
+    /// The key whose `values` slot `key` reads — itself unless it's a
+    /// value-sharing instance (see [`Self::insert_instance`]).
+    fn values_owner(&self, key: Key) -> Key {
+        self.values_alias.get(key).copied().unwrap_or(key)
+    }
+
     /// Removes morph data by key.
     pub fn remove(&mut self, key: Key) {
         self.weights.remove(key);
-        self.values.remove(key);
         self.infos.remove(key);
+
+        if let Some(owner) = self.values_alias.remove(key) {
+            // Value-sharing instance: the shared slot belongs to its owner.
+            if let Some(refs) = self.values_alias_refs.get_mut(owner) {
+                *refs = refs.saturating_sub(1);
+                if *refs == 0 {
+                    self.values_alias_refs.remove(owner);
+                }
+            }
+        } else if self.values_alias_refs.get(key).copied().unwrap_or(0) > 0 {
+            // Values OWNER removed while instances still read its slot:
+            // PROMOTE the slot to a surviving instance so it stays keyed by a
+            // live entry (this key's SlotMap slot may be recycled, which would
+            // collide inside the SecondaryMap-keyed values buffer).
+            let heir = self
+                .values_alias
+                .iter()
+                .find(|(_, o)| **o == key)
+                .map(|(k, _)| k)
+                .expect("alias refs > 0 but no alias found");
+            self.values.rekey(key, heir);
+            self.values_alias.remove(heir);
+            let refs = self.values_alias_refs.remove(key).unwrap_or(1) - 1;
+            for (_, owner) in self.values_alias.iter_mut() {
+                if *owner == key {
+                    *owner = heir;
+                }
+            }
+            if refs > 0 {
+                self.values_alias_refs.insert(heir, refs);
+            }
+        } else {
+            self.values.remove(key);
+        }
 
         self.weights_dirty = true;
         self.values_dirty = true;
@@ -243,10 +317,12 @@ impl<Key: slotmap::Key, Info: MorphInfo> MorphData<Key, Info> {
             .ok_or_else(|| AwsmMeshError::MorphNotFound(format!("{:?}", key)))
     }
 
-    /// Returns the values buffer offset for a morph key.
+    /// Returns the values buffer offset for a morph key. For a value-sharing
+    /// instance this resolves to the SHARED slot it reads (see
+    /// [`Self::insert_instance`]).
     pub fn values_buffer_offset(&self, key: Key) -> Result<usize> {
         self.values
-            .offset(key)
+            .offset(self.values_owner(key))
             .ok_or_else(|| AwsmMeshError::MorphNotFound(format!("{:?}", key)))
     }
 
@@ -357,6 +433,7 @@ impl<Key: slotmap::Key, Info: MorphInfo> MorphData<Key, Info> {
                     self.weights.raw_slice(),
                     &ranges,
                 )?;
+                self.weights.recycle_dirty_ranges(ranges);
             }
 
             self.weights_dirty = false;
@@ -396,6 +473,7 @@ impl<Key: slotmap::Key, Info: MorphInfo> MorphData<Key, Info> {
                     self.values.raw_slice(),
                     &ranges,
                 )?;
+                self.values.recycle_dirty_ranges(ranges);
             }
 
             self.values_dirty = false;
@@ -412,6 +490,17 @@ pub struct MorphData<Key: slotmap::Key, Info> {
     weights_dirty: bool,
     values_dirty: bool,
     infos: SlotMap<Key, Info>,
+    /// Target-VALUE sharing for per-instance morphs (prefab clones): an
+    /// instance inserted via [`Self::insert_instance`] owns its own WEIGHTS
+    /// slot (per-instance animation state) but reads the big target-delta
+    /// stream from another key's `values` slot. Maps `instance → the key
+    /// whose values slot it reads` (always a non-alias owner; chains are
+    /// collapsed at insert).
+    values_alias: slotmap::SecondaryMap<Key, Key>,
+    /// Owner-side alias count; on owner removal with live aliases the values
+    /// slot is PROMOTED to a surviving alias (see [`Self::remove`]) so the
+    /// slot's key always names a live morph entry.
+    values_alias_refs: slotmap::SecondaryMap<Key, usize>,
     pub(crate) gpu_buffer_weights: web_sys::GpuBuffer,
     pub(crate) gpu_buffer_values: web_sys::GpuBuffer,
     weights_uploader: crate::buffer::mapped_uploader::MappedUploader,

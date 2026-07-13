@@ -54,6 +54,14 @@ pub struct ShaderTemplateMaterialOpaqueBindGroups {
     /// materials that don't run first-party lighting drop it. The shadow
     /// bind group + structs are always emitted (ABI) regardless.
     pub needs_shadow_sampling: bool,
+    /// Emit the cascade-debug overlay (`debug_cascade_tint` +
+    /// `debug_picked_cascade`) in `shared_wgsl/shadow/bind_groups.wgsl`. Set
+    /// from `inc.apply_lighting` (the only caller — the overlay is a
+    /// shading-time colour op), NOT from `needs_shadow_sampling`: opaque
+    /// compiles with the sampler block dropped (prep reads the shadow buffer)
+    /// but must still carry the overlay, or `debug_cascade_colors` changes
+    /// zero pixels. The overlay only reads the always-bound shadow uniforms.
+    pub needs_cascade_debug: bool,
     /// Plan B: always `true` for the opaque pass (prep is unconditional);
     /// the shared transparent template sets it `false`. When true, the gated
     /// `prep_uv` / `prep_vcolor` / `prep_shadow_visibility` sampled
@@ -61,6 +69,9 @@ pub struct ShaderTemplateMaterialOpaqueBindGroups {
     /// group so the shared `texture_uv()` / `vertex_color()` / shadow
     /// helpers can `textureLoad` them (`cs_opaque` reads prep under any AA).
     pub prep_present: bool,
+    /// Depth convention (003) — read by the shared SSCS body in
+    /// `shared_wgsl/shadow/bind_groups.wgsl`.
+    pub reverse_z: bool,
 }
 
 /// Compute shader template for the opaque material pass.
@@ -125,6 +136,11 @@ pub struct ShaderTemplateMaterialOpaqueCompute {
     /// former (their body doesn't read it) and the minimal skybox-only shader
     /// for the latter. Never the full "uber" set.
     pub pbr_features: awsm_renderer_materials::pbr::PbrFeatures,
+    /// M2a: emit the per-base reflectance computation + the
+    /// `reflection_descriptor_tex` stores. Gated so an SSR-off kernel computes
+    /// and stores nothing. See
+    /// [`ShaderCacheKeyMaterialOpaque::write_ssr_descriptor`].
+    pub write_ssr_descriptor: bool,
     /// For dynamic shader ids: the auto-generated `struct
     /// MaterialData { ... }` declaration emitted above the author's
     /// WGSL fragment. Empty string for first-party ids.
@@ -247,6 +263,11 @@ pub struct ShaderTemplateMaterialOpaqueSkyboxPrimary {
     pub inc: crate::dynamic_materials::ShaderIncludeFlags,
     pub owns_skybox: bool,
     pub pbr_features: awsm_renderer_materials::pbr::PbrFeatures,
+    /// The skybox writer never writes the reflection descriptor itself, but
+    /// the shared `brdf_pbr.wgsl` include gates the SSR IBL-specular
+    /// suppression (`ssr-spread-gate`) on this field, so it must exist for
+    /// askama. Carried from the compute template (matches the cache key).
+    pub write_ssr_descriptor: bool,
     pub dynamic_struct_decl: String,
     pub dynamic_loader_decl: String,
     pub dynamic_wgsl_fragment: String,
@@ -311,6 +332,7 @@ impl From<ShaderTemplateMaterialOpaqueCompute> for ShaderTemplateMaterialOpaqueS
             inc: c.inc,
             owns_skybox: c.owns_skybox,
             pbr_features: c.pbr_features,
+            write_ssr_descriptor: c.write_ssr_descriptor,
             dynamic_struct_decl: c.dynamic_struct_decl,
             dynamic_loader_decl: c.dynamic_loader_decl,
             dynamic_wgsl_fragment: c.dynamic_wgsl_fragment,
@@ -421,9 +443,13 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
                 // Under MSAA+prep cs_edge=RECOMPUTE still inline-samples, so it
                 // stays. (See `needs_shadow_sampling` derivation above.)
                 needs_shadow_sampling,
+                // The cascade-debug overlay rides `apply_lighting` (its only
+                // caller), independent of the dropped sampler block.
+                needs_cascade_debug: inc.apply_lighting,
                 bucket_entries: bucket_entries.clone(),
                 pad_words_iter,
                 prep_present,
+                reverse_z: value.reverse_z,
             },
             compute: ShaderTemplateMaterialOpaqueCompute {
                 texture_pool_arrays_len,
@@ -469,6 +495,7 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
                 pbr_features: awsm_renderer_materials::pbr::PbrFeatures::from_bits(
                     value.pbr_features,
                 ),
+                write_ssr_descriptor: value.write_ssr_descriptor,
                 dynamic_struct_decl: value
                     .dynamic_shader
                     .as_ref()
@@ -700,6 +727,8 @@ mod empty_registry_tests {
 
     fn render_first_party_wgsl(shader_id: MaterialShaderId, msaa: Option<u32>) -> String {
         let key = ShaderCacheKeyMaterialOpaque {
+            write_ssr_descriptor: false,
+            reverse_z: false,
             texture_pool_arrays_len: 1,
             texture_pool_samplers_len: 1,
             msaa_sample_count: msaa,
@@ -920,6 +949,7 @@ return TransparentShadingOutput(vec4<f32>(color, alpha));
             texture_pool_samplers_len: 1,
             msaa_sample_count: None,
             mipmaps: true,
+            reverse_z: false,
             base: crate::dynamic_materials::ShadingBase::Custom,
             pbr_features: awsm_renderer_materials::pbr::PbrFeatures::default().bits(),
             dispatch_hash: 0,
@@ -978,6 +1008,7 @@ return TransparentShadingOutput(vec4<f32>(color, alpha));
             texture_pool_samplers_len: 1,
             msaa_sample_count: None,
             mipmaps: true,
+            reverse_z: false,
             base: crate::dynamic_materials::ShadingBase::Pbr,
             pbr_features: awsm_renderer_materials::pbr::PbrFeatures::default().bits(),
             dispatch_hash: 0,
@@ -1036,6 +1067,8 @@ mod size_regression {
             name: "noise".to_string(),
         });
         let key = ShaderCacheKeyMaterialOpaque {
+            write_ssr_descriptor: false,
+            reverse_z: false,
             texture_pool_arrays_len: 1,
             texture_pool_samplers_len: 1,
             msaa_sample_count: msaa,
@@ -1125,8 +1158,14 @@ mod size_regression {
     // sample-all-select body lives in the transparent fragment. A permanent,
     // intended ~0.3 KB addition so dynamic-material helpers compile in BOTH
     // contexts. Measured 88.4 KB empty / 127.0 KB all; ALL ceiling bumped.
-    const CEIL_EMPTY_MSAA4_MIPS: usize = 90_000;
-    const CEIL_ALL_MSAA4_MIPS: usize = 130_000;
+    // **Per-sample SSR descriptor resolve (MSAA fix):** shade_sample returns
+    // a struct carrying each sample's reflection descriptor and the edge arm
+    // accumulates it into the widened (8-word) accumulator slots — a
+    // permanent ~2 KB addition so final_blend can resolve a coverage-correct
+    // per-pixel descriptor (single-sample descriptors made SSR visibly undo
+    // MSAA along silhouettes). Measured 91.1 KB empty; both ceilings bumped.
+    const CEIL_EMPTY_MSAA4_MIPS: usize = 94_000;
+    const CEIL_ALL_MSAA4_MIPS: usize = 134_000;
 
     #[test]
     fn custom_shader_sizes_within_ceiling() {
@@ -1251,15 +1290,22 @@ mod brdf_gate_tests {
     #[template(path = "shared_wgsl/lighting/brdf.wgsl")]
     struct BrdfGateTest {
         pbr_features: PbrFeatures,
+        /// Referenced by `brdf_pbr.wgsl`'s SSR IBL-specular suppression gate
+        /// (`ssr-spread-gate`); rendered `false` here — these tests exercise
+        /// the PBR feature gating, not the SSR axis.
+        write_ssr_descriptor: bool,
     }
 
     /// Rendered brdf with `//` line comments removed (so marker tokens
     /// that appear in comments outside the gates don't pollute matches)
     /// and all whitespace stripped (spacing-robust token matching).
     fn render_nows(pbr_features: PbrFeatures) -> String {
-        let raw = BrdfGateTest { pbr_features }
-            .render()
-            .expect("brdf.wgsl renders");
+        let raw = BrdfGateTest {
+            pbr_features,
+            write_ssr_descriptor: false,
+        }
+        .render()
+        .expect("brdf.wgsl renders");
         raw.lines()
             .map(|l| match l.find("//") {
                 Some(i) => &l[..i],

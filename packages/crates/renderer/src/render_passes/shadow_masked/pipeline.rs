@@ -137,6 +137,7 @@ impl ShadowMaskedPipelines {
                         instancing,
                         cube_face,
                         double_sided,
+                        ctx.features.depth(),
                     )
                     .with_force_fragment_stage()
                 })

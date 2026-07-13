@@ -17,7 +17,7 @@ use awsm_renderer_scene::particle::{
 };
 use awsm_renderer_scene::{
     AssetId, EnvSlot, EnvironmentConfig, MaterialDef, MaterialShading, NodeId, NodeKind,
-    ToneMappingConfig, Trs, VariantId,
+    ReflectionProbe, ToneMappingConfig, Trs, VariantId,
 };
 
 use awsm_renderer_meshgen::recipe::{Modifier, ModifierStack};
@@ -27,6 +27,7 @@ use crate::mesh_def::{CapturedMesh, VertexOverrides};
 
 use crate::anim_ui::{AnimSel, AnimView, StepKind};
 use crate::node_spec::{InsertSpec, NodeSpec};
+use crate::shadows_patch::ShadowsPatch;
 
 /// A procedural texture generator the Content Browser can author.
 /// Maps to `ProceduralTextureDef` with sensible defaults at apply-time.
@@ -280,6 +281,24 @@ pub enum EditorCommand {
         texture: Option<Option<AssetId>>,
     },
 
+    /// REPLACE an `Instancer` node's entire instance-transform list in one step
+    /// — the bulk authoring path (one command for N instances; mirrors
+    /// `SetTrackKeys` for keyframes). Optionally replaces the per-instance
+    /// color list in the same step (`None` leaves the current colors
+    /// untouched). The node must be an `Instancer` (rejected loudly
+    /// otherwise). Re-materializes like `SetKind`. Inverse: restore the prior
+    /// kind (a `SetKind`), so undo restores the previous transform list
+    /// exactly.
+    SetInstancerTransforms {
+        node: NodeId,
+        /// One local transform per instance (relative to the node's transform).
+        transforms: Vec<Trs>,
+        /// Optional replacement per-instance color list (RGBA; shorter than
+        /// `transforms` repeats the last value). `None` = keep current.
+        #[serde(default)]
+        per_instance_colors: Option<Vec<[f32; 4]>>,
+    },
+
     /// Set a node's local transform (TRS). Inverse: restore the prior transform.
     /// Consecutive `SetTransform`s on the same node coalesce into one undo step
     /// (so a drag-scrub is a single undo).
@@ -297,12 +316,13 @@ pub enum EditorCommand {
     /// Set a node's prefab-root flag. Inverse: restore prior value.
     SetPrefab { id: NodeId, prefab: bool },
 
-    /// Duplicate a node (deep clone, fresh ids) as a following sibling. Inverse:
-    /// delete the clone.
     /// Deep-clone a node (fresh ids) as a following sibling. `new_id` (optional,
     /// caller-minted) forces the clone's **root** id so the MCP `duplicate_node`
     /// can echo it back (§6); `None` mints one. Descendants always get fresh ids.
-    /// Inverse: `Delete` of the new root.
+    /// Clip tracks targeting nodes INSIDE the duplicated subtree are extended
+    /// with retargeted duplicates driving the cloned nodes, so the clip
+    /// animates the original AND the clone. Inverse: `Delete` of the new root
+    /// (wrapped in a `Batch` with `DeleteTrack`s when tracks were retargeted).
     Duplicate {
         id: NodeId,
         #[serde(default)]
@@ -338,6 +358,19 @@ pub enum EditorCommand {
     /// save→reload (captured meshes / materials / clips) and what doesn't.
     /// Destructive (replaces the open project with the reloaded one); not undoable.
     ReloadProjectInMemory,
+
+    /// Debug **destructive self-test**: prove a project save→load is lossless
+    /// END TO END. Serializes the open project to its persisted form (the same
+    /// `project.toml` + side-file bytes a Save writes), clears **every** session
+    /// byte cache — including the captured-mesh cache that
+    /// `ReloadProjectInMemory` deliberately keeps warm (exactly where a
+    /// historical byte-loss bug hid) — then re-applies the serialized project
+    /// through the same path as a directory Load. A save-census (asset / byte /
+    /// clip / material counts) is taken before and after; the resulting report
+    /// (`before` / `after` / `equal` / `lossless`) is served by the
+    /// `VerifyRoundtripReport` query and surfaced via the activity/census path.
+    /// Replaces the open project with the reloaded one; NOT undoable.
+    VerifyRoundtrip,
 
     /// Insert a fresh node (from a ribbon Insert action) under `parent` (root
     /// when `None`). **Carries its `id`** (minted by the dispatcher, not in
@@ -520,14 +553,36 @@ pub enum EditorCommand {
         skybox: Option<EnvSlot>,
         specular: Option<EnvSlot>,
         irradiance: Option<EnvSlot>,
+        /// Box-projected reflection probe (parallax-corrected specular env).
+        /// `None` preserves the current probe; `Some` replaces the whole
+        /// probe block (including its enabled flag). `#[serde(default)]`
+        /// keeps older wire payloads (no probe key) deserializing.
+        #[serde(default)]
+        probe: Option<ReflectionProbe>,
     },
 
+    /// Patch the renderer-wide shadow config on `scene.shadows` (persisted into
+    /// `project.toml` + the player bundle; the `settings_sync` observer pushes
+    /// the whole block into the renderer live). Only the `Some` fields of the
+    /// patch change — see [`ShadowsPatch`] for per-field semantics and clamps.
+    /// `sscs_enabled` / `sscs_step_count` recompile the shadow-consuming
+    /// pipelines; `atlas_size` / `evsm_atlas_size` / `max_point_shadows` /
+    /// `point_shadow_resolution` recreate GPU textures + bind groups at the
+    /// next frame; everything else is a live uniform. Inverse: a full-replace
+    /// patch of the prior values. Supersedes `SetShadowsSscs` for new call
+    /// sites.
+    SetShadows { patch: ShadowsPatch },
+
     /// Patch the global SSCS (screen-space contact-shadow) settings on
-    /// `scene.shadows` (persisted; the `sscs_sync` bridge pushes them into the
-    /// renderer live). Every field is optional — only the `Some` ones change.
+    /// `scene.shadows` (persisted; the `settings_sync` observer pushes them into
+    /// the renderer live). Every field is optional — only the `Some` ones change.
     /// `enabled` + `step_count` recompile the shadow-consuming pipelines (they're
     /// compile-time template constants); the scalars are live uniforms. Inverse:
     /// restore the prior SSCS values.
+    ///
+    /// LEGACY: the SSCS-only subset of [`Self::SetShadows`]. Kept so an older
+    /// MCP binary (or a recorded undo history) still applies; new call sites
+    /// dispatch `SetShadows`.
     SetShadowsSscs {
         enabled: Option<bool>,
         step_count: Option<u32>,
@@ -548,6 +603,91 @@ pub enum EditorCommand {
         bloom: Option<bool>,
         dof: Option<bool>,
         exposure: Option<f32>,
+        bloom_threshold: Option<f32>,
+        bloom_knee: Option<f32>,
+        bloom_intensity: Option<f32>,
+        bloom_scatter: Option<f32>,
+        // The SSR fields are `#[serde(default)]` so a pre-SSR sender (e.g. an
+        // MCP binary built before this field set) still deserializes into the
+        // newer editor over the JSON `/editor` websocket — the SSR fields just
+        // default to `None` (leave unchanged). Keeps the protocol
+        // forward/backward compatible without a lockstep rebuild.
+        /// Screen-space reflections on/off. Records nothing when off.
+        #[serde(default)]
+        ssr_enabled: Option<bool>,
+        /// SSR reflection strength (live uniform).
+        #[serde(default)]
+        ssr_intensity: Option<f32>,
+        /// SSR max ray length, world units (live uniform).
+        #[serde(default)]
+        ssr_max_distance: Option<f32>,
+        /// SSR hit thickness, world units (live uniform).
+        #[serde(default)]
+        ssr_thickness: Option<f32>,
+        /// SSR linear-march step budget (live uniform).
+        #[serde(default)]
+        ssr_max_steps: Option<u32>,
+        /// SSR reflection-spread cutoff → IBL (live uniform).
+        #[serde(default)]
+        ssr_spread_cutoff: Option<f32>,
+        /// SSR screen-border fade width 0..1 (live uniform).
+        #[serde(default)]
+        ssr_edge_fade: Option<f32>,
+        /// SSR temporal reprojection on/off (STRUCTURAL — recompiles).
+        #[serde(default)]
+        ssr_temporal: Option<bool>,
+        /// SSR resolution scale: 0.5 half-res, 1.0 full-res (STRUCTURAL — recompiles).
+        #[serde(default)]
+        ssr_resolution_scale: Option<f32>,
+        /// SSR temporal history blend weight 0..1 — the fraction of the previous
+        /// frame's accumulated reflection kept each frame (higher = smoother but
+        /// more ghosting). Live uniform; only meaningful when `ssr_temporal` is on.
+        #[serde(default)]
+        ssr_temporal_weight: Option<f32>,
+        #[serde(default)]
+        ssr_debug: Option<u32>,
+        /// Software-BVH reflections toggle (structural — rebuilds the SSR
+        /// pass). Persisted like `ssr_temporal`.
+        #[serde(default)]
+        ssr_bvh_reflections: Option<bool>,
+    },
+
+    /// Set editor viewport view options — partial update, every field
+    /// `Option` (only the ones you pass change). **Transient** — view state
+    /// (same class as camera/selection): NOT persisted to the project, not
+    /// recorded in the undo log. The read half is `EditorQuery::ViewOptions`.
+    /// Agents: turn `grid`/`gizmos`/`light_gizmos`/`skeleton_viz` OFF for
+    /// clean feature-verification screenshots, restore after.
+    SetViewOptions {
+        /// Ground grid visibility.
+        #[serde(default)]
+        grid: Option<bool>,
+        /// Transform gizmo visibility.
+        #[serde(default)]
+        gizmos: Option<bool>,
+        /// Pickable light-icon HUD markers.
+        #[serde(default)]
+        light_gizmos: Option<bool>,
+        /// Skeleton bone-line overlay on skinned rigs.
+        #[serde(default)]
+        skeleton_viz: Option<bool>,
+        /// Auto-switch the workspace to the mode a remote command edits
+        /// (default off).
+        #[serde(default)]
+        follow_agent: Option<bool>,
+        /// The agent activity narration overlay + panel spotlight (default off).
+        #[serde(default)]
+        activity_overlay: Option<bool>,
+        /// MCP info/error toasts (default off).
+        #[serde(default)]
+        mcp_notifications: Option<bool>,
+        /// Viewport MSAA (4x). STRUCTURAL — flipping recompiles AA-variant
+        /// pipelines; wait_render_settled after.
+        #[serde(default)]
+        msaa: Option<bool>,
+        /// SMAA post-process AA (independent of MSAA).
+        #[serde(default)]
+        smaa: Option<bool>,
     },
 
     /// Snap the viewport camera to a world axis (the nav-cube directions).
@@ -574,6 +714,19 @@ pub enum EditorCommand {
         perspective: bool,
         #[serde(default)]
         fov_y: Option<f32>,
+    },
+    /// Set the viewport camera's near/far clip planes. `manual = Some(true)`
+    /// pins the planes to `near`/`far`; `manual = Some(false)` restores AUTO
+    /// (planes re-derived from the orbit distance every move). `near`/`far`
+    /// (metres) update the pinned values; any field left `None` is unchanged.
+    /// **Transient** (view state, not undo-logged).
+    SetCameraClip {
+        #[serde(default)]
+        manual: Option<bool>,
+        #[serde(default)]
+        near: Option<f64>,
+        #[serde(default)]
+        far: Option<f64>,
     },
     /// Frame a node in the viewport — fit its world-space bounds with `padding`
     /// (0 = tight, 0.2 = 20% margin). **Transient** (view state).
@@ -1279,6 +1432,7 @@ impl EditorCommand {
                 | EditorCommand::ResetCamera
                 | EditorCommand::SetCameraOrbit { .. }
                 | EditorCommand::SetCameraProjection { .. }
+                | EditorCommand::SetCameraClip { .. }
                 | EditorCommand::FrameNode { .. }
                 | EditorCommand::ResetPose { .. }
                 | EditorCommand::SetFrameTime { .. }
@@ -1403,11 +1557,13 @@ impl EditorCommand {
             EditorCommand::NewProject => "New project",
             EditorCommand::LoadPlayerBundle => "Load player bundle",
             EditorCommand::ReloadProjectInMemory => "Reload project (round-trip)",
+            EditorCommand::VerifyRoundtrip => "Verify save/load round-trip",
             EditorCommand::Insert { .. } | EditorCommand::InsertTree { .. } => "Insert node",
             EditorCommand::Delete { .. } => "Delete node",
             EditorCommand::SetKind { .. } => "Edit properties",
             EditorCommand::PatchKind { .. } => "Patch properties",
             EditorCommand::SetParticleEmitter { .. } => "Configure emitter",
+            EditorCommand::SetInstancerTransforms { .. } => "Set instancer transforms",
             EditorCommand::SetTransform { .. } => "Transform",
             EditorCommand::ResetToBindPose { .. } => "Reset to bind pose",
             EditorCommand::Rename { .. } => "Rename",
@@ -1480,12 +1636,15 @@ impl EditorCommand {
             EditorCommand::SetMaterialBuffer { .. } => "Bind buffer",
             EditorCommand::SetEnvironment { .. } => "Set environment",
             EditorCommand::PatchEnvironment { .. } => "Set environment",
+            EditorCommand::SetShadows { .. } => "Set shadows",
             EditorCommand::SetShadowsSscs { .. } => "Set SSCS",
             EditorCommand::SetPostProcess { .. } => "Set post-processing",
+            EditorCommand::SetViewOptions { .. } => "Set view options",
             EditorCommand::SnapCameraToAxis { .. } => "Snap camera",
             EditorCommand::ResetCamera => "Reset view",
             EditorCommand::SetCameraOrbit { .. } => "Orbit camera",
             EditorCommand::SetCameraProjection { .. } => "Set projection",
+            EditorCommand::SetCameraClip { .. } => "Set clip planes",
             EditorCommand::FrameNode { .. } => "Frame node",
             EditorCommand::ResetPose { .. } => "Reset pose",
             EditorCommand::SetFrameTime { .. } => "Pin frame time",
@@ -1538,6 +1697,61 @@ impl EditorCommand {
             EditorCommand::TrimStrip { .. } => "Trim strip",
             EditorCommand::SetStripRepeat { .. } => "Set strip repeat",
         }
+    }
+}
+
+#[cfg(test)]
+mod instancer_command_tests {
+    use super::*;
+
+    /// The documented wire shape parses: tag `set_instancer_transforms`,
+    /// `transforms` as full TRS tables, optional `per_instance_colors`.
+    #[test]
+    fn set_instancer_transforms_wire_shape() {
+        let cmd: EditorCommand = serde_json::from_str(
+            r#"{"cmd":"set_instancer_transforms",
+                "node":"7a1c2e40-0000-4000-8000-00000000ca4d",
+                "transforms":[
+                  {"translation":[1.0,0.0,2.0],"rotation":[0.0,0.0,0.0,1.0],"scale":[1.0,1.0,1.0]},
+                  {"translation":[3.0,0.0,4.0],"rotation":[0.0,0.0,0.0,1.0],"scale":[2.0,2.0,2.0]}
+                ],
+                "per_instance_colors":[[1.0,0.0,0.0,1.0]]}"#,
+        )
+        .unwrap();
+        let EditorCommand::SetInstancerTransforms {
+            transforms,
+            per_instance_colors,
+            ..
+        } = cmd
+        else {
+            panic!("wrong variant");
+        };
+        assert_eq!(transforms.len(), 2);
+        assert_eq!(transforms[1].scale, [2.0, 2.0, 2.0]);
+        assert_eq!(per_instance_colors, Some(vec![[1.0, 0.0, 0.0, 1.0]]));
+    }
+
+    /// `per_instance_colors` is optional — omitting it deserializes to `None`
+    /// (keep current colors), and the command round-trips through JSON.
+    #[test]
+    fn set_instancer_transforms_colors_optional_and_round_trips() {
+        let cmd: EditorCommand = serde_json::from_str(
+            r#"{"cmd":"set_instancer_transforms",
+                "node":"7a1c2e40-0000-4000-8000-00000000ca4d",
+                "transforms":[]}"#,
+        )
+        .unwrap();
+        let EditorCommand::SetInstancerTransforms {
+            per_instance_colors,
+            ..
+        } = &cmd
+        else {
+            panic!("wrong variant");
+        };
+        assert!(per_instance_colors.is_none());
+        let json = serde_json::to_string(&cmd).unwrap();
+        let back: EditorCommand = serde_json::from_str(&json).unwrap();
+        assert_eq!(format!("{cmd:?}"), format!("{back:?}"));
     }
 }
 

@@ -150,12 +150,17 @@ pub struct ProjectSnapshot {
     pub units: String,
 }
 
-/// Read-only view of the scene environment's three slots.
+/// Read-only view of the scene environment's three slots + reflection probe.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct EnvironmentSnapshot {
     pub skybox: EnvSlotSnapshot,
     pub specular: EnvSlotSnapshot,
     pub irradiance: EnvSlotSnapshot,
+    /// Box-projected reflection probe (serialized `ReflectionProbe` — was
+    /// WRITE-ONLY over MCP before this field: a probe change couldn't be
+    /// verified or discovered by an agent).
+    #[serde(default)]
+    pub probe: crate::ReflectionProbe,
 }
 
 /// Read-only view of one environment slot. `kind` is `"builtin"` (the default
@@ -315,6 +320,22 @@ pub enum EditorQuery {
     /// slopes mean healthy; a steady climb on an idle scene is a leak. A read —
     /// no mutation.
     MemoryStats,
+
+    /// The scene's global post-process config — tonemapping / bloom / dof /
+    /// exposure / the bloom knobs / the full SSR block — as its serialized
+    /// `PostProcessConfig` JSON. The read half of `SetPostProcess`.
+    PostProcess,
+
+    /// The renderer-wide shadow config — the SSCS block, atlas sizes, EVSM
+    /// tuning, point-shadow pool, debug cascade tint — as its serialized
+    /// `ShadowsConfig` JSON. The read half of `SetShadows`.
+    Shadows,
+
+    /// The editor viewport view options — grid / gizmos / light_gizmos /
+    /// skeleton_viz / follow_agent / activity_overlay / mcp_notifications /
+    /// msaa / smaa —
+    /// as a flat JSON object of booleans. The read half of `SetViewOptions`.
+    ViewOptions,
     /// Save-completeness census (Phase 0.2 roundtrip oracle): how many mesh /
     /// raster-texture assets exist vs how many lack their persistable bytes in the
     /// session cache (so a save would drop them). Returned as a JSON `Text` payload
@@ -322,6 +343,12 @@ pub enum EditorQuery {
     /// caches" probe — `*_missing_cache`/`*_unhashed` of 0 means a lossless save.
     /// A read — no mutation.
     SaveCensus,
+    /// The report from the LAST `VerifyRoundtrip` self-test run this session,
+    /// as a JSON `Text` payload: `{ before, after, equal, after_complete,
+    /// lossless }` where `before`/`after` are the full save-census taken
+    /// pre-serialize and post-reload. `null` when the self-test has not run.
+    /// A read — no mutation (the destructive part is the command itself).
+    VerifyRoundtripReport,
     /// Renderer-side animation runtime state (clip/channel lowering diagnostics):
     /// how many clip groups + RESOLVED channels actually lowered into the
     /// renderer, the rest-cache size, and the mixer layer count — plus the

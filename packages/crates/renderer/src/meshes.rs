@@ -57,6 +57,78 @@ impl AwsmRenderer {
         Ok(new_mesh_key)
     }
 
+    /// Register a per-instance skin cloned from `template_skin_key` bound to a
+    /// fresh joint set (prefab instancing). Thin wrapper over
+    /// [`Meshes::clone_skin_for_joints`] returning the renderer-level error.
+    pub fn clone_skin_for_joints(
+        &mut self,
+        template_skin_key: SkinKey,
+        instance_joints: Vec<TransformKey>,
+    ) -> crate::error::Result<SkinKey> {
+        Ok(self
+            .meshes
+            .clone_skin_for_joints(template_skin_key, instance_joints)?)
+    }
+
+    /// Duplicate a skinned mesh with an INDEPENDENT per-instance skin (prefab
+    /// instancing). Skinned counterpart of [`Self::duplicate_mesh_with_transform`]
+    /// — the clone SHARES the source's geometry resource (nothing re-uploads);
+    /// see [`Meshes::duplicate_skinned_with_new_skin`] for the per-instance
+    /// skin/morph override model.
+    pub fn duplicate_skinned_mesh_with_skin(
+        &mut self,
+        mesh_key: MeshKey,
+        new_transform_key: TransformKey,
+        new_skin_key: SkinKey,
+    ) -> crate::error::Result<MeshKey> {
+        let new_mesh_key = self.meshes.duplicate_skinned_with_new_skin(
+            mesh_key,
+            new_transform_key,
+            new_skin_key,
+            &self.materials,
+            &self.transforms,
+        )?;
+
+        self.render_passes
+            .material_transparent
+            .pipelines
+            .clone_render_pipeline_key(mesh_key, new_mesh_key);
+
+        self.sync_spatial_for_mesh(new_mesh_key);
+
+        Ok(new_mesh_key)
+    }
+
+    /// Per-instance skin-weight edit. If `skin_key` is a weight-SHARING
+    /// instance (a prefab/duplicate clone), copy-on-write it onto its own
+    /// stream first — so the edit diverges only this instance, not every
+    /// sharer — then apply `f` in place (layout per
+    /// [`skins::Skins::read_joint_index_weights`]). When the CoW moves the
+    /// skin's buffer offset, the geometry meta of every mesh reading this
+    /// skin is re-patched so the GPU keeps pointing at the right stream.
+    pub fn update_skin_weights(
+        &mut self,
+        skin_key: skins::SkinKey,
+        f: impl FnOnce(&mut [u8]),
+    ) -> crate::error::Result<()> {
+        let moved = self.meshes.skins.make_weights_owned(skin_key)?;
+        self.meshes
+            .skins
+            .update_joint_index_weights_with(skin_key, f);
+        if moved {
+            let offset = self.meshes.skins.joint_index_weights_offset(skin_key)? as u32;
+            let affected: Vec<MeshKey> = self
+                .meshes
+                .keys()
+                .filter(|mk| self.meshes.mesh_skin_key(*mk).flatten() == Some(skin_key))
+                .collect();
+            for mk in affected {
+                self.meshes.meta.set_skin_weights_offset(mk, offset);
+            }
+        }
+        Ok(())
+    }
+
     /// Clones a mesh and its current transform under the same parent.
     pub fn clone_mesh(&mut self, mesh_key: MeshKey) -> crate::error::Result<MeshKey> {
         let transform_key = self.meshes.get(mesh_key)?.transform_key;
@@ -104,6 +176,7 @@ impl AwsmRenderer {
     pub fn set_mesh_hidden(&mut self, mesh_key: MeshKey, hidden: bool) -> crate::error::Result<()> {
         let mesh = self.meshes.get_mut(mesh_key)?;
         mesh.hidden = hidden;
+        self.meshes.bvh_tlas_revision += 1;
         self.sync_spatial_for_mesh(mesh_key);
         Ok(())
     }
@@ -114,6 +187,7 @@ impl AwsmRenderer {
     pub fn set_mesh_hud(&mut self, mesh_key: MeshKey, hud: bool) -> crate::error::Result<()> {
         let mesh = self.meshes.get_mut(mesh_key)?;
         mesh.hud = hud;
+        self.meshes.bvh_tlas_revision += 1;
         if hud {
             // T2.6: first HUD usage flips the sticky flag so the next
             // `RenderTextures::views` allocates the HUD depth
@@ -389,6 +463,8 @@ impl AwsmRenderer {
                 &self.anti_aliasing,
                 &self.textures,
                 &self.render_textures.formats,
+                self.features.depth().compare(),
+                self.features.reverse_z,
                 writes_depth,
                 mat_base,
                 mat_pbr_features,
@@ -476,13 +552,22 @@ impl AwsmRenderer {
             .map(|off| (off / crate::instances::InstanceAttr::BYTE_SIZE) as u32)
             .unwrap_or(u32::MAX);
 
-        let mesh_keys: Vec<MeshKey> = self
-            .meshes
-            .keys_by_transform_key(transform_key)
-            .cloned()
-            .unwrap_or_default();
+        // Snapshot into the reused scratch (this runs every frame on the
+        // particle path) — decouples the `transform_to_meshes` borrow from
+        // the per-mesh meta refresh without a per-frame `Vec` clone. An
+        // error `?` below drops the scratch instead of restoring it —
+        // harmless, it just re-allocates next call.
+        let mut mesh_keys = std::mem::take(&mut self.meshes.instance_attr_keys_scratch);
+        mesh_keys.clear();
+        mesh_keys.extend(
+            self.meshes
+                .keys_by_transform_key(transform_key)
+                .into_iter()
+                .flatten()
+                .copied(),
+        );
 
-        for mesh_key in mesh_keys {
+        for mesh_key in mesh_keys.iter().copied() {
             if let Ok(mesh) = self.meshes.get_mut(mesh_key) {
                 mesh.instance_attr_base = base;
             }
@@ -492,6 +577,7 @@ impl AwsmRenderer {
                 &self.transforms,
             )?;
         }
+        self.meshes.instance_attr_keys_scratch = mesh_keys;
 
         Ok(())
     }
@@ -622,6 +708,17 @@ pub struct Meshes {
     mesh_geometry_pool_uploader: crate::buffer::mapped_uploader::MappedUploader,
     visibility_geometry_index_uploader: crate::buffer::mapped_uploader::MappedUploader,
     transparency_geometry_data_uploader: crate::buffer::mapped_uploader::MappedUploader,
+    /// Software-BVH BLAS store for off-screen reflections (architecture in
+    /// the bvh.rs module docs). Built at commit (see `resolve_one`), dropped in
+    /// `remove` alongside the shared resource; GPU upload happens on the SSR
+    /// path only while `ssr.bvh_reflections` is enabled.
+    pub bvh: crate::bvh::BvhStore,
+    /// Monotonic revision for everything the software-BVH TLAS depends on:
+    /// mesh add/remove/rewire, hidden/HUD flips, transform updates, and
+    /// BLAS store changes. `render.rs` rebuilds + re-uploads the TLAS only
+    /// when this moves — a static scene costs ZERO TLAS work per frame
+    /// (house standard: no idle rebuilds/uploads).
+    pub bvh_tlas_revision: u64,
     // buffer infos
     pub buffer_infos: MeshBufferInfos,
     // meta
@@ -660,6 +757,23 @@ pub struct Meshes {
     /// remember to keep it in sync; reuse-and-clear gets us the bulk
     /// of the win with none of the maintenance burden.
     skin_consumers_scratch: HashMap<SkinKey, Vec<MeshKey>>,
+    /// Recycled backing storage for `update_world`'s returned
+    /// `touched` mesh list — handed out each call and returned via
+    /// [`Self::recycle_touched`], so the per-frame caller reuses its
+    /// capacity ([[avoid-per-frame-allocations]]).
+    touched_spare: Vec<MeshKey>,
+    /// Reused per-frame set of skins the skin-skip gate decided to
+    /// skip this frame (`update_world`; cleared, capacity kept).
+    skip_skins_scratch: std::collections::HashSet<SkinKey>,
+    /// Reused per-frame snapshot of the live skin keys (`update_world`
+    /// collects it to decouple the `skins` borrow from the per-skin
+    /// grace-counter writes; cleared, capacity kept).
+    skin_keys_scratch: Vec<SkinKey>,
+    /// Reused snapshot of a transform's mesh keys for the per-frame
+    /// `set_mesh_instance_attrs` path (decouples the
+    /// `transform_to_meshes` borrow from the per-mesh meta refresh;
+    /// cleared, capacity kept).
+    instance_attr_keys_scratch: Vec<MeshKey>,
     /// T2.6 sticky flag — set to `true` the first time any mesh
     /// transitions to the HUD render group, and never cleared. The
     /// HUD depth texture is allocated only when this flag is true,
@@ -704,6 +818,8 @@ impl Meshes {
         Ok(Self {
             list: DenseSlotMap::with_key(),
             resources: DenseSlotMap::with_key(),
+            bvh: crate::bvh::BvhStore::new(gpu)?,
+            bvh_tlas_revision: 1,
             geometries: DenseSlotMap::with_key(),
             mesh_to_geometry: SecondaryMap::new(),
             geometry_to_meshes: SecondaryMap::new(),
@@ -771,6 +887,10 @@ impl Meshes {
             last_effective_material: SecondaryMap::new(),
             skin_zero_coverage_grace: SecondaryMap::new(),
             skin_consumers_scratch: HashMap::new(),
+            touched_spare: Vec::new(),
+            skip_skins_scratch: std::collections::HashSet::new(),
+            skin_keys_scratch: Vec::new(),
+            instance_attr_keys_scratch: Vec::new(),
             has_seen_hud: false,
             hud_revision: 0,
         })
@@ -1104,6 +1224,21 @@ impl Meshes {
                 resource.refcount = bound.len();
             }
 
+            // Software-BVH BLAS for reflections: STATIC meshes only — a
+            // skinned mesh's rest pose would reflect frozen limbs, and a
+            // geometry-morphed mesh would reflect its frozen base pose (the
+            // same rationale). Built here because this is the last moment
+            // the CPU-side positions/indices exist. Capped inside `add` —
+            // over-cap meshes simply stay on the SSR/probe path.
+            if source.skin_key.is_none()
+                && source.geometry_morph_key.is_none()
+                && !source.indices.is_empty()
+            {
+                self.bvh
+                    .add(resource_key, &source.positions, &source.indices);
+                self.bvh_tlas_revision += 1;
+            }
+
             // Wire every bound mesh to the shared resource (flags + meta).
             for &mk in &bound {
                 self.wire_instance(mk, resource_key, materials, transforms)?;
@@ -1348,6 +1483,8 @@ impl Meshes {
         materials: &Materials,
         transforms: &Transforms,
     ) -> Result<()> {
+        // A mesh (re)bound to a resource/material is a TLAS instance change.
+        self.bvh_tlas_revision += 1;
         let (
             resource_aabb,
             buffer_info_key,
@@ -1418,9 +1555,13 @@ impl Meshes {
             visibility_geometry_data_offset,
             custom_attribute_index_offset,
             custom_attribute_data_offset,
-            geometry_morph_key,
+            // Per-instance overrides (skinned/morphed prefab clones sharing the
+            // resource) win over the shared resource's keys — the meta slot is
+            // per-mesh, so each clone's shader reads its OWN skin palette /
+            // morph weights over the shared geometry.
+            mesh.instance_geometry_morph_key.or(geometry_morph_key),
             material_morph_key,
-            skin_key,
+            mesh.instance_skin_key.or(skin_key),
             materials,
             transforms,
             &self.morphs,
@@ -1443,7 +1584,34 @@ impl Meshes {
         transforms: &Transforms,
     ) -> Result<MeshKey> {
         let mesh = self.get(mesh_key)?.clone();
+        // A source that is itself a per-instance clone carries OWNED instance
+        // keys (skin / morph weights) — the duplicate must mint its OWN
+        // (over the same joints / targets), never alias them: both meshes
+        // free their instance keys on removal, so sharing would double-free
+        // and couple their animation state.
+        let instance_skin_key = match mesh.instance_skin_key {
+            Some(sk) => {
+                let joints = self.skins.read_joint_transforms(sk)?;
+                Some(self.skins.insert_instance(sk, joints)?)
+            }
+            None => None,
+        };
         let resource_key = self.resource_key(mesh_key)?;
+        // Same fallback as `duplicate_skinned_with_new_skin`: when the source
+        // is the ORIGINAL (morph weights live on the resource, no instance
+        // key), the duplicate still mints its own weights slot — otherwise the
+        // two meshes would animate through the one resource-level slot.
+        let instance_geometry_morph_key = {
+            let source_morph = mesh.instance_geometry_morph_key.or_else(|| {
+                self.resources
+                    .get(resource_key)
+                    .and_then(|r| r.geometry_morph_key)
+            });
+            match source_morph {
+                Some(mk) => Some(self.morphs.geometry.insert_instance(mk)?),
+                None => None,
+            }
+        };
         let resource_aabb = {
             let resource = self
                 .resources
@@ -1472,8 +1640,69 @@ impl Meshes {
         let mut new_mesh = mesh.clone();
         new_mesh.transform_key = new_transform_key;
         new_mesh.world_aabb = world_aabb;
+        new_mesh.instance_skin_key = instance_skin_key;
+        new_mesh.instance_geometry_morph_key = instance_geometry_morph_key;
 
         self.insert_instance(new_mesh, resource_key, materials, transforms)
+    }
+
+    /// Duplicate a SKINNED mesh into `new_transform_key` with an INDEPENDENT
+    /// per-instance skin. Unlike [`Self::duplicate_with_transform`] — which
+    /// shares the source `MeshResource`, and thus its single `skin_key`, across
+    /// every duplicate, binding them all to the ONE template skeleton (they
+    /// render collapsed on top of each other) — this stores `new_skin_key` as a
+    /// PER-MESH override ([`Mesh::instance_skin_key`]) so each prefab instance
+    /// deforms through its own cloned skeleton while the geometry/buffer-info
+    /// stay the source's SHARED resource (refcounted; NOTHING re-uploads —
+    /// axis 4's "clone must never clone data"). Per-instance GPU data is the
+    /// skin's joint-matrix palette plus (when the source is morphed) a fresh
+    /// morph WEIGHTS slot — morph target values and the per-vertex
+    /// joint/weight stream are shared with the source.
+    pub(crate) fn duplicate_skinned_with_new_skin(
+        &mut self,
+        mesh_key: MeshKey,
+        new_transform_key: TransformKey,
+        new_skin_key: SkinKey,
+        materials: &Materials,
+        transforms: &Transforms,
+    ) -> Result<MeshKey> {
+        let mesh = self.get(mesh_key)?.clone();
+        let source_resource_key = self.resource_key(mesh_key)?;
+        // Per-instance morph WEIGHTS over the source's (effective) morph
+        // targets, so a clone's morph animation is independent — minted before
+        // the refcount bump so an allocation failure leaves nothing to unwind.
+        let instance_geometry_morph_key = {
+            let source_morph = mesh.instance_geometry_morph_key.or_else(|| {
+                self.resources
+                    .get(source_resource_key)
+                    .and_then(|r| r.geometry_morph_key)
+            });
+            match source_morph {
+                Some(mk) => Some(self.morphs.geometry.insert_instance(mk)?),
+                None => None,
+            }
+        };
+
+        let aabb = {
+            let resource = self
+                .resources
+                .get_mut(source_resource_key)
+                .ok_or(AwsmMeshError::ResourceNotFound(source_resource_key))?;
+            resource.refcount += 1;
+            resource.aabb.clone()
+        };
+
+        let world_aabb = match (aabb.as_ref(), transforms.get_world(new_transform_key).ok()) {
+            (Some(a), Some(w)) => Some(a.transformed(w)),
+            (Some(a), None) => Some(a.clone()),
+            (None, _) => None,
+        };
+        let mut new_mesh = mesh;
+        new_mesh.transform_key = new_transform_key;
+        new_mesh.world_aabb = world_aabb;
+        new_mesh.instance_skin_key = Some(new_skin_key);
+        new_mesh.instance_geometry_morph_key = instance_geometry_morph_key;
+        self.insert_instance(new_mesh, source_resource_key, materials, transforms)
     }
 
     /// Duplicates all meshes under a transform into a new transform key.
@@ -1648,7 +1877,7 @@ impl Meshes {
     /// uses the list to mirror the new AABBs into the spatial index.
     pub fn update_world(
         &mut self,
-        dirty_transforms: HashMap<TransformKey, Mat4>,
+        dirty_transforms: &HashMap<TransformKey, Mat4>,
         dirty_instances: &std::collections::HashSet<TransformKey>,
         transforms: &Transforms,
         instances: &Instances,
@@ -1669,11 +1898,24 @@ impl Meshes {
         // have a camera matrix yet.
         frustum: Option<&crate::frustum::Frustum>,
     ) -> Vec<MeshKey> {
-        let mut update_keys = std::collections::HashSet::new();
-        update_keys.extend(dirty_transforms.keys().copied());
-        update_keys.extend(dirty_instances.iter().copied());
+        // Dedup'd union of the two dirty sets, without materialising a
+        // per-frame `HashSet`: walk the map's keys, then the instance keys
+        // that aren't already in the map ([[avoid-per-frame-allocations]]).
+        let update_keys = dirty_transforms.keys().copied().chain(
+            dirty_instances
+                .iter()
+                .copied()
+                .filter(|key| !dirty_transforms.contains_key(key)),
+        );
 
-        let mut touched = Vec::new();
+        let mut touched = std::mem::take(&mut self.touched_spare);
+        touched.clear();
+
+        // Any moved transform can move a TLAS instance — one bump covers
+        // the frame (the TLAS rebuild reads every instance anyway).
+        if !dirty_transforms.is_empty() || !dirty_instances.is_empty() {
+            self.bvh_tlas_revision += 1;
+        }
 
         // This doesn't mark anything as dirty, it just updates the world AABB for frustum culling and depth sorting
         for transform_key in update_keys {
@@ -1762,7 +2004,10 @@ impl Meshes {
         // doesn't suffer from rest-pose persistence — it just picks
         // a cheaper shader on the next frame.
         const SKIN_COVERAGE_GRACE_FRAMES: u32 = 2;
-        let mut skip_skins: std::collections::HashSet<SkinKey> = std::collections::HashSet::new();
+        // Reused per-frame set (cleared, capacity kept) — restored to
+        // `self.skip_skins_scratch` at the end of this call.
+        let mut skip_skins = std::mem::take(&mut self.skip_skins_scratch);
+        skip_skins.clear();
         // Build the inverted index skin_key → Vec<MeshKey> once so the
         // per-skin BVH / coverage walk is O(meshes) total instead of
         // O(skins × meshes). Empty entries are fine (a skin with no
@@ -1788,14 +2033,16 @@ impl Meshes {
             for bucket in skin_consumers_scratch.values_mut() {
                 bucket.clear();
             }
-            for (mesh_key, _mesh) in list.iter() {
+            for (mesh_key, mesh) in list.iter() {
                 let Some(resource_key) = mesh_to_resource.get(mesh_key).copied() else {
                     continue;
                 };
                 let Some(resource) = resources.get(resource_key) else {
                     continue;
                 };
-                if let Some(skin_key) = resource.skin_key {
+                // Per-instance skin override (prefab clones sharing the
+                // resource) wins — each clone is a consumer of ITS skin.
+                if let Some(skin_key) = mesh.instance_skin_key.or(resource.skin_key) {
                     skin_consumers_scratch
                         .entry(skin_key)
                         .or_default()
@@ -1806,8 +2053,13 @@ impl Meshes {
         let skin_consumers: &HashMap<SkinKey, Vec<MeshKey>> = &self.skin_consumers_scratch;
 
         if frame_index > 0 {
-            let skin_keys: Vec<SkinKey> = self.skins.iter_skin_keys().collect();
-            for skin_key in skin_keys {
+            // Reused per-frame snapshot (cleared, capacity kept) — collected
+            // to decouple the `skins` borrow from the grace-counter writes
+            // below; restored to `self.skin_keys_scratch` at the end.
+            let mut skin_keys = std::mem::take(&mut self.skin_keys_scratch);
+            skin_keys.clear();
+            skin_keys.extend(self.skins.iter_skin_keys());
+            for skin_key in skin_keys.iter().copied() {
                 // Layer 1: cadence gate.
                 if !self.skin_should_update_this_frame(skin_key, frame_index) {
                     skip_skins.insert(skin_key);
@@ -1868,6 +2120,7 @@ impl Meshes {
                     skip_skins.insert(skin_key);
                 }
             }
+            self.skin_keys_scratch = skin_keys;
         }
 
         // This does update the GPU as dirty, bit skins manage their own GPU dirty state
@@ -1875,8 +2128,17 @@ impl Meshes {
             .update_transforms(dirty_transforms, transforms, |skin_key| {
                 !skip_skins.contains(&skin_key)
             });
+        self.skip_skins_scratch = skip_skins;
 
         touched
+    }
+
+    /// Return the `touched` list handed out by [`Self::update_world`] so
+    /// its capacity is reused next frame. Dropping it instead is harmless —
+    /// the next call just re-allocates.
+    pub fn recycle_touched(&mut self, mut touched: Vec<MeshKey>) {
+        touched.clear();
+        self.touched_spare = touched;
     }
 
     fn update_mesh_transform(
@@ -1980,9 +2242,10 @@ impl Meshes {
             visibility_geometry_data_offset,
             custom_attribute_index_offset,
             custom_attribute_data_offset,
-            geometry_morph_key,
+            // Same per-instance precedence as `wire_instance`.
+            mesh.instance_geometry_morph_key.or(geometry_morph_key),
             material_morph_key,
-            skin_key,
+            mesh.instance_skin_key.or(skin_key),
             materials,
             transforms,
             &self.morphs,
@@ -2003,10 +2266,8 @@ impl Meshes {
     /// duplicate (or a hidden original) loses its skinning. Callers use this to
     /// leave skinned meshes rendering in place.
     pub fn mesh_is_skinned(&self, mesh_key: MeshKey) -> bool {
-        self.resource_key(mesh_key)
-            .ok()
-            .and_then(|rk| self.resources.get(rk))
-            .map(|r| r.skin_key.is_some())
+        self.mesh_skin_key(mesh_key)
+            .map(|sk| sk.is_some())
             .unwrap_or(false)
     }
 
@@ -2051,23 +2312,55 @@ impl Meshes {
             .ok_or(AwsmMeshError::ResourceNotFound(resource_key))
     }
 
-    /// Convenience accessor for the optional `SkinKey` on a mesh resource.
-    /// Returns `None` if the mesh has no resource or no skin. Used by the
-    /// spatial-index auto-flagger to route skinned meshes through the
-    /// dynamic sidecar.
+    /// Convenience accessor for the EFFECTIVE `SkinKey` of a mesh — the
+    /// per-instance override (a skinned prefab clone sharing its source's
+    /// resource) when set, otherwise the shared resource's skin. Returns
+    /// `None` if the mesh has no resource. Used by the spatial-index
+    /// auto-flagger to route skinned meshes through the dynamic sidecar.
     pub fn mesh_skin_key(&self, mesh_key: MeshKey) -> Option<Option<SkinKey>> {
-        self.resource(mesh_key).ok().map(|r| r.skin_key)
-    }
-
-    /// Convenience accessor for the optional `GeometryMorphKey` on a mesh
-    /// resource. Returns `None` if the mesh has no resource or no geometry
-    /// morph targets. Used by the editor's animation bridge to resolve a
-    /// morph-weight animation track (which names a node) to the renderer
-    /// morph-weight set it drives.
-    pub fn geometry_morph_key_for_mesh(&self, mesh_key: MeshKey) -> Option<GeometryMorphKey> {
+        let mesh = self.list.get(mesh_key)?;
         self.resource(mesh_key)
             .ok()
-            .and_then(|r| r.geometry_morph_key)
+            .map(|r| mesh.instance_skin_key.or(r.skin_key))
+    }
+
+    /// Joint `TransformKey`s of a mesh's skin (skin-array order), or `None` if
+    /// the mesh isn't skinned. Prefab instancing clones these into a fresh
+    /// per-instance skeleton so each instance deforms independently.
+    pub fn mesh_skin_joint_transforms(&self, mesh_key: MeshKey) -> Option<Vec<TransformKey>> {
+        let skin_key = self.mesh_skin_key(mesh_key).flatten()?;
+        self.skins.read_joint_transforms(skin_key).ok()
+    }
+
+    /// Registers a fresh per-instance skin: same inverse-bind matrices and
+    /// set-count as `template_skin_key`, SHARING its per-vertex joint/weight
+    /// stream (geometry-shaped, identical across clones — see
+    /// [`Skins::insert_instance`]), but bound to `instance_joints` (a cloned
+    /// skeleton). The only per-instance GPU data is the joint-matrix palette.
+    /// Returns the new key for [`Self::duplicate_skinned_with_new_skin`] to
+    /// bind onto the instance mesh.
+    pub fn clone_skin_for_joints(
+        &mut self,
+        template_skin_key: SkinKey,
+        instance_joints: Vec<TransformKey>,
+    ) -> Result<SkinKey> {
+        Ok(self
+            .skins
+            .insert_instance(template_skin_key, instance_joints)?)
+    }
+
+    /// Convenience accessor for the EFFECTIVE `GeometryMorphKey` of a mesh —
+    /// the per-instance override (a morphed prefab clone sharing its source's
+    /// resource but owning its weights) when set, otherwise the shared
+    /// resource's key. Returns `None` if the mesh has no resource or no
+    /// geometry morph targets. Used by the editor's animation bridge to
+    /// resolve a morph-weight animation track (which names a node) to the
+    /// renderer morph-weight set it drives.
+    pub fn geometry_morph_key_for_mesh(&self, mesh_key: MeshKey) -> Option<GeometryMorphKey> {
+        let mesh = self.list.get(mesh_key)?;
+        self.resource(mesh_key)
+            .ok()
+            .and_then(|r| mesh.instance_geometry_morph_key.or(r.geometry_morph_key))
     }
 
     /// Material-morph counterpart of [`Self::geometry_morph_key_for_mesh`] —
@@ -2092,7 +2385,7 @@ impl Meshes {
             let same_skin = self
                 .resource(mesh_key)
                 .ok()
-                .and_then(|r| r.skin_key)
+                .and_then(|r| mesh.instance_skin_key.or(r.skin_key))
                 .map(|k| k == skin_key)
                 .unwrap_or(false);
             if !same_skin {
@@ -2116,11 +2409,11 @@ impl Meshes {
         coverage: &crate::coverage::MeshCoverage,
     ) -> bool {
         let mut had_any_consumer = false;
-        for (mesh_key, _mesh) in self.iter() {
+        for (mesh_key, mesh) in self.iter() {
             let same_skin = self
                 .resource(mesh_key)
                 .ok()
-                .and_then(|r| r.skin_key)
+                .and_then(|r| mesh.instance_skin_key.or(r.skin_key))
                 .map(|k| k == skin_key)
                 .unwrap_or(false);
             if !same_skin {
@@ -2250,6 +2543,21 @@ impl Meshes {
         self.list.len()
     }
 
+    /// Number of SHARED geometry resources (deduped uploads). The prefab
+    /// geometry-sharing census metric (axis 4): duplicating a mesh — skinned
+    /// or static — grows [`Self::len`] (one instance record each) but NOT
+    /// this count, since clones refcount the source's resource.
+    pub fn resource_count(&self) -> usize {
+        self.resources.len()
+    }
+
+    /// Total bytes of live allocations in the merged geometry pool
+    /// ([vis || attr_index || attr_data] per resource). Companion census
+    /// metric to [`Self::resource_count`] — flat across prefab duplicates.
+    pub fn geometry_pool_used_bytes(&self) -> usize {
+        self.mesh_geometry_pool_buffers.used_size()
+    }
+
     /// True when there are no `Mesh` entries.
     pub fn is_empty(&self) -> bool {
         self.list.is_empty()
@@ -2331,6 +2639,17 @@ impl Meshes {
             // hit (which would suppress the first frame's patch).
             self.last_effective_material.remove(mesh_key);
 
+            // Per-instance keys are OWNED by this mesh (a skinned/morphed
+            // prefab clone sharing the resource) — free them regardless of
+            // the shared resource's refcount.
+            if let Some(skin_key) = mesh.instance_skin_key {
+                self.skins.remove(skin_key, None);
+                self.skin_zero_coverage_grace.remove(skin_key);
+            }
+            if let Some(morph_key) = mesh.instance_geometry_morph_key {
+                self.morphs.geometry.remove(morph_key);
+            }
+
             if let Some(meshes) = self.transform_to_meshes.get_mut(mesh.transform_key) {
                 meshes.retain(|&key| key != mesh_key)
             }
@@ -2353,6 +2672,8 @@ impl Meshes {
                         self.mesh_geometry_pool_buffers.remove(resource_key);
                         self.visibility_geometry_index_buffers.remove(resource_key);
                         self.transparency_geometry_data_buffers.remove(resource_key);
+                        self.bvh.remove(resource_key);
+                        self.bvh_tlas_revision += 1;
 
                         self.mesh_geometry_pool_dirty = true;
                         self.visibility_geometry_index_dirty = true;
@@ -2390,6 +2711,75 @@ impl Meshes {
     }
 
     /// Writes dirty mesh buffers to the GPU and updates bind groups.
+    /// Assemble the software-BVH TLAS instance bytes for this frame into
+    /// `out` (cleared first; capacity reused frame to frame — no per-frame
+    /// heap allocation once warm). One instance per mesh whose shared
+    /// resource carries a BLAS (static, under the caps) and whose world
+    /// AABB is known. Returns the instance count. Linear array — the GPU
+    /// pass scans it (fine to a few hundred instances; see bvh.rs).
+    pub fn build_bvh_tlas(
+        &self,
+        transforms: &crate::transforms::Transforms,
+        materials: &crate::materials::Materials,
+        out: &mut Vec<u8>,
+    ) -> u32 {
+        out.clear();
+        let mut count: u32 = 0;
+        for (mesh_key, mesh) in self.list.iter() {
+            // Hidden meshes must not reflect: the primary render and the
+            // shadow pass both skip them, and discrete LOD keeps every
+            // non-selected level loaded-but-hidden — without this filter a
+            // mirror shows ALL LOD levels at once (and editor-hidden
+            // objects). HUD overlays aren't world geometry either.
+            if mesh.hidden || mesh.hud {
+                continue;
+            }
+            let Some(&resource_key) = self.mesh_to_resource.get(mesh_key) else {
+                continue;
+            };
+            let Some((node_base, tri_base)) = self.bvh.bases(resource_key) else {
+                continue;
+            };
+            let Some(world_aabb) = &mesh.world_aabb else {
+                continue;
+            };
+            let Ok(world) = transforms.get_world(mesh.transform_key) else {
+                continue;
+            };
+            let inv = world.inverse();
+            // Constrained hit shading: premultiplied emissive only (plus the
+            // shared probe/env term added in the shader). Texture-emissive
+            // surfaces are approximated by their factor — documented MVP.
+            let emissive = match materials.get(mesh.material_key) {
+                Ok(crate::materials::Material::Pbr(pbr)) => {
+                    let strength = pbr
+                        .emissive_strength
+                        .as_ref()
+                        .map(|s| s.strength)
+                        .unwrap_or(1.0);
+                    [
+                        pbr.emissive_factor[0] * strength,
+                        pbr.emissive_factor[1] * strength,
+                        pbr.emissive_factor[2] * strength,
+                    ]
+                }
+                Ok(crate::materials::Material::Toon(t)) => t.emissive_factor,
+                _ => [0.0, 0.0, 0.0],
+            };
+            crate::bvh::push_instance(
+                out,
+                &inv,
+                world_aabb.min.to_array(),
+                world_aabb.max.to_array(),
+                node_base,
+                tri_base,
+                emissive,
+            );
+            count += 1;
+        }
+        count
+    }
+
     pub fn write_gpu(
         &mut self,
         logging: &AwsmRendererLogging,
@@ -2443,6 +2833,7 @@ impl Meshes {
                         self.mesh_geometry_pool_buffers.raw_slice(),
                         &ranges,
                     )?;
+                    self.mesh_geometry_pool_buffers.recycle_dirty_ranges(ranges);
                 }
             }
 
@@ -2480,6 +2871,8 @@ impl Meshes {
                         self.visibility_geometry_index_buffers.raw_slice(),
                         &ranges,
                     )?;
+                    self.visibility_geometry_index_buffers
+                        .recycle_dirty_ranges(ranges);
                 }
             }
 
@@ -2521,6 +2914,8 @@ impl Meshes {
                             self.transparency_geometry_data_buffers.raw_slice(),
                             &ranges,
                         )?;
+                    self.transparency_geometry_data_buffers
+                        .recycle_dirty_ranges(ranges);
                 }
             }
 

@@ -31,6 +31,13 @@ pub struct ShaderCacheKeyMaterialClassify {
     /// multi-sampled visibility texture (so the single-sampled variant
     /// can still compile with this off as a zero-cost no-op).
     pub emit_edge_data: bool,
+    /// Whether the edge accumulator uses WIDE (32-byte, SSR-descriptor-
+    /// carrying) slots — mirrors the opaque/final_blend `write_ssr_descriptor`
+    /// axis so the classify CLEAR walks the same stride the shading pass
+    /// writes and final_blend reads. Narrow (16-byte) slots halve the
+    /// accumulator allocation when SSR is off (~32 MB at the desktop edge
+    /// budget).
+    pub wide_edge_slots: bool,
 }
 
 impl ShaderCacheKeyMaterialClassify {

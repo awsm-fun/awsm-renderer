@@ -21,7 +21,10 @@ impl DecalClassifyPipelines {
         bind_groups: &DecalClassifyBindGroups,
     ) -> Result<Self> {
         ctx.shaders
-            .ensure_keys(ctx.gpu, Self::shader_cache_keys(bind_groups))
+            .ensure_keys(
+                ctx.gpu,
+                Self::shader_cache_keys(bind_groups, ctx.features.reverse_z),
+            )
             .await?;
         let descs = Self::build_descriptors(ctx, bind_groups).await?;
         let pipeline_keys = ctx
@@ -37,10 +40,37 @@ impl DecalClassifyPipelines {
         Ok(Self::from_resolved(pipeline_keys))
     }
 
-    pub fn shader_cache_keys(bind_groups: &DecalClassifyBindGroups) -> Vec<ShaderCacheKey> {
+    pub fn shader_cache_keys(
+        bind_groups: &DecalClassifyBindGroups,
+        reverse_z: bool,
+    ) -> Vec<ShaderCacheKey> {
         vec![ShaderCacheKey::from(ShaderCacheKeyDecalClassify {
             hzb_enabled: bind_groups.hzb_enabled,
+            reverse_z,
         })]
+    }
+
+    /// Sync cache-key build for the render-loop kick path
+    /// ([`MaterialDecalRenderPass::kick_compile`](crate::render_passes::material_decal::render_pass::MaterialDecalRenderPass::kick_compile)):
+    /// creates the classify shader module WITHOUT awaiting validation
+    /// (errors surface through the pipeline-creation promise).
+    pub fn build_cache_key_sync(
+        ctx: &mut RenderPassInitContext<'_>,
+        bind_groups: &DecalClassifyBindGroups,
+    ) -> Result<ComputePipelineCacheKey> {
+        let pipeline_layout_key = ctx.pipeline_layouts.get_key(
+            ctx.gpu,
+            ctx.bind_group_layouts,
+            PipelineLayoutCacheKey::new(vec![bind_groups.layout_key]),
+        )?;
+        let shader_keys = ctx.shaders.ensure_keys_sync_skip_validate(
+            ctx.gpu,
+            Self::shader_cache_keys(bind_groups, ctx.features.reverse_z),
+        )?;
+        Ok(ComputePipelineCacheKey::new(
+            shader_keys[0],
+            pipeline_layout_key,
+        ))
     }
 
     pub async fn build_descriptors(
@@ -58,6 +88,7 @@ impl DecalClassifyPipelines {
                 ctx.gpu,
                 ShaderCacheKeyDecalClassify {
                     hzb_enabled: bind_groups.hzb_enabled,
+                    reverse_z: ctx.features.reverse_z,
                 },
             )
             .await?;

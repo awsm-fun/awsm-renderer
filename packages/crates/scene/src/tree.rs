@@ -7,7 +7,7 @@ use super::{
     curve::CurveDef,
     decal::DecalConfig,
     dynamic_material::{MaterialInstance, MaterialVariant, VariantId},
-    instances::InstancesAlongCurveDef,
+    instances::{InstancerDef, InstancesAlongCurveDef},
     light::LightConfig,
     line::LineDef,
     particle::ParticleEmitterDef,
@@ -299,6 +299,9 @@ pub enum NodeKind {
     Curve(CurveDef),
     /// Place copies of a source node along a curve.
     InstancesAlongCurve(InstancesAlongCurveDef),
+    /// Explicit GPU instancer: references a mesh ASSET and owns N authored
+    /// instance transforms (one node = thousands of instances, one draw).
+    Instancer(InstancerDef),
     /// Authored polyline (debug-draw / neon rails / curve handles).
     Line(LineDef),
     /// Camera-facing or world-aligned textured quad.
@@ -393,6 +396,7 @@ impl NodeKind {
             Self::ClusterMesh { .. } => "cluster_mesh",
             Self::Curve(_) => "curve",
             Self::InstancesAlongCurve(_) => "instances",
+            Self::Instancer(_) => "instancer",
             Self::Line(_) => "line",
             Self::Sprite(_) => "sprite",
             Self::ParticleEmitter(_) => "particle",
@@ -498,6 +502,7 @@ impl NodeKind {
             Self::Mesh { shadow, .. } => Some(shadow),
             Self::SkinnedMesh { shadow, .. } => Some(shadow),
             Self::InstancesAlongCurve(d) => Some(&d.shadow),
+            Self::Instancer(d) => Some(&d.shadow),
             _ => None,
         }
     }
@@ -508,6 +513,7 @@ impl NodeKind {
             Self::Mesh { shadow, .. } => Some(shadow),
             Self::SkinnedMesh { shadow, .. } => Some(shadow),
             Self::InstancesAlongCurve(d) => Some(&mut d.shadow),
+            Self::Instancer(d) => Some(&mut d.shadow),
             _ => None,
         }
     }
@@ -519,6 +525,7 @@ impl NodeKind {
             Self::Mesh { lod, .. } => Some(lod),
             Self::SkinnedMesh { lod, .. } => Some(lod),
             Self::InstancesAlongCurve(d) => Some(&d.lod),
+            Self::Instancer(d) => Some(&d.lod),
             _ => None,
         }
     }
@@ -529,6 +536,7 @@ impl NodeKind {
             Self::Mesh { lod, .. } => Some(lod),
             Self::SkinnedMesh { lod, .. } => Some(lod),
             Self::InstancesAlongCurve(d) => Some(&mut d.lod),
+            Self::Instancer(d) => Some(&mut d.lod),
             _ => None,
         }
     }
@@ -600,6 +608,90 @@ mod tests {
         let skin: SkinnedMeshRef = toml::from_str(toml).expect("deserialize legacy");
         assert!(skin.joints.is_empty());
         assert_eq!(skin.node_index, 1);
+    }
+
+    /// An `Instancer` node round-trips through TOML — the format both
+    /// `project.toml` and the bundle's `scene.toml` use. `Vec<Trs>` must
+    /// serialize as an array of tables and every optional field must
+    /// `#[serde(default)]` back in.
+    #[test]
+    fn instancer_toml_round_trip() {
+        use crate::instances::InstancerDef;
+        use crate::primitive::MeshRef;
+
+        let node = EditorNode {
+            id: NodeId::new(),
+            name: "Forest".into(),
+            transform: Trs::default(),
+            kind: NodeKind::Instancer(InstancerDef {
+                mesh: MeshRef(AssetId::new()),
+                transforms: vec![
+                    Trs {
+                        translation: [1.0, 0.0, 2.0],
+                        rotation: [0.0, 0.0, 0.0, 1.0],
+                        scale: [1.0, 1.0, 1.0],
+                    },
+                    Trs {
+                        translation: [-3.0, 0.5, 4.0],
+                        rotation: [
+                            0.0,
+                            std::f32::consts::FRAC_1_SQRT_2,
+                            0.0,
+                            std::f32::consts::FRAC_1_SQRT_2,
+                        ],
+                        scale: [2.0, 2.0, 2.0],
+                    },
+                ],
+                per_instance_colors: vec![[1.0, 0.0, 0.0, 1.0]],
+                shadow: MeshShadowConfig {
+                    cast: false,
+                    receive: true,
+                },
+                lod: MeshLodConfig { enabled: false },
+            }),
+            locked: false,
+            visible: true,
+            prefab: false,
+            children: Vec::new(),
+        };
+
+        let text = toml::to_string(&node).expect("serialize");
+        let back: EditorNode = toml::from_str(&text).expect("deserialize");
+        assert_eq!(node, back);
+        match back.kind {
+            NodeKind::Instancer(def) => {
+                assert_eq!(def.transforms.len(), 2);
+                assert_eq!(def.transforms[1].scale, [2.0, 2.0, 2.0]);
+                assert_eq!(def.per_instance_colors.len(), 1);
+                assert!(!def.shadow.cast);
+                assert!(!def.lod.enabled);
+            }
+            other => panic!("expected Instancer, got {other:?}"),
+        }
+    }
+
+    /// A minimal `Instancer` TOML (just mesh + transforms) deserializes with
+    /// every optional field at its default: no colors, shadow cast+receive,
+    /// LOD enabled. This is the forward-compat guarantee for hand-authored /
+    /// MCP-authored kinds that omit the optional tables.
+    #[test]
+    fn instancer_optional_fields_default() {
+        let toml = r#"
+            [instancer]
+            mesh = "00000000-0000-0000-0000-000000000000"
+            transforms = []
+        "#;
+        let kind: NodeKind = toml::from_str(toml).expect("deserialize minimal instancer");
+        match kind {
+            NodeKind::Instancer(def) => {
+                assert!(def.mesh.0.is_nil());
+                assert!(def.transforms.is_empty());
+                assert!(def.per_instance_colors.is_empty());
+                assert_eq!(def.shadow, MeshShadowConfig::default());
+                assert_eq!(def.lod, MeshLodConfig::default());
+            }
+            other => panic!("expected Instancer, got {other:?}"),
+        }
     }
 
     /// A `MeshLodConfig` round-trips through TOML, and a legacy `Mesh` node with

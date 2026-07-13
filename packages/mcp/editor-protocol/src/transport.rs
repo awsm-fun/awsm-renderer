@@ -55,6 +55,12 @@ pub enum Request {
     /// each file to the server's `/bundle/<id>/<path>` side-channel and replies
     /// with a small [`BundleHandle`] manifest.
     ExportPlayerBundle,
+    /// Serialize the open project to its persisted form — the same
+    /// `project.toml` + `assets/*` side files a directory Save writes. Like
+    /// [`Request::ExportPlayerBundle`], the file bytes never ride the control
+    /// link: the editor POSTs each file to the server's `/bundle/<id>/<path>`
+    /// side-channel and replies with a small [`BundleHandle`] manifest.
+    SaveProject,
     /// The current workspace mode.
     Mode,
 }
@@ -498,6 +504,7 @@ mod wire_roundtrip_tests {
             "export_glb_node",
         );
         assert_roundtrips(&Request::ExportPlayerBundle, "export_player_bundle");
+        assert_roundtrips(&Request::SaveProject, "save_project");
         assert_roundtrips(&Request::Mode, "mode");
     }
 

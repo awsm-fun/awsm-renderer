@@ -347,35 +347,89 @@ impl Animatable for TransformAnimation {
 }
 
 /// Per-vertex weight animation data.
+///
+/// `mask` is the set of morph-target indices this animation **drives** (bit `i`
+/// set ⇒ index `i` is driven). `None` means the animation drives the whole
+/// vector — the glTF path, where every keyframe carries all weights. A masked
+/// animation (the editor's per-index morph tracks) contributes only its driven
+/// indices when applied or blended; undriven indices keep the accumulator /
+/// rest value, so two tracks driving different indices of one mesh compose
+/// instead of stomping each other (the morph analogue of
+/// [`TransformAnimation`]'s per-field `Option`-ness). Masked animations
+/// support up to 64 targets; [`Self::new_single`] falls back to unmasked
+/// (whole-vector) semantics beyond that.
 #[derive(Debug, Clone)]
 pub struct VertexAnimation {
     pub weights: Vec<f32>,
+    pub mask: Option<u64>,
 }
 
 impl VertexAnimation {
-    /// Creates a vertex animation from morph weights.
+    /// Creates a vertex animation from morph weights, driving the WHOLE vector
+    /// (no mask) — the glTF whole-vector path.
     pub fn new(weights: Vec<f32>) -> Self {
-        Self { weights }
+        Self {
+            weights,
+            mask: None,
+        }
+    }
+
+    /// Creates a vertex animation driving a **single** morph index: a weight
+    /// vector of length `index + 1` whose slot `index` carries `weight`, masked
+    /// so only that index is driven (every other index keeps its current /
+    /// rest value under apply + blend). An `index >= 64` (beyond the mask
+    /// width — morph-target counts never approach this in practice) falls back
+    /// to an unmasked whole vector.
+    pub fn new_single(index: usize, weight: f32) -> Self {
+        let mut weights = vec![0.0_f32; index + 1];
+        weights[index] = weight;
+        Self {
+            weights,
+            mask: (index < 64).then(|| 1u64 << index),
+        }
+    }
+
+    /// Whether this animation drives morph index `index` (see `mask`).
+    #[inline]
+    pub fn drives(&self, index: usize) -> bool {
+        match self.mask {
+            None => true,
+            Some(mask) => index < 64 && (mask >> index) & 1 == 1,
+        }
     }
 
     /// Applies weights to a copy of the provided data.
     pub fn apply(&self, input: Vec<f32>) -> Vec<f32> {
         let mut result = input;
-        for (i, weight) in self.weights.iter().enumerate() {
-            if i < result.len() {
-                result[i] = *weight;
-            }
-        }
+        self.apply_mut(&mut result);
         result
     }
 
-    /// Applies weights in place on the provided data.
+    /// Applies weights in place on the provided data — only the driven indices
+    /// (an unmasked animation writes every index it carries). The unmasked
+    /// path is a straight slice copy (the hot glTF/single-track path).
     pub fn apply_mut(&self, other: &mut [f32]) {
-        for (i, weight) in self.weights.iter().enumerate() {
-            if i < other.len() {
-                other[i] = *weight;
+        let n = other.len().min(self.weights.len());
+        match self.mask {
+            None => other[..n].copy_from_slice(&self.weights[..n]),
+            Some(mask) => {
+                // A mask only addresses indices 0..64 (cap defends the shift;
+                // constructors never produce a masked animation longer than 64).
+                for (i, slot) in other.iter_mut().enumerate().take(n.min(64)) {
+                    if (mask >> i) & 1 == 1 {
+                        *slot = self.weights[i];
+                    }
+                }
             }
         }
+    }
+}
+
+/// The union of two driven-index masks (`None` = drives all, absorbing).
+fn mask_union(a: Option<u64>, b: Option<u64>) -> Option<u64> {
+    match (a, b) {
+        (Some(a), Some(b)) => Some(a | b),
+        _ => None,
     }
 }
 
@@ -392,7 +446,11 @@ impl Animatable for VertexAnimation {
             results.push(weight);
         }
 
-        Self { weights: results }
+        Self {
+            weights: results,
+            // Keys of one sampler share one mask; union is the defensive join.
+            mask: mask_union(first.mask, second.mask),
+        }
     }
 
     fn interpolate_cubic_spline(
@@ -424,6 +482,10 @@ impl Animatable for VertexAnimation {
             results.push(weight);
         }
 
-        Self { weights: results }
+        Self {
+            weights: results,
+            // Keys of one sampler share one mask; union is the defensive join.
+            mask: mask_union(first_value.mask, second_value.mask),
+        }
     }
 }

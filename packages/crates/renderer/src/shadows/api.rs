@@ -56,14 +56,20 @@ impl AwsmRenderer {
     /// Replaces the renderer-wide shadow config. Player / runtime
     /// equivalent of the editor's "shadows" inspector — load the
     /// `ShadowsConfig` from disk (via `awsm_renderer_scene` → `into()`
-    /// or a custom build pipeline) and push it in at startup.
+    /// or a custom build pipeline) and push it in at startup, or push
+    /// live edits at runtime (this is what the editor's
+    /// `settings_sync` observer does).
     ///
     /// Resource-shaped fields (`atlas_size`, `max_point_shadows`,
-    /// `point_shadow_resolution`, `evsm_atlas_size`) are baked into
-    /// `Shadows::new` at construction time, so changing them at
-    /// runtime requires recreating the renderer. The other tunables
-    /// (SSCS toggle, blur radius, exponent, debug overlay) take
-    /// effect on the next `render()` call.
+    /// `point_shadow_resolution`, `evsm_atlas_size`) tear down and
+    /// recreate their GPU textures + dependent bind groups at the
+    /// start of the next `write_gpu` (see `Shadows::set_config`) —
+    /// not free, so don't poke them at frame rate. The other tunables
+    /// (SSCS scalars, blur radius, exponent, debug overlay) take
+    /// effect on the next `render()` call. `sscs_enabled` /
+    /// `sscs_step_count` are compile-time template constants: they
+    /// flag a material-variant recompile that the next `commit_load`
+    /// picks up (call it after this, like `set_anti_aliasing`).
     pub fn set_shadows_config(&mut self, config: ShadowsConfig) {
         // SSCS `enabled` + `step_count` drive the shadow module's COMPILE-TIME
         // template (see `PrepPassConfig`'s SSCS fields), so a change to either

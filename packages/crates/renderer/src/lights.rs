@@ -178,6 +178,26 @@ pub struct Lights {
     lighting_info_gpu_dirty: bool,
     punctual_uploader: crate::buffer::mapped_uploader::MappedUploader,
     info_uploader: crate::buffer::mapped_uploader::MappedUploader,
+    /// Reused staging bytes for the punctual-light pack in `write_gpu`.
+    /// Rebuilt (cleared, capacity kept) every dirty frame — a moving light
+    /// dirties every frame, so a fresh `Vec` here was a per-frame heap
+    /// allocation.
+    punctual_scratch: Vec<u8>,
+    /// Box-projected reflection probe (parallax-corrected specular env
+    /// sampling). `None` = disabled: every env lookup falls back to the
+    /// classic direction-only sample. Packed into the info uniform's tail
+    /// (bytes 48..80) and mirrored into the SSR params uniform each frame.
+    reflection_probe: Option<ReflectionProbeBox>,
+}
+
+/// The world-space box a [`Lights::set_reflection_probe`] probe projects
+/// against. Reflection directions are parallax-corrected by intersecting the
+/// reflected ray with this AABB and sampling the specular env cubemap toward
+/// the intersection point (relative to `center`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ReflectionProbeBox {
+    pub center: [f32; 3],
+    pub half_extents: [f32; 3],
 }
 
 impl Lights {
@@ -191,7 +211,9 @@ impl Lights {
     /// `LightsInfoPacked` WGSL struct):
     ///   data: vec4<u32> (16) — x=n_lights, y/z=IBL mip counts, w=n_directional
     ///   directional: array<vec4<u32>, 2> (32) — packed indices of the ≤8 directionals
-    pub const INFO_SIZE: usize = 48;
+    ///   probe_center_enabled: vec4<f32> (16) — reflection-probe box center + enabled flag
+    ///   probe_half_pad: vec4<f32> (16) — probe box half-extents + pad
+    pub const INFO_SIZE: usize = 80;
 
     /// Creates light buffers and initializes IBL state.
     pub fn new(gpu: &AwsmRendererWebGpu, ibl: Ibl, brdf_lut: BrdfLut) -> Result<Self> {
@@ -224,7 +246,27 @@ impl Lights {
                 "Punctual Lights",
             ),
             info_uploader: crate::buffer::mapped_uploader::MappedUploader::new("Lights Info"),
+            punctual_scratch: Vec::new(),
+            reflection_probe: None,
         })
+    }
+
+    /// Set (or clear) the global box-projected reflection probe. `None`
+    /// disables parallax correction — env lookups revert to direction-only
+    /// sampling. Marks the info uniform dirty; the values land on the GPU at
+    /// the next `write_gpu`.
+    pub fn set_reflection_probe(&mut self, probe: Option<ReflectionProbeBox>) {
+        if self.reflection_probe != probe {
+            self.reflection_probe = probe;
+            self.lighting_info_gpu_dirty = true;
+        }
+    }
+
+    /// The currently-set reflection probe (see [`Self::set_reflection_probe`]).
+    /// The render loop mirrors this into the SSR params uniform so the SSR
+    /// miss fallback projects identically to the material IBL path.
+    pub fn reflection_probe(&self) -> Option<ReflectionProbeBox> {
+        self.reflection_probe
     }
 
     /// Mapped-ring upload telemetry for the lights buffers.
@@ -437,12 +479,12 @@ impl Lights {
                 );
             }
 
-            let punctual_light_buffer: Vec<u8> = self
-                .lights
-                .iter()
-                .take(MAX_PUNCTUAL_LIGHTS)
-                .flat_map(|(key, light)| light.storage_buffer_data(shadow_index_for(key)))
-                .collect();
+            self.punctual_scratch.clear();
+            for (key, light) in self.lights.iter().take(MAX_PUNCTUAL_LIGHTS) {
+                self.punctual_scratch
+                    .extend_from_slice(&light.storage_buffer_data(shadow_index_for(key)));
+            }
+            let punctual_light_buffer = &self.punctual_scratch;
 
             if !punctual_light_buffer.is_empty() {
                 // The punctual buffer is fixed-size (MAX_PUNCTUAL_LIGHTS *
@@ -471,7 +513,8 @@ impl Lights {
                 None
             };
 
-            let mut data = vec![0u8; Self::INFO_SIZE];
+            // Fixed 80-byte block — stack array, no per-frame heap allocation.
+            let mut data = [0u8; Self::INFO_SIZE];
             data[0..4].copy_from_slice(&(self.lights.len() as u32).to_ne_bytes());
             data[4..8].copy_from_slice(&self.ibl.prefiltered_env.mip_count.to_ne_bytes());
             data[8..12].copy_from_slice(&self.ibl.irradiance.mip_count.to_ne_bytes());
@@ -492,6 +535,18 @@ impl Lights {
                 }
             }
             data[12..16].copy_from_slice(&n_directional.to_ne_bytes());
+
+            // Reflection-probe tail (bytes 48..80): box center + enabled flag,
+            // half-extents + pad. Zeroed (= disabled) when no probe is set.
+            if let Some(probe) = &self.reflection_probe {
+                for (i, v) in probe.center.iter().enumerate() {
+                    data[48 + i * 4..52 + i * 4].copy_from_slice(&v.to_ne_bytes());
+                }
+                data[60..64].copy_from_slice(&1.0f32.to_ne_bytes());
+                for (i, v) in probe.half_extents.iter().enumerate() {
+                    data[64 + i * 4..68 + i * 4].copy_from_slice(&v.to_ne_bytes());
+                }
+            }
 
             self.info_uploader.write_dirty_ranges(
                 gpu,
@@ -736,7 +791,13 @@ impl Light {
                 write(Value::SkipVec3); // skip position
                 write(Value::SkipN32(1)); // skip range
                                           // row 2
-                write(direction.into());
+                                          // Normalize at the pack boundary: the public setters take raw
+                                          // vectors, and every shader consumer (SSCS ray dirs, shadow
+                                          // to-light math) assumes unit length — normalizing once here
+                                          // lets the WGSL drop its defensive per-fragment normalizes
+                                          // without NaN risk from unnormalized caller input.
+                let dir_n = glam::Vec3::from_array(*direction).normalize_or_zero();
+                write((&dir_n.to_array()).into());
                 write(Value::SkipN32(1)); // skip inner cone
                                           // row 3
                 write(color.into());
@@ -794,7 +855,9 @@ impl Light {
                 write(position.into());
                 write((&gpu_range).into());
                 // row 2
-                write(direction.into());
+                // Normalized at pack (see the directional arm's rationale).
+                let dir_n = glam::Vec3::from_array(*direction).normalize_or_zero();
+                write((&dir_n.to_array()).into());
                 write((&inner_cos).into());
                 // row 3
                 write(color.into());

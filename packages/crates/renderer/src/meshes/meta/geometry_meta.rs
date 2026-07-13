@@ -23,6 +23,12 @@ use crate::{
 pub const GEOMETRY_MESH_META_BYTE_SIZE: usize = 48;
 /// Byte alignment for geometry mesh meta buffer entries.
 pub const GEOMETRY_MESH_META_BYTE_ALIGNMENT: usize = 256;
+/// Byte offset of the skin `joint_index_weights` buffer-offset u32 within a
+/// record (see `to_bytes`: mesh_key 8B + morph 12B + skin sets_len 4B +
+/// joint_matrices 4B, then this field). Patched in place by
+/// `MeshMeta::set_skin_weights_offset` when a copy-on-write weight edit moves
+/// an instance skin onto its own slot.
+pub const GEOMETRY_MESH_META_SKIN_WEIGHTS_OFFSET_OFFSET: usize = 28;
 
 // The geometry-meta GPU buffer is bound at `@group(2) @binding(0)`
 // of the geometry pass — as a uniform-with-dynamic-offset for

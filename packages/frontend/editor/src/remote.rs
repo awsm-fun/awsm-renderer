@@ -68,7 +68,9 @@ thread_local! {
     /// User setting: when `false`, MCP connect/disconnect/error notices are
     /// suppressed (the link still works; only the toasts are muted). Bound to a
     /// Settings toggle; defaults on. Session-only chrome, not project state.
-    static SHOW_NOTIFICATIONS: Mutable<bool> = Mutable::new(true);
+    // Default OFF: MCP info toasts overlay the viewport and contaminate
+    // agent screenshots; opt in via Settings or SetViewOptions.
+    static SHOW_NOTIFICATIONS: Mutable<bool> = Mutable::new(false);
     /// Outbound frame sender for the live link; `None` when disconnected. Kept so
     /// the UI can `disconnect()` (drop it) and `notify_event()` over the socket.
     static SESSION: RefCell<Option<LinkTx>> = const { RefCell::new(None) };
@@ -378,17 +380,16 @@ async fn serve_one(id: u64, req: Request) {
     activity_end().await;
 }
 
-/// Follow the agent to the workspace it's editing: when "Follow agent activity"
-/// is on and the command belongs to a different mode than the one on screen,
-/// switch to it so the work happens in view (you can't watch a material or
-/// animation edit while looking at the Scene tab). No-op for mode-agnostic
-/// commands (`None`) or when already there. Gated by the same activity toggle, so
-/// a user who finds the switching distracting turns it off with the feed.
+/// Follow the agent to the workspace it's editing: when "Follow agent" is on
+/// and the command belongs to a different mode than the one on screen, switch
+/// to it so the work happens in view. No-op for mode-agnostic commands
+/// (`None`) or when already there. Gated by its OWN toggle (default OFF),
+/// independent of the activity-feed overlay.
 fn follow_agent_mode(mode: Option<awsm_renderer_editor_protocol::EditorMode>) {
     let Some(m) = mode else {
         return;
     };
-    if !crate::engine::activity_feed::enabled().get() {
+    if !crate::engine::activity_feed::follow_enabled().get() {
         return;
     }
     let ctrl = controller();
@@ -458,6 +459,25 @@ async fn dispatch(req: Request) -> Response {
         Request::ExportGlb { node } => glb_response(ctrl.export_glb_bytes(node).await).await,
         Request::ExportPlayerBundle => {
             bundle_response(crate::controller::export::bake_player_bundle(&ctrl).await).await
+        }
+        Request::SaveProject => {
+            // Same persisted form a directory Save writes: `project.toml` first
+            // (mirrors `assemble_bundle`'s scene.toml-first ordering), then the
+            // byte side files sorted by path — the source is a HashMap, and an
+            // unsorted manifest would reshuffle on every save.
+            let files = crate::controller::persistence::serialize_inmem(&ctrl)
+                .map(|(toml, byte_files)| {
+                    let mut side: Vec<_> = byte_files.into_iter().collect();
+                    side.sort_by(|(a, _), (b, _)| a.cmp(b));
+                    std::iter::once(("project.toml".to_string(), toml.into_bytes()))
+                        .chain(side)
+                        .map(|(path, bytes)| {
+                            awsm_renderer_editor_protocol::BundleFile::new(path, bytes)
+                        })
+                        .collect()
+                })
+                .map_err(|e| format!("{e}"));
+            bundle_response(files).await
         }
     }
 }

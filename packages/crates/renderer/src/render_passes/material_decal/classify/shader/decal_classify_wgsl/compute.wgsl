@@ -53,10 +53,11 @@ struct Buckets {
 {% if hzb_enabled %}
 // HZB occlusion gate. Bound only when
 // `features.gpu_culling && features.decals` — the HZB texture is
-// itself gated on `gpu_culling`. Stores the *maximum* clip-space
-// depth per texel (canonical Karis/Sousa orientation), so the
-// gate fires when a decal's *closest* projected depth sits
-// behind the HZB max for the tile.
+// itself gated on `gpu_culling`. Stores the conservative occluder
+// bound per texel — the *farthest* depth in the reduced footprint:
+// numerical MAX under forward-Z, numerical MIN under reverse-Z
+// (see hzb_wgsl/reduce.wgsl). The gate fires when a decal's
+// *closest* projected depth sits behind that bound for the tile.
 @group(0) @binding(3) var hzb_texture: texture_2d<f32>;
 {% endif %}
 
@@ -102,7 +103,14 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let view_proj = camera_raw.view_proj;
     var uv_min = vec2<f32>(2.0, 2.0);
     var uv_max = vec2<f32>(-1.0, -1.0);
-    var min_depth = 1.0;
+    // Closest projected corner depth across the 8 corners — the
+    // convention-aware extreme (003): forward-Z closest = numerical
+    // MIN (0 = near); reverse-Z closest = numerical MAX (1 = near).
+    {% if reverse_z %}
+    var closest_depth = 0.0;
+    {% else %}
+    var closest_depth = 1.0;
+    {% endif %}
     var any_in_front = false;
     var any_behind_near = false;
     let xs = array<f32, 2>(-1.0, 1.0);
@@ -130,12 +138,18 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let uv = vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
         uv_min = min(uv_min, uv);
         uv_max = max(uv_max, uv);
-        // Track the *closest* (smallest) screen-space depth across
-        // the 8 projected corners. WebGPU clip-space is `[0, 1]`
-        // with 0 = near, 1 = far. The HZB stores maximum depth
-        // per texel; the gate fires when this min depth sits
-        // behind the HZB max for the screen-AABB's footprint.
-        min_depth = min(min_depth, clip.z * inv_w);
+        // Track the *closest* screen-space depth across the 8
+        // projected corners. WebGPU clip-space is `[0, 1]`; under
+        // forward-Z 0 = near (closest = min), under reverse-Z
+        // 1 = near (closest = max). The HZB stores the farthest
+        // occluder bound per texel; the gate fires when this
+        // closest depth sits behind that bound for the
+        // screen-AABB's footprint.
+        {% if reverse_z %}
+        closest_depth = max(closest_depth, clip.z * inv_w);
+        {% else %}
+        closest_depth = min(closest_depth, clip.z * inv_w);
+        {% endif %}
         any_in_front = true;
     }
     if (!any_in_front) {
@@ -184,11 +198,14 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let max_mip = textureNumLevels(hzb_texture) - 1u;
         var mip: u32 = 0u;
         if (extent_px > 1.0) {
-            // ceil(log2(extent_px)) — `firstLeadingBit` works on u32;
-            // round extent up first so a 3.x pixel AABB picks mip 2
-            // (4-px texel), not mip 1.
+            // ceil(log2(extent_px)) — `firstLeadingBit(e)` is
+            // floor(log2(e)) for u32 (bit index of the MSB, LSB = 0);
+            // bump by one when e isn't a power of two so a 3.x-pixel
+            // AABB picks mip 2 (4-px texel), not mip 1. (This used to
+            // compute `31 - firstLeadingBit` — the count-leading-zeros
+            // dual — which always selected the coarsest mip.)
             let e_int = u32(ceil(extent_px));
-            mip = min(31u - firstLeadingBit(e_int), max_mip);
+            mip = min(firstLeadingBit(e_int), max_mip);
             if ((1u << mip) < e_int) {
                 mip = min(mip + 1u, max_mip);
             }
@@ -199,12 +216,20 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
             min(u32(center_uv.x * f32(mip_dims.x)), mip_dims.x - 1u),
             min(u32(center_uv.y * f32(mip_dims.y)), mip_dims.y - 1u),
         );
-        let hzb_max = textureLoad(hzb_texture, center_px, mip).r;
-        // Decal fully behind the closest geometry covering the
-        // screen-AABB footprint — drop it from every tile.
-        if (min_depth > hzb_max) {
+        let hzb_bound = textureLoad(hzb_texture, center_px, mip).r;
+        // Decal fully behind the farthest occluder bound covering the
+        // screen-AABB footprint — drop it from every tile. "Behind"
+        // is convention-aware (003): forward-Z behind = numerically
+        // greater; reverse-Z behind = numerically smaller.
+        {% if reverse_z %}
+        if (closest_depth < hzb_bound) {
             return;
         }
+        {% else %}
+        if (closest_depth > hzb_bound) {
+            return;
+        }
+        {% endif %}
     }
     {% endif %}
 

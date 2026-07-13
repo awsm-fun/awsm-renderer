@@ -134,7 +134,7 @@ async fn create_seed_layout(
         },
         BindGroupLayoutCacheKeyEntry {
             resource: BindGroupLayoutResource::StorageTexture(
-                StorageTextureBindingLayout::new(TextureFormat::R32float)
+                StorageTextureBindingLayout::new(TextureFormat::Rg32float)
                     .with_view_dimension(TextureViewDimension::N2d)
                     .with_access(StorageTextureAccess::WriteOnly),
             ),
@@ -162,7 +162,7 @@ async fn create_reduce_layout(ctx: &mut RenderPassInitContext<'_>) -> Result<Bin
         },
         BindGroupLayoutCacheKeyEntry {
             resource: BindGroupLayoutResource::StorageTexture(
-                StorageTextureBindingLayout::new(TextureFormat::R32float)
+                StorageTextureBindingLayout::new(TextureFormat::Rg32float)
                     .with_view_dimension(TextureViewDimension::N2d)
                     .with_access(StorageTextureAccess::WriteOnly),
             ),

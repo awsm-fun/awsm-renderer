@@ -31,6 +31,13 @@ pub fn get(id: AssetId) -> Option<(Vec<u8>, ImageMime)> {
     TEXTURE_BYTES.with(|c| c.borrow().get(&id).cloned())
 }
 
+/// Whether non-empty encoded bytes for `id` are cached — a presence probe
+/// that avoids [`get`]'s byte clone (textures can be MBs). Used by the save
+/// census (`persistence::save_census`).
+pub fn has_bytes(id: AssetId) -> bool {
+    TEXTURE_BYTES.with(|c| c.borrow().get(&id).is_some_and(|(b, _)| !b.is_empty()))
+}
+
 /// Drop every cached texture (project reset).
 pub fn clear() {
     TEXTURE_BYTES.with(|c| c.borrow_mut().clear());

@@ -59,6 +59,18 @@ async fn handle_diff(
 ) {
     match diff {
         VecDiff::Replace { values } => {
+            // Hold the `WaitRenderSettled` barrier open across the WHOLE bulk
+            // materialization (teardown → transforms-first → declare-all →
+            // commit). Like the kind observer's guard, this is raised on the
+            // microtask queue — before a settled-wait's first (timer) poll —
+            // so a driver can't observe "settled" in the gap between the
+            // triggering command and this async processing. For a project
+            // load the barrier was additionally armed SYNCHRONOUSLY inside
+            // the command itself (`apply_project` →
+            // [`arm_load_settle_barrier`]); this guard extends the same
+            // coverage to every other bulk Replace (an imported subtree's
+            // children, New Project).
+            let _guard = crate::controller::CompileGuard::new();
             // Tear down whatever was there, then add all.
             for id in order_snapshot(parent_id) {
                 remove_node(id).await;
@@ -80,6 +92,13 @@ async fn handle_diff(
                 add_node(parent_id, parent_tk, i, node, true).await;
             }
             commit_bulk_load().await;
+            // The scene is now FULLY populated + committed: drop the barrier
+            // the load command armed (`apply_project`). Root list only — a
+            // nested children Replace mid-flight must not release the load's
+            // barrier early. No-op when nothing is armed (New Project).
+            if parent_id.is_none() {
+                release_load_settle_barrier();
+            }
         }
         VecDiff::InsertAt { index, value } => {
             add_node(parent_id, parent_tk, index, value, false).await
@@ -235,6 +254,44 @@ async fn commit_bulk_load() {
     }
 }
 
+thread_local! {
+    /// Count of ARMED load-settle barriers — one per in-flight `apply_project`
+    /// (project load / in-memory reload). See [`arm_load_settle_barrier`].
+    static LOAD_SETTLE_ARMED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Raise the `WaitRenderSettled` barrier for a whole bulk scene load,
+/// SYNCHRONOUSLY inside the load command (`apply_project` calls this right
+/// before swapping the scene forest via `replace_cloned`). The matching release
+/// happens in `handle_diff`'s ROOT `Replace` arm after the single bulk-load
+/// `commit_load` completes — so a driver that dispatches `LoadProjectFromUrl`
+/// (or `ReloadProjectInMemory`) and then queries `wait_render_settled` observes
+/// the FULLY populated scene, instead of settling in the gap before the async
+/// Replace materialization starts (loading is ONE transaction — the §5b
+/// observability half; drivers previously had to poll node counts).
+///
+/// Deadlock-safe by construction: arming happens only immediately before
+/// `replace_cloned`, whose `Replace` diff is always delivered to the
+/// boot-started `node_sync` observer (which releases regardless of the commit's
+/// Ok/Err), and load failures BEFORE `apply_project` never arm.
+pub(crate) fn arm_load_settle_barrier() {
+    crate::controller::compile_begin();
+    LOAD_SETTLE_ARMED.with(|c| c.set(c.get() + 1));
+}
+
+/// Release one armed load-settle barrier. No-op when none is armed (a root
+/// `Replace` that wasn't a project load — e.g. New Project), so it can never
+/// underflow `compile_pending`.
+fn release_load_settle_barrier() {
+    LOAD_SETTLE_ARMED.with(|c| {
+        let n = c.get();
+        if n > 0 {
+            c.set(n - 1);
+            crate::controller::compile_end();
+        }
+    });
+}
+
 async fn add_node(
     parent_id: Option<NodeId>,
     parent_tk: Option<TransformKey>,
@@ -331,8 +388,22 @@ async fn add_node(
                     // parented to the node transform), so a move/rotate leaves it
                     // stale — re-bake it from the fresh transform so the on-screen
                     // affordance keeps matching where the collider actually is.
-                    if let NodeKind::Collider(shape) = entry.node.kind.get_cloned() {
-                        materialize_collider(entry.clone(), shape).await;
+                    // A decal is the same shape twice over: the renderer decal
+                    // carries a world-baked inverse_transform + AABB and its
+                    // volume wireframe is world-baked lines — without this
+                    // re-bake a moved decal keeps projecting at its
+                    // materialize-time placement (while the gizmo moves on).
+                    match entry.node.kind.get_cloned() {
+                        NodeKind::Collider(shape) => {
+                            materialize_collider(entry.clone(), shape).await;
+                        }
+                        NodeKind::Decal(cfg) => {
+                            // Live re-bake (never a bulk load): the texture is
+                            // already resolved, so the cache-hit probe inside
+                            // skips the commit.
+                            materialize_decal(entry.clone(), cfg, false).await;
+                        }
+                        _ => {}
                     }
                 })
             }).await;
@@ -672,30 +743,53 @@ async fn apply_kind(entry: Arc<RendererNode>, kind: NodeKind, declare_only: bool
         NodeKind::Curve(def) => materialize_curve_viz(entry.clone(), def).await,
         NodeKind::Sprite(def) => materialize_sprite(entry.clone(), def, declare_only).await,
         NodeKind::Collider(shape) => materialize_collider(entry.clone(), shape).await,
-        NodeKind::Decal(cfg) => materialize_decal(entry.clone(), cfg).await,
+        NodeKind::Decal(cfg) => materialize_decal(entry.clone(), cfg, declare_only).await,
         NodeKind::InstancesAlongCurve(def) => {
             materialize_instances(entry.clone(), def, declare_only).await
         }
+        NodeKind::Instancer(def) => materialize_instancer(entry.clone(), def, declare_only).await,
         NodeKind::ParticleEmitter(def) => {
             materialize_particle(entry.clone(), def, declare_only).await
         }
         // The sole procedural-geometry path: read the baked stack from the mesh
         // cache + upload with the node's assigned material (magenta when None).
         // Primitives + sweeps are now `MeshDef` stacks behind this same arm.
-        NodeKind::Mesh { mesh, .. } => match super::mesh_cache::get_raw(mesh.0) {
-            Some(raw) => {
-                upload_simple_mesh(
-                    entry.clone(),
-                    raw,
-                    MeshMaterial::Assigned(selected_material),
-                    declare_only,
-                )
-                .await;
+        // GEOMETRY SHARING (axis 4, static): when another live node already
+        // materialized this exact mesh ASSET, duplicate its mesh over the
+        // shared resource instead of re-uploading — N duplicates (or a
+        // reloaded project full of them) keep ONE geometry upload. Vertex
+        // edits stay consistent: they re-bake the asset's cache and
+        // re-materialize every node using it, so shared-asset semantics are
+        // unchanged.
+        NodeKind::Mesh { mesh, .. } => {
+            if materialize_static_duplicate(
+                &entry,
+                mesh.0,
+                selected_material.as_ref(),
+                declare_only,
+            )
+            .await
+            {
+                // shared a donor's geometry — nothing to upload
+            } else {
+                match super::mesh_cache::get_raw(mesh.0) {
+                    Some(raw) => {
+                        upload_simple_mesh(
+                            entry.clone(),
+                            raw,
+                            MeshMaterial::Assigned(selected_material),
+                            declare_only,
+                        )
+                        .await;
+                    }
+                    None => {
+                        tracing::warn!(
+                            "NodeKind::Mesh {mesh:?}: not in the capture cache; renders empty"
+                        )
+                    }
+                }
             }
-            None => {
-                tracing::warn!("NodeKind::Mesh {mesh:?}: not in the capture cache; renders empty")
-            }
-        },
+        }
         // A skinned glTF import: the renderer's `populate_gltf` already built the
         // skinned mesh + skeleton; we keep that copy rendering (it deforms via the
         // joints) and just (re)assign this node's material/shadow to it. NOT the
@@ -822,6 +916,7 @@ pub(crate) fn merged_builtin_def(
         emissive: inline.emissive,
         normal_scale: inline.normal_scale,
         occlusion_strength: inline.occlusion_strength,
+        ssr_mask: inline.ssr_mask,
         base_color_texture: tex(
             "base_color_texture",
             inline.base_color_texture,
@@ -973,33 +1068,9 @@ fn raw_mesh_from_rig(skin: &awsm_renderer_editor_protocol::SkinnedMeshRef) -> Op
     // joint node-index → its editor bone `TransformKey`. A bone not yet in the bridge
     // means the transforms-first pass hasn't landed it → return `None` so the caller
     // retries (same ordering guard as before). Morph-only nodes have no skin → `None`.
-    let b = bridge();
     let raw_skin = match decode.skin.as_ref() {
         Some(ext_skin) => {
-            let mut joints = Vec::with_capacity(ext_skin.joint_node_indices.len());
-            for rig_idx in &ext_skin.joint_node_indices {
-                let bone_node = skin
-                    .joints
-                    .iter()
-                    .find(|sj| sj.index == *rig_idx as u32)
-                    .map(|sj| sj.node)?;
-                let tk = {
-                    let nodes = b.nodes.lock().unwrap();
-                    match nodes.get(&bone_node).map(|e| e.transform_key) {
-                        Some(tk) => tk,
-                        None => {
-                            tracing::warn!(
-                                "raw_mesh_from_rig: bone node {:?} (rig joint idx {}) not yet \
-                                 in bridge — falling back",
-                                bone_node,
-                                rig_idx
-                            );
-                            return None;
-                        }
-                    }
-                };
-                joints.push(tk);
-            }
+            let joints = resolve_skin_joint_transforms(skin, ext_skin)?;
             let inverse_bind_matrices: Vec<Mat4> = ext_skin
                 .inverse_bind_matrices
                 .iter()
@@ -1055,6 +1126,331 @@ fn raw_mesh_from_rig(skin: &awsm_renderer_editor_protocol::SkinnedMeshRef) -> Op
     })
 }
 
+/// Resolve a `SkinnedMesh` node's skin joints to their editor-bone renderer
+/// `TransformKey`s, in the RIG-GLB joint order (`ext_skin.joint_node_indices`)
+/// — the order every renderer skin built from this source uses, so the result
+/// pairs 1:1 with that skin's inverse-bind matrices. `None` when a joint isn't
+/// in the node's `skin.joints` table or its bone node hasn't materialized in
+/// the bridge yet (callers fall back / retry — the same ordering guard the
+/// raw-mesh path always had).
+fn resolve_skin_joint_transforms(
+    skin: &awsm_renderer_editor_protocol::SkinnedMeshRef,
+    ext_skin: &awsm_renderer_glb_export::ExtractedSkin,
+) -> Option<Vec<TransformKey>> {
+    let b = bridge();
+    let nodes = b.nodes.lock().unwrap();
+    let mut joints = Vec::with_capacity(ext_skin.joint_node_indices.len());
+    for rig_idx in &ext_skin.joint_node_indices {
+        let bone_node = skin
+            .joints
+            .iter()
+            .find(|sj| sj.index == *rig_idx as u32)
+            .map(|sj| sj.node)?;
+        match nodes.get(&bone_node).map(|e| e.transform_key) {
+            Some(tk) => joints.push(tk),
+            None => {
+                tracing::warn!(
+                    "skinned materialize: bone node {:?} (rig joint idx {}) not yet in \
+                     bridge — falling back",
+                    bone_node,
+                    rig_idx
+                );
+                return None;
+            }
+        }
+    }
+    Some(joints)
+}
+
+/// A live, already-materialized skinned drawable of the SAME rig geometry
+/// (same source / rig node index / primitive) on ANOTHER scene node — the
+/// geometry donor a duplicated `SkinnedMesh` shares GPU buffers with instead
+/// of re-uploading (axis 4: clone must never clone data). Returns the donor's
+/// `MeshKey`; `None` when this node is the first of its geometry (the normal
+/// first-materialize) or no candidate is live/skinned right now.
+/// Find a live node whose materialized drawable can serve as the geometry
+/// donor for a `NodeKind::Mesh` referencing the same mesh ASSET — the static
+/// counterpart of [`find_skinned_geometry_donor`]. Only node-owned drawables
+/// (`model_meshes`) qualify; liveness is validated against the renderer, and
+/// instanced meshes are skipped (an instancer's drawable carries per-instance
+/// state a plain duplicate must not inherit).
+fn find_static_geometry_donor(
+    r: &awsm_renderer::AwsmRenderer,
+    node_id: NodeId,
+    mesh_asset: crate::engine::scene::AssetId,
+) -> Option<awsm_renderer::meshes::MeshKey> {
+    let b = bridge();
+    let nodes = b.nodes.lock().unwrap();
+    for entry in nodes.values() {
+        if entry.node_id == node_id {
+            continue;
+        }
+        let NodeKind::Mesh { mesh: other, .. } = entry.node.kind.get_cloned() else {
+            continue;
+        };
+        if other.0 != mesh_asset {
+            continue;
+        }
+        for mk in entry.model_meshes.lock().unwrap().iter() {
+            if let Ok(m) = r.meshes.get(*mk) {
+                if !m.instanced {
+                    return Some(*mk);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Materialize a `NodeKind::Mesh` by SHARING an existing node's geometry:
+/// duplicate the donor's mesh (refcounted resource — no re-upload) with this
+/// node's own material/shadow/visibility. Returns `false` (having created
+/// nothing) when there is no donor or the resolved material needs a pass
+/// representation the donor's geometry doesn't carry — the caller then takes
+/// the fresh `upload_simple_mesh` path.
+async fn materialize_static_duplicate(
+    entry: &Arc<RendererNode>,
+    mesh_asset: crate::engine::scene::AssetId,
+    material: Option<&awsm_renderer_editor_protocol::dynamic_material::MaterialInstance>,
+    declare_only: bool,
+) -> bool {
+    let visible = entry.node.visible.get();
+    let shadow_cfg = entry
+        .node
+        .kind
+        .get_cloned()
+        .mesh_shadow()
+        .copied()
+        .unwrap_or_default();
+    let shadow_flags = mesh_shadow_flags_from_config(&shadow_cfg);
+
+    let handle = renderer_handle();
+    let mut r = handle.lock().await;
+    let Some(donor_mk) = find_static_geometry_donor(&r, entry.node_id, mesh_asset) else {
+        return false;
+    };
+    // Same geometry ⇒ same vertex-colour classification as the donor.
+    let vertex_color_set = mesh_vertex_color_set(&r, donor_mk);
+    let mat_key = resolve_assigned_material(&mut r, material, vertex_color_set);
+    // The duplicate reuses the donor's uploaded representations — a material
+    // routed to a pass the donor's geometry has no representation for can't
+    // share; fall back to the fresh-upload path, which packs the right kind.
+    let donor_has_rep = if r.materials.is_transparency_pass(mat_key) {
+        r.meshes
+            .transparency_geometry_data_buffer_offset(donor_mk)
+            .is_ok()
+    } else {
+        r.meshes
+            .visibility_geometry_data_buffer_offset(donor_mk)
+            .is_ok()
+    };
+    if !donor_has_rep {
+        r.remove_material(mat_key);
+        return false;
+    }
+    let sub_tk = r
+        .transforms
+        .insert(Transform::IDENTITY, Some(entry.transform_key));
+    match r.duplicate_mesh_with_transform(donor_mk, sub_tk) {
+        Ok(mk) => {
+            let _ = r.set_mesh_material(mk, mat_key);
+            let _ = r.set_mesh_hidden(mk, !visible);
+            let _ = r.set_mesh_shadow_flags(mk, shadow_flags);
+            if !declare_only {
+                if let Err(e) = r
+                    .commit_load(crate::engine::activity::commit_phase_handler())
+                    .await
+                {
+                    tracing::warn!("commit_load (static duplicate): {e}");
+                }
+            }
+            drop(r);
+            entry.model_meshes.lock().unwrap().push(mk);
+            entry.model_transforms.lock().unwrap().push(sub_tk);
+            entry.material_keys.lock().unwrap().push(mat_key);
+            bridge().register_mesh(mk, entry.node_id);
+            true
+        }
+        Err(e) => {
+            r.transforms.remove(sub_tk);
+            r.remove_material(mat_key);
+            tracing::warn!("static duplicate: duplicate_mesh_with_transform failed: {e}");
+            false
+        }
+    }
+}
+
+fn find_skinned_geometry_donor(
+    r: &awsm_renderer::AwsmRenderer,
+    node_id: NodeId,
+    skin: &awsm_renderer_editor_protocol::SkinnedMeshRef,
+) -> Option<awsm_renderer::meshes::MeshKey> {
+    let b = bridge();
+    let nodes = b.nodes.lock().unwrap();
+    for entry in nodes.values() {
+        if entry.node_id == node_id {
+            continue;
+        }
+        let NodeKind::SkinnedMesh { skin: other, .. } = entry.node.kind.get_cloned() else {
+            continue;
+        };
+        if other.source != skin.source
+            || other.rig_node_index != skin.rig_node_index
+            || other.primitive_index != skin.primitive_index
+        {
+            continue;
+        }
+        // Node-owned drawables only (`model_meshes`) — the legacy
+        // template-reuse path's meshes are template-owned and never land here.
+        // Validate liveness against the renderer (the entry could be
+        // mid-rematerialize). No skin requirement: a MORPH-ONLY source's
+        // drawable carries no skin, and same source/rig-node/primitive ⇒ same
+        // skinned-ness — the caller branches on the rig decode.
+        for mk in entry.model_meshes.lock().unwrap().iter() {
+            if r.meshes.get(*mk).is_ok() {
+                return Some(*mk);
+            }
+        }
+    }
+    None
+}
+
+/// Materialize a DUPLICATED `SkinnedMesh` node by SHARING an existing node's
+/// geometry: duplicate the donor's mesh (refcounted resource — no geometry
+/// re-upload) onto a fresh per-instance skin cloned over THIS node's bones.
+/// The per-instance GPU data is the skin's joint-matrix palette (+ a morph
+/// WEIGHTS slot when the rig is morphed) — exactly the prefab-instantiate
+/// model the scene-loader uses, so editor duplicates and player prefab
+/// instances agree on one sharing model. Returns `false` (having created
+/// nothing) when there is no donor / no rig decode / a bone isn't bridged yet
+/// / the resolved material needs a pass representation the donor's geometry
+/// doesn't carry — the caller then takes the normal `add_raw_mesh` path.
+async fn materialize_skinned_duplicate(
+    entry: &Arc<RendererNode>,
+    skin: &awsm_renderer_editor_protocol::SkinnedMeshRef,
+    material: Option<&awsm_renderer_editor_protocol::dynamic_material::MaterialInstance>,
+    declare_only: bool,
+) -> bool {
+    let visible = entry.node.visible.get();
+    let shadow_cfg = entry
+        .node
+        .kind
+        .get_cloned()
+        .mesh_shadow()
+        .copied()
+        .unwrap_or_default();
+    let shadow_flags = mesh_shadow_flags_from_config(&shadow_cfg);
+
+    let handle = renderer_handle();
+    let mut r = handle.lock().await;
+    // Donor first — it's the cheap check, and on the COMMON first-materialize
+    // (no donor) it bails before paying for a rig decode clone.
+    let Some(donor_mk) = find_skinned_geometry_donor(&r, entry.node_id, skin) else {
+        return false;
+    };
+    // Joint order comes from the rig decode (the order the donor's skin — and
+    // every renderer skin of this source — was inserted in); an uncached rig
+    // can't take this path. A MORPH-ONLY node (rig decode has no skin) shares
+    // geometry too — it skips the skin clone and mints only a fresh
+    // morph-weights instance (`duplicate_mesh_with_transform`).
+    let Some(decode) = super::skinned_bake_cache::get_rig_node_decode(
+        skin.source,
+        skin.rig_node_index,
+        skin.primitive_index,
+    ) else {
+        return false;
+    };
+    // Skinned: resolve the donor skin + this node's cloned joints up front
+    // (before any allocation) so every bail below stays create-nothing.
+    let skin_parts = match decode.skin.as_ref() {
+        Some(ext_skin) => {
+            let Some(donor_skin) = r.meshes.mesh_skin_key(donor_mk).flatten() else {
+                return false;
+            };
+            let Some(instance_joints) = resolve_skin_joint_transforms(skin, ext_skin) else {
+                return false;
+            };
+            Some((donor_skin, instance_joints))
+        }
+        None => None,
+    };
+
+    // Same geometry ⇒ same vertex-colour classification as the donor.
+    let vertex_color_set = mesh_vertex_color_set(&r, donor_mk);
+    let mat_key = resolve_assigned_material(&mut r, material, vertex_color_set);
+    // The duplicate reuses the donor's uploaded representations — a material
+    // routed to a pass the donor's geometry has no representation for (an
+    // opaque↔blend flip relative to how the donor committed) can't share;
+    // fall back to the fresh-upload path, which packs the right kind.
+    let donor_has_rep = if r.materials.is_transparency_pass(mat_key) {
+        r.meshes
+            .transparency_geometry_data_buffer_offset(donor_mk)
+            .is_ok()
+    } else {
+        r.meshes
+            .visibility_geometry_data_buffer_offset(donor_mk)
+            .is_ok()
+    };
+    if !donor_has_rep {
+        r.remove_material(mat_key);
+        return false;
+    }
+
+    // Same placement rule as the fresh path: skinned drawables ride an
+    // IDENTITY transform under the renderer root (the skin deforms via the
+    // joints; the glTF rule ignores a skinned mesh node's own transform).
+    let root = r.transforms.root_node;
+    let sub_tk = r.transforms.insert(Transform::IDENTITY, Some(root));
+    let dup_result = match skin_parts {
+        Some((donor_skin, instance_joints)) => {
+            let new_skin = match r.clone_skin_for_joints(donor_skin, instance_joints) {
+                Ok(k) => k,
+                Err(e) => {
+                    r.transforms.remove(sub_tk);
+                    r.remove_material(mat_key);
+                    tracing::warn!("skinned duplicate: clone_skin_for_joints failed: {e}");
+                    return false;
+                }
+            };
+            r.duplicate_skinned_mesh_with_skin(donor_mk, sub_tk, new_skin)
+                .inspect_err(|_| {
+                    r.meshes.skins.remove(new_skin, None);
+                })
+        }
+        // Morph-only: shared geometry, fresh per-instance morph weights.
+        None => r.duplicate_mesh_with_transform(donor_mk, sub_tk),
+    };
+    match dup_result {
+        Ok(mk) => {
+            let _ = r.set_mesh_material(mk, mat_key);
+            let _ = r.set_mesh_hidden(mk, !visible);
+            let _ = r.set_mesh_shadow_flags(mk, shadow_flags);
+            if !declare_only {
+                if let Err(e) = r
+                    .commit_load(crate::engine::activity::commit_phase_handler())
+                    .await
+                {
+                    tracing::warn!("commit_load (skinned duplicate): {e}");
+                }
+            }
+            drop(r);
+            entry.model_meshes.lock().unwrap().push(mk);
+            entry.model_transforms.lock().unwrap().push(sub_tk);
+            entry.material_keys.lock().unwrap().push(mat_key);
+            bridge().register_mesh(mk, entry.node_id);
+            true
+        }
+        Err(e) => {
+            // A failed skinned duplicate already freed its cloned skin (see
+            // the map_err above); only the shared allocations remain.
+            r.transforms.remove(sub_tk);
+            r.remove_material(mat_key);
+            tracing::warn!("skinned duplicate: duplicate failed: {e}");
+            false
+        }
+    }
+}
+
 /// Materialize (or re-materialize) a `SkinnedMesh` node. **The unified path** decodes
 /// the clean rig glb (our-format) into a NODE-OWNED skinned drawable via
 /// [`raw_mesh_from_rig`] + `add_raw_mesh` with the CURRENT material, so an
@@ -1074,6 +1470,14 @@ async fn materialize_skinned_mesh(
     material: Option<awsm_renderer_editor_protocol::dynamic_material::MaterialInstance>,
     declare_only: bool,
 ) {
+    // GEOMETRY-SHARING duplicate path (axis 4): when another node already
+    // materialized this exact rig geometry (a duplicated character), don't
+    // re-upload it — duplicate that mesh over the shared resource with a
+    // fresh per-instance skin bound to THIS node's (cloned) bones.
+    if materialize_skinned_duplicate(&entry, &skin, material.as_ref(), declare_only).await {
+        return;
+    }
+
     let Some(raw) = raw_mesh_from_rig(&skin) else {
         // No rig decode cached → the legacy template-reuse fallback (a SAFETY NET for
         // legacy projects / sources whose rig glb wasn't persisted). Kept on purpose:
@@ -1556,36 +1960,125 @@ async fn materialize_collider(
 /// Projection decal (`NodeKind::Decal`) → inserts the renderer decal (inert
 /// until a texture is assigned) plus a unit-cube volume wireframe so the decal
 /// is placeable/visible in the editor (the projection volume).
+///
+/// Idempotent: drains any previously-inserted decal + wireframe first, so it
+/// doubles as the re-bake the transform observer calls on every move/rotate/
+/// scale (mirrors `materialize_collider`). Both the renderer decal (world-baked
+/// `inverse_transform` + AABB) and the wireframe (world-baked line geometry)
+/// are snapshots of the node's world matrix — without the re-bake they'd stay
+/// at the materialize-time placement while the node moved on.
+///
+/// `declare_only` mirrors the other materializers (⭐ TRANSACTION PRINCIPLE):
+/// when the decal's texture resolve stages a FRESH pool upload on a LIVE edit
+/// (`declare_only == false`), this issues the `commit_load` that finalizes it;
+/// a bulk load leaves the staged upload for the Replace join's single commit.
 async fn materialize_decal(
     entry: Arc<RendererNode>,
     cfg: awsm_renderer_editor_protocol::DecalConfig,
+    declare_only: bool,
 ) {
-    let parent_tk = entry.transform_key;
+    let key = entry.transform_key;
     let entry2 = entry.clone();
     let alpha = cfg.alpha;
-    with_renderer_mut(move |r| {
-        let world = r
-            .transforms
-            .get_world(parent_tk)
-            .copied()
-            .unwrap_or(glam::Mat4::IDENTITY);
-        match r.insert_decal(world, 0, alpha) {
-            Ok(key) => entry2.decal_keys.lock().unwrap().push(key),
-            Err(err) => tracing::warn!("insert_decal: {err:?}"),
+    let texture = cfg.texture;
+    let old_decals: Vec<_> = entry.decal_keys.lock().unwrap().drain(..).collect();
+    let old_lines: Vec<_> = entry.line_keys.lock().unwrap().drain(..).collect();
+    let handle = renderer_handle();
+    let mut r = handle.lock().await;
+    for dk in old_decals {
+        r.remove_decal(dk);
+    }
+    for lk in old_lines {
+        r.remove_line(lk);
+    }
+    // Fresh world = parent's CURRENT world × this node's local. `get_world`
+    // on the node itself is a cached matrix only refreshed by the render
+    // loop's update_transforms, so reading it right after `set_local` (the
+    // transform-observer re-bake) or right after the transform was first
+    // established (whose cached world is seeded local-only, missing
+    // ancestors) would bake a stale/incomplete placement into the decal —
+    // same fix as `materialize_collider`.
+    let local = r
+        .transforms
+        .get_local(key)
+        .map(|t| t.to_matrix())
+        .unwrap_or(glam::Mat4::IDENTITY);
+    let parent_world = r
+        .transforms
+        .get_parent(key)
+        .ok()
+        .and_then(|p| r.transforms.get_world(p).ok().copied())
+        .unwrap_or(glam::Mat4::IDENTITY);
+    let world = parent_world * local;
+    // A cache MISS below means the resolve STAGES a fresh pool upload
+    // (procedural assets upload lazily at first bind) — probe it BEFORE the
+    // resolve registers the key, so we know whether to commit afterwards.
+    let texture_was_cached = texture.as_ref().map(|tref| {
+        super::material::texture_binding_cached(
+            tref.asset,
+            true,
+            awsm_renderer_core::texture::mipmap::MipmapTextureKind::Albedo,
+        )
+    });
+    // Resolve the decal's texture asset to the pool's flat index the decal
+    // shader unpacks (`array_index * stride + layer_index` — the same
+    // packing the scene-loader uses). This was hard-coded to 0, which
+    // sampled whatever texture happened to occupy pool slot (0,0) — an
+    // editor decal never projected its ASSIGNED texture.
+    let resolved = texture.as_ref().and_then(|tref| {
+        super::material::resolve_texture_binding(
+            &mut r,
+            tref,
+            true,
+            awsm_renderer_core::texture::mipmap::MipmapTextureKind::Albedo,
+        )
+    });
+    let texture_index = resolved
+        .and_then(|(key, _sampler)| {
+            let stride = awsm_renderer::decals::decal_texture_index_stride(&r.gpu);
+            r.textures
+                .get_entry(key)
+                .ok()
+                .map(|e| (e.array_index as u32) * stride + e.layer_index as u32)
+        })
+        .unwrap_or(0);
+    match r.insert_decal(world, texture_index, alpha) {
+        Ok(key) => entry2.decal_keys.lock().unwrap().push(key),
+        Err(err) => tracing::warn!("insert_decal: {err:?}"),
+    }
+    // The decal volume is the ±1 oriented unit cube (2×2×2 m under unit
+    // scale) — half-extents 1.0, so the wireframe shows the TRUE
+    // projection volume. (Was 0.5: the affordance covered an eighth of
+    // the volume the decal actually projects into.)
+    let (positions, colors) = super::collider_wire::build(
+        &awsm_renderer_editor_protocol::ColliderShape::Box {
+            half_extents: [1.0, 1.0, 1.0],
+        },
+        &world,
+    );
+    if !positions.is_empty() {
+        if let Ok(Some(lk)) = r.add_line_segments(&positions, &colors, 1.5, false) {
+            entry2.line_keys.lock().unwrap().push(lk);
         }
-        let (positions, colors) = super::collider_wire::build(
-            &awsm_renderer_editor_protocol::ColliderShape::Box {
-                half_extents: [0.5, 0.5, 0.5],
-            },
-            &world,
-        );
-        if !positions.is_empty() {
-            if let Ok(Some(lk)) = r.add_line_segments(&positions, &colors, 1.5, false) {
-                entry2.line_keys.lock().unwrap().push(lk);
-            }
+    }
+    // The resolve above staged a FRESH texture upload (first bind of a
+    // procedural / captured-raster asset): the image only lives in the pool's
+    // CPU staging until `commit_load` finalizes it — uploads the array,
+    // rebuilds the decal pass's texture-pool bind group, and recompiles the
+    // pool-baked shaders. No other path commits for a decal (it inserts no
+    // mesh), so without this the decal projected the pool PLACEHOLDER (solid
+    // white) until some unrelated edit happened to commit. Cache hits (incl.
+    // every transform-observer re-bake) skip it, and a bulk load
+    // (`declare_only`) defers to the Replace join's single commit — loading
+    // is ONE transaction.
+    if !declare_only && resolved.is_some() && texture_was_cached == Some(false) {
+        if let Err(e) = r
+            .commit_load(crate::engine::activity::commit_phase_handler())
+            .await
+        {
+            tracing::warn!("materialize_decal commit_load: {e}");
         }
-    })
-    .await;
+    }
 }
 
 /// The single curve node referenced by a sweep/instances node, if it exists and
@@ -1783,6 +2276,70 @@ async fn materialize_instances(
     }
 }
 
+/// Explicit instancer (`NodeKind::Instancer`): draw the referenced mesh ASSET
+/// once with the node's authored per-instance transforms via GPU instancing —
+/// ONE geometry upload (`upload_simple_mesh`) + one instance buffer
+/// (`enable_mesh_instancing_opaque`), exactly like [`materialize_instances`]
+/// but with the transform list stored on the node instead of derived from a
+/// curve. Per-instance colors ride the same instance-attribute path.
+async fn materialize_instancer(
+    entry: Arc<RendererNode>,
+    def: awsm_renderer_editor_protocol::InstancerDef,
+    declare_only: bool,
+) {
+    use awsm_renderer::instances::InstanceAttr;
+
+    // A nil mesh ref just means "not wired up yet" — the node renders empty
+    // until the user picks a mesh (mirrors InstancesAlongCurve's nil refs).
+    // An empty transform list is likewise a valid authored state (instancing
+    // requires ≥ 1 transform, so there is nothing to draw).
+    if def.mesh.0.is_nil() || def.transforms.is_empty() {
+        return;
+    }
+    let Some(raw) = super::mesh_cache::get_raw(def.mesh.0) else {
+        tracing::warn!("Instancer mesh {} not in the capture cache", def.mesh.0);
+        return;
+    };
+
+    let transforms: Vec<Transform> = def.transforms.iter().map(trs_to_transform).collect();
+    let has_colors = !def.per_instance_colors.is_empty();
+    let attrs: Vec<InstanceAttr> = if has_colors {
+        // Expand to the instance count, repeating the last authored value (the
+        // def's documented semantics — same as InstancesAlongCurve).
+        (0..transforms.len())
+            .map(|i| {
+                let rgba = def.per_instance_colors[i.min(def.per_instance_colors.len() - 1)];
+                InstanceAttr::from_rgba_alpha_size(rgba, 1.0, 1.0)
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    let mesh_key = upload_simple_mesh(
+        entry,
+        raw,
+        MeshMaterial::Flat(awsm_renderer_editor_protocol::MaterialDef::default()),
+        declare_only,
+    )
+    .await;
+    if let Some(mk) = mesh_key {
+        with_renderer_mut(move |r| {
+            if let Err(err) = r.enable_mesh_instancing_opaque(mk, &transforms) {
+                tracing::warn!("enable_mesh_instancing_opaque failed: {err}");
+            }
+            if has_colors {
+                if let Ok(tk) = r.meshes.get(mk).map(|m| m.transform_key) {
+                    if let Err(err) = r.set_mesh_instance_attrs(tk, &attrs) {
+                        tracing::warn!("set_mesh_instance_attrs failed: {err}");
+                    }
+                }
+            }
+        })
+        .await;
+    }
+}
+
 /// Particle emitter (`NodeKind::ParticleEmitter`) → an auto-playing simulator +
 /// instanced billboard quad, ticked each frame by the render loop.
 async fn materialize_particle(
@@ -1909,12 +2466,55 @@ pub(crate) async fn rematerialize_mesh_nodes() {
     let _guard = crate::controller::CompileGuard::new();
     let entries: Vec<Arc<RendererNode>> =
         bridge().nodes.lock().unwrap().values().cloned().collect();
+    let mut declared = false;
     for entry in entries {
         let kind = entry.node.kind.get_cloned();
-        if matches!(kind, NodeKind::Mesh { .. }) {
-            // Live re-materialise (mesh edit) — declares AND commits, as before.
-            apply_kind(entry, kind, false).await;
+        // Instancers read the same mesh cache, so a geometry edit to a shared
+        // mesh asset must re-upload them too (their kind didn't change either).
+        if matches!(kind, NodeKind::Mesh { .. } | NodeKind::Instancer(_)) {
+            // ⭐ TRANSACTION grain = the USER OP, not the node: one mesh edit
+            // can re-materialize MANY referencing nodes (shared mesh asset →
+            // several Mesh/Instancer nodes) — declare each, commit ONCE below
+            // (was: a full commit_load per node inside apply_kind).
+            apply_kind(entry, kind, true).await;
+            declared = true;
         }
+    }
+    if declared {
+        commit_bulk_load().await;
+    }
+}
+
+#[cfg(test)]
+mod load_settle_barrier_tests {
+    use super::{arm_load_settle_barrier, release_load_settle_barrier};
+
+    /// The load-settle barrier must pair arm/release exactly onto
+    /// `compile_pending` (what `wait_render_settled` polls), tolerate an
+    /// UNARMED release (a New-Project root Replace runs the release path with
+    /// nothing armed), never underflow, and support nested arming (two loads
+    /// in flight → two Replaces → two releases).
+    #[test]
+    fn barrier_pairs_and_tolerates_unarmed_release() {
+        crate::controller::init();
+        let pending = || crate::controller::controller().compile_pending.get();
+        let base = pending();
+        // Unarmed release is a no-op (never underflows the settle counter).
+        release_load_settle_barrier();
+        assert_eq!(pending(), base);
+        // One load: armed holds the barrier, release drops it.
+        arm_load_settle_barrier();
+        assert_eq!(pending(), base + 1);
+        release_load_settle_barrier();
+        assert_eq!(pending(), base);
+        // Nested loads pair symmetrically; the extra release is a no-op.
+        arm_load_settle_barrier();
+        arm_load_settle_barrier();
+        assert_eq!(pending(), base + 2);
+        release_load_settle_barrier();
+        release_load_settle_barrier();
+        release_load_settle_barrier();
+        assert_eq!(pending(), base);
     }
 }
 

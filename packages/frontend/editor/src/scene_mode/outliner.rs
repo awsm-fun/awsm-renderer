@@ -821,6 +821,8 @@ pub fn kind_icon(kind: &NodeKind) -> &'static str {
         NodeKind::ClusterMesh { .. } => "cube",
         NodeKind::Curve(_) => "curve",
         NodeKind::InstancesAlongCurve(_) => "layers",
+        // The explicit instancer is the same concept (N copies of one mesh).
+        NodeKind::Instancer(_) => "layers",
         NodeKind::Line(_) => "curve",
         NodeKind::Sprite(_) => "sprite",
         NodeKind::ParticleEmitter(_) => "sprite",

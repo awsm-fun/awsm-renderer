@@ -10,7 +10,7 @@ use crate::{
     AwsmRenderer,
 };
 
-use super::blend::{blend_additive, blend_replace};
+use super::blend::{blend_additive_into, blend_replace_into};
 use super::clip_group::{
     AnimationClipGroup, AnimationClipKey, AnimationTarget, BuiltinMaterialParam, CameraParam,
     LightParam,
@@ -325,20 +325,22 @@ impl AwsmRenderer {
                 // skip the dangling write; the relower rebinds it. Present keys unchanged.
                 AnimationData::Vertex(vertex_animation) => match morph_key {
                     AnimationMorphKey::Geometry(morph_key) => {
-                        let _ = self.meshes.morphs.geometry.update_morph_weights_with(
-                            *morph_key,
-                            |target| {
-                                target.copy_from_slice(&vertex_animation.weights);
-                            },
-                        );
+                        let _ = self
+                            .meshes
+                            .morphs
+                            .geometry
+                            .update_morph_weights_with(*morph_key, |target| {
+                                vertex_animation.apply_mut(target)
+                            });
                     }
                     AnimationMorphKey::Material(morph_key) => {
-                        let _ = self.meshes.morphs.material.update_morph_weights_with(
-                            *morph_key,
-                            |target| {
-                                target.copy_from_slice(&vertex_animation.weights);
-                            },
-                        );
+                        let _ = self
+                            .meshes
+                            .morphs
+                            .material
+                            .update_morph_weights_with(*morph_key, |target| {
+                                vertex_animation.apply_mut(target)
+                            });
                     }
                 },
                 _ => {
@@ -420,12 +422,15 @@ impl AwsmRenderer {
                 for (target, value) in samples.iter() {
                     let target = *target;
                     self.ensure_rest(target)?;
-                    let rest_val = match self.animations.rest.get(&target) {
-                        Some(r) => r.clone(),
-                        None => continue,
+                    // Skip unreadable targets (no rest); otherwise seed the
+                    // accumulator from rest ONLY on the first touch this frame
+                    // — the unconditional clone here was a per-sample heap
+                    // alloc for morph `Vertex` data.
+                    let Some(rest_ref) = self.animations.rest.get(&target) else {
+                        continue;
                     };
-                    let entry = acc.entry(target).or_insert_with(|| rest_val.clone());
-                    *entry = blend_replace(entry, value, 1.0);
+                    let entry = acc.entry(target).or_insert_with(|| rest_ref.clone());
+                    blend_replace_into(entry, value, 1.0);
                 }
             }
             clip_keys.clear();
@@ -438,18 +443,31 @@ impl AwsmRenderer {
         let mut targets = std::mem::take(&mut self.animations.scratch_targets);
         targets.clear();
         targets.extend(self.animations.rest.keys().copied());
+        // `acc` is an owned local (mem::take'n scratch), so the composited
+        // value can be written by reference — no per-target clone (a heap
+        // alloc for morph `Vertex` data). The rest-restore arm writes by
+        // reference too: `rest` is mem::take'n around the loop (its borrow
+        // couldn't otherwise cross the `&mut self` write call) and restored
+        // unconditionally — including across the `?` — below.
+        let rest = std::mem::take(&mut self.animations.rest);
+        let mut write_result = Ok(());
         for &target in &targets {
-            let value = match acc.get(&target) {
-                Some(v) => v.clone(),
-                None => self
-                    .animations
-                    .rest
-                    .get(&target)
-                    .cloned()
-                    .expect("rest entry exists for a key drawn from rest"),
+            let result = match acc.get(&target) {
+                Some(v) => self.write_anim_target(target, v),
+                None => {
+                    let value = rest
+                        .get(&target)
+                        .expect("rest entry exists for a key drawn from rest");
+                    self.write_anim_target(target, value)
+                }
             };
-            self.write_anim_target(target, &value)?;
+            if let Err(e) = result {
+                write_result = Err(e);
+                break;
+            }
         }
+        self.animations.rest = rest;
+        write_result?;
 
         // Return the scratch buffers (cleared — capacity retained for next frame).
         acc.clear();
@@ -520,24 +538,25 @@ impl AwsmRenderer {
                     }
                     // Lazy-capture rest BEFORE any write this frame.
                     self.ensure_rest(target)?;
-                    let rest_val = match self.animations.rest.get(&target) {
-                        Some(r) => r.clone(),
-                        None => continue, // unreadable target — skip
+                    // Borrow the rest value instead of cloning it per sample
+                    // (a heap alloc for morph `Vertex` data): `acc` is a
+                    // caller-owned scratch, so holding this `&self` borrow
+                    // across the accumulator writes is fine. The clone now
+                    // happens only when seeding a first-touch entry.
+                    let Some(rest_ref) = self.animations.rest.get(&target) else {
+                        continue; // unreadable target — skip
                     };
-                    let entry = acc.entry(target).or_insert_with(|| rest_val.clone());
+                    let entry = acc.entry(target).or_insert_with(|| rest_ref.clone());
                     match &layer.mode {
                         LayerMode::Replace => {
-                            *entry = blend_replace(entry, value, w);
+                            blend_replace_into(entry, value, w);
                         }
                         LayerMode::Additive { base_clip } => {
                             let reference = match base_clip {
-                                Some(_) => base
-                                    .get(&target)
-                                    .cloned()
-                                    .unwrap_or_else(|| rest_val.clone()),
-                                None => rest_val.clone(),
+                                Some(_) => base.get(&target).unwrap_or(rest_ref),
+                                None => rest_ref,
                             };
-                            *entry = blend_additive(entry, value, &reference, w);
+                            blend_additive_into(entry, value, reference, w);
                         }
                     }
                 }
@@ -645,6 +664,10 @@ impl AwsmRenderer {
                     },
                     BuiltinMaterialParam::NormalScale => match m {
                         Material::Pbr(p) => Some(AnimationData::F32(p.normal_scale)),
+                        _ => None,
+                    },
+                    BuiltinMaterialParam::SsrMask => match m {
+                        Material::Pbr(p) => Some(AnimationData::F32(p.ssr_mask)),
                         _ => None,
                     },
                     BuiltinMaterialParam::OcclusionStrength => match m {
@@ -808,22 +831,22 @@ impl AwsmRenderer {
                 // path; present keys are unchanged.
                 AnimationData::Vertex(vertex_animation) => match morph_key {
                     AnimationMorphKey::Geometry(morph_key) => {
-                        let _ = self.meshes.morphs.geometry.update_morph_weights_with(
-                            morph_key,
-                            |target| {
-                                let n = target.len().min(vertex_animation.weights.len());
-                                target[..n].copy_from_slice(&vertex_animation.weights[..n]);
-                            },
-                        );
+                        let _ = self
+                            .meshes
+                            .morphs
+                            .geometry
+                            .update_morph_weights_with(morph_key, |target| {
+                                vertex_animation.apply_mut(target)
+                            });
                     }
                     AnimationMorphKey::Material(morph_key) => {
-                        let _ = self.meshes.morphs.material.update_morph_weights_with(
-                            morph_key,
-                            |target| {
-                                let n = target.len().min(vertex_animation.weights.len());
-                                target[..n].copy_from_slice(&vertex_animation.weights[..n]);
-                            },
-                        );
+                        let _ = self
+                            .meshes
+                            .morphs
+                            .material
+                            .update_morph_weights_with(morph_key, |target| {
+                                vertex_animation.apply_mut(target)
+                            });
                     }
                 },
                 _ => {
@@ -973,6 +996,7 @@ impl AwsmRenderer {
             | BuiltinMaterialParam::Roughness
             | BuiltinMaterialParam::NormalScale
             | BuiltinMaterialParam::OcclusionStrength
+            | BuiltinMaterialParam::SsrMask
             | BuiltinMaterialParam::EmissiveStrength
             | BuiltinMaterialParam::AlphaCutoff
             | BuiltinMaterialParam::ToonDiffuseBands
@@ -991,6 +1015,7 @@ impl AwsmRenderer {
                         BuiltinMaterialParam::Roughness => pbr.roughness_factor = scalar,
                         BuiltinMaterialParam::NormalScale => pbr.normal_scale = scalar,
                         BuiltinMaterialParam::OcclusionStrength => pbr.occlusion_strength = scalar,
+                        BuiltinMaterialParam::SsrMask => pbr.ssr_mask = scalar.clamp(0.0, 1.0),
                         // Animate the VALUE only when the feature is already enabled
                         // (toggling it on/off would change the compiled feature set).
                         BuiltinMaterialParam::EmissiveStrength => {

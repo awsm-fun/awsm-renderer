@@ -64,6 +64,22 @@ pub fn get_captured(id: AssetId) -> Option<CapturedMesh> {
     CAPTURED.with(|c| c.borrow().get(&id).cloned())
 }
 
+/// Whether a captured mesh for `id` is stored with non-empty geometry — a
+/// presence probe that avoids [`get_captured`]'s full clone. Used by the
+/// save census (`persistence::save_census`) to count meshes with real bytes.
+pub fn has_captured_bytes(id: AssetId) -> bool {
+    CAPTURED.with(|c| c.borrow().get(&id).is_some_and(|m| !m.positions.is_empty()))
+}
+
+/// Drop every captured mesh. Only the `VerifyRoundtrip` self-test calls this:
+/// a normal reload keeps the cache warm (its bytes ARE the persisted
+/// `.mesh.bin` side files), but the end-to-end losslessness proof must model a
+/// truly cold load where `restore_mesh_bytes` is the ONLY way geometry comes
+/// back.
+pub fn clear() {
+    CAPTURED.with(|c| c.borrow_mut().clear());
+}
+
 /// Resolve a captured-mesh id to renderer-ready geometry, if present.
 pub fn get_raw(id: AssetId) -> Option<RawMeshData> {
     CAPTURED.with(|c| {

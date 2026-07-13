@@ -71,15 +71,22 @@ fn extract_planes(view_proj: mat4x4<f32>) -> array<vec4<f32>, 6> {
     //   right  = row3 - row0
     //   bottom = row3 + row1
     //   top    = row3 - row1
-    //   near   = row3 + row2   (WebGPU's [0,1] depth → near is `row2`-positive)
-    //   far    = row3 - row2
+    //   near   = row2          (WebGPU [0,1] depth, forward-Z: near is z >= 0)
+    //   far    = row3 - row2    (forward-Z: far is z <= w)
+    // Under reverse-Z (003) the two swap: near = row3 - row2, far = row2 —
+    // in lockstep with the CPU extraction in frustum.rs.
     return array<vec4<f32>, 6>(
         row3 + row0,
         row3 - row0,
         row3 + row1,
         row3 - row1,
-        row2,        // near (D = 0 in NDC)
-        row3 - row2, // far
+        {% if reverse_z %}
+        row3 - row2, // near (z <= w under reverse)
+        row2,        // far  (z >= 0 under reverse)
+        {% else %}
+        row2,        // near (z >= 0 forward)
+        row3 - row2, // far  (z <= w forward)
+        {% endif %}
     );
 }
 
@@ -118,7 +125,14 @@ fn aabb_to_screen(
 ) -> ScreenAabb {
     var uv_min = vec2<f32>(1.0, 1.0);
     var uv_max = vec2<f32>(0.0, 0.0);
+    // Track the AABB's NEAREST corner depth. "Nearest" flips with the depth
+    // convention (003): forward-Z nearest = smallest (start from the far
+    // extreme 1.0), reverse-Z nearest = largest (start from 0.0).
+    {% if reverse_z %}
+    var depth_min: f32 = 0.0;
+    {% else %}
     var depth_min: f32 = 1.0;
+    {% endif %}
     var any_in_front = false;
 
     let xs = array<f32, 2>(aabb_min.x, aabb_max.x);
@@ -132,14 +146,24 @@ fn aabb_to_screen(
         // conservatively treat the AABB as visible — the HZB test
         // doesn't apply cleanly to clipped corners.
         if (clip.w <= 0.0) {
+            // Bypass sentinel: full-screen UV + the NEAREST-possible depth so
+            // the HZB test can never cull a near-plane-clipped AABB.
+            {% if reverse_z %}
+            return ScreenAabb(vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 1.0), 1.0, true);
+            {% else %}
             return ScreenAabb(vec2<f32>(0.0, 0.0), vec2<f32>(1.0, 1.0), 0.0, true);
+            {% endif %}
         }
         let inv_w = 1.0 / clip.w;
         let ndc = clip.xyz * inv_w;
         let uv = vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
         uv_min = min(uv_min, uv);
         uv_max = max(uv_max, uv);
+        {% if reverse_z %}
+        depth_min = max(depth_min, ndc.z);
+        {% else %}
         depth_min = min(depth_min, ndc.z);
+        {% endif %}
         any_in_front = true;
     }
 
@@ -207,14 +231,29 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let d10 = textureLoad(hzb_tex, vec2<i32>(t_max.x, t_min.y), mip).x;
     let d01 = textureLoad(hzb_tex, vec2<i32>(t_min.x, t_max.y), mip).x;
     let d11 = textureLoad(hzb_tex, vec2<i32>(t_max.x, t_max.y), mip).x;
+    {% if reverse_z %}
+    // Reverse-Z (003): the permissive footprint reduce keeps the FARTHEST
+    // (smallest) occluder depth — min, mirroring the pyramid's reduce op.
+    let hzb_depth = min(min(d00, d10), min(d01, d11));
+    {% else %}
     let hzb_depth = max(max(d00, d10), max(d01, d11));
+    {% endif %}
 
     // Occlusion test: our closest depth must be ≤ hzb max depth to
     // possibly be visible. WebGPU depth is `[0, 1]` with 1 = far.
+    {% if reverse_z %}
+    // Reverse-Z (003): closer = LARGER depth, so "our nearest corner is
+    // farther than every occluder in the footprint" flips to <.
+    if (screen.depth_min < hzb_depth) {
+        visible_this_frame[i] = 0u;
+        return;
+    }
+    {% else %}
     if (screen.depth_min > hzb_depth) {
         visible_this_frame[i] = 0u;
         return;
     }
+    {% endif %}
 
     visible_this_frame[i] = 1u;
 }

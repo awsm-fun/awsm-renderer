@@ -1087,6 +1087,7 @@ impl DynamicMaterials {
             texture_pool_samplers_len: 1,
             msaa_sample_count: None,
             mipmaps: true,
+            reverse_z: false,
             base: crate::dynamic_materials::ShadingBase::Custom,
             pbr_features: awsm_renderer_materials::pbr::PbrFeatures::default().bits(),
             dispatch_hash: 1,

@@ -18,8 +18,9 @@
 //! a Chebyshev visibility reconstruction (`sample_shadow_evsm` in
 //! `shared_wgsl/shadow/bind_groups.wgsl`).
 //!
-//! The depth → moment remap uses `z' = 2·z − 1` so the exponent space
-//! is symmetric around 0 — keeps `exp(c·z)` numerically tight in
+//! The depth → moment remap uses `z' = 2·z − 1` (forward-Z; reverse-Z
+//! uses the mirrored `z' = 1 − 2·z` — see `moment_write_wgsl`) so the
+//! exponent space is symmetric around 0 — keeps `exp(c·z)` numerically tight in
 //! `RGBA16F` (default `c = 20` → endpoints at `±exp(20) ≈ ±5·10⁸`, the
 //! bigger end of the half-float range; lower `c` if you see moment
 //! overflow on highly-contrasted depth ranges).
@@ -164,8 +165,9 @@ impl EvsmPass {
         pipeline_layouts: &mut PipelineLayouts,
         pipelines: &mut Pipelines,
         shaders: &mut Shaders,
+        depth: crate::depth_convention::DepthConvention,
     ) -> Result<Self, AwsmShadowError> {
-        let descs = Self::build_descriptors(gpu, bind_group_layouts, pipeline_layouts)?;
+        let descs = Self::build_descriptors(gpu, bind_group_layouts, pipeline_layouts, depth)?;
 
         // Join the 3 inline-shader validations in parallel.
         let validation_results = futures::future::join_all(descs.validate_shader_futures()).await;
@@ -196,6 +198,7 @@ impl EvsmPass {
         gpu: &AwsmRendererWebGpu,
         bind_group_layouts: &mut BindGroupLayouts,
         pipeline_layouts: &mut PipelineLayouts,
+        depth: crate::depth_convention::DepthConvention,
     ) -> Result<EvsmDescriptors, AwsmShadowError> {
         // ── moment-write layout ───────────────────────────────────────
         let moment_write_layout_key = bind_group_layouts.get_key(
@@ -291,8 +294,9 @@ impl EvsmPass {
         // `EvsmDescriptors::validate_shader_futures` so the
         // orchestrator can interleave them with the cross-tail shader
         // ensure_keys.
+        let moment_write_src = moment_write_wgsl(depth);
         let inline_specs: [(&str, &str); 3] = [
-            ("Shadow EVSM Moment Write", MOMENT_WRITE_WGSL),
+            ("Shadow EVSM Moment Write", moment_write_src.as_str()),
             ("Shadow EVSM Blur H", blur_h_wgsl()),
             ("Shadow EVSM Blur V", blur_v_wgsl()),
         ];
@@ -468,8 +472,15 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         i32(params.cascade_layer),
         0,
     );
-    // Remap [0,1] → [-1,1] so the exponent space is symmetric.
-    let z = 2.0 * depth - 1.0;
+    // Remap [0,1] → [-1,1] so the exponent space is symmetric. Substituted
+    // per depth convention by `moment_write_wgsl` — the receiver's remap in
+    // `shared_wgsl/shadow/bind_groups.wgsl` (`sample_shadow_evsm`) MUST match:
+    //   forward: z = 2·depth − 1        (near → −1, far → +1)
+    //   reverse: z = 1 − 2·depth        (near → −1, far → +1)
+    // Both keep "farther ⇒ larger warped value", preserving the one-tailed
+    // Chebyshev semantics; the reverse ortho cascade depth is exactly
+    // 1 − forward depth, so the warped values are identical.
+    let z = /*EVSM_DEPTH_REMAP*/;
     let pos_exp = exp(params.exponent * z);
     let neg_exp = -exp(-params.exponent * z);
     let moments = vec4<f32>(pos_exp, pos_exp * pos_exp, neg_exp, neg_exp * neg_exp);
@@ -574,6 +585,19 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 static BLUR_H_ONCE: OnceLock<String> = OnceLock::new();
 static BLUR_V_ONCE: OnceLock<String> = OnceLock::new();
 
+/// Moment-write WGSL for the active depth convention — substitutes the
+/// depth → warp remap (see the marker comment inside [`MOMENT_WRITE_WGSL`]).
+/// Forward and reverse both warp to a symmetric [-1, 1] with "farther ⇒
+/// larger", so the Chebyshev reconstruction on the receiver is unchanged.
+fn moment_write_wgsl(depth: crate::depth_convention::DepthConvention) -> String {
+    let remap = if depth.reverse_z {
+        "1.0 - 2.0 * depth"
+    } else {
+        "2.0 * depth - 1.0"
+    };
+    MOMENT_WRITE_WGSL.replace("/*EVSM_DEPTH_REMAP*/", remap)
+}
+
 fn blur_h_wgsl() -> &'static str {
     BLUR_H_ONCE
         .get_or_init(|| format!("{}{}", BLUR_COMMON_PREFIX, BLUR_H_BODY))
@@ -584,4 +608,28 @@ fn blur_v_wgsl() -> &'static str {
     BLUR_V_ONCE
         .get_or_init(|| format!("{}{}", BLUR_COMMON_PREFIX, BLUR_V_BODY))
         .as_str()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::depth_convention::DepthConvention;
+
+    /// 003 stage 7 guard: the moment-write remap is substituted via a marker
+    /// string — if the marker drifts, `replace` silently no-ops and the shader
+    /// ships `let z = ;` (a browser-only compile failure). Also pins the two
+    /// remap arms to the receiver's (`sample_shadow_evsm`) exactly.
+    #[test]
+    fn moment_write_remap_substitutes_per_convention() {
+        let forward = moment_write_wgsl(DepthConvention::FORWARD);
+        assert!(forward.contains("let z = 2.0 * depth - 1.0;"));
+        let reverse = moment_write_wgsl(DepthConvention { reverse_z: true });
+        assert!(reverse.contains("let z = 1.0 - 2.0 * depth;"));
+        for src in [&forward, &reverse] {
+            assert!(
+                !src.contains("EVSM_DEPTH_REMAP"),
+                "marker must be fully substituted"
+            );
+        }
+    }
 }

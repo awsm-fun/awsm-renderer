@@ -123,6 +123,9 @@ fn pbr_get_material_color(
         iridescence_factor,
         iridescence.ior,
         iridescence_thickness,
+        // SSR receive mask (transparent surfaces never write the descriptor,
+        // but the shared struct is positional — keep the fields aligned).
+        material.ssr_mask,
     );
 }
 

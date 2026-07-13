@@ -105,6 +105,13 @@ pub struct FrameOptimizationStats {
     pub features_gpu_culling: bool,
     /// Whether the `decals` capability is allocated.
     pub features_decals: bool,
+    /// SSR is enabled this frame — the Hi-Z trace consumes the HZB's
+    /// closest-depth channel, so an SSR frame requests the build even
+    /// when mesh occlusion is disengaged (same independent-consumer
+    /// pattern as decals). Requires the `gpu_culling` capability (that
+    /// allocates the texture); without it SSR falls back to the linear
+    /// per-pixel march variant.
+    pub ssr_enabled: bool,
     /// Total opaque renderables this frame
     /// (post-`collect_renderables`). Surfaced for diagnostics / future
     /// tuning; the Auto-mode threshold reads
@@ -182,8 +189,10 @@ pub fn compute_frame_optimizations(
     // that's what allocates the HZB texture itself.
     let decal_hzb_gate =
         stats.features_gpu_culling && stats.features_decals && stats.decals_count > 0;
+    // SSR: same independent-consumer rule as decals (see the stats field doc).
+    let ssr_hzb_gate = stats.features_gpu_culling && stats.ssr_enabled;
 
-    let hzb = gpu_occlusion || decal_hzb_gate;
+    let hzb = gpu_occlusion || decal_hzb_gate || ssr_hzb_gate;
     let indirect_geometry = gpu_occlusion && stats.args_ready;
 
     FrameOptimizations {
@@ -211,6 +220,7 @@ mod tests {
         FrameOptimizationStats {
             features_gpu_culling: true,
             features_decals: true,
+            ssr_enabled: false,
             opaque_count: opaque,
             non_instanced_with_aabb_count: opaque,
             decals_count: decals,
@@ -260,6 +270,24 @@ mod tests {
         let out = compute_frame_optimizations(&p, &s, &on_prev(), 1000);
         assert!(!out.hzb);
         assert!(!out.decal_hzb_gate);
+    }
+
+    #[test]
+    fn ssr_requests_hzb_like_decals_do() {
+        // SSR's Hi-Z trace is an independent HZB consumer: even with mesh
+        // occlusion Off and zero decals, an SSR frame must build the pyramid.
+        let mut p = policy();
+        p.gpu_culling = OptimizationMode::Off;
+        let mut s = stats(10_000, 0, true);
+        s.ssr_enabled = true;
+        let out = compute_frame_optimizations(&p, &s, &on_prev(), 1000);
+        assert!(!out.gpu_occlusion);
+        assert!(out.hzb, "SSR must engage the HZB build");
+        // Without the gpu_culling CAPABILITY (which allocates the texture)
+        // the gate stays off — the trace falls back to the linear march.
+        s.features_gpu_culling = false;
+        let out = compute_frame_optimizations(&p, &s, &on_prev(), 1000);
+        assert!(!out.hzb);
     }
 
     // (2) Force enables gpu_occlusion, but indirect_geometry still
@@ -375,6 +403,7 @@ mod tests {
         let stats = FrameOptimizationStats {
             features_gpu_culling: true,
             features_decals: false,
+            ssr_enabled: false,
             opaque_count: 10_000, // huge, but all instanced/no-AABB
             non_instanced_with_aabb_count: 10,
             decals_count: 0,
@@ -396,6 +425,7 @@ mod tests {
         let stats = FrameOptimizationStats {
             features_gpu_culling: true,
             features_decals: false,
+            ssr_enabled: false,
             opaque_count: 800,
             non_instanced_with_aabb_count: 800,
             decals_count: 0,

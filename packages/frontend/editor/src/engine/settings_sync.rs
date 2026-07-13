@@ -152,47 +152,51 @@ pub fn start() {
             .await;
     });
 
-    // Global SSCS (screen-space contact shadows): the authored, persisted
-    // `scene.shadows` SSCS fields → renderer. `enabled` / `step_count` are
-    // compile-time template constants, so they can recompile the shadow-consuming
-    // pipelines — route through `commit_load` (a no-op when nothing got flagged);
-    // the scalar params are live uniforms and just re-upload. Guarded against
-    // redundant applies so unrelated `scene.shadows` edits don't churn.
+    // Renderer-wide shadows: the authored, persisted `scene.shadows` block →
+    // renderer, in full. `sscs_enabled` / `sscs_step_count` are compile-time
+    // template constants, so they can recompile the shadow-consuming pipelines
+    // — route through `commit_load` (a no-op when nothing got flagged).
+    // `atlas_size` / `evsm_atlas_size` / `max_point_shadows` /
+    // `point_shadow_resolution` are resource-shape: `set_shadows_config` flags
+    // them and the shadow module recreates the textures + bind groups at the
+    // next frame's `write_gpu`. Everything else is a live uniform re-upload.
+    // Guarded on config equality so unrelated re-emissions don't churn — that
+    // guard also makes the initial boot emission (defaults == defaults) a
+    // no-op, so no first-skip is needed and a project load (`apply_project`
+    // sets `scene.shadows`) applies through this same path. The renderer-only
+    // fields the schema doesn't author (`denoise`, cascade array shape) are
+    // preserved from the live config. `CompileGuard` holds the
+    // `WaitRenderSettled` barrier open so an MCP edit→settle→screenshot can't
+    // capture a mid-recompile frame.
     spawn_local(async {
-        let mut first = true;
         controller()
             .scene
             .shadows
             .signal_cloned()
-            .for_each(move |sh| {
-                let skip = first;
-                first = false;
-                async move {
-                    if skip {
-                        return;
-                    }
-                    let handle = renderer_handle();
-                    let mut r = handle.lock().await;
-                    let mut cfg = r.shadows_config().clone();
-                    let changed = cfg.sscs_enabled != sh.sscs_enabled
-                        || cfg.sscs_step_count != sh.sscs_step_count
-                        || cfg.sscs_step_world != sh.sscs_step_world
-                        || cfg.sscs_thickness != sh.sscs_thickness
-                        || cfg.sscs_directional_darkening != sh.sscs_directional_darkening
-                        || cfg.sscs_punctual_darkening != sh.sscs_punctual_darkening;
-                    if !changed {
-                        return;
-                    }
-                    cfg.sscs_enabled = sh.sscs_enabled;
-                    cfg.sscs_step_count = sh.sscs_step_count;
-                    cfg.sscs_step_world = sh.sscs_step_world;
-                    cfg.sscs_thickness = sh.sscs_thickness;
-                    cfg.sscs_directional_darkening = sh.sscs_directional_darkening;
-                    cfg.sscs_punctual_darkening = sh.sscs_punctual_darkening;
-                    r.set_shadows_config(cfg);
-                    if let Err(e) = r.commit_load(|_| {}).await {
-                        tracing::warn!("commit_load after SSCS change: {e}");
-                    }
+            .for_each(|sh| async move {
+                let _guard = crate::controller::CompileGuard::new();
+                let handle = renderer_handle();
+                let mut r = handle.lock().await;
+                let mut cfg = r.shadows_config().clone();
+                cfg.sscs_enabled = sh.sscs_enabled;
+                cfg.sscs_step_count = sh.sscs_step_count;
+                cfg.sscs_step_world = sh.sscs_step_world;
+                cfg.sscs_thickness = sh.sscs_thickness;
+                cfg.sscs_directional_darkening = sh.sscs_directional_darkening;
+                cfg.sscs_punctual_darkening = sh.sscs_punctual_darkening;
+                cfg.atlas_size = sh.atlas_size;
+                cfg.evsm_atlas_size = sh.evsm_atlas_size;
+                cfg.evsm_exponent = sh.evsm_exponent;
+                cfg.evsm_blur_radius = sh.evsm_blur_radius;
+                cfg.max_point_shadows = sh.max_point_shadows;
+                cfg.point_shadow_resolution = sh.point_shadow_resolution;
+                cfg.debug_cascade_colors = sh.debug_cascade_colors;
+                if cfg == *r.shadows_config() {
+                    return;
+                }
+                r.set_shadows_config(cfg);
+                if let Err(e) = r.commit_load(|_| {}).await {
+                    tracing::warn!("commit_load after shadows change: {e}");
                 }
             })
             .await;

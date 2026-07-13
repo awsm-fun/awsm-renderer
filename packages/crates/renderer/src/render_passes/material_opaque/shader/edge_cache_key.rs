@@ -18,6 +18,10 @@ pub struct ShaderCacheKeyMaterialFinalBlend {
     /// WGSL format string (e.g. `"rgba16float"` / `"rgba8unorm"`) for
     /// the opaque storage texture binding.
     pub color_format: String,
+    /// SSR axis: when on, final_blend also resolves the per-pixel SSR
+    /// reflection descriptor from the edge arms' per-sample sums and
+    /// writes `reflection_descriptor_tex`.
+    pub write_ssr_descriptor: bool,
 }
 
 impl From<ShaderCacheKeyMaterialFinalBlend> for ShaderCacheKey {

@@ -70,6 +70,8 @@ fn first_party_key_prep(
     mipmaps: bool,
 ) -> ShaderCacheKeyMaterialOpaque {
     ShaderCacheKeyMaterialOpaque {
+        write_ssr_descriptor: false,
+        reverse_z: false,
         texture_pool_arrays_len: 1,
         texture_pool_samplers_len: 1,
         msaa_sample_count: msaa,
@@ -101,6 +103,8 @@ fn custom_key(
         name: "noise".to_string(),
     });
     ShaderCacheKeyMaterialOpaque {
+        write_ssr_descriptor: false,
+        reverse_z: false,
         texture_pool_arrays_len: 1,
         texture_pool_samplers_len: 1,
         msaa_sample_count: msaa,
@@ -156,6 +160,7 @@ fn sscs_enabled_shaders_validate() {
                 max_shadow_casters: 4,
                 sscs_enabled: true,
                 sscs_step_count: step_count,
+                reverse_z: false,
             })
             .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
             .into_source()
@@ -175,6 +180,78 @@ fn sscs_enabled_shaders_validate() {
             naga_validate(&render(&key, &label), &label);
         }
     }
+}
+
+#[test]
+fn reverse_z_shadow_shaders_validate() {
+    // 003 stage 7: the shared shadow receiver
+    // (`shared_wgsl/shadow/bind_groups.wgsl`) grew `{% if reverse_z %}` arms —
+    // cube-face NDC.z reconstruction, ref-depth bias directions, PCSS blocker
+    // tests + penumbra math, and the EVSM remap. Every other validation test
+    // renders `reverse_z: false`, so without this test a syntax/type error in
+    // a reverse arm would only surface at pipeline compile in a real browser.
+    use crate::render_passes::material_prep::shader::cache_key::ShaderCacheKeyMaterialPrep;
+    use crate::render_passes::material_prep::shader::template::ShaderTemplateMaterialPrep;
+
+    // The forward/reverse cube-face NDC.z formulas — exactly one must be
+    // compiled in, matching the writer projection the convention builds.
+    const CUBE_NDC_FORWARD: &str =
+        "(range / (range - near)) * (1.0 - near / max(view_depth, near))";
+    const CUBE_NDC_REVERSE: &str =
+        "(near / (range - near)) * (range / max(view_depth, near) - 1.0)";
+
+    for msaa in [None, Some(4u32)] {
+        // Prep owns the shadow-sampling call sites (SSCS on to compile that
+        // branch's reverse-z sentinel too).
+        let label = format!("reverse-z prep msaa={msaa:?}");
+        let src = ShaderTemplateMaterialPrep::try_from(&ShaderCacheKeyMaterialPrep {
+            msaa_sample_count: msaa,
+            max_shadow_casters: 4,
+            sscs_enabled: true,
+            sscs_step_count: 16,
+            reverse_z: true,
+        })
+        .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
+        .into_source()
+        .unwrap_or_else(|e| panic!("{label}: render failed: {e:?}"));
+        naga_validate(&src, &label);
+        assert!(
+            src.contains(CUBE_NDC_REVERSE) && !src.contains(CUBE_NDC_FORWARD),
+            "{label}: reverse-z module must compile the REVERSE cube NDC.z arm only"
+        );
+
+        // Opaque + transparent compile the same shared receiver include.
+        let mut key = first_party_key(MaterialShaderId::PBR, ShadingBase::Pbr, false, msaa, false);
+        key.reverse_z = true;
+        let label = format!("reverse-z opaque msaa={msaa:?}");
+        naga_validate(&render(&key, &label), &label);
+
+        let mut tkey = transparent_first_party_key(ShadingBase::Pbr, msaa);
+        tkey.reverse_z = true;
+        let label = format!("reverse-z transparent msaa={msaa:?}");
+        let src = ShaderTemplateMaterialTransparent::try_from(&tkey)
+            .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
+            .into_source()
+            .unwrap_or_else(|e| panic!("{label}: render failed: {e:?}"));
+        naga_validate(&src, &label);
+    }
+
+    // Forward stays forward: the default-off path must keep the forward arm.
+    let label = "forward-z prep (control)";
+    let src = ShaderTemplateMaterialPrep::try_from(&ShaderCacheKeyMaterialPrep {
+        msaa_sample_count: None,
+        max_shadow_casters: 4,
+        sscs_enabled: false,
+        sscs_step_count: 16,
+        reverse_z: false,
+    })
+    .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
+    .into_source()
+    .unwrap_or_else(|e| panic!("{label}: render failed: {e:?}"));
+    assert!(
+        src.contains(CUBE_NDC_FORWARD) && !src.contains(CUBE_NDC_REVERSE),
+        "{label}: forward module must compile the FORWARD cube NDC.z arm only"
+    );
 }
 
 #[test]
@@ -217,6 +294,103 @@ fn first_party_opaque_shaders_validate() {
             }
         }
     }
+}
+
+#[test]
+fn ssr_ibl_suppression_gated_on_descriptor_axis() {
+    // Mirror-correctness (SSR feature B): when the opaque module writes the
+    // SSR reflection descriptor (`write_ssr_descriptor` — true exactly when
+    // SSR is enabled), the shared `brdf_pbr.wgsl` must suppress the IBL
+    // SPECULAR term for low-spread surfaces (SSR supplies the reflection —
+    // trace hit or skybox env fallback — so adding prefiltered-env specular
+    // would double-count the environment). When the axis is OFF, the module
+    // must not reference the suppression at all (SSR-off builds stay
+    // byte-identical). The `ssr-spread-gate` tag marks every copy of the
+    // shared 0.15 constant (resolve / temporal / brdf_pbr).
+    const SUPPRESSION_TERM: &str = "let ssr_ibl_keep = 1.0 - ssr_mask_factor * \
+         (1.0 - smoothstep(SSR_SPREAD_GATE, SSR_SPREAD_CUTOFF, ssr_spread));";
+    for (msaa, mips) in CONFIGS {
+        // ON: PBR opaque with the descriptor axis set.
+        let mut key = first_party_key(MaterialShaderId::PBR, ShadingBase::Pbr, false, msaa, mips);
+        key.write_ssr_descriptor = true;
+        let label = format!("opaque/pbr ssr-descriptor msaa={msaa:?} mips={mips}");
+        let src = render(&key, &label);
+        naga_validate(&src, &label);
+        assert!(
+            src.contains("ssr-spread-gate"),
+            "{label}: write_ssr_descriptor module must carry the `ssr-spread-gate` \
+             IBL-specular suppression"
+        );
+        assert!(
+            src.contains(SUPPRESSION_TERM),
+            "{label}: write_ssr_descriptor module must compute the exact suppression term \
+             `{SUPPRESSION_TERM}`"
+        );
+        assert!(
+            src.contains("* ssr_ibl_keep"),
+            "{label}: the IBL specular term must be scaled by `ssr_ibl_keep`"
+        );
+        // The descriptor store must be present too (the axis' original job) —
+        // and its reflectivity must be scaled by the writing material's MSAA
+        // sample coverage (comment-pinned in compute.wgsl): an un-scaled
+        // single-sample descriptor makes the SSR composite add all-or-nothing
+        // reflection along silhouettes, visibly undoing MSAA.
+        assert!(
+            src.contains("textureStore(reflection_descriptor_tex"),
+            "{label}: write_ssr_descriptor module must store the reflection descriptor"
+        );
+        assert!(
+            src.contains("fn ssr_descriptor_coverage(coords: vec2<i32>, mat_offset: u32) -> f32 {")
+                && src.contains("vec4<f32>(ssr_reflectivity * ssr_cov, ssr_spread)"),
+            "{label}: descriptor reflectivity must be scaled by the material's \
+             MSAA sample coverage (ssr_descriptor_coverage)"
+        );
+        // Per-material SSR receive mask: the descriptor rgb must be the FULL
+        // Schlick fresnel (baked at the shading n·v) times the material's
+        // ssr_mask (word 39 of the PBR core header). Masking F0 alone is NOT
+        // enough — the trace's unmasked (1-F0) grazing term would erase
+        // fractional damping at grazing angles. ssr_mask=0 zeroes the
+        // descriptor (rgb < 1/255 = SSR opt-out) and the brdf_pbr suppression
+        // below reads the same masked value so IBL specular is kept.
+        assert!(
+            src.contains(
+                "let fresnel = f0 + (vec3<f32>(1.0) - f0) * pow(1.0 - saturate(n_dot_v), 5.0);"
+            ) && src.contains("fresnel * clamp(ssr_mask, 0.0, 1.0)")
+                && src.contains("pbr_material.ssr_mask,"),
+            "{label}: the reflection descriptor must bake Schlick fresnel and scale it \
+             by the material's ssr_mask"
+        );
+        // ...and the IBL suppression factor must carry the SAME mask — an
+        // unmasked factor kills IBL specular on ssr_mask=0 mirrors that SSR
+        // no longer covers (black-mirror bug).
+        assert!(
+            src.contains("* clamp(color.ssr_mask, 0.0, 1.0)"),
+            "{label}: brdf_pbr's ssr_ibl_keep factor must be scaled by the material's \
+             ssr_mask"
+        );
+
+        // OFF: the identical key without the axis must not reference any of it.
+        let off_key = first_party_key(MaterialShaderId::PBR, ShadingBase::Pbr, false, msaa, mips);
+        let off_label = format!("opaque/pbr no-ssr msaa={msaa:?} mips={mips}");
+        let off = render(&off_key, &off_label);
+        assert!(
+            !off.contains("ssr-spread-gate") && !off.contains("ssr_ibl_keep"),
+            "{off_label}: SSR-off module must NOT reference the IBL suppression \
+             (byte-identical SSR-off builds)"
+        );
+    }
+
+    // Transparent surfaces never write the descriptor — their brdf include
+    // must never carry the suppression, SSR on or off.
+    let tkey = transparent_first_party_key(ShadingBase::Pbr, None);
+    let tsrc = ShaderTemplateMaterialTransparent::try_from(&tkey)
+        .expect("transparent template builds")
+        .into_source()
+        .expect("transparent renders");
+    assert!(
+        !tsrc.contains("ssr-spread-gate") && !tsrc.contains("ssr_ibl_keep"),
+        "transparent/pbr must NOT compile the SSR IBL suppression (no descriptor writes)"
+    );
 }
 
 #[test]
@@ -461,6 +635,20 @@ fn opaque_shadow_from_buffer_variant_validates() {
         !src.contains("fn sample_shadow_directional"),
         "shadow_from_buffer opaque module should DROP `fn sample_shadow_directional` (the inline sampler)"
     );
+    // (d) the cascade-debug overlay SURVIVES the drop: it's a shading-time
+    // colour op reading only the always-bound shadow uniforms, emitted
+    // ungated (outside the `needs_shadow_sampling` block). Regression guard
+    // for `debug_cascade_colors` producing zero pixel change — the overlay
+    // used to sit inside the sampling block, so prep-only opaque (which is
+    // ALL opaque) compiled it out.
+    assert!(
+        src.contains("fn debug_cascade_tint("),
+        "shadow_from_buffer opaque module must KEEP `fn debug_cascade_tint` (cascade-debug overlay)"
+    );
+    assert!(
+        src.contains("color = debug_cascade_tint("),
+        "shadow_from_buffer opaque module must CALL the cascade-debug overlay from apply_lighting"
+    );
 
     // Control 2 (stage 5b-shadow): MSAA on ⇒ cs_opaque (PRIMARY) reads
     // the full-screen prep buffer AND cs_edge (EDGE) reads the compact
@@ -481,6 +669,13 @@ fn opaque_shadow_from_buffer_variant_validates() {
     assert!(
         !msaa_src.contains("fn sample_shadow_directional"),
         "MSAA+prep PBR opaque must DROP inline `fn sample_shadow_directional` (5b: cs_edge reads the compact edge-shadow buffer)"
+    );
+    // The cascade-debug overlay survives the 5b drop too (same guard as the
+    // no-MSAA (d) assert above).
+    assert!(
+        msaa_src.contains("fn debug_cascade_tint(")
+            && msaa_src.contains("color = debug_cascade_tint("),
+        "MSAA+prep PBR opaque must KEEP + CALL `debug_cascade_tint` (cascade-debug overlay)"
     );
     // cs_opaque (PRIMARY) reads the full-screen buffer; cs_edge (EDGE) reads the
     // compact per-edge-sample buffer. Both reads must be present.
@@ -541,9 +736,19 @@ fn opaque_shadow_from_buffer_variant_validates() {
 /// for a given config. Mirrors the renderer's `ShaderTemplateMaterialClassify`
 /// build path so the gating is exercised exactly as the pipeline cache does.
 fn render_classify(msaa: Option<u32>, emit_edge_data: bool, label: &str) -> String {
+    render_classify_slots(msaa, emit_edge_data, true, label)
+}
+
+fn render_classify_slots(
+    msaa: Option<u32>,
+    emit_edge_data: bool,
+    wide_edge_slots: bool,
+    label: &str,
+) -> String {
     use crate::render_passes::material_classify::shader::cache_key::ShaderCacheKeyMaterialClassify;
     use crate::render_passes::material_classify::shader::template::ShaderTemplateMaterialClassify;
     ShaderTemplateMaterialClassify::try_from(&ShaderCacheKeyMaterialClassify {
+        wide_edge_slots,
         msaa_sample_count: msaa,
         bucket_count: crate::dynamic_materials::first_party_bucket_entries().len() as u32,
         emit_edge_data,
@@ -570,6 +775,23 @@ fn material_classify_shader_validates() {
     // On the MSAA edge path, both edge scaffolds must render: the edge_id_tex
     // storage texture (declared + written) and the ANY-sample tile_mask branch.
     let on = render_classify(Some(4), true, "classify on");
+    // Accumulator-clear stride pin: the clear must cover the FULL 32-word
+    // (4 slots x 8 words) per-edge region — when the slots widened 16->32
+    // bytes for the per-sample SSR descriptor, a stale 16-word clear left
+    // the upper half of the edge-id range never-cleared (stale resolves).
+    assert!(
+        on.contains("edge_id * 32u") && on.contains("ci < 32u"),
+        "wide classify accumulator clear must cover 32B x 4 slots = 32 words"
+    );
+    // Narrow (SSR-off) variant: 16-byte slots -> 16-word clear, and the
+    // wide stride must be absent (the allocation is half the size).
+    let narrow = render_classify_slots(Some(4), true, false, "classify narrow");
+    assert!(
+        narrow.contains("edge_id * 16u")
+            && narrow.contains("ci < 16u")
+            && !narrow.contains("edge_id * 32u"),
+        "narrow classify accumulator clear must cover 16B x 4 slots = 16 words"
+    );
     assert!(
         on.contains("var edge_id_tex: texture_storage_2d<r32uint, write>"),
         "MSAA classify must declare `edge_id_tex` storage texture (binding 11)"
@@ -608,6 +830,7 @@ fn material_prep_shader_validates() {
             max_shadow_casters: 4,
             sscs_enabled: false,
             sscs_step_count: 16,
+            reverse_z: false,
         })
         .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
         .into_source()
@@ -689,6 +912,8 @@ fn custom_froxel_lights_accessors_validate() {
         return OpaqueShadingOutput(c, 1.0);";
     for (msaa, mips) in CONFIGS {
         let key = ShaderCacheKeyMaterialOpaque {
+            write_ssr_descriptor: false,
+            reverse_z: false,
             texture_pool_arrays_len: 1,
             texture_pool_samplers_len: 1,
             msaa_sample_count: msaa,
@@ -741,6 +966,7 @@ fn transparent_first_party_key(
         texture_pool_samplers_len: 1,
         msaa_sample_count: msaa,
         mipmaps: true,
+        reverse_z: false,
         base,
         pbr_features: awsm_renderer_materials::pbr::PbrFeatures::default().bits(),
         dispatch_hash: 0,
@@ -803,6 +1029,745 @@ fn custom_transparent_shaders_validate() {
     }
 }
 
+#[test]
+fn material_final_blend_shader_validates() {
+    // The MSAA final_blend compositor must naga-validate for both values of
+    // the write_ssr_descriptor axis — ON additionally resolves the per-pixel
+    // SSR reflection descriptor from the edge arms' per-sample sums
+    // (comment-pinned in final_blend.wgsl / compute.wgsl: a single-sample
+    // descriptor makes the SSR composite add all-or-nothing reflection along
+    // silhouettes, visibly undoing MSAA).
+    use crate::render_passes::material_opaque::shader::edge_cache_key::ShaderCacheKeyMaterialFinalBlend;
+    use crate::render_passes::material_opaque::shader::edge_template::ShaderTemplateMaterialFinalBlend;
+    for write_ssr_descriptor in [false, true] {
+        let key = ShaderCacheKeyMaterialFinalBlend {
+            bucket_entries: crate::dynamic_materials::first_party_bucket_entries(),
+            color_format: "rgba16float".to_string(),
+            write_ssr_descriptor,
+        };
+        let label = format!("final_blend ssr={write_ssr_descriptor}");
+        let src = ShaderTemplateMaterialFinalBlend::try_from(&key)
+            .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
+            .into_source()
+            .unwrap_or_else(|e| panic!("{label}: render failed: {e:?}"));
+        naga_validate(&src, &label);
+        // Slot stride tracks the axis (see accumulator_slot_bytes): 8 words
+        // (32 B, color + SSR descriptor) when SSR is on, 4 words (16 B,
+        // color only — the descriptor half is not allocated) when off.
+        let stride = if write_ssr_descriptor { "8u" } else { "4u" };
+        assert!(
+            src.contains(&format!("(edge_pixel_id * 4u + slot) * {stride}")),
+            "{label}: final_blend must read the {stride}-word accumulator stride"
+        );
+        if write_ssr_descriptor {
+            assert!(
+                src.contains("let desc_rgb = desc_rgb_sum / 4.0;")
+                    && src.contains("textureStore(reflection_descriptor_tex, coords,"),
+                "{label}: SSR final_blend must resolve + store the per-pixel \
+                 reflection descriptor"
+            );
+        } else {
+            assert!(
+                !src.contains("reflection_descriptor_tex"),
+                "{label}: SSR-off final_blend must not reference the descriptor"
+            );
+        }
+    }
+}
+
+#[test]
+fn box_projected_probe_in_both_env_paths() {
+    // box-projected-probe (comment-pinned in brdf_pbr.wgsl + trace.wgsl): the
+    // reflection-probe parallax correction must go through the ONE shared
+    // `box_project_env_dir` helper (shared_wgsl/math.wgsl) in BOTH specular
+    // env consumers — the material IBL path and the SSR miss fallback — with
+    // the SAME (dir, world_pos, center_enabled, half_extents) argument shape,
+    // or the two paths drift and a probe-anchored reflection jumps when a
+    // pixel crosses from SSR-hit to fallback. The gate is the RUNTIME
+    // `center_enabled.w` (probe off = zeroed uniform = classic direction-only
+    // sampling), NOT a template axis — pin that no `{% if probe %}`-style
+    // axis snuck in by asserting the call exists in every permutation.
+    const IBL_CALL: &str =
+        "box_project_env_dir(R, world_position, ibl_info.probe_center_enabled, ibl_info.probe_half)";
+    const SSR_CALL: &str = "box_project_env_dir(dir_raw, world_pos, \
+         params.probe_center_enabled, params.probe_half_pad.xyz)";
+    for (msaa, mips) in CONFIGS {
+        for write_ssr_descriptor in [false, true] {
+            let mut key =
+                first_party_key(MaterialShaderId::PBR, ShadingBase::Pbr, false, msaa, mips);
+            key.write_ssr_descriptor = write_ssr_descriptor;
+            let label =
+                format!("opaque/pbr probe msaa={msaa:?} mips={mips} ssr={write_ssr_descriptor}");
+            let src = render(&key, &label);
+            naga_validate(&src, &label);
+            assert!(
+                src.contains(IBL_CALL),
+                "{label}: IBL specular must box-project through the shared helper `{IBL_CALL}`"
+            );
+        }
+    }
+    {
+        use crate::render_passes::ssr::shader::cache_key::{
+            ShaderCacheKeySsr, ShaderCacheKeySsrTrace, SsrMode, SsrTrace,
+        };
+        use crate::render_passes::ssr::shader::template::ShaderTemplateSsr;
+        for mode in [SsrMode::Mirror, SsrMode::Glossy] {
+            for trace in [SsrTrace::LinearDda, SsrTrace::HiZ] {
+                let key = ShaderCacheKeySsr::Trace(ShaderCacheKeySsrTrace {
+                    mode,
+                    trace,
+                    half_res: false,
+                    multisampled_geometry: false,
+                    reverse_z: false,
+                    debug: 0,
+                    bvh: false,
+                });
+                let label = format!("ssr probe mode={mode:?} trace={trace:?}");
+                let src = ShaderTemplateSsr::try_from(&key)
+                    .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
+                    .into_source()
+                    .unwrap_or_else(|e| panic!("{label}: render failed: {e:?}"));
+                naga_validate(&src, &label);
+                assert!(
+                    src.contains(SSR_CALL),
+                    "{label}: SSR env fallback must box-project through the shared helper \
+                     `{SSR_CALL}`"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn ssr_bvh_shaders_validate() {
+    // Software-BVH reflections (design in the bvh.rs module docs): the bvh_trace
+    // module must naga-validate for every axis combo, carry the world-space
+    // traversal essentials (bounded stack walk + no-cull Möller–Trumbore +
+    // the near-mirror eligibility gate), and constrained hit shading only
+    // (no recursion: exactly one traversal loop, emissive + env term).
+    // The screen-space trace's bvh axis must consume the hit target in its
+    // miss fallback when ON and reference none of it when OFF (zero-cost).
+    use crate::render_passes::ssr::shader::cache_key::{
+        ShaderCacheKeySsr, ShaderCacheKeySsrBvhTrace, ShaderCacheKeySsrTrace, SsrMode, SsrTrace,
+    };
+    use crate::render_passes::ssr::shader::template::ShaderTemplateSsr;
+    for multisampled_geometry in [false, true] {
+        for reverse_z in [false, true] {
+            let key = ShaderCacheKeySsr::BvhTrace(ShaderCacheKeySsrBvhTrace {
+                multisampled_geometry,
+                reverse_z,
+            });
+            let label = format!("ssr bvh msaa={multisampled_geometry} reverse_z={reverse_z}");
+            let src = ShaderTemplateSsr::try_from(&key)
+                .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
+                .into_source()
+                .unwrap_or_else(|e| panic!("{label}: render failed: {e:?}"));
+            naga_validate(&src, &label);
+            assert!(
+                src.contains("spread > BVH_SPREAD_MAX"),
+                "{label}: must gate on the near-mirror spread bound"
+            );
+            assert!(
+                src.contains("var stack: array<u32, 28>"),
+                "{label}: bounded traversal stack"
+            );
+            assert!(
+                src.contains("fn tri_hit("),
+                "{label}: Möller–Trumbore intersector"
+            );
+            assert!(
+                src.contains("inst.emissive.rgb + env_c"),
+                "{label}: constrained hit shading (emissive + env term only)"
+            );
+            // Grazing gate: noisy far-pixel normals tilt mirror rays below
+            // the reflector's tangent plane; tracing those paints a false
+            // dark self-hit band across the horizon (mirror-scene A/B).
+            assert!(
+                src.contains("if (up < 0.005) {"),
+                "{label}: grazing rays must fall through to the env fallback"
+            );
+        }
+    }
+    // Trace consumption: ON pins the select over the env fallback; OFF must
+    // compile no bvh reference at all.
+    for bvh in [false, true] {
+        let key = ShaderCacheKeySsr::Trace(ShaderCacheKeySsrTrace {
+            mode: SsrMode::Glossy,
+            trace: SsrTrace::LinearDda,
+            half_res: false,
+            multisampled_geometry: false,
+            reverse_z: false,
+            debug: 0,
+            bvh,
+        });
+        let label = format!("ssr trace bvh={bvh}");
+        let src = ShaderTemplateSsr::try_from(&key)
+            .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
+            .into_source()
+            .unwrap_or_else(|e| panic!("{label}: render failed: {e:?}"));
+        naga_validate(&src, &label);
+        if bvh {
+            assert!(
+                src.contains("select(env, bvh_sample.rgb, bvh_sample.a > 0.5)"),
+                "{label}: miss fallback must prefer a real BVH hit over the env"
+            );
+        } else {
+            assert!(
+                !src.contains("bvh_tex"),
+                "{label}: bvh-off trace must reference no bvh binding"
+            );
+        }
+    }
+}
+
+#[test]
+fn ssr_shaders_validate() {
+    // SSR trace shader must naga-validate for EVERY permutation
+    // (mode × trace-strategy × half_res × msaa × reverse_z) — proving the §5a
+    // zero-cost templating emits valid WGSL for each variant, and that the
+    // shared `camera.wgsl` / `math.wgsl` includes resolve. Also asserts the
+    // compute entry point exists (the dispatch selects it by name).
+    // `SsrTrace::HiZ` additionally must reference the pyramid binding.
+    // Temporal is NOT a trace axis anymore: history accumulation moved to the
+    // dedicated temporal pass (see `ssr_temporal_shader_validates`), so the
+    // trace must carry NO history bindings in any variant.
+    use crate::render_passes::ssr::shader::cache_key::{
+        ShaderCacheKeySsr, ShaderCacheKeySsrTrace, SsrMode, SsrTrace,
+    };
+    use crate::render_passes::ssr::shader::template::ShaderTemplateSsr;
+    for mode in [SsrMode::Mirror, SsrMode::Glossy] {
+        for trace in [SsrTrace::LinearDda, SsrTrace::HiZ] {
+            for reverse_z in [false, true] {
+                for half_res in [false, true] {
+                    for multisampled_geometry in [false, true] {
+                        let key = ShaderCacheKeySsr::Trace(ShaderCacheKeySsrTrace {
+                            mode,
+                            trace,
+                            half_res,
+                            multisampled_geometry,
+                            reverse_z,
+                            debug: 0,
+                            bvh: false,
+                        });
+                        let label = format!(
+                            "ssr mode={mode:?} trace={trace:?} \
+                         half_res={half_res} msaa={multisampled_geometry} reverse_z={reverse_z}"
+                        );
+                        let src = ShaderTemplateSsr::try_from(&key)
+                            .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
+                            .into_source()
+                            .unwrap_or_else(|e| panic!("{label}: render failed: {e:?}"));
+                        naga_validate(&src, &label);
+                        assert!(
+                            src.contains("fn cs_main("),
+                            "{label}: SSR module missing `fn cs_main` entry point"
+                        );
+                        // Temporal accumulation lives in the dedicated pass:
+                        // the trace must never reference history.
+                        assert!(
+                            !src.contains("history_prev"),
+                            "{label}: trace must not reference history_prev \
+                             (temporal accumulation moved to temporal.wgsl)"
+                        );
+                        // Deterministic mirror (comment-pinned in trace.wgsl):
+                        // mirror pixels take the FIXED 0.5 march phase — no
+                        // per-pixel IGN, no per-frame dither. Bilinear scene
+                        // depth makes the intersection continuous, so a
+                        // perfect mirror needs no stochastic supersampling.
+                        assert!(
+                            src.contains("select(glossy_jitter, 0.5, spread < MIRROR_SPREAD_EPS)"),
+                            "{label}: trace must select the deterministic 0.5 \
+                             phase for mirror pixels (spread < MIRROR_SPREAD_EPS)"
+                        );
+                        // Bilinear scene depth (comment-pinned in trace.wgsl):
+                        // THE fundamental fix for the quantization family —
+                        // hit tests interpolate the 2x2 raw-depth neighborhood
+                        // (sky-guarded) so intersections are continuous.
+                        assert!(
+                            src.contains(
+                                "fn scene_depth_at(pix: vec2<f32>, fdims: vec2<f32>) -> f32 {"
+                            ) && src.contains(
+                                "return mix(mix(d00, d10, f.x), mix(d01, d11, f.x), f.y);"
+                            ),
+                            "{label}: trace must sample scene depth bilinearly \
+                             (sky-guarded scene_depth_at) in its hit tests"
+                        );
+                        // Glossy depth-phase (comment-pinned): in the Hi-Z
+                        // path the per-pixel IGN jitter can only act through
+                        // the in-cell evaluation phase (crossings are
+                        // geometric); mirror pixels evaluate mid-cell (0.5),
+                        // deterministically.
+                        if trace == SsrTrace::HiZ {
+                            assert!(
+                                src.contains(
+                                    "let s_eval = mix(s_cur, min(s_next, screen_len), eval_phase);"
+                                ) && src.contains(
+                                    "let eval_phase = select(glossy_jitter, 0.5, spread < MIRROR_SPREAD_EPS);"
+                                ),
+                                "{label}: Hi-Z trace must phase its ray-depth \
+                                 evaluation point within the cell (glossy IGN; \
+                                 mirror mid-cell deterministic)"
+                            );
+                        }
+                        // Bilinear hit-color reconstruction for the mirror
+                        // mode (comment-pinned in trace.wgsl): nearest
+                        // sampling dots thin magnified source features.
+                        assert!(
+                            src.contains("hit_color = mix(mix(h00, h10, hfrac.x), mix(h01, h11, hfrac.x), hfrac.y);"),
+                            "{label}: the sharp hit path must reconstruct the \
+                             hit color bilinearly at the refined sub-texel \
+                             hit_uv (both mode templates carry it — the live \
+                             pipeline always compiles Glossy, mirror is its \
+                             runtime spread~0 branch)"
+                        );
+                        // Travel-scaled glossy cone (comment-pinned in
+                        // trace.wgsl): rough-reflection blur must grow with
+                        // travel like a cone footprint — contact reflections
+                        // sharpen like contact shadows.
+                        if mode == SsrMode::Glossy {
+                            assert!(
+                                src.contains("let cone = clamp(screen_travel / (0.12 * f32(full_dims.y)), 0.3, 1.0);")
+                                    && src.contains("* cone;"),
+                                "{label}: glossy trace must scale its disk-blur \
+                                 radius with screen-space travel (cone growth)"
+                            );
+                        }
+                        // SSR->IBL crossfade (comment-pinned in trace.wgsl):
+                        // output scales by the inverse of brdf_pbr's
+                        // ssr_ibl_keep ramp — no double-counted reflection
+                        // energy in the mid-gloss band.
+                        assert!(
+                            src.contains(
+                                "let ssr_own = 1.0 - smoothstep(SSR_SPREAD_GATE, SSR_SPREAD_CUTOFF, spread);"
+                            ) && src.contains("vec4<f32>(reflection * ssr_own, coverage)"),
+                            "{label}: trace must crossfade its output against \
+                             the IBL specular ramp (ssr-spread-cutoff)"
+                        );
+                        // Glossy HDR clamp (comment-pinned in trace.wgsl):
+                        // bloom-hot reflections keep view-dependent banding
+                        // through any blur width — clamp luminance before
+                        // filtering (glossy template only; mirror exact).
+                        if mode == SsrMode::Glossy {
+                            assert!(
+                                src.contains(
+                                    "hit_color = hit_color * min(1.0, 3.0 / max(hit_lum, 1e-4));"
+                                ),
+                                "{label}: glossy trace must clamp hit luminance \
+                                 before filtering"
+                            );
+                        }
+                        // Mirror-on-mirror fallback (comment-pinned in
+                        // trace.wgsl): a hit on a reflective surface samples
+                        // a pre-composite color missing its own reflection —
+                        // substitute the environment in proportion to the
+                        // hit surface's reflectivity (descriptor at the hit).
+                        assert!(
+                            src.contains("let hit_missing = hit_reflectivity")
+                                && src.contains(
+                                    "* (1.0 - smoothstep(0.0, SSR_SPREAD_GATE, hit_desc.a));"
+                                )
+                                && src.contains("hit_color = mix(hit_color, env, hit_missing);"),
+                            "{label}: trace must env-substitute hits on \
+                             reflective surfaces ONLY where the pre-composite \
+                             lacks energy (near-mirror spreads under the \
+                             ssr-spread-gate ramp) — reflectivity-only \
+                             substitution erases rough metals' reflections"
+                        );
+                        // Contact-first probe (comment-pinned): the march's
+                        // first sample sits at ~1 px, never mid-stride, so
+                        // contact geometry cannot be skipped.
+                        assert!(
+                            src.contains("var s_cur = 1.0;"),
+                            "{label}: trace march must start its first probe at ~1 px"
+                        );
+                        // CROSSING acceptance + post-refine validation
+                        // (comment-pinned): a hit is a SIGN CHANGE of
+                        // (ray_z - scene_z) across the step (in FRONT at the
+                        // previous sample, BEHIND now); the binary refine
+                        // converges to the root and the refined penetration
+                        // is validated against ONE absolute leak threshold —
+                        // angle-robust by construction (the old clause pair
+                        // dissolved curved reflections into stipple at steep
+                        // cameras).
+                        assert!(
+                            src.contains("front_prev = ray_z_prev < pscene_z * (1.0 + 1e-4);"),
+                            "{label}: trace must detect crossings by the \
+                             front-at-previous-sample sign test"
+                        );
+                        assert!(
+                            src.contains("let pen_r = rray_z - rscene_z;")
+                                && src.contains("let max_pen = params.thickness + 1e-3 * rscene_z;")
+                                && src.contains("hit_conf = 1.0 - smoothstep(0.5, 1.0, max(pen_r, 0.0) / max_pen);"),
+                            "{label}: trace must validate the REFINED penetration \
+                             against the leak threshold and derive confidence from it"
+                        );
+                        // The old absolute front bias (+0.01) killed exact
+                        // contacts; only the tiny RELATIVE epsilon remains.
+                        assert!(
+                            !src.contains("scene_z + 0.01") && src.contains("1e-4 * scene_z"),
+                            "{label}: trace must use the relative self-intersection \
+                             epsilon, not the absolute +0.01 contact-killing bias"
+                        );
+                        // 8-iteration binary refine (the refined texel is
+                        // what hit_uv — and thus the color fetch — uses).
+                        assert!(
+                            src.contains("for (var b = 0; b < 8; b = b + 1)"),
+                            "{label}: trace binary refine must run 8 iterations"
+                        );
+                        // ENVIRONMENT FALLBACK (comment-pinned in trace.wgsl):
+                        // every variant binds the skybox cubemap + sampler and
+                        // samples it on a MISS along the world reflected
+                        // direction — off-screen reflections return the
+                        // environment, never black.
+                        assert!(
+                            src.contains("var skybox_tex: texture_cube<f32>")
+                                && src.contains("var skybox_sampler: sampler")
+                                && src.contains(
+                                    "let env_mip = spread * f32(textureNumLevels(skybox_tex) - 1u);"
+                                ),
+                            "{label}: trace must bind the skybox cubemap + filtering sampler \
+                             (miss-path env fallback)"
+                        );
+                        assert!(
+                            src.contains("textureSampleLevel(skybox_tex"),
+                            "{label}: trace must sample the skybox on a miss \
+                             (`textureSampleLevel(skybox_tex`)"
+                        );
+                        // Edge/travel fades AND hit confidence must mix INTO
+                        // the env fallback, not into black; confidence turns
+                        // grazing-tangency hit/miss flips into a smooth
+                        // transition (comment-pinned in trace.wgsl).
+                        assert!(
+                            src.contains("mix(env_reflection, hit_reflection, confidence)"),
+                            "{label}: trace must blend hits toward the env fallback by \
+                             fade * travel_fade * hit_conf"
+                        );
+                        // The multisampled variant must bind the MSAA depth type.
+                        if multisampled_geometry {
+                            assert!(
+                                src.contains("texture_depth_multisampled_2d"),
+                                "{label}: MSAA SSR must bind texture_depth_multisampled_2d"
+                            );
+                        }
+                        // Hi-Z variant must bind + traverse the pyramid; linear
+                        // must not reference it at all.
+                        if trace == SsrTrace::HiZ {
+                            assert!(
+                                src.contains("var hzb_tex")
+                                    && src.contains("textureLoad(hzb_tex, cell, mip).g"),
+                                "{label}: Hi-Z SSR must bind hzb_tex and read the closest channel"
+                            );
+                        } else {
+                            assert!(
+                                !src.contains("hzb_tex"),
+                                "{label}: linear SSR must not reference hzb_tex"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn ssr_temporal_shader_validates() {
+    // The SSR temporal accumulation (history reproject + neighborhood clamp
+    // AFTER the spatial resolve) must naga-validate for every permutation
+    // (msaa × reverse_z). Beyond validity, pin the anti-ghosting core: the
+    // history sample must be CLAMPED to the 3×3 neighborhood AABB before the
+    // blend (comment-pinned in temporal.wgsl — this is what kills
+    // camera-motion trails in 1-2 frames), and the reprojection must go
+    // through the previous frame's view-projection.
+    use crate::render_passes::ssr::shader::cache_key::{
+        ShaderCacheKeySsr, ShaderCacheKeySsrTemporal,
+    };
+    use crate::render_passes::ssr::shader::template::ShaderTemplateSsr;
+    for multisampled_geometry in [false, true] {
+        for reverse_z in [false, true] {
+            let key = ShaderCacheKeySsr::Temporal(ShaderCacheKeySsrTemporal {
+                multisampled_geometry,
+                reverse_z,
+            });
+            let label = format!("ssr temporal msaa={multisampled_geometry} reverse_z={reverse_z}");
+            let src = ShaderTemplateSsr::try_from(&key)
+                .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
+                .into_source()
+                .unwrap_or_else(|e| panic!("{label}: render failed: {e:?}"));
+            naga_validate(&src, &label);
+            assert!(
+                src.contains("fn cs_main("),
+                "{label}: temporal module missing `fn cs_main` entry point"
+            );
+            // The neighborhood clamp — the anti-ghosting core (comment-pinned
+            // in the wgsl): history pulled to the current 3×3 AABB.
+            assert!(
+                src.contains("clamp(hist, nb_min, nb_max)"),
+                "{label}: temporal must clamp history to the neighborhood AABB \
+                 (`clamp(hist, nb_min, nb_max)`)"
+            );
+            // Depth reprojection through the previous frame's view-projection.
+            assert!(
+                src.contains("prev_view_proj"),
+                "{label}: temporal must reproject via cam.prev_view_proj"
+            );
+            // UNGATED blend (comment-pinned in the wgsl): mirror pixels
+            // accumulate exactly like glossy ones — the trace cycles the
+            // mirror march phase per frame (temporal supersampling of
+            // sub-texel silhouettes) and the history blend converges it. A
+            // spread gate here would silently discard that information; the
+            // motion safety is the neighborhood clamp, not a gate. The
+            // descriptor binding stays declared for layout parity.
+            assert!(
+                src.contains("var reflection_descriptor_tex"),
+                "{label}: temporal must keep the reflection descriptor binding \
+                 (bind-group-layout parity)"
+            );
+            assert!(
+                src.contains("params.temporal_weight,")
+                    && !src.contains("smoothstep(0.0, SSR_SPREAD_GATE, spread)"),
+                "{label}: temporal blend must be spread-UNGATED \
+                 (mirror pixels accumulate their per-frame phase cycle)"
+            );
+            // Unconditional clamp (comment-pinned in the wgsl): ghosting
+            // dies in 1-2 frames whatever moved. The trace is deterministic
+            // for mirrors (bilinear depth), so nothing needs a relaxed clamp
+            // to converge.
+            assert!(
+                src.contains("let hist_clamped = clamp(hist, nb_min, nb_max);")
+                    && !src.contains("reproj_px"),
+                "{label}: temporal must clamp history unconditionally \
+                 (no reprojection gating)"
+            );
+            // The multisampled variant must bind the MSAA depth type; the
+            // single-sample variant must not.
+            if multisampled_geometry {
+                assert!(
+                    src.contains("texture_depth_multisampled_2d"),
+                    "{label}: MSAA temporal must bind texture_depth_multisampled_2d"
+                );
+            } else {
+                assert!(
+                    src.contains("var depth_tex: texture_depth_2d"),
+                    "{label}: non-MSAA temporal must bind texture_depth_2d"
+                );
+            }
+            // Sky early-out matches the depth convention (reverse-Z far = 0).
+            let expect = if reverse_z {
+                "depth <= 0.0"
+            } else {
+                "depth >= 1.0"
+            };
+            assert!(
+                src.contains(expect),
+                "{label}: temporal sky test must be `{expect}`"
+            );
+        }
+    }
+}
+
+#[test]
+fn ssr_debug_views_validate() {
+    // Every debug view variant (1 confidence, 2 travel, 3 source, 4 steps)
+    // must naga-validate and REPLACE the reflection store with its encoding
+    // (comment-pinned in trace.wgsl). Validated on the production-shaped
+    // variant (Glossy + HiZ + reverse-Z); debug 0 is covered by the main
+    // ssr_shaders_validate sweep.
+    use crate::render_passes::ssr::shader::cache_key::{
+        ShaderCacheKeySsr, ShaderCacheKeySsrTrace, SsrMode, SsrTrace,
+    };
+    use crate::render_passes::ssr::shader::template::ShaderTemplateSsr;
+    for debug in 1u32..=4 {
+        let key = ShaderCacheKeySsr::Trace(ShaderCacheKeySsrTrace {
+            mode: SsrMode::Glossy,
+            trace: SsrTrace::HiZ,
+            half_res: false,
+            multisampled_geometry: false,
+            reverse_z: true,
+            debug,
+            bvh: false,
+        });
+        let label = format!("ssr debug={debug}");
+        let src = ShaderTemplateSsr::try_from(&key)
+            .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
+            .into_source()
+            .unwrap_or_else(|e| panic!("{label}: render failed: {e:?}"));
+        naga_validate(&src, &label);
+        assert!(
+            src.contains("textureStore(out_tex, coords, vec4<f32>(dbg, 1.0));")
+                && !src.contains("vec4<f32>(reflection * ssr_own, coverage)"),
+            "{label}: debug variant must replace the reflection store with \
+             the encoded debug value"
+        );
+        assert!(
+            src.contains("var steps_used: f32 = 0.0;"),
+            "{label}: debug variant must track the march iteration count"
+        );
+    }
+}
+
+#[test]
+fn ssr_resolve_shader_validates() {
+    // The SSR spatial resolve (the edge-aware denoise between trace and
+    // composite) must naga-validate for every permutation (msaa × reverse_z).
+    // Beyond validity, pin the filter's load-bearing structure: the
+    // depth-similarity edge weight (same exp(-|Δz|/sigma) form the composite
+    // upsample uses) and the coverage-weighted divide (rgb AND coverage share
+    // one weight sum so premultiplied color + fractional coverage stay
+    // consistent through the additive blend). Both lines carry comments in
+    // resolve.wgsl noting this test pins them.
+    use crate::render_passes::ssr::shader::cache_key::{
+        ShaderCacheKeySsr, ShaderCacheKeySsrResolve,
+    };
+    use crate::render_passes::ssr::shader::template::ShaderTemplateSsr;
+    for multisampled_geometry in [false, true] {
+        for reverse_z in [false, true] {
+            let key = ShaderCacheKeySsr::Resolve(ShaderCacheKeySsrResolve {
+                multisampled_geometry,
+                reverse_z,
+            });
+            let label = format!("ssr resolve msaa={multisampled_geometry} reverse_z={reverse_z}");
+            let src = ShaderTemplateSsr::try_from(&key)
+                .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
+                .into_source()
+                .unwrap_or_else(|e| panic!("{label}: render failed: {e:?}"));
+            naga_validate(&src, &label);
+            assert!(
+                src.contains("fn cs_main("),
+                "{label}: resolve module missing `fn cs_main` entry point"
+            );
+            // Depth-similarity edge-stopping term (comment-pinned in the wgsl).
+            assert!(
+                src.contains("exp(-abs(z_tap - z_center) / sigma)"),
+                "{label}: resolve must weight taps by the depth-similarity term \
+                 `exp(-abs(z_tap - z_center) / sigma)`"
+            );
+            // Coverage-weighted divide: rgb + coverage divided by the same
+            // weight sum (comment-pinned in the wgsl).
+            assert!(
+                src.contains("sum / sum_w"),
+                "{label}: resolve must divide the accumulated rgb+coverage by \
+                 the shared weight sum (`sum / sum_w`)"
+            );
+            // Mirror passthrough (comment-pinned in the wgsl): the resolve
+            // reads the reflection descriptor's spread; mirror pixels
+            // (spread < eps) write the CENTER tap unfiltered — a perfect
+            // mirror must be pixel-exact through this pass.
+            assert!(
+                src.contains("var reflection_descriptor_tex"),
+                "{label}: resolve must bind the reflection descriptor (spread source)"
+            );
+            // Mirror pixels get a TIGHT (~1px, scale 0.6) antialiasing
+            // kernel — never a passthrough (tangency rows quantize) and
+            // NEVER a travel-widened radius (trace alpha rides to ~1 along
+            // reflection silhouettes, so travel-widening frays every mirror
+            // edge); glossy pixels widen with travel, gated by spread
+            // (comment-pinned).
+            assert!(
+                src.contains("let radius_scale = mix(")
+                    && src.contains("0.6,")
+                    && src.contains("1.0 + travel * 2.2,")
+                    && src.contains("smoothstep(0.0, SSR_SPREAD_GATE, spread),"),
+                "{label}: resolve radius must lerp mirror-AA -> travel blur by spread \
+                 with NO unconditional travel widening on mirror pixels"
+            );
+            // Quantization-comb fusing is DIRECTIONAL, two-axis and
+            // multi-scale: columns (contacts) stretch taps in x, rows
+            // (curved-silhouette apex) stretch in y, proportional to the
+            // detected scale — and the periodicity discriminator
+            // (`- dev(±2d)`) must exempt isolated THIN features (a reflected
+            // thin ring) from fusing. Nothing else widens a mirror pixel
+            // (comment-pinned in the wgsl).
+            assert!(
+                src.contains("var amt_x = 0.0;")
+                    && src.contains("var amt_y = 0.0;")
+                    && src.contains("- length(center.rgb - (xm2 + xp2) * 0.5)")
+                    && src.contains("- length(center.rgb - (ym2 + yp2) * 0.5)")
+                    && src.contains("1.0 + amt_x * 3.0")
+                    && src.contains("1.0 + amt_y * 3.0")
+                    && src.contains("tap_offsets[i] * radius_scale * stretch"),
+                "{label}: resolve must fuse quantization combs via the two-axis \
+                 multi-scale comb detector with the thin-feature periodicity guard"
+            );
+            // The gate constant is shared prose-tagged across shader files
+            // (resolve / temporal / brdf_pbr) — grep "ssr-spread-gate".
+            assert!(
+                src.contains("ssr-spread-gate"),
+                "{label}: resolve must define its SSR_SPREAD_GATE with the \
+                 `ssr-spread-gate` sync tag"
+            );
+            // The multisampled variant must bind the MSAA depth type; the
+            // single-sample variant must not.
+            if multisampled_geometry {
+                assert!(
+                    src.contains("texture_depth_multisampled_2d"),
+                    "{label}: MSAA resolve must bind texture_depth_multisampled_2d"
+                );
+            } else {
+                assert!(
+                    src.contains("var depth_tex: texture_depth_2d"),
+                    "{label}: non-MSAA resolve must bind texture_depth_2d"
+                );
+            }
+            // Sky early-out matches the depth convention (reverse-Z far = 0).
+            let expect = if reverse_z {
+                "center_depth <= 0.0"
+            } else {
+                "center_depth >= 1.0"
+            };
+            assert!(
+                src.contains(expect),
+                "{label}: resolve sky test must be `{expect}`"
+            );
+        }
+    }
+}
+
+#[test]
+fn ssr_composite_shader_validates() {
+    // M4b: the SSR composite pass is a plain const/function-built WGSL string
+    // (NOT part of the `ShaderTemplateSsr` naga suite above), so validate it
+    // here. The joint-bilateral upsample reads the full-res depth binding, whose
+    // WGSL type differs under MSAA (`texture_depth_multisampled_2d`); both
+    // variants must parse + validate and carry the fragment entry point.
+    use crate::render_passes::ssr::composite::shader_source;
+    for multisampled in [false, true] {
+        for reverse_z in [false, true] {
+            let label = format!("ssr composite multisampled={multisampled} reverse_z={reverse_z}");
+            let src = shader_source(multisampled, reverse_z);
+            naga_validate(&src, &label);
+            // The sky early-out must match the depth convention: reverse-Z
+            // clears to 0 at the far plane, forward-Z to 1.
+            let expect = if reverse_z {
+                "center_depth <= 0.0"
+            } else {
+                "center_depth >= 1.0"
+            };
+            assert!(
+                src.contains(expect),
+                "{label}: composite sky test must be `{expect}`"
+            );
+        }
+        let label = format!("ssr composite multisampled={multisampled}");
+        let src = shader_source(multisampled, true);
+        assert!(
+            src.contains("fn frag_main("),
+            "{label}: composite module missing `fn frag_main` entry point"
+        );
+        if multisampled {
+            assert!(
+                src.contains("texture_depth_multisampled_2d"),
+                "{label}: MSAA composite must bind texture_depth_multisampled_2d"
+            );
+        } else {
+            assert!(
+                src.contains("var depth_tex: texture_depth_2d"),
+                "{label}: non-MSAA composite must bind texture_depth_2d"
+            );
+        }
+    }
+}
+
 /// A.4: the decal compute pass unpacks a flat `texture_index` with a templated
 /// stride (`% {{ texture_pool_layers_per_array }}u`); validate the shader compiles
 /// for a non-64 stride (256 = a real device `max_texture_array_layers`) so the
@@ -811,22 +1776,204 @@ fn custom_transparent_shaders_validate() {
 fn decal_shader_validates_with_templated_layer_stride() {
     for msaa in [None, Some(4)] {
         for stride in [256u32, 2048u32] {
-            let key = ShaderCacheKeyMaterialDecal {
-                msaa_sample_count: msaa,
-                texture_pool_arrays_len: 1,
-                texture_pool_samplers_len: 1,
-                texture_pool_layers_per_array: stride,
+            for reverse_z in [false, true] {
+                let key = ShaderCacheKeyMaterialDecal {
+                    msaa_sample_count: msaa,
+                    texture_pool_arrays_len: 1,
+                    texture_pool_samplers_len: 1,
+                    texture_pool_layers_per_array: stride,
+                    reverse_z,
+                };
+                let label = format!("decal msaa={msaa:?} stride={stride} reverse_z={reverse_z}");
+                let src = ShaderTemplateMaterialDecal::try_from(&key)
+                    .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
+                    .into_source()
+                    .unwrap_or_else(|e| panic!("{label}: render failed: {e:?}"));
+                assert!(
+                    src.contains(&format!("% {stride}u")) && src.contains(&format!("/ {stride}u")),
+                    "{label}: expected the templated stride in the unpacking math"
+                );
+                // 003: the sky skip must match the depth clear value of the
+                // convention (reverse-Z clears to 0.0, forward-Z to 1.0).
+                if reverse_z {
+                    assert!(
+                        src.contains("depth <= 0.0"),
+                        "{label}: reverse-Z sky skip must test depth <= 0.0"
+                    );
+                } else {
+                    assert!(
+                        src.contains("depth >= 1.0"),
+                        "{label}: forward-Z sky skip must test depth >= 1.0"
+                    );
+                }
+                naga_validate(&src, &label);
+            }
+        }
+    }
+}
+
+/// The decal classify shader's HZB occlusion gate is depth-convention-aware
+/// (003): under reverse-Z "closest" is the numerical MAX corner depth and the
+/// HZB stores the min-reduced (farthest) occluder bound, so the drop test
+/// inverts. Before this axis existed the forward-Z gate ran under reverse-Z
+/// and dropped EVERY decal whose screen footprint touched the sky (hzb min =
+/// 0.0 clear) — i.e. all of them: the editor rendered no decals at all.
+/// Validate all four template variants and pin the gate's comparison
+/// direction + the mip-selection formula (the old `31u - firstLeadingBit`
+/// computed count-leading-zeros and always picked the coarsest mip).
+#[test]
+fn decal_classify_shader_validates_for_both_depth_conventions() {
+    use crate::render_passes::material_decal::classify::shader::{
+        cache_key::ShaderCacheKeyDecalClassify, template::ShaderTemplateDecalClassify,
+    };
+    for hzb_enabled in [false, true] {
+        for reverse_z in [false, true] {
+            let key = ShaderCacheKeyDecalClassify {
+                hzb_enabled,
+                reverse_z,
             };
-            let label = format!("decal msaa={msaa:?} stride={stride}");
-            let src = ShaderTemplateMaterialDecal::try_from(&key)
+            let label = format!("decal classify hzb={hzb_enabled} reverse_z={reverse_z}");
+            let src = ShaderTemplateDecalClassify::try_from(&key)
                 .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
                 .into_source()
                 .unwrap_or_else(|e| panic!("{label}: render failed: {e:?}"));
-            assert!(
-                src.contains(&format!("% {stride}u")) && src.contains(&format!("/ {stride}u")),
-                "{label}: expected the templated stride in the unpacking math"
-            );
             naga_validate(&src, &label);
+            if hzb_enabled {
+                assert!(
+                    !src.contains("31u - firstLeadingBit"),
+                    "{label}: mip selection must use firstLeadingBit (floor log2), \
+                     not its count-leading-zeros dual"
+                );
+                if reverse_z {
+                    assert!(
+                        src.contains("closest_depth = max(closest_depth"),
+                        "{label}: reverse-Z closest corner depth is the numerical max"
+                    );
+                    assert!(
+                        src.contains("closest_depth < hzb_bound"),
+                        "{label}: reverse-Z occlusion gate must drop when closest \
+                         depth is numerically SMALLER than the HZB min-bound"
+                    );
+                } else {
+                    assert!(
+                        src.contains("closest_depth = min(closest_depth"),
+                        "{label}: forward-Z closest corner depth is the numerical min"
+                    );
+                    assert!(
+                        src.contains("closest_depth > hzb_bound"),
+                        "{label}: forward-Z occlusion gate must drop when closest \
+                         depth is numerically GREATER than the HZB max-bound"
+                    );
+                }
+            } else {
+                assert!(
+                    !src.contains("hzb_texture"),
+                    "{label}: HZB binding must be absent when the gate is off"
+                );
+            }
         }
     }
+}
+
+/// Axis 1 (optimization sweep, plan 006 — git history): bloom went content/config-lazy — its 4 compute
+/// shaders no longer compile at boot (only when `post_processing.bloom` turns
+/// on), so on-device boot validation no longer covers them. Keep them
+/// natively validated here: every pyramid step (prefilter / downsample /
+/// tent upsample, all routed through the `BloomDownsample` cache key) and
+/// the combine must parse + validate and carry the compute entry point.
+#[test]
+fn bloom_shaders_validate() {
+    use crate::render_passes::bloom::shader::{
+        cache_key::{BloomPyramidStep, ShaderCacheKeyBloomDownsample},
+        template::{ShaderTemplateBloomCombine, ShaderTemplateBloomDownsample},
+    };
+
+    // The 9-tap tent kernel in upsample.wgsl + combine.wgsl uses weights
+    // (1 2 1 / 2 4 2 / 1 2 1) with a `(1.0 / 16.0)` normalization — pin that
+    // the taps sum to exactly the divisor so the filter stays
+    // energy-preserving if the kernel is ever edited (edit both together).
+    const TENT9_WEIGHTS: [f32; 9] = [1.0, 2.0, 1.0, 2.0, 4.0, 2.0, 1.0, 2.0, 1.0];
+    const TENT9_DIVISOR: f32 = 16.0;
+    assert_eq!(
+        TENT9_WEIGHTS.iter().sum::<f32>(),
+        TENT9_DIVISOR,
+        "tent9 kernel weights must sum to the shader's normalization divisor"
+    );
+
+    for step in [
+        BloomPyramidStep::Prefilter,
+        BloomPyramidStep::Downsample,
+        BloomPyramidStep::Upsample,
+    ] {
+        let label = format!("bloom pyramid step={step:?}");
+        let src = ShaderTemplateBloomDownsample::try_from(&ShaderCacheKeyBloomDownsample { step })
+            .unwrap_or_else(|e| panic!("{label}: template dispatch failed: {e:?}"))
+            .into_source()
+            .unwrap_or_else(|e| panic!("{label}: render failed: {e:?}"));
+        naga_validate(&src, &label);
+        assert!(
+            src.contains("fn cs_main("),
+            "{label}: bloom module missing `fn cs_main` entry point"
+        );
+        if matches!(step, BloomPyramidStep::Upsample) {
+            assert!(
+                src.contains("(1.0 / 16.0)"),
+                "{label}: tent9 normalization (1/16, matching TENT9_DIVISOR) missing"
+            );
+            assert!(
+                src.contains("textureLoad(src_prev"),
+                "{label}: upsample must accumulate onto the down-pyramid base"
+            );
+        }
+    }
+
+    let src = ShaderTemplateBloomCombine
+        .into_source()
+        .expect("bloom combine: render failed");
+    naga_validate(&src, "bloom combine");
+    assert!(
+        src.contains("fn cs_main("),
+        "bloom combine: module missing `fn cs_main` entry point"
+    );
+    assert!(
+        src.contains("(1.0 / 16.0)"),
+        "bloom combine: tent9 normalization (1/16, matching TENT9_DIVISOR) missing"
+    );
+    assert!(
+        src.contains("textureNumLevels(pyramid)"),
+        "bloom combine: scatter-weight normalization must span every pyramid level"
+    );
+}
+
+/// Axis 1 (optimization sweep, plan 006 — git history): the cluster-LOD cut + compaction went
+/// content-lazy — they no longer compile at boot (only at the first commit
+/// with a resident cluster mesh), so the "creating the pipeline validates
+/// `cluster_cut.wgsl` on-device" boot checkpoint moved to that commit. Keep
+/// every variant natively validated here: cut with paging off/on plus the
+/// compaction.
+#[cfg(feature = "lod")]
+#[test]
+fn cluster_lod_shaders_validate() {
+    use crate::render_passes::cluster_lod::shader::template::{
+        ShaderTemplateClusterCompaction, ShaderTemplateClusterCut,
+    };
+    for paging in [false, true] {
+        let label = format!("cluster cut paging={paging}");
+        let src = ShaderTemplateClusterCut { paging }
+            .into_source()
+            .unwrap_or_else(|e| panic!("{label}: render failed: {e:?}"));
+        naga_validate(&src, &label);
+        assert!(
+            src.contains("fn cs_main("),
+            "{label}: cluster cut missing `fn cs_main` entry point"
+        );
+    }
+    let src = ShaderTemplateClusterCompaction
+        .into_source()
+        .expect("cluster compaction: render failed");
+    naga_validate(&src, "cluster compaction");
+    assert!(
+        src.contains("fn cs_main("),
+        "cluster compaction: module missing `fn cs_main` entry point"
+    );
 }

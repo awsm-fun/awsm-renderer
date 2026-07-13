@@ -1,0 +1,18 @@
+<!doctype html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>awsm-renderer — player-tests harness (plan 007)</title>
+    <style>
+        html, body { margin: 0; padding: 0; background: #111; height: 100%; color: #ddd; font-family: system-ui, sans-serif; }
+        canvas { display: block; }
+        #hud { position: fixed; top: 8px; left: 8px; font-size: 12px; white-space: pre; opacity: 0.85; pointer-events: none; }
+    </style>
+</head>
+<body>
+    <div id="hud">player-tests: booting…</div>
+    <!-- The render canvas is created fresh per scene by the harness (a fresh
+         renderer + device per bundle keeps every load cold + isolated). -->
+    <link data-trunk rel="rust" data-wasm-opt="0" />
+</body>
+</html>

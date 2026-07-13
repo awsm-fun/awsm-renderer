@@ -19,7 +19,10 @@ tasks:
     env:
       ROOT_BASE_URI_PATH: "{{.DEV_ROOT_BASE_URI_PATH}}"
       MEDIA_BASE_URL_ADDITIONAL_ASSETS: "{{.URL_DEV_MEDIA_BASE_URL_ADDITIONAL_ASSETS}}"
-      MCP_DEFAULT_ORIGIN: "{{.URL_MCP_DEFAULT}}"
+      # Baked-in default MCP origin the editor's connect button dials. Defaults to
+      # the prod port (URL_MCP_DEFAULT → 9086); `task mcp-dev` overrides MCP_ORIGIN
+      # so its editor defaults straight to the local dev MCP port (no ?mcp= needed).
+      MCP_DEFAULT_ORIGIN: '{{.MCP_ORIGIN | default .URL_MCP_DEFAULT}}'
     cmds:
       - >
         cd {{.PATH_CRATE}} &&

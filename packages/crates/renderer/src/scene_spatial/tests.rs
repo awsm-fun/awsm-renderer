@@ -157,7 +157,7 @@ fn frustum_query_parity_with_linear_scan() {
 
     let view = Mat4::look_at_rh(Vec3::new(0.0, 0.0, 30.0), Vec3::ZERO, Vec3::Y);
     let proj = Mat4::perspective_rh(45.0_f32.to_radians(), 16.0 / 9.0, 0.1, 100.0);
-    let frustum = Frustum::from_view_projection(proj * view);
+    let frustum = Frustum::from_view_projection(proj * view, false);
 
     let mut linear_hits = Vec::new();
     for i in 0..100 {
@@ -210,7 +210,7 @@ fn flag_filter_excludes_hidden_and_hud() {
 
     let view = Mat4::look_at_rh(Vec3::new(0.0, 0.0, 10.0), Vec3::ZERO, Vec3::Y);
     let proj = Mat4::perspective_rh(60.0_f32.to_radians(), 1.0, 0.1, 100.0);
-    let frustum = Frustum::from_view_projection(proj * view);
+    let frustum = Frustum::from_view_projection(proj * view, false);
 
     let camera_hits: Vec<_> = spatial
         .query_frustum(&frustum, NodeFilter::camera_default())
@@ -254,7 +254,7 @@ fn cube_face_frustum_prunes_other_face_geometry() {
     // Camera at origin looking at +X with 90° aspect-1 perspective.
     let view = Mat4::look_at_rh(Vec3::ZERO, Vec3::new(1.0, 0.0, 0.0), Vec3::Y);
     let proj = Mat4::perspective_rh(90.0_f32.to_radians(), 1.0, 0.1, 100.0);
-    let frustum = Frustum::from_view_projection(proj * view);
+    let frustum = Frustum::from_view_projection(proj * view, false);
 
     let hits: Vec<_> = spatial
         .query_frustum(&frustum, NodeFilter::default())
@@ -445,7 +445,7 @@ fn randomized_mutations_match_linear_scan_oracle() {
 
     let view = Mat4::look_at_rh(Vec3::new(0.0, 15.0, 70.0), Vec3::ZERO, Vec3::Y);
     let proj = Mat4::perspective_rh(50.0_f32.to_radians(), 16.0 / 9.0, 0.1, 200.0);
-    let frustum = Frustum::from_view_projection(proj * view);
+    let frustum = Frustum::from_view_projection(proj * view, false);
 
     for round in 0..300 {
         // ── mutate ──

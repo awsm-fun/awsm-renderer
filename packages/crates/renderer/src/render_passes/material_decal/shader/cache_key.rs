@@ -18,6 +18,8 @@ pub struct ShaderCacheKeyMaterialDecal {
     /// Device-constant in practice, so it adds no real variant; carried here so the
     /// compute template substitutes the exact stride the loader packs with.
     pub texture_pool_layers_per_array: u32,
+    /// Depth convention (003).
+    pub reverse_z: bool,
 }
 
 impl From<ShaderCacheKeyMaterialDecal> for ShaderCacheKey {

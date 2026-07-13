@@ -256,6 +256,8 @@ pub(super) async fn build_renderer(
         .with_logging(AwsmRendererLogging::default())
         .with_clear_color(Color::new_values(0.10, 0.11, 0.13, 1.0))
         .with_features(RendererFeatures {
+            // Follows the main viewport's staged reverse-Z rollout (003).
+            reverse_z: super::context::reverse_z_flag(),
             gpu_culling: false,
             decals: false,
             coverage_lod: false,

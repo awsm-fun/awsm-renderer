@@ -207,6 +207,7 @@ dependencies = [
  "anyhow",
  "askama",
  "awsm-renderer-core",
+ "awsm-renderer-lod-bake",
  "awsm-renderer-materials",
  "awsm-renderer-scene",
  "awsm-renderer-tangents",
@@ -513,6 +514,27 @@ dependencies = [
  "awsm-renderer-geometry",
  "glam 0.32.1",
  "serde",
+]
+
+[[package]]
+name = "awsm-renderer-player-tests-example"
+version = "0.20.1"
+dependencies = [
+ "anyhow",
+ "awsm-renderer",
+ "awsm-renderer-core",
+ "awsm-renderer-scene",
+ "awsm-renderer-scene-loader",
+ "futures",
+ "glam 0.32.1",
+ "gloo-net",
+ "js-sys",
+ "tracing",
+ "tracing-subscriber",
+ "tracing-web",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
 ]
 
 [[package]]

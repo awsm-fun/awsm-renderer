@@ -163,7 +163,11 @@ every command/query, and each tool self-describes over the MCP schema.
 - `get_frame_globals` — renderer `time`/`delta_time`/`frame_count`/`resolution`.
 - `canvas_stats { region? }` — mean/min/max luma over a region or the whole canvas.
 - `wait_render_settled { max_ms? }` — block until recompiles drain + a frame
-  presents. **Call between an edit and a screenshot.**
+  presents. **Call between an edit and a screenshot.** Note: bloom / SSR / decal /
+  cluster pipelines compile **lazily on first use**, so the first settle after
+  enabling one of those features takes longer than later ones. Loads
+  (`import_model_from_url` / `load_project_from_url` / `load_player_bundle`) are
+  settle-visible: one settle after the call observes the fully-populated scene.
 - `screenshot_scene { width?, height? }` / `screenshot_material { width?, height? }`
   / `screenshot_texture { asset }` — PNG as an MCP **image** block.
 
@@ -172,9 +176,15 @@ every command/query, and each tool self-describes over the MCP schema.
   `insert_empty`, `insert_camera`, `insert_light { kind, parent? }`,
   `insert_particle { parent? }` (CPU particle emitter), `insert_decal { parent? }`
   (projection decal; transform = oriented unit-cube volume, projects down local -Z)
-  — **return the new node id.** Other node kinds (Line, Sprite, Curve, Sweep,
-  Instances) are created via `dispatch_command { command: { cmd: "insert", spec:
-  "line" | "sprite" | "curve" | "sweep" | "instances", … } }`.
+  — **return the new node id.** `insert_instancer { mesh?, parent? }` — insert an
+  explicit **Instancer** node (one node referencing a mesh ASSET, drawn as ONE
+  GPU-instanced mesh; optionally wires the `mesh` ref in the same undo step), then
+  author placements with `set_instancer_transforms { node, transforms,
+  per_instance_colors? }` (bulk-replace the whole instance list in one call).
+  Other node kinds (Line, Sprite, Curve, Sweep, Instances) are created via
+  `dispatch_command { command: { cmd: "insert", spec:
+  "line" | "sprite" | "curve" | "sweep" | "instances", … } }` (unit-variant specs
+  are the bare string or `{"<tag>":{}}`; inlined fields error with "expected unit").
 - `set_particle_emitter { node, spawn_rate?, burst_count?, max_alive?, one_shot?,
   space?, shape?, initial_speed?, lifetime?, size?, forces?, color_over_life?,
   size_over_life?, blend?, texture? }` — typed, **patch-style** emitter config
@@ -201,8 +211,15 @@ every command/query, and each tool self-describes over the MCP schema.
   root).
 
 **Project / import / history**
-- `new_project` (seeds a key light + IBL), `load_project_from_url { base_url }`,
-  `import_model_from_url { url }`, `undo`, `redo`.
+- `new_project` (seeds a key light + the default three-slot environment),
+  `load_project_from_url { base_url }`, `import_model_from_url { url }`, `undo`,
+  `redo`. Loads are **settle-visible**: one `wait_render_settled` after the call
+  observes the fully-populated scene (no `get_snapshot` polling loops).
+- `save_project` — serialize the open project (`project.toml` + `assets/*` side
+  files) to a server-side directory; the bytes ride a side-channel (never the
+  tool result) and the tool returns the path + a file manifest.
+- `verify_roundtrip` — destructive save→load losslessness self-test; returns a
+  before/after census report (`{ before, after, equal, lossless }`).
 - `import_nanite_asset { clusters_url }` — import a **pre-baked nanite / cluster-LOD**
   asset as a **view-only** mesh, rendered through the bounded cluster pipeline (the
   same path the player uses). Use this instead of `import_model_from_url` for **heavy
@@ -250,11 +267,20 @@ every command/query, and each tool self-describes over the MCP schema.
 
 **Lighting / environment**
 - `set_light_color`, `set_light_intensity`, `set_light_range`, `set_light_angles`.
-- `set_environment { skybox?, ibl_prefiltered?, ibl_irradiance?, zenith?, nadir? }`
-  — builtin, KTX cubemap (asset/.ktx2 URL), OR an **agent-authored sky gradient**:
-  pass `zenith` + `nadir` (`[r,g,b]` linear) and it sets both skybox + IBL to that
-  two-color gradient (author dusk/overcast/night/studio from your own colors, no
-  hosted `.ktx2`).
+- `set_environment { skybox?, specular?, irradiance?, zenith?, nadir? }` — THREE
+  independent slots (skybox background / specular IBL / irradiance IBL), each
+  `"builtin"`, a KTX cubemap (asset id or `.ktx2` URL), OR an **agent-authored sky
+  gradient**: pass `zenith` + `nadir` (`[r,g,b]` linear) and it sets all three
+  slots to that two-color gradient (author dusk/overcast/night/studio from your
+  own colors, no hosted `.ktx2`). **PARTIAL update:** an omitted slot KEEPS its
+  current binding (pass `"builtin"` to explicitly reset one). Read the slots back
+  via `get_snapshot` → `project.environment`.
+- `set_shadows { … }` / `get_shadows` — patch/read the renderer-wide shadow
+  config (`scene.shadows`, persisted + carried in the player bundle): the
+  `sscs_*` contact-shadow block, `atlas_size`, `evsm_atlas_size` / `evsm_exponent`
+  / `evsm_blur_radius`, `max_point_shadows` / `point_shadow_resolution`,
+  `debug_cascade_colors`. Patch semantics — only the fields you pass change.
+  `set_sscs` is the legacy SSCS-only subset (now routed through the same patch).
 
 **Textures**
 - `add_texture_asset { proc }` (checker/gradient/noise) and
@@ -287,7 +313,14 @@ heightmaps (`displace_from_texture { node, url, strength }`). See the
 - `switch_mode { mode }`, `snap_camera_to_axis { axis }`, `reset_camera`.
 - `set_camera_orbit { yaw, pitch, radius, look_at }`,
   `set_camera_projection { perspective, fov_y? }`, `frame_node { node, padding? }`
-  (padding 0 = tight; fits the node's bounds to fill the view).
+  (padding 0 = tight; fits the node's bounds to fill the view),
+  `set_camera_clip { manual?, near?, far? }` (pin or restore AUTO clip planes).
+  Depth is **reverse-Z by default** (near=1, far=0 — huge far/near ratios don't
+  z-fight; `?noreversez` on the editor URL rolls back to forward-Z).
+- `set_view_options { grid?, gizmos?, light_gizmos?, skeleton_viz?, msaa?, smaa?, … }`
+  / `get_view_options` — viewport toggles (turn grid/gizmos off for clean
+  verification screenshots). `set_post_process { … }` / `get_post_process` —
+  tonemapping / bloom / dof / exposure + the flat `ssr_*` block (patch semantics).
 - `reset_pose { node }` — restore a node + all descendants to their scene base
   transforms; reverts a clip's last-previewed pose left baked after clearing the
   current clip (pass a rig root to reset a skeleton). Transient, not undoable.
@@ -357,11 +390,17 @@ heightmaps (`displace_from_texture { node, url, strength }`). See the
   (bake a skinned mesh to a static editable Mesh).
 
 **Bake / export / bundle**
-- `export_scene_glb` / `export_node_glb` — bake to binary glTF (base64); PBR→glTF
-  PBR, Unlit→`KHR_materials_unlit`, custom/Toon→`AWSM_materials_none`.
+- `export_scene_glb` / `export_node_glb` — bake to binary glTF; PBR→glTF
+  PBR, Unlit→`KHR_materials_unlit`, custom/Toon→`AWSM_materials_none`. The bytes
+  ride the `/glb/<id>` side-channel — the tool returns a temp-file **path** +
+  byte length, never inline base64.
 - `export_player_bundle` — bake the project to a runtime bundle dir (`scene.toml`
-  + `assets/`). `load_player_bundle` — round-trip self-test: bundle the current
-  project in-memory, reset, reload through `populate_awsm_scene`.
+  + `assets/`); files ride the `/bundle` side-channel, the tool returns
+  `{ bundle_dir, files, total_bytes, url_base }`. Per-texture bundle encoding is
+  authored with the dedicated `set_texture_export` tool (lossless WebP default;
+  lossy + quality per texture). `load_player_bundle` — round-trip
+  self-test: bundle the current project in-memory, reset, reload through
+  `populate_awsm_scene`.
 
 **Batch + generic escape hatches — full coverage**
 - `dispatch_batch { commands }` — a list of raw `EditorCommand`s applied
@@ -375,8 +414,11 @@ heightmaps (`displace_from_texture { node, url, strength }`). See the
   ergonomic pattern for escape-hatch edits without a typed tool: `get_node_details`
   to see the exact shape + field names, then send just the delta.
 
-**Resources** (read-only docs): `awsm://docs/mcp`,
-`awsm://docs/material-contract-opaque`, `awsm://docs/material-contract-transparent`.
+**Resources** (read-only docs): `awsm://docs/mcp`, `awsm://docs/agent-guide`,
+`awsm://docs/asset-workflows`, `awsm://docs/material-recipes`,
+`awsm://docs/animation`, `awsm://docs/mesh-tools`,
+`awsm://docs/material-contract-opaque`, `awsm://docs/material-contract-transparent`,
+`awsm://docs/material-contract-vertex`.
 
 **Prompts** (workflow templates): `author_lit_material`, `setup_rotation_clip`,
 `import_and_frame_model`.

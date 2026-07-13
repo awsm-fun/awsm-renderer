@@ -251,7 +251,10 @@ async fn import_typed(
     file_type: Option<GltfFileType>,
     name: Option<&str>,
 ) -> Result<GltfImport, String> {
-    let loader = GltfLoader::load(url, file_type)
+    // bypass_http_cache = true: editor URL imports are a dev-iteration workflow
+    // (re-bake to the same filename, re-import) — always fetch the model fresh so
+    // a stale browser-cached copy of a prior bake can't be silently re-imported.
+    let loader = GltfLoader::load(url, file_type, true)
         .await
         .map_err(|e| format!("load: {e}"))?;
     let data = loader.into_data(None).map_err(|e| format!("decode: {e}"))?;

@@ -21,7 +21,6 @@ pub struct ShaderTemplateEffectsBindGroups {
     pub smaa_anti_alias: bool,
     pub multisampled_geometry: bool,
     pub dof: bool,
-    pub ping_pong: bool,
     pub debug: ShaderTemplateEffectsDebug,
 }
 
@@ -32,7 +31,6 @@ impl ShaderTemplateEffectsBindGroups {
             smaa_anti_alias: cache_key.smaa_anti_alias,
             multisampled_geometry: cache_key.multisampled_geometry,
             dof: cache_key.dof,
-            ping_pong: cache_key.ping_pong,
             debug: ShaderTemplateEffectsDebug::new(),
         }
     }
@@ -44,32 +42,26 @@ impl ShaderTemplateEffectsBindGroups {
 pub struct ShaderTemplateEffectsCompute {
     pub smaa_anti_alias: bool,
     pub multisampled_geometry: bool,
-    /// Bloom is enabled (any phase other than None)
+    /// Bloom blend is enabled (`BloomPhase::Blend` — the pre-built pyramid
+    /// glow is added over the composite)
     pub bloom: bool,
-    /// First pass: extract bright pixels from composite
-    pub bloom_extract: bool,
-    /// Final pass: blend bloom result with original
-    pub bloom_blend: bool,
     pub dof: bool,
-    pub ping_pong: bool,
+    /// Depth convention (003) — read by the DoF include (`helpers/dof.wgsl`).
+    pub reverse_z: bool,
     pub debug: ShaderTemplateEffectsDebug,
 }
 
 impl ShaderTemplateEffectsCompute {
     /// Creates a compute shader template from the cache key.
     pub fn new(cache_key: &ShaderCacheKeyEffects) -> Self {
-        let bloom = cache_key.bloom_phase != BloomPhase::None;
-        let bloom_extract = cache_key.bloom_phase == BloomPhase::Extract;
-        let bloom_blend = cache_key.bloom_phase == BloomPhase::Blend;
+        let bloom = cache_key.bloom_phase == BloomPhase::Blend;
 
         Self {
             smaa_anti_alias: cache_key.smaa_anti_alias,
             multisampled_geometry: cache_key.multisampled_geometry,
             bloom,
-            bloom_extract,
-            bloom_blend,
             dof: cache_key.dof,
-            ping_pong: cache_key.ping_pong,
+            reverse_z: cache_key.reverse_z,
             debug: ShaderTemplateEffectsDebug::new(),
         }
     }

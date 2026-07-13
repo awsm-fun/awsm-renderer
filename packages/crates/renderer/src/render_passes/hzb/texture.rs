@@ -1,6 +1,8 @@
 //! HZB texture allocation + per-mip views.
 //!
-//! One `r32float` texture sized to the viewport with a full mip chain
+//! One `rg32float` texture sized to the viewport with a full mip chain
+//! (.r = furthest depth per tile for occlusion/decals, .g = closest for
+//! the Hi-Z SSR traversal)
 //! (`floor(log2(max(w, h))) + 1` levels). Each mip is bound separately
 //! as a storage texture during the build pass — WebGPU requires
 //! single-level views for `texture_storage_2d`. A combined sample-side
@@ -46,7 +48,7 @@ impl HzbTexture {
 
         let texture = gpu.create_texture(
             &TextureDescriptor::new(
-                TextureFormat::R32float,
+                TextureFormat::Rg32float,
                 Extent3d::new(width, Some(height), Some(1)),
                 TextureUsage::new()
                     .with_storage_binding()

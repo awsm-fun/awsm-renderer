@@ -77,7 +77,7 @@ impl AwsmRenderer {
         // in `light_importance_decision`, so importance scores treated every
         // light as if the camera were at the origin.
         let camera_pos = matrices.view.inverse().w_axis.truncate();
-        let frustum = Frustum::from_view_projection(matrices.view_projection());
+        let frustum = Frustum::from_view_projection(matrices.view_projection(), matrices.reverse_z);
 
         // Snapshot the light keys + state so we can mutate
         // `shadows.params` without holding a borrow on `self.lights`.
@@ -208,7 +208,7 @@ mod tests {
             direction: [0.0, -1.0, 0.0],
         };
         let frustum =
-            Frustum::from_view_projection(glam::Mat4::perspective_rh(1.0, 1.0, 0.1, 100.0));
+            Frustum::from_view_projection(glam::Mat4::perspective_rh(1.0, 1.0, 0.1, 100.0), false);
         let d = light_importance_decision(&light, Vec3::ZERO, &frustum);
         assert_eq!(d.tier, ShadowQualityTier::High);
     }
@@ -218,7 +218,7 @@ mod tests {
         // Camera looks down +Z; light is behind at -Z = -100.
         let view = glam::Mat4::look_at_rh(Vec3::ZERO, Vec3::new(0.0, 0.0, 1.0), Vec3::Y);
         let proj = glam::Mat4::perspective_rh(60.0_f32.to_radians(), 1.0, 0.1, 50.0);
-        let frustum = Frustum::from_view_projection(proj * view);
+        let frustum = Frustum::from_view_projection(proj * view, false);
         let light = Light::Point {
             color: [1.0; 3],
             intensity: 10.0,
@@ -233,7 +233,7 @@ mod tests {
     fn close_strong_point_climbs_to_ultra() {
         let view = glam::Mat4::look_at_rh(Vec3::ZERO, Vec3::new(0.0, 0.0, 1.0), Vec3::Y);
         let proj = glam::Mat4::perspective_rh(60.0_f32.to_radians(), 1.0, 0.1, 50.0);
-        let frustum = Frustum::from_view_projection(proj * view);
+        let frustum = Frustum::from_view_projection(proj * view, false);
         let light = Light::Point {
             color: [1.0; 3],
             intensity: 100.0,

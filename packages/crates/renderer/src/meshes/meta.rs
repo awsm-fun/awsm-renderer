@@ -255,6 +255,25 @@ impl MeshMeta {
         true
     }
 
+    /// Patches the skin `joint_index_weights` buffer-offset u32 (offset
+    /// `GEOMETRY_MESH_META_SKIN_WEIGHTS_OFFSET_OFFSET`) inside an
+    /// already-registered mesh's geometry metadata. Used after a
+    /// copy-on-write weight edit ([`Skins::make_weights_owned`]) moves an
+    /// instance skin onto its own slot — the record otherwise keeps pointing
+    /// at the still-shared source stream.
+    pub fn set_skin_weights_offset(&mut self, mesh_key: MeshKey, offset: u32) -> bool {
+        if !self.geometry_buffers.contains_key(mesh_key) {
+            return false;
+        }
+        self.geometry_buffers.update_offset(
+            mesh_key,
+            geometry_meta::GEOMETRY_MESH_META_SKIN_WEIGHTS_OFFSET_OFFSET,
+            &offset.to_le_bytes(),
+        );
+        self.geometry_dirty = true;
+        true
+    }
+
     /// Patches the per-frame `shadow_receiver_gate` u32 (offset
     /// `MATERIAL_MESH_META_SHADOW_RECEIVER_GATE_OFFSET`) for an
     /// already-registered mesh. Returns whether the patch actually
@@ -339,6 +358,7 @@ impl MeshMeta {
                     self.geometry_buffers.raw_slice(),
                     &ranges,
                 )?;
+                self.geometry_buffers.recycle_dirty_ranges(ranges);
             }
 
             self.geometry_dirty = false;
@@ -377,6 +397,7 @@ impl MeshMeta {
                     self.material_buffers.raw_slice(),
                     &ranges,
                 )?;
+                self.material_buffers.recycle_dirty_ranges(ranges);
             }
 
             self.material_dirty = false;

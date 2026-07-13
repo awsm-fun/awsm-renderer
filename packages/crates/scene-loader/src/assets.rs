@@ -185,16 +185,46 @@ impl<A: SceneAssets> SceneAssets for PrefetchedAssets<'_, A> {
 #[cfg(feature = "http")]
 pub struct HttpAssets {
     base: String,
+    /// Optional cache-bust token appended as `?cb=<token>` to every fetched
+    /// URL. `None` (the default) fetches clean URLs and lets the browser HTTP
+    /// cache do its normal thing — correct for stable, content-addressed
+    /// bundles. A player that re-bakes assets to the SAME filename during dev
+    /// (so a cache hit would silently serve the STALE prior bake) opts in via
+    /// [`HttpAssets::with_cache_bust`] and supplies the token itself (a build
+    /// id or a load-time timestamp). The loader stays policy-free: it only
+    /// appends what the caller set.
+    cache_bust: Option<String>,
 }
 
 #[cfg(feature = "http")]
 impl HttpAssets {
     /// Fetch bundle files relative to `origin` (a trailing `/` is trimmed, so
     /// `https://host` and `https://host/` behave identically). For a same-origin
-    /// web player pass the page origin (`window.location.origin`).
+    /// web player pass the page origin (`window.location.origin`). Cache-busting
+    /// is off by default — see [`HttpAssets::with_cache_bust`].
     pub fn new(origin: impl Into<String>) -> Self {
         Self {
             base: origin.into().trim_end_matches('/').to_string(),
+            cache_bust: None,
+        }
+    }
+
+    /// Append `?cb=<token>` to every fetched bundle URL to bypass the browser
+    /// HTTP cache. The PLAYER owns the token — pass a build id (stable per
+    /// release) or a per-load timestamp (fresh every reload, best for active
+    /// asset iteration). Off unless called.
+    pub fn with_cache_bust(mut self, token: impl Into<String>) -> Self {
+        self.cache_bust = Some(token.into());
+        self
+    }
+
+    /// The exact URL `fetch`/`asset_url` resolve for `path`, with the optional
+    /// `?cb=` token applied. Bundle paths never carry their own query string, so
+    /// a bare `?cb=` is always well-formed.
+    fn url(&self, path: &str) -> String {
+        match &self.cache_bust {
+            Some(tok) => format!("{}/{}?cb={}", self.base, path, tok),
+            None => format!("{}/{}", self.base, path),
         }
     }
 }
@@ -202,7 +232,7 @@ impl HttpAssets {
 #[cfg(feature = "http")]
 impl SceneAssets for HttpAssets {
     async fn fetch(&self, path: &str) -> anyhow::Result<Vec<u8>> {
-        let url = format!("{}/{}", self.base, path);
+        let url = self.url(path);
         let bytes = gloo_net::http::Request::get(&url)
             .send()
             .await
@@ -215,8 +245,8 @@ impl SceneAssets for HttpAssets {
 
     fn asset_url(&self, path: &str) -> Option<String> {
         // The exact URL `fetch` GETs — so the loader's zero-copy image path
-        // decodes from the same origin/response, just without dragging the
-        // compressed bytes through wasm and back.
-        Some(format!("{}/{}", self.base, path))
+        // decodes from the same origin/response (same `?cb=`), just without
+        // dragging the compressed bytes through wasm and back.
+        Some(self.url(path))
     }
 }

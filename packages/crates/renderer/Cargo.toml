@@ -101,3 +101,7 @@ futures = {workspace = true}
 
 [dev-dependencies]
 naga = { version = "28.0.0", features = ["wgsl-in"] }
+# The cluster-paging planner's group-graph tests rebuild a REAL cluster DAG
+# (grid mesh) so the bit-exact group-sphere keying is verified against the
+# actual bake, not just synthetic pages.
+awsm-renderer-lod-bake = { workspace = true }
