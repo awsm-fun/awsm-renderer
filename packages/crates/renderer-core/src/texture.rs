@@ -8,6 +8,7 @@ pub mod exporter;
 pub mod texture_pool;
 
 pub mod blit;
+pub mod block_format;
 pub mod clear;
 pub mod convert_srgb;
 pub mod mipmap;

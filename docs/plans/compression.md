@@ -250,8 +250,17 @@ BC5/EAC-RG (in-shader Z reconstruct) is a Phase-6 opt. **Block dims multiple of
       SPA index.html fallback, a gotcha to remember when curl-probing dists).
       `compatibility.rs` untouched on purpose: compression is optional
       (RGBA8 fallback), never a compat gate.
-- [ ] Lift `cubemap/ktx.rs` block-layout + format-map helpers into a shared
+- [x] Lift `cubemap/ktx.rs` block-layout + format-map helpers into a shared
       `renderer-core` module used by cubemaps AND materials.
+      ✅ 2026-07-13 — new `renderer-core/src/texture/block_format.rs`:
+      `is_block_compressed` / `block_dims` / `bytes_per_pixel` /
+      `tight_bytes_per_row` / `aligned_bytes_per_row` / `rows_per_image` /
+      `mip_level_byte_size` / `map_ktx_format`, with unit tests. Pure lift —
+      `cubemap/ktx.rs` now delegates (605→203 lines), behavior identical.
+      One addition for the materials path: `tight_bytes_per_row` — the
+      256-byte row alignment is only a *buffer*-copy requirement;
+      `queue.writeTexture` takes tight rows, so the Phase-2 upload path can
+      skip the cubemap loader's padding staging entirely.
 - [ ] Compressed upload path in `renderer-core/src/texture/texture_pool.rs`
       (`write_gpu`): block `write_texture` + pre-supplied mips; **bucket the
       texture-array pool by compressed format**; skip staging, `srgb_to_linear`
