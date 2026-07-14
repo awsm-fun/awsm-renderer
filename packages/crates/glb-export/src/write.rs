@@ -270,13 +270,18 @@ impl Builder {
             }
         }
 
-        // TANGENT (vec4: xyz + handedness). Prefer the source's AUTHORED tangents
-        // (round-tripped from the original glTF) so a normal map keeps the exact
-        // basis it was baked against — regenerating them shades differently (the
-        // dark-patch save→reload bug where authored ≠ MikkTSpace). Only when none
-        // are carried, bake from normals+uvs via MikkTSpace (against UV set 0) so
-        // the canonical/exported glb stays self-contained; population is then a
-        // dumb upload that skips generation when tangents are present.
+        // TANGENT (vec4: xyz + handedness). ONLY carry the source's AUTHORED
+        // tangents (round-tripped from the original glTF) — the author chose
+        // those and MikkTSpace can't reproduce them, so a normal map keeps the
+        // exact basis it was baked against (the dark-patch save→reload bug where
+        // authored ≠ MikkTSpace). We deliberately DO NOT bake MikkTSpace-derived
+        // tangents: the runtime population path generates them at load via the
+        // identical `awsm_renderer_tangents::generate_tangents`, gated on whether
+        // a bound material samples a normal map — so baking them here would be
+        // byte-identical redundant data (and, once quantized, computed from
+        // pre-quant geometry rather than the geometry the player renders). Only a
+        // divergent/non-deterministic tangent source would justify baking; ours
+        // is one shared deterministic function.
         if let Some(tangents) = src.tangents.filter(|t| t.len() == vcount) {
             let acc = self.push_accessor(
                 &flatten_f32x4(tangents),
@@ -287,20 +292,6 @@ impl Builder {
                 None,
             );
             attributes.insert(Checked::Valid(mesh::Semantic::Tangents), acc);
-        } else if let (Some(normals), Some(uvs)) = (&m.normals, m.uvs.first()) {
-            if let Some(tangents) =
-                crate::tangents::generate_tangents(&m.positions, normals, uvs, &m.indices)
-            {
-                let acc = self.push_accessor(
-                    &flatten_f32x4(&tangents),
-                    tangents.len(),
-                    accessor::ComponentType::F32,
-                    accessor::Type::Vec4,
-                    None,
-                    None,
-                );
-                attributes.insert(Checked::Valid(mesh::Semantic::Tangents), acc);
-            }
         }
 
         // JOINTS_0 / WEIGHTS_0 (skinned meshes). u16 joint indices + f32 weights,

@@ -45,6 +45,8 @@ mesh-only.
 ## Companion crates
 
 - `awsm-renderer-meshgen` — supplies the plain-data `MeshData` this crate re-exports.
-- `awsm-renderer-tangents` — used to bake `TANGENT` attributes during write.
+- Tangents: only AUTHORED `TANGENT` attributes are carried verbatim; derived
+  (MikkTSpace) tangents are NOT baked — the runtime population path generates
+  them at load (gated on normal-map usage), so baking would be redundant.
 - `awsm-renderer-gltf-convert` — builds on the `reexport_clean*` path to normalize foreign
   glTF into the canonical AWSM form.

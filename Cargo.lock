@@ -378,7 +378,6 @@ dependencies = [
  "anyhow",
  "awsm-renderer-codec-meshopt",
  "awsm-renderer-meshgen",
- "awsm-renderer-tangents",
  "base64 0.22.1",
  "glam 0.32.1",
  "gltf",

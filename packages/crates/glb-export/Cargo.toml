@@ -24,9 +24,6 @@ awsm-renderer-codec-meshopt = { workspace = true }
 # Decoding `data:` image URIs when copying source textures into the clean
 # re-export (GLB buffer-view images are sliced directly; no re-encode either way).
 base64 = { workspace = true }
-# MikkTSpace tangent generation (shared crate), baked into the exported/canonical
-# glb so the (browser) population path is a dumb upload. Pure CPU, wasm-friendly.
-awsm-renderer-tangents = { workspace = true }
 
 [dev-dependencies]
 # Throwaway directories for the player-bundle write_to_dir integration test.

@@ -885,9 +885,12 @@ Pieces:
       editor wasm has 0 env imports, symbols defined, editor boots clean.
 - [x] Native fixture-gated parity test (`raw_export_compresses_close_to_gltfpack`,
       gated on astrabot-large + astrabot-meshopt): 188MB raw export →
-      reexport_clean_scene → strip+compress = **2.547MB vs gltfpack's 2.409MB
-      geometry — ratio 1.057** (asserted ≤ 1.25). GOAL MET. Editor adds
-      MikkTSpace tangents on top (+~0.26MB, data gltfpack doesn't ship).
+      reexport_clean_scene → strip+compress = **2.269MB vs gltfpack's 2.409MB
+      geometry — ratio 0.942** (asserted 0.4 ≤ ratio ≤ 1.25). We now BEAT
+      gltfpack because derived MikkTSpace tangents are no longer baked (the
+      runtime generates them at load, gated on normal-map usage — see the
+      tangent-policy change below); only AUTHORED tangents ship. Was 1.057 with
+      derived tangents baked.
 - [x] Former "deferred candidates" — DROPPED after scrutiny (2026-07-14, David
       pushed on both; neither is worth doing):
       - **per-skin IBM dedup/encode (0.133 vs 0.081MB):** WIRE SIZE ONLY, ~52KB,
