@@ -1,0 +1,141 @@
+<!doctype html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <title>Basis worker smoke test (compression Phase 1)</title>
+    <style>
+        body { font-family: ui-monospace, monospace; background: #111; color: #ddd; padding: 2rem; }
+        .ok { color: #7dd87d; }
+        .fail { color: #ff6b6b; }
+    </style>
+</head>
+<body>
+    <h1>Basis worker smoke test</h1>
+    <p>Serve the REPO ROOT (so /media is same-origin): <code>npx http-server . -p 9095</code>, open <code>/web/workers/basis-worker-smoke.html</code>.</p>
+    <pre id="out">running…</pre>
+    <script>
+        const out = document.getElementById("out");
+        const lines = [];
+        function log(cls, msg) {
+            lines.push(`<span class="${cls}">${msg}</span>`);
+            out.innerHTML = lines.join("\n");
+            console.log(`[basis-worker-smoke] ${msg}`);
+        }
+
+        const FIXTURE = "/media/glTF-Sample-Assets/Models/ChronographWatch/glTF-KTX-BasisU/khronos_basecolor.ktx2";
+
+        // Cache-buster: Chrome aggressively disk-caches worker scripts.
+        const worker = new Worker(`basis-worker.js?dev=${Date.now()}`);
+        let nextId = 1;
+        const pending = new Map();
+        worker.onmessage = (e) => {
+            const { id, ok, result, error } = e.data;
+            const p = pending.get(id);
+            pending.delete(id);
+            ok ? p.resolve(result) : p.reject(new Error(`${error.code}: ${error.message}`));
+        };
+        worker.onerror = (e) => log("fail", `WORKER FATAL: ${e.message}`);
+        function request(msg, transfer = []) {
+            return new Promise((resolve, reject) => {
+                const id = nextId++;
+                pending.set(id, { resolve, reject });
+                worker.postMessage({ v: 1, id, ...msg }, transfer);
+            });
+        }
+
+        (async () => {
+            try {
+                await request({
+                    op: "init",
+                    urls: {
+                        transcoder: new URL("../vendor/basis/basis_transcoder.js", location).href,
+                        encoder: new URL("../vendor/basis/basis_encoder.js", location).href,
+                    },
+                });
+                log("ok", "init: transcoder module ready (off main thread)");
+
+                const ktx2 = await (await fetch(FIXTURE)).arrayBuffer();
+                log("ok", `fetched fixture ${FIXTURE.split("/").pop()} (${ktx2.byteLength} bytes)`);
+
+                // GOLDENS: sha-256 of the level-0 transcode output for the
+                // in-repo Khronos fixture. Locks transcoder determinism across
+                // re-vendors — a hash change means the vendored transcoder
+                // changed its output and every golden must be re-baked
+                // knowingly.
+                const GOLDENS = {
+                    "bc7": "159aa3497ba4afe012f3a7efa52d2daa8ba92b8ecb0ce3a78e0a817017e9a052",
+                    "astc-4x4": "c3980339fc7c86b80efb9a135907ea3ddc7cef53a2ee5a0361f614042076e85c",
+                    "rgba32": "596fd0f7aa0aae85f554699892a0a7e300a54efa6e604e46828a2df7bdd2e67e",
+                };
+                for (const target of ["bc7", "astc-4x4", "rgba32"]) {
+                    const t0 = performance.now();
+                    // Copy per-target since the buffer transfers to the worker.
+                    const r = await request({ op: "transcode", ktx2: ktx2.slice(0), target }, []);
+                    const ms = (performance.now() - t0).toFixed(1);
+                    const bytes = r.levels.reduce((n, l) => n + l.data.byteLength, 0);
+                    const digest = await crypto.subtle.digest("SHA-256", r.levels[0].data);
+                    const hash = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
+                    const golden = GOLDENS[target];
+                    const verdict = !golden ? `hash ${hash} (no golden baked)` : hash === golden ? "golden MATCH" : `golden MISMATCH: got ${hash}`;
+                    log(!golden || hash === golden ? "ok" : "fail",
+                        `transcode → ${target}: ${r.width}×${r.height}, ${r.levels.length} mips, ${bytes} bytes (${ms}ms) — ${verdict}`);
+                }
+
+                // Encode roundtrip: 32×32 gradient → ETC1S KTX2 → transcode back.
+                const W = 32, H = 32;
+                const rgba = new Uint8Array(W * H * 4);
+                for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+                    const i = (y * W + x) * 4;
+                    rgba[i] = x * 8; rgba[i + 1] = y * 8; rgba[i + 2] = 128; rgba[i + 3] = 255;
+                }
+                const enc = await request(
+                    { op: "encode", rgba: rgba.buffer, width: W, height: H, uastc: false, srgb: true, mipmaps: true, quality: 190 },
+                    [rgba.buffer]
+                );
+                log("ok", `encode: ${W}×${H} RGBA → ETC1S KTX2, ${enc.ktx2.byteLength} bytes`);
+                const back = await request({ op: "transcode", ktx2: enc.ktx2, target: "rgba32" }, [enc.ktx2]);
+                const l0 = new Uint8Array(back.levels[0].data);
+                const probe = (x, y) => l0[(y * W + x) * 4];
+                if (back.width !== W || back.levels.length < 2) throw new Error("encode roundtrip: bad dims/mips");
+                if (!(probe(31, 0) > probe(0, 0))) throw new Error("encode roundtrip: gradient lost");
+                log("ok", `encode→transcode roundtrip: ${back.levels.length} mips, gradient preserved (R ${probe(0,0)}→${probe(31,0)})`);
+
+                log("ok", "PHASE-1 BASIS EXIT: PASS — worker transcodes + encodes off the main thread");
+
+                // Leak soak: ?cycles=N runs N transcode+encode round-trips and
+                // reports JS heap growth (Chrome exposes performance.memory).
+                const cycles = Number(new URLSearchParams(location.search).get("cycles") || 0);
+                if (cycles > 0) {
+                    // The JS heap sawtooths with GC, so instantaneous readings
+                    // mislead — compare the MINIMUM heap (the GC floor) of the
+                    // first vs last quarter of the run. A real leak raises the
+                    // floor; GC timing noise doesn't.
+                    const heap = () => (performance.memory ? performance.memory.usedJSHeapSize : 0);
+                    await new Promise((r) => setTimeout(r, 500));
+                    let headFloor = Infinity, tailFloor = Infinity;
+                    for (let i = 0; i < cycles; i++) {
+                        const t = await request({ op: "transcode", ktx2: ktx2.slice(0), target: "bc7" }, []);
+                        // drop t.levels (transferred buffers) immediately
+                        const rgba2 = new Uint8Array(W * H * 4).fill(128);
+                        const e2 = await request(
+                            { op: "encode", rgba: rgba2.buffer, width: W, height: H, uastc: false, srgb: true, mipmaps: false, quality: 128 },
+                            [rgba2.buffer]
+                        );
+                        void t; void e2;
+                        const h = heap();
+                        if (i < cycles / 4) headFloor = Math.min(headFloor, h);
+                        if (i >= cycles * 3 / 4) tailFloor = Math.min(tailFloor, h);
+                        if ((i + 1) % 100 === 0) log("ok", `cycle ${i + 1}/${cycles}, heap ${(h / 1048576).toFixed(1)}MB`);
+                    }
+                    const growth = (tailFloor - headFloor) / 1048576;
+                    log(growth < 10 ? "ok" : "fail",
+                        `LEAK SOAK: ${cycles} cycles, GC floor ${(headFloor / 1048576).toFixed(1)}MB → ${(tailFloor / 1048576).toFixed(1)}MB (Δ ${growth.toFixed(1)}MB, threshold 10MB)`);
+                }
+            } catch (e) {
+                log("fail", `PHASE-1 BASIS EXIT: FAIL — ${e.message}`);
+                console.error(e);
+            }
+        })();
+    </script>
+</body>
+</html>

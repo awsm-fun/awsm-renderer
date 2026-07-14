@@ -7,6 +7,19 @@ skybox = "built_in_default"
 specular = "built_in_default"
 irradiance = "built_in_default"
 
+[environment.probe]
+enabled = false
+center = [
+    0.0,
+    0.0,
+    0.0,
+]
+half_extents = [
+    10.0,
+    10.0,
+    10.0,
+]
+
 [shadows]
 sscs_enabled = false
 sscs_step_count = 16
@@ -39,10 +52,11 @@ max_distance = 100.0
 thickness = 1.0
 max_steps = 96
 spread_cutoff = 0.6000000238418579
-edge_fade = 0.10000000149011612
+edge_fade = 0.03999999910593033
 resolution_scale = 0.5
 temporal = false
 temporal_weight = 0.8999999761581421
+bvh_reflections = false
 
 [assets.00000000-0000-4000-8000-00000000000a]
 gltf_material_asset_ids = []
@@ -56,6 +70,16 @@ dims = [
     1.7999999523162842,
 ]
 
+[assets.00000000-0000-4000-8000-0000000000f2]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = "19c705f7e207384ca1ab01e0665601c051ca33c5848c03ce4fffad625b416b53"
+texture_encoding = "ktx2"
+
+[assets.00000000-0000-4000-8000-0000000000f2.source.texture.raster]
+display_name = "AlphaBlendLabels.png"
+color_kind = "albedo"
+
 [assets.00000000-0000-4000-8000-000000000001]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
@@ -67,43 +91,11 @@ depth = 12.0
 segments_x = 1
 segments_z = 1
 
-[assets.00000000-0000-4000-8000-0000000000f2]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = "19c705f7e207384ca1ab01e0665601c051ca33c5848c03ce4fffad625b416b53"
-
-[assets.00000000-0000-4000-8000-0000000000f2.source.texture.raster]
-display_name = "AlphaBlendLabels.png"
-color_kind = "albedo"
-
-[assets.00000000-0000-4000-8000-0000000000f1]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-
-[assets.00000000-0000-4000-8000-0000000000f1.source.texture.procedural.checker]
-width = 512
-height = 512
-cells_x = 8
-cells_y = 8
-color_a = [
-    0.8100000023841858,
-    0.8299999833106995,
-    0.8500000238418579,
-    1.0,
-]
-color_b = [
-    0.1599999964237213,
-    0.18000000715255737,
-    0.20000000298023224,
-    1.0,
-]
-
 [mixer]
 layers = []
 
 [[nodes]]
-id = "99ca9433-1024-466e-9327-0f22d32f4690"
+id = "d4921d04-8240-4b0a-9632-2b15a442e892"
 name = "Directional Light"
 locked = false
 visible = true
@@ -206,6 +198,7 @@ emissive = [
 ]
 normal_scale = 1.0
 occlusion_strength = 1.0
+ssr_mask = 1.0
 double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
@@ -280,6 +273,7 @@ emissive = [
 ]
 normal_scale = 1.0
 occlusion_strength = 1.0
+ssr_mask = 1.0
 double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"

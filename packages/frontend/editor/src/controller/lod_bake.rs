@@ -19,7 +19,8 @@ use std::hash::{Hash, Hasher};
 
 use awsm_renderer_editor_protocol::BundleFile;
 use awsm_renderer_glb_export::{
-    reexport_clean_scene, write_glb, ExportNode, ExtraPrimitive, GlbScene, MeshData, MorphTarget,
+    compress_glb_with, reexport_clean_scene, write_glb, CompressOptions, ExportNode,
+    ExtraPrimitive, GlbScene, MeshData, MorphTarget,
 };
 use awsm_renderer_lod_bake::{
     bounding_sphere_radius, lod_level_filename, lod_manifest_filename, plan_lod_levels, simplify,
@@ -114,8 +115,15 @@ thread_local! {
 /// [`LOD_MIN_TRIANGLES`] or no level actually reduced the triangle count.
 ///
 /// `asset_id` is the mesh asset's id stringified (so files line up with the
-/// base `<id>.glb`); `mesh` is the already-resolved base geometry.
-pub fn bake_static_lod(asset_id: &str, mesh: &MeshData) -> Vec<BundleFile> {
+/// base `<id>.glb`); `mesh` is the already-resolved base geometry. Level glbs
+/// compress under the same `compress` options as the base mesh (the session
+/// cache holds the UNCOMPRESSED levels, so option changes between exports
+/// can't serve stale bytes).
+pub fn bake_static_lod(
+    asset_id: &str,
+    mesh: &MeshData,
+    compress: &CompressOptions,
+) -> Vec<BundleFile> {
     if mesh.indices.len() / 3 < LOD_MIN_TRIANGLES {
         return Vec::new();
     }
@@ -139,7 +147,7 @@ pub fn bake_static_lod(asset_id: &str, mesh: &MeshData) -> Vec<BundleFile> {
     for (idx, glb) in &baked.levels {
         files.push(BundleFile::asset(
             lod_level_filename(asset_id, *idx),
-            glb.clone(),
+            compress_level(asset_id, *idx, glb, compress),
         ));
     }
     match toml::to_string(&baked.manifest) {
@@ -227,8 +235,13 @@ thread_local! {
 /// reduced.
 ///
 /// `source_id` is the skin source asset id stringified, so files line up with
-/// the base rig glb `<source>.glb`.
-pub fn bake_skinned_lod(source_id: &str, rig_glb: &[u8]) -> Vec<BundleFile> {
+/// the base rig glb `<source>.glb`. Level rig glbs compress under the same
+/// `compress` options as the base rig (cache holds uncompressed levels).
+pub fn bake_skinned_lod(
+    source_id: &str,
+    rig_glb: &[u8],
+    compress: &CompressOptions,
+) -> Vec<BundleFile> {
     let Some(base) = parse_rig_scene(rig_glb) else {
         return Vec::new();
     };
@@ -262,7 +275,7 @@ pub fn bake_skinned_lod(source_id: &str, rig_glb: &[u8]) -> Vec<BundleFile> {
     for (idx, glb) in &baked.levels {
         files.push(BundleFile::asset(
             lod_level_filename(source_id, *idx),
-            glb.clone(),
+            compress_level(source_id, *idx, glb, compress),
         ));
     }
     match toml::to_string(&baked.manifest) {
@@ -276,6 +289,29 @@ pub fn bake_skinned_lod(source_id: &str, rig_glb: &[u8]) -> Vec<BundleFile> {
         }
     }
     files
+}
+
+/// Compress one LOD level glb under the bundle options — same
+/// strip(no-op)/compress route as the base mesh; the player already decodes
+/// levels through `from_glb_bytes` → the meshopt/quantization decode pass. A
+/// failed compression ships the uncompressed level — never fail a bake.
+fn compress_level(id: &str, index: u32, glb: &[u8], compress: &CompressOptions) -> Vec<u8> {
+    match compress_glb_with(glb, compress) {
+        Ok(out) => {
+            tracing::info!(
+                "bundle lod {id}.lod{index}: {} -> {} bytes",
+                glb.len(),
+                out.len()
+            );
+            out
+        }
+        Err(e) => {
+            tracing::warn!(
+                "bundle lod {id}.lod{index}: compression failed ({e}); shipping uncompressed"
+            );
+            glb.to_vec()
+        }
+    }
 }
 
 /// Run the simplifier per ratio over a clone of the base rig scene, gathering

@@ -15,16 +15,15 @@ use gltf::{buffer, image, Document, Error as GltfError, Gltf};
 use std::future::Future;
 use std::sync::{Arc, Mutex};
 
-use crate::error::AwsmGltfError;
-
 /// glTF extensions this renderer handles — most via raw-JSON parsing in
 /// `populate::material` / `populate::extensions`. The upstream `gltf` crate only
 /// feature-gates a subset, so its `from_slice` validation rejects a model that
 /// lists any of the others in `extensionsRequired` (even though we render them
 /// fine). [`parse_gltf_lenient`] drops these from `extensionsRequired` before
 /// re-validating, so they load; genuinely unsupported extensions (e.g.
-/// `KHR_materials_variants`, `EXT_texture_webp`, `KHR_draco_mesh_compression`,
-/// `KHR_mesh_quantization`) stay in the list and still fail validation cleanly.
+/// `KHR_materials_variants`, `EXT_texture_webp`,
+/// `KHR_draco_mesh_compression`) stay in the list and still fail validation
+/// cleanly.
 ///
 /// Keep this in sync with what `populate` actually consumes.
 pub(crate) const RENDERER_SUPPORTED_EXTENSIONS: &[&str] = &[
@@ -43,6 +42,14 @@ pub(crate) const RENDERER_SUPPORTED_EXTENSIONS: &[&str] = &[
     "KHR_materials_dispersion",
     "KHR_materials_diffuse_transmission",
     "EXT_mesh_gpu_instancing",
+    // Compression trio (docs/plans/compression.md): meshopt-compressed
+    // bufferViews are decoded by a pre-pass before accessors read them;
+    // quantized accessor component types are dequantized in
+    // `buffers/attributes.rs`; Basis KTX2 textures transcode via the Basis
+    // worker.
+    "EXT_meshopt_compression",
+    "KHR_mesh_quantization",
+    "KHR_texture_basisu",
 ];
 
 /// Parse glTF/GLB bytes, tolerating `extensionsRequired` entries this renderer
@@ -57,8 +64,74 @@ pub(crate) fn parse_gltf_lenient(bytes: &[u8]) -> std::result::Result<Gltf, Gltf
     let mut json = gltf.document.into_json();
     json.extensions_required
         .retain(|e| !RENDERER_SUPPORTED_EXTENSIONS.contains(&e.as_str()));
+
+    // `KHR_texture_basisu` puts the image index in the extension and omits
+    // the core `texture.source` (gltf-json's sentinel Index(u32::MAX)), which
+    // fails `Document::from_json` validation as Missing. Lift the extension's
+    // source into the core field: downstream, the texture then points at the
+    // KTX2 image entry exactly like a PNG texture points at its PNG — the
+    // image DECODE path branches on the KTX2 payload, not the texture.
+    for texture in &mut json.textures {
+        if texture.source.value() == u32::MAX as usize {
+            let basisu_source = texture
+                .extensions
+                .as_ref()
+                .and_then(|ext| ext.others.get("KHR_texture_basisu"))
+                .and_then(|basisu| basisu.get("source"))
+                .and_then(|source| source.as_u64());
+            if let Some(source) = basisu_source {
+                texture.source = gltf::json::Index::new(source as u32);
+            }
+        }
+    }
+
     let document = Document::from_json(json)?;
     Ok(Gltf { document, blob })
+}
+
+/// Fixture-gated proof that the `gltf` crate accepts real gltfpack output
+/// (meshopt + KHR_mesh_quantization) once [`parse_gltf_lenient`] strips the
+/// supported extensions from `extensionsRequired` — i.e. no extra leniency is
+/// needed for quantized accessor component types.
+#[cfg(all(test, has_local_fixtures))]
+mod fixture_tests {
+    use super::*;
+
+    const POLICE_GLB: &[u8] = include_bytes!("../../../../fixtures/local/police-meshopt.glb");
+
+    #[test]
+    fn gltf_crate_accepts_the_meshopt_quantized_robot() {
+        let gltf = parse_gltf_lenient(POLICE_GLB)
+            .expect("quantized+meshopt robot must parse after extension leniency");
+
+        // gltfpack output for the robots: POSITION = VEC3 i16 NORMALIZED
+        // (both the /32767 normalize AND the node/IBM transform apply).
+        let mut quantized_positions = 0usize;
+        let mut meshopt_views = 0usize;
+        for mesh in gltf.document.meshes() {
+            for prim in mesh.primitives() {
+                let acc = prim.get(&gltf::Semantic::Positions).expect("POSITION");
+                if acc.data_type() == gltf::accessor::DataType::I16 && acc.normalized() {
+                    quantized_positions += 1;
+                }
+            }
+        }
+        // The ext lives in raw JSON (the gltf crate has no meshopt support);
+        // count via the document's raw extension values.
+        for view in gltf.document.views() {
+            if view.extension_value("EXT_meshopt_compression").is_some() {
+                meshopt_views += 1;
+            }
+        }
+        assert!(
+            quantized_positions > 0,
+            "expected quantized POSITION accessors"
+        );
+        assert_eq!(
+            meshopt_views, 82,
+            "expected the robot's 82 meshopt bufferViews"
+        );
+    }
 }
 
 /// Loaded glTF document plus buffer and image data.
@@ -75,7 +148,6 @@ pub struct GltfLoader {
 pub enum GltfFileType {
     Json,
     Glb,
-    Draco, //TODO
 }
 
 /// Determines the glTF file type based on a filename extension.
@@ -83,7 +155,6 @@ pub fn get_type_from_filename(url: &str) -> Option<GltfFileType> {
     match url.rsplit('.').next() {
         Some("gltf") => Some(GltfFileType::Json),
         Some("glb") => Some(GltfFileType::Glb),
-        Some("drc") => Some(GltfFileType::Draco),
         _ => None,
     }
 }
@@ -99,7 +170,10 @@ impl GltfLoader {
     /// to keep normal HTTP caching for load performance.
     pub async fn load(
         url: &str,
-        file_type: Option<GltfFileType>,
+        // Kept for caller API stability; the container form is sniffed from
+        // CONTENT below, so the hint is no longer consulted (Draco, the one
+        // hint that mattered, is dropped entirely — see the compression plan).
+        _file_type: Option<GltfFileType>,
         bypass_http_cache: bool,
     ) -> anyhow::Result<Self> {
         let url = url.to_owned();
@@ -113,14 +187,6 @@ impl GltfLoader {
         // "could not completely read the object". `Gltf::from_slice` (via
         // `parse_gltf_lenient`) sniffs the container form itself, so one binary
         // fetch is correct for both — a `.gltf` JSON body is just its UTF-8 bytes.
-        //
-        // Draco (`.drc`) is a distinct compressed container the parser can't sniff;
-        // honour an explicit/extension hint for it and reject (unchanged — this
-        // loader never supported a raw-Draco path).
-        let hint = file_type.or_else(|| get_type_from_filename(&url));
-        if matches!(hint, Some(GltfFileType::Draco)) {
-            return Err(AwsmGltfError::Load.into());
-        }
 
         // Bypass the browser HTTP cache via the fetch `no-store` mode when the
         // caller asked for it (see `bypass_http_cache` above) — done through the
@@ -223,6 +289,11 @@ async fn import_buffer_data<'a>(
         }
         buffers.push(data);
     }
+
+    // EXT_meshopt_compression: reconstruct every compressed bufferView into
+    // the (zero-allocated) fallback buffer BEFORE anything reads an accessor.
+    crate::meshopt::decode_meshopt_buffer_views(document, &mut buffers)?;
+
     Ok(buffers)
 }
 
@@ -242,6 +313,13 @@ fn get_buffer_futures<'a>(
             let base = base.clone();
 
             async move {
+                // EXT_meshopt_compression `fallback: true` buffers carry no
+                // data on the wire — allocate zeroed at the declared length;
+                // the meshopt decode pass fills them. (They'd otherwise fall
+                // into the `Bin` arm below and steal/miss the GLB blob.)
+                if crate::meshopt::buffer_is_meshopt_fallback(&buffer) {
+                    return Ok(vec![0u8; buffer.length()]);
+                }
                 match buffer.source() {
                     buffer::Source::Uri(uri) => {
                         let url = get_url(base.as_ref(), uri)?;
@@ -319,6 +397,18 @@ fn get_image_futures<'a>(
                 match image.source() {
                     image::Source::Uri { uri, mime_type } => {
                         let url = get_url(base.as_ref(), uri)?;
+                        // KTX2 (KHR_texture_basisu) can't go through
+                        // createImageBitmap — fetch bytes and transcode.
+                        if mime_type == Some("image/ktx2") || uri.ends_with(".ktx2") {
+                            let bytes = gloo_net::http::Request::get(&url)
+                                .send()
+                                .await?
+                                .binary()
+                                .await?;
+                            let data = crate::ktx2_image::transcode_ktx2_image(&bytes).await?;
+                            let encoded = Some((bytes, "image/ktx2".to_string()));
+                            return Ok((data, encoded));
+                        }
                         // DECODE via the unchanged URL path (format handling intact).
                         let data = ImageData::load_url(&url, options).await?;
                         // Best-effort: retain the ENCODED bytes for our-format re-embed.
@@ -341,8 +431,17 @@ fn get_image_futures<'a>(
                         let begin = view.offset();
                         let end = begin + view.length();
                         let encoded_image = &parent_buffer_data[begin..end];
+                        // KTX2 (KHR_texture_basisu) — the robots' path: GLB
+                        // with embedded image/ktx2 payloads.
+                        if mime_type == "image/ktx2" || encoded_image.starts_with(b"\xabKTX 20\xbb")
+                        {
+                            let data =
+                                crate::ktx2_image::transcode_ktx2_image(encoded_image).await?;
+                            let encoded = Some((encoded_image.to_vec(), "image/ktx2".to_string()));
+                            return Ok((data, encoded));
+                        }
                         let image = awsm_renderer_core::image::bitmap::load_u8(
-                            &encoded_image,
+                            encoded_image,
                             mime_type,
                             options.clone(),
                         )

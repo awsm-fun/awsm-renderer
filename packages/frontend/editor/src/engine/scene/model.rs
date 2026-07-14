@@ -1,3 +1,5 @@
+use awsm_renderer_editor_protocol::BundleOptions;
+
 use crate::prelude::*;
 
 use super::{AssetTable, EnvironmentConfig, Node, NodeKind, PostProcessConfig, ShadowsConfig};
@@ -7,6 +9,9 @@ pub struct Scene {
     pub environment: Mutable<EnvironmentConfig>,
     pub shadows: Mutable<ShadowsConfig>,
     pub post_process: Mutable<PostProcessConfig>,
+    /// Player-bundle export options (project-persisted; pre-export modal +
+    /// MCP edit them).
+    pub bundle_options: Mutable<BundleOptions>,
     pub nodes: MutableVec<Arc<Node>>,
     /// Per-project asset table. Every `Model` node + env entry refers into this
     /// by `AssetId`. Mutations bump `revision` so derived UI reacts.
@@ -21,6 +26,7 @@ impl Scene {
             environment: Mutable::new(EnvironmentConfig::default()),
             shadows: Mutable::new(ShadowsConfig::default()),
             post_process: Mutable::new(PostProcessConfig::default()),
+            bundle_options: Mutable::new(BundleOptions::default()),
             nodes: MutableVec::new(),
             assets: Mutex::new(AssetTable::new()),
             revision: Mutable::new(0),

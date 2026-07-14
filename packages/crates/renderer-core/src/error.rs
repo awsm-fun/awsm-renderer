@@ -116,6 +116,9 @@ pub enum AwsmCoreError {
     #[error("[gpu] cubemap error: {0}")]
     Cubemap(String),
 
+    #[error("[gpu] compressed image error: {0}")]
+    CompressedImage(String),
+
     #[cfg(feature = "mega-texture")]
     #[error("[gpu] Largest Image {largest_img_width}x{largest_img_height} (padding {padding}) was too large to fit in mega texture atlas {atlas_width}x{atlas_height}")]
     MegaTextureAtlasSize {

@@ -1,18 +1,20 @@
-//! Tangent baking for the glb writer. The MikkTSpace generation lives in the
-//! shared `awsm-renderer-tangents` crate (also used by the renderer's raw-mesh path);
-//! `write_glb` calls it to emit a `TANGENT` accessor from normals+uvs so the
-//! exported/canonical glb is self-contained and population is a dumb upload.
-
-pub(crate) use awsm_renderer_tangents::generate_tangents;
+//! Tangent policy for the glb writer. `write_glb` carries the source's AUTHORED
+//! tangents verbatim (they can't be reproduced), but NEVER bakes
+//! MikkTSpace-derived ones: the runtime population path (renderer `raw_mesh`)
+//! generates those at load via the SAME `awsm-renderer-tangents` crate, gated on
+//! whether a bound material samples a normal map — so baking derived tangents
+//! here would be byte-identical redundant data.
 
 #[cfg(test)]
 mod tests {
     use crate::{write_glb, ExportNode, GlbScene, MeshData};
 
-    /// A mesh with normals + uvs round-trips through write_glb carrying a TANGENT
-    /// accessor (vec4 f32, one per vertex) — so population skips generation.
+    /// A mesh with normals + uvs but NO authored tangents carries NO TANGENT
+    /// accessor — derived tangents are the runtime's job (computed at load from
+    /// the geometry the player actually renders, gated on normal-map usage), so
+    /// baking them would be redundant. Only authored tangents ship.
     #[test]
-    fn write_glb_bakes_tangent_accessor() {
+    fn derived_tangents_not_baked() {
         let mesh = MeshData {
             positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
             normals: Some(vec![[0.0, 0.0, 1.0]; 3]),
@@ -28,20 +30,16 @@ mod tests {
         let buffers: Vec<Vec<u8>> = buffers.into_iter().map(|b| b.0).collect();
         let prim = doc.meshes().next().unwrap().primitives().next().unwrap();
         let reader = prim.reader(|b| buffers.get(b.index()).map(|v| v.as_slice()));
-        let tangents: Vec<[f32; 4]> = reader.read_tangents().expect("TANGENT present").collect();
-        assert_eq!(tangents.len(), 3, "one tangent per vertex");
-        for t in &tangents {
-            assert!((t[3].abs() - 1.0).abs() < 1e-3, "w is ±1");
-            let len = (t[0] * t[0] + t[1] * t[1] + t[2] * t[2]).sqrt();
-            assert!((len - 1.0).abs() < 1e-2, "xyz ~ unit");
-        }
+        assert!(
+            reader.read_tangents().is_none(),
+            "derived tangents must NOT be baked; the runtime generates them at load"
+        );
     }
 
-    /// AUTHORED tangents on the node are emitted VERBATIM — not regenerated —
-    /// even though normals+uvs are present (which would otherwise trigger
-    /// MikkTSpace). Pins the save→reload fix: the clean rig glb preserves the
-    /// exact tangent basis a normal map was baked against. The sentinel values
-    /// below are deliberately NOT what MikkTSpace would produce for this mesh.
+    /// AUTHORED tangents on the node are emitted VERBATIM — even though
+    /// normals+uvs are present. Pins the save→reload fix: the clean rig glb
+    /// preserves the exact tangent basis a normal map was baked against. The
+    /// sentinel values below are deliberately NOT what MikkTSpace would produce.
     #[test]
     fn authored_tangents_emitted_verbatim() {
         let mesh = MeshData {

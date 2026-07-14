@@ -1000,13 +1000,7 @@ impl EditorController {
                 // §14: bind/clear the billboard sprite texture. Some(Some) binds,
                 // Some(None) clears, None leaves it untouched.
                 if let Some(tex) = texture {
-                    def.texture = tex.map(|asset| awsm_renderer_editor_protocol::TextureRef {
-                        asset,
-                        uv_index: 0,
-                        transform: None,
-                        sampler: None,
-                        flow: None,
-                    });
+                    def.texture = tex.map(awsm_renderer_editor_protocol::TextureRef::new);
                 }
                 // Delegate to SetKind for identical re-materialize + inverse.
                 Box::pin(self.apply_inner(EditorCommand::SetKind {
@@ -1313,7 +1307,7 @@ impl EditorController {
                 // populate are still running. RAII — drops on every exit path.
                 let _load_guard = CompileGuard::new();
                 // 1. Bake the CURRENT project — must read it before we clear.
-                let files = crate::controller::export::bake_player_bundle(self)
+                let files = crate::controller::export::bake_player_bundle(self, None)
                     .await
                     .map_err(|e| crate::error::EditorError::msg(format!("bake: {e}")))?;
                 // 2. Split scene.toml out; the rest is the asset map
@@ -1669,6 +1663,20 @@ impl EditorController {
                 };
                 self.scene.bump_revision();
                 Ok(Some(EditorCommand::SetTextureExport { id, export: prev }))
+            }
+            EditorCommand::SetBundleOptions { patch } => {
+                // Patch semantics live in `BundleOptionsPatch::apply` (host-
+                // tested in editor-protocol): `None` preserves, `Some` sets.
+                let prev = self.scene.bundle_options.get();
+                let next = patch.apply(prev);
+                if prev == next {
+                    return Ok(None); // no-op — don't churn undo history
+                }
+                self.scene.bundle_options.set(next);
+                self.scene.bump_revision();
+                Ok(Some(EditorCommand::SetBundleOptions {
+                    patch: awsm_renderer_editor_protocol::BundleOptionsPatch::replace(&prev),
+                }))
             }
             EditorCommand::PurgeUnusedAssets => {
                 // Delete every asset the live scene no longer references. The
@@ -2893,6 +2901,30 @@ impl EditorController {
                     if !patch_builtin_texture(&mut next, slot, texture) {
                         return Ok(None);
                     }
+                    n.kind.set(next);
+                    self.scene.bump_revision();
+                    Ok(Some(EditorCommand::SetKind {
+                        id: node,
+                        kind: Box::new(prev),
+                    }))
+                }
+                None => Err(crate::error::EditorError::msg(
+                    "target id not found — command not applied (check ids against get_snapshot)",
+                )),
+            },
+            EditorCommand::SetTextureUseProfile {
+                node,
+                slot,
+                profile,
+            } => match mutate::find_by_id(&self.scene, node) {
+                Some(n) => {
+                    let prev = n.kind.get_cloned();
+                    let mut next = prev.clone();
+                    // Reject loudly: no silent no-op when nothing is bound at
+                    // the named slot. A bake-only knob — but `kind.set` keeps
+                    // the stored kind + undo path consistent with its peers.
+                    patch_texture_use_profile(&mut next, &slot, profile)
+                        .map_err(crate::error::EditorError::msg)?;
                     n.kind.set(next);
                     self.scene.bump_revision();
                     Ok(Some(EditorCommand::SetKind {
@@ -8094,13 +8126,7 @@ fn patch_builtin_texture(
         return false;
     };
     let inline = &mut inst.inline;
-    let tref = texture.map(|asset| awsm_renderer_editor_protocol::TextureRef {
-        asset,
-        uv_index: 0,
-        transform: None,
-        sampler: None,
-        flow: None,
-    });
+    let tref = texture.map(awsm_renderer_editor_protocol::TextureRef::new);
     match slot {
         S::BaseColor => inline.base_color_texture = tref,
         S::MetallicRoughness => inline.metallic_roughness_texture = tref,
@@ -8196,6 +8222,40 @@ fn patch_builtin_texture_transform(
         tref.uv_index = uv;
     }
     Ok(())
+}
+
+/// Set (or clear) the per-USE bundle-export profile on a node's texture slot
+/// ref: built-in slot names first, else a custom-material texture override
+/// slot (docs/plans/compression.md F2). `Err` when no material is assigned or
+/// nothing is bound at the slot — never a silent no-op.
+fn patch_texture_use_profile(
+    kind: &mut NodeKind,
+    slot: &str,
+    profile: Option<awsm_renderer_editor_protocol::TextureUseProfile>,
+) -> Result<(), String> {
+    let Some(inst) = node_material_mut(kind) else {
+        return Err(
+            "node has no material assigned — assign one and bind a texture first".to_string(),
+        );
+    };
+    let tref = match slot {
+        "base_color" => inst.inline.base_color_texture.as_mut(),
+        "metallic_roughness" => inst.inline.metallic_roughness_texture.as_mut(),
+        "normal" => inst.inline.normal_texture.as_mut(),
+        "occlusion" => inst.inline.occlusion_texture.as_mut(),
+        "emissive" => inst.inline.emissive_texture.as_mut(),
+        custom => inst.texture_overrides.get_mut(custom),
+    };
+    match tref {
+        Some(t) => {
+            t.export_profile = profile;
+            Ok(())
+        }
+        None => Err(format!(
+            "texture slot `{slot}` has no texture bound — bind one first \
+             (set_node_texture / set_material_texture)"
+        )),
+    }
 }
 
 /// Bind (or clear) a texture override on a node's assigned custom material.
@@ -8670,6 +8730,7 @@ fn ensure_import_texture(
         transform: binding.transform,
         sampler: binding.sampler,
         flow: None,
+        export_profile: None,
     };
     if let Some(id) = tex_for_key.get(&key) {
         return Some(mk(*id));

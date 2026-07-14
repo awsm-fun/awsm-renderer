@@ -161,6 +161,7 @@ pub fn to_editor_project(ctrl: &EditorController) -> EditorProject {
         custom_animations,
         editor_animations,
         anim_mixer: ctrl.anim_mixer.get_cloned(),
+        bundle_options: ctrl.scene.bundle_options.get(),
         nodes,
     }
 }
@@ -792,6 +793,7 @@ pub fn apply_project(ctrl: &EditorController, project: EditorProject) {
     ctrl.scene.environment.set(project.environment);
     ctrl.scene.shadows.set(project.shadows);
     ctrl.scene.post_process.set(project.post_process);
+    ctrl.scene.bundle_options.set(project.bundle_options);
     *ctrl.scene.assets.lock().unwrap() = project.assets;
     if !project.name.is_empty() {
         ctrl.project_name.set(project.name);

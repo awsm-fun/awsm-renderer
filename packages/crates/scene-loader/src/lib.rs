@@ -1049,7 +1049,7 @@ pub async fn load_scene_for_player(
     // result, just without the overlap. The cache also dedupes pool staging:
     // an image shared by N material slots uploads ONCE per color semantics
     // instead of N times.
-    let mut cache = texture::TextureCache::new(scene);
+    let mut cache = texture::TextureCache::new(scene, renderer);
     {
         let mut seen = std::collections::HashSet::new();
         let mut ids: Vec<awsm_renderer_scene::AssetId> = Vec::new();
@@ -3801,7 +3801,7 @@ pub async fn materialize_node_mesh(
         .insert(trs_to_transform(&node.transform), None);
     // Public API: no caller-visible cache — a fresh per-call one still dedupes
     // and on-demand-fetches within this node's own slots.
-    let mut cache = texture::TextureCache::new(scene);
+    let mut cache = texture::TextureCache::new(scene, renderer);
     build_node_meshes(
         renderer, &mut cache, scene, node, tk, material, assets, None, false,
     )
@@ -3892,6 +3892,11 @@ async fn resolve_material(
             if let Some(t) = &def.normal_texture {
                 pbr.normal_tex =
                     texture::load_texture(renderer, cache, assets, t, false, K::Normal).await;
+                // Two-channel-packed normal artifact (compression F3): tell
+                // the shader how to reconstruct Z (bits 0-1 = main normal).
+                if pbr.normal_tex.is_some() {
+                    pbr.normal_packing |= cache.normal_packing(t.asset) & 3;
+                }
             }
             if let Some(t) = &def.occlusion_texture {
                 pbr.occlusion_tex =
@@ -3931,6 +3936,9 @@ async fn bind_extension_textures(
 ) {
     use MipmapTextureKind as K;
     let ext = &def.extensions;
+    // Accumulated after the clearcoat borrow ends (bits 2-3 of the material's
+    // normal_packing word — compression F3).
+    let mut clearcoat_normal_packing = 0u32;
     if let (Some(e), Some(p)) = (ext.specular.as_ref(), pbr.specular.as_mut()) {
         if let Some(t) = &e.tex {
             p.tex = texture::load_texture(renderer, cache, assets, t, false, K::MetallicRoughness)
@@ -3978,8 +3986,12 @@ async fn bind_extension_textures(
         if let Some(t) = &e.normal_tex {
             p.normal_tex =
                 texture::load_texture(renderer, cache, assets, t, false, K::Normal).await;
+            if p.normal_tex.is_some() {
+                clearcoat_normal_packing = (cache.normal_packing(t.asset) & 3) << 2;
+            }
         }
     }
+    pbr.normal_packing |= clearcoat_normal_packing;
     if let (Some(e), Some(p)) = (ext.sheen.as_ref(), pbr.sheen.as_mut()) {
         if let Some(t) = &e.color_tex {
             p.color_tex = texture::load_texture(renderer, cache, assets, t, true, K::Albedo).await;

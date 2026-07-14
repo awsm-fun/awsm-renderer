@@ -1,0 +1,35 @@
+{
+  "comment": "Prebuilt, vendored Basis Universal codec modules. NEVER edit these artifacts; re-vendor from the pinned upstreams and update the hashes here.",
+  "artifacts": {
+    "basis_transcoder.js": {
+      "upstream": "https://github.com/mrdoob/three.js/blob/r185/examples/jsm/libs/basis/basis_transcoder.js",
+      "version": "three.js r185 (transcoder built by the three.js team from BinomialLLC/basis_universal, KTX2+Zstd, non-pthread)",
+      "sha256": "8478b5b6d6b74e7d3082b89f6417321d8d1dc0307f2b30d4484bb11b441696a1",
+      "license": "LICENSE-basis_universal (Apache-2.0); redistributed by three.js (MIT, LICENSE-three.js)"
+    },
+    "basis_transcoder.wasm": {
+      "upstream": "https://github.com/mrdoob/three.js/blob/r185/examples/jsm/libs/basis/basis_transcoder.wasm",
+      "version": "three.js r185",
+      "sha256": "6cf17dc889352c42e9acf8897107978d127005fe3386c36a0e3845e27967630a",
+      "license": "LICENSE-basis_universal (Apache-2.0)"
+    },
+    "basis_encoder.js": {
+      "upstream": "https://github.com/BinomialLLC/basis_universal/blob/v2_1_0r/webgl/encoder/build/basis_encoder.js",
+      "version": "basis_universal v2_1_0r (official prebuilt web encoder, non-pthread single-thread build)",
+      "sha256": "19743a4e7419e6f9140b5d9da2a1d5fab116d4c838e417994e515921f70b59ce",
+      "license": "LICENSE-basis_universal (Apache-2.0)"
+    },
+    "basis_encoder.wasm": {
+      "upstream": "https://github.com/BinomialLLC/basis_universal/blob/v2_1_0r/webgl/encoder/build/basis_encoder.wasm",
+      "version": "basis_universal v2_1_0r",
+      "sha256": "10ed9ffdfb1e8ec09da98f43c67eca70ea3c1c89ce3bebffbc347d6db76faf13",
+      "license": "LICENSE-basis_universal (Apache-2.0)"
+    }
+  },
+  "notes": [
+    "Non-pthread builds only — no SharedArrayBuffer, no COOP/COEP headers required.",
+    "Both JS files are Emscripten MODULARIZE+UMD builds and BOTH export the SAME global factory name `BASIS`. Never load both into one scope naively; capture-and-delete the global between loads, or host them in separate workers.",
+    "Encoder (v2_1_0r) is newer than the transcoder (three r185). ETC1S / UASTC-LDR bitstreams are stable across these versions; if a decode incompatibility ever surfaces, swap the transcoder for webgl/transcoder/build/ from the same v2_1_0r tag.",
+    "Encoder ships to the EDITOR only. Player apps copy the transcoder pair only."
+  ]
+}

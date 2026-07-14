@@ -2826,11 +2826,45 @@ fn dynamic_overrides(node: &Arc<Node>) -> Dom {
         }));
         let assets = collect_texture_assets();
         for slot in &tex_slots {
-            let cur = inst.texture_overrides.get(&slot.name).map(|t| t.asset);
+            let bound = inst.texture_overrides.get(&slot.name).copied();
             rows.push(row(
                 &slot.name,
-                texture_override_picker(node, &slot.name, cur, assets.clone()),
+                texture_override_picker(node, &slot.name, bound.map(|t| t.asset), assets.clone()),
             ));
+            // Per-USE bundle-export codec override (compression F2) — only
+            // meaningful once a texture is bound to this slot.
+            if bound.is_some() {
+                let n = node.clone();
+                let name = slot.name.clone();
+                rows.push(enum_select_row(
+                    "· Bundle codec",
+                    match bound.and_then(|t| t.export_profile) {
+                        None => "inherit",
+                        Some(awsm_renderer_editor_protocol::TextureUseProfile::Etc1s) => "etc1s",
+                        Some(awsm_renderer_editor_protocol::TextureUseProfile::Uastc) => "uastc",
+                    },
+                    vec![
+                        ("inherit".into(), "Inherit".into()),
+                        ("etc1s".into(), "ETC1S (smallest)".into()),
+                        ("uastc".into(), "UASTC (highest quality)".into()),
+                    ],
+                    move |v| {
+                        let profile = match v.as_str() {
+                            "etc1s" => {
+                                Some(awsm_renderer_editor_protocol::TextureUseProfile::Etc1s)
+                            }
+                            "uastc" => {
+                                Some(awsm_renderer_editor_protocol::TextureUseProfile::Uastc)
+                            }
+                            _ => None,
+                        };
+                        if let Some(mut t) = bound {
+                            t.export_profile = profile;
+                            set_texture_override(&n, &name, Some(t));
+                        }
+                    },
+                ));
+            }
         }
     }
 
@@ -3430,6 +3464,37 @@ fn texture_slot_rows(
                 filt_str(smp.mipmap_filter),
                 filt_opts(),
                 move |v| set_smp(&n, |s, x| s.mipmap_filter = filt_from(x), v),
+            ));
+        }
+        // Per-USE bundle-export codec override (docs/plans/compression.md F2):
+        // the top rung of the bake's use-level resolution. `Inherit` follows
+        // the texture asset's pref / slot Auto / global bundle option; forcing
+        // ETC1S/UASTC mints a per-encoding variant artifact for THIS use.
+        {
+            let n = node.clone();
+            let cur_profile = cur.and_then(|t| t.export_profile);
+            rows.push(enum_select_row(
+                "· Bundle codec",
+                match cur_profile {
+                    None => "inherit",
+                    Some(awsm_renderer_editor_protocol::TextureUseProfile::Etc1s) => "etc1s",
+                    Some(awsm_renderer_editor_protocol::TextureUseProfile::Uastc) => "uastc",
+                },
+                vec![
+                    ("inherit".into(), "Inherit".into()),
+                    ("etc1s".into(), "ETC1S (smallest)".into()),
+                    ("uastc".into(), "UASTC (highest quality)".into()),
+                ],
+                move |v| {
+                    let profile = match v.as_str() {
+                        "etc1s" => Some(awsm_renderer_editor_protocol::TextureUseProfile::Etc1s),
+                        "uastc" => Some(awsm_renderer_editor_protocol::TextureUseProfile::Uastc),
+                        _ => None,
+                    };
+                    edit_slot(&n, slot, is_ext, default_ref, |t| {
+                        t.export_profile = profile
+                    });
+                },
             ));
         }
     }
@@ -4816,6 +4881,7 @@ fn asset_export(id: AssetId) -> Dom {
             TextureExport::Source => "source",
             TextureExport::WebpLossless => "webp_lossless",
             TextureExport::WebpLossy { .. } => "webp_lossy",
+            TextureExport::Ktx2 { .. } => "ktx2",
         }
         .to_string(),
     );
@@ -4823,16 +4889,27 @@ fn asset_export(id: AssetId) -> Dom {
         TextureExport::WebpLossy { quality } => quality as f64,
         _ => 0.85,
     });
+    let profile = Mutable::new(
+        match cur {
+            TextureExport::Ktx2 { profile } => match profile {
+                awsm_renderer_editor_protocol::Ktx2Profile::Auto => "auto",
+                awsm_renderer_editor_protocol::Ktx2Profile::Etc1s => "etc1s",
+                awsm_renderer_editor_protocol::Ktx2Profile::Uastc => "uastc",
+            },
+            _ => "auto",
+        }
+        .to_string(),
+    );
 
     // Dispatch on mode change (skip the seed emission so opening the panel is inert).
-    spawn_local(clone!(mode, quality => async move {
+    spawn_local(clone!(mode, quality, profile => async move {
         let mut first = true;
         mode.signal_cloned().for_each(move |m| {
             let fire = !first;
             first = false;
-            clone!(quality => async move {
+            clone!(quality, profile => async move {
                 if fire {
-                    dispatch_texture_export(id, &m, quality.get());
+                    dispatch_texture_export(id, &m, quality.get(), &profile.get_cloned());
                 }
             })
         }).await;
@@ -4843,6 +4920,7 @@ fn asset_export(id: AssetId) -> Dom {
         segmented(
             mode.clone(),
             vec![
+                SegOption::new("ktx2", "KTX2"),
                 SegOption::new("webp_lossless", "Lossless"),
                 SegOption::new("webp_lossy", "Lossy"),
                 SegOption::new("source", "Source"),
@@ -4851,6 +4929,39 @@ fn asset_export(id: AssetId) -> Dom {
             true,
         ),
     ));
+
+    // KTX2 codec profile — only meaningful in KTX2 mode, shown only there.
+    // Auto resolves PER USE at bake (UASTC for normal-map slots, ETC1S for
+    // the rest); forcing pins every use of this texture.
+    sec = sec.child(html!("div", {
+        .child_signal(mode.signal_cloned().map(clone!(profile => move |m| {
+            if m != "ktx2" {
+                return None;
+            }
+            let sel = Mutable::new(profile.get_cloned());
+            spawn_local(clone!(sel, profile => async move {
+                let mut first = true;
+                sel.signal_cloned().for_each(move |p| {
+                    let fire = !first;
+                    first = false;
+                    clone!(profile => async move {
+                        if fire {
+                            profile.set_neq(p.clone());
+                            dispatch_texture_export(id, "ktx2", 0.0, &p);
+                        }
+                    })
+                }).await;
+            }));
+            Some(row(
+                "Profile",
+                select(sel, vec![
+                    ("auto".to_string(), "Auto (by slot)".to_string()),
+                    ("etc1s".to_string(), "ETC1S (smallest)".to_string()),
+                    ("uastc".to_string(), "UASTC (highest quality)".to_string()),
+                ]),
+            ))
+        })))
+    }));
 
     // Quality row — only meaningful for lossy WebP, shown only in that mode.
     sec = sec.child(html!("div", {
@@ -4867,7 +4978,7 @@ fn asset_export(id: AssetId) -> Dom {
                     .on_change(clone!(quality => move |v| {
                         let v = v.clamp(0.0, 1.0);
                         quality.set_neq(v);
-                        dispatch_texture_export(id, "webp_lossy", v);
+                        dispatch_texture_export(id, "webp_lossy", v, "auto");
                     }))
                     .render(),
             ))
@@ -4877,22 +4988,33 @@ fn asset_export(id: AssetId) -> Dom {
     sec.child(html!("div", {
         .style("font-size", "11px").style("color", "var(--text-3)")
         .style("line-height", "1.45").style("margin-top", "4px")
-        .text("How this texture is encoded in an exported player bundle. Lossless WebP \
-               (default) is pixel-identical and usually smaller than PNG; Lossy trades \
-               quality for size; Source ships the original bytes unchanged. Takes effect \
-               on the next bundle export.")
+        .text("How this texture is encoded in an exported player bundle. KTX2 (default) \
+               stays GPU-compressed in VRAM; its Auto profile resolves per material slot \
+               at bake. Lossless WebP is pixel-identical and usually smaller than PNG; \
+               Lossy trades quality for size; Source ships the original bytes unchanged. \
+               Takes effect on the next bundle export.")
     }))
     .render()
 }
 
-/// Build a [`TextureExport`] from the inspector's mode string + quality and
-/// dispatch a `SetTextureExport` for the texture asset (no-op on the handler side
-/// if unchanged).
-fn dispatch_texture_export(id: AssetId, mode: &str, quality: f64) {
+/// Build a [`TextureExport`] from the inspector's mode string + quality/profile
+/// and dispatch a `SetTextureExport` for the texture asset (no-op on the handler
+/// side if unchanged).
+fn dispatch_texture_export(id: AssetId, mode: &str, quality: f64, profile: &str) {
+    use awsm_renderer_editor_protocol::Ktx2Profile;
     let export = Some(match mode {
         "source" => TextureExport::Source,
         "webp_lossy" => TextureExport::WebpLossy {
             quality: quality as f32,
+        },
+        "ktx2" => TextureExport::Ktx2 {
+            profile: match profile {
+                "etc1s" => Ktx2Profile::Etc1s,
+                "uastc" => Ktx2Profile::Uastc,
+                // Auto: resolved per USE at bake (UASTC for normal slots,
+                // ETC1S otherwise).
+                _ => Ktx2Profile::Auto,
+            },
         },
         _ => TextureExport::WebpLossless,
     });

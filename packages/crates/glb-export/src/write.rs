@@ -270,13 +270,18 @@ impl Builder {
             }
         }
 
-        // TANGENT (vec4: xyz + handedness). Prefer the source's AUTHORED tangents
-        // (round-tripped from the original glTF) so a normal map keeps the exact
-        // basis it was baked against — regenerating them shades differently (the
-        // dark-patch save→reload bug where authored ≠ MikkTSpace). Only when none
-        // are carried, bake from normals+uvs via MikkTSpace (against UV set 0) so
-        // the canonical/exported glb stays self-contained; population is then a
-        // dumb upload that skips generation when tangents are present.
+        // TANGENT (vec4: xyz + handedness). ONLY carry the source's AUTHORED
+        // tangents (round-tripped from the original glTF) — the author chose
+        // those and MikkTSpace can't reproduce them, so a normal map keeps the
+        // exact basis it was baked against (the dark-patch save→reload bug where
+        // authored ≠ MikkTSpace). We deliberately DO NOT bake MikkTSpace-derived
+        // tangents: the runtime population path generates them at load via the
+        // identical `awsm_renderer_tangents::generate_tangents`, gated on whether
+        // a bound material samples a normal map — so baking them here would be
+        // byte-identical redundant data (and, once quantized, computed from
+        // pre-quant geometry rather than the geometry the player renders). Only a
+        // divergent/non-deterministic tangent source would justify baking; ours
+        // is one shared deterministic function.
         if let Some(tangents) = src.tangents.filter(|t| t.len() == vcount) {
             let acc = self.push_accessor(
                 &flatten_f32x4(tangents),
@@ -287,20 +292,6 @@ impl Builder {
                 None,
             );
             attributes.insert(Checked::Valid(mesh::Semantic::Tangents), acc);
-        } else if let (Some(normals), Some(uvs)) = (&m.normals, m.uvs.first()) {
-            if let Some(tangents) =
-                crate::tangents::generate_tangents(&m.positions, normals, uvs, &m.indices)
-            {
-                let acc = self.push_accessor(
-                    &flatten_f32x4(&tangents),
-                    tangents.len(),
-                    accessor::ComponentType::F32,
-                    accessor::Type::Vec4,
-                    None,
-                    None,
-                );
-                attributes.insert(Checked::Valid(mesh::Semantic::Tangents), acc);
-            }
         }
 
         // JOINTS_0 / WEIGHTS_0 (skinned meshes). u16 joint indices + f32 weights,
@@ -536,11 +527,37 @@ impl Builder {
             extras: Default::default(),
         };
         let image_index = self.root.push(image);
+        // KTX2 payloads ride `KHR_texture_basisu` (declared used+required —
+        // a loader that can't transcode Basis can't render this texture). The
+        // core `source` also points at the image for maximum tooling compat.
+        let extensions = if matches!(img.mime, crate::ImageMime::Ktx2) {
+            self.use_extension("KHR_texture_basisu");
+            if !self
+                .root
+                .extensions_required
+                .iter()
+                .any(|e| e == "KHR_texture_basisu")
+            {
+                self.root
+                    .extensions_required
+                    .push("KHR_texture_basisu".to_string());
+            }
+            let mut basisu = serde_json::Map::new();
+            basisu.insert("source".into(), serde_json::json!(image_index.value()));
+            let mut others = serde_json::Map::new();
+            others.insert(
+                "KHR_texture_basisu".into(),
+                serde_json::Value::Object(basisu),
+            );
+            Some(gltf_json::extensions::texture::Texture { others })
+        } else {
+            Default::default()
+        };
         let tex = Texture {
             name: Some(img.name.clone()),
             sampler: None,
             source: image_index,
-            extensions: Default::default(),
+            extensions,
             extras: Default::default(),
         };
         self.root.push(tex)
@@ -766,35 +783,40 @@ impl Builder {
     // ───────────────────────── GLB container ─────────────────────────
 
     fn into_glb(self) -> Vec<u8> {
-        let mut json = serde_json::to_vec(&self.root).expect("serialize gltf json");
-        while json.len() % 4 != 0 {
-            json.push(b' ');
-        }
-        let mut bin = self.bin;
-        while bin.len() % 4 != 0 {
-            bin.push(0);
-        }
-
-        let has_bin = !bin.is_empty();
-        let bin_chunk = if has_bin { 8 + bin.len() } else { 0 };
-        let total = 12 + 8 + json.len() + bin_chunk;
-
-        let mut out = Vec::with_capacity(total);
-        out.extend_from_slice(b"glTF");
-        out.extend_from_slice(&GLB_VERSION.to_le_bytes());
-        out.extend_from_slice(&(total as u32).to_le_bytes());
-
-        out.extend_from_slice(&(json.len() as u32).to_le_bytes());
-        out.extend_from_slice(b"JSON");
-        out.extend_from_slice(&json);
-
-        if has_bin {
-            out.extend_from_slice(&(bin.len() as u32).to_le_bytes());
-            out.extend_from_slice(b"BIN\0");
-            out.extend_from_slice(&bin);
-        }
-        out
+        let json = serde_json::to_vec(&self.root).expect("serialize gltf json");
+        glb_from_parts(json, self.bin)
     }
+}
+
+/// Assemble a GLB container from serialized glTF JSON + BIN bytes. Shared by
+/// the writer and the compression post-pass (`crate::compress`).
+pub(crate) fn glb_from_parts(mut json: Vec<u8>, mut bin: Vec<u8>) -> Vec<u8> {
+    while json.len() % 4 != 0 {
+        json.push(b' ');
+    }
+    while bin.len() % 4 != 0 {
+        bin.push(0);
+    }
+
+    let has_bin = !bin.is_empty();
+    let bin_chunk = if has_bin { 8 + bin.len() } else { 0 };
+    let total = 12 + 8 + json.len() + bin_chunk;
+
+    let mut out = Vec::with_capacity(total);
+    out.extend_from_slice(b"glTF");
+    out.extend_from_slice(&GLB_VERSION.to_le_bytes());
+    out.extend_from_slice(&(total as u32).to_le_bytes());
+
+    out.extend_from_slice(&(json.len() as u32).to_le_bytes());
+    out.extend_from_slice(b"JSON");
+    out.extend_from_slice(&json);
+
+    if has_bin {
+        out.extend_from_slice(&(bin.len() as u32).to_le_bytes());
+        out.extend_from_slice(b"BIN\0");
+        out.extend_from_slice(&bin);
+    }
+    out
 }
 
 // ───────────────────────── free helpers ─────────────────────────

@@ -171,6 +171,7 @@ impl ImagePool {
                 let mime = match mime.as_str() {
                     "image/png" => ImageMime::Png,
                     "image/jpeg" | "image/jpg" => ImageMime::Jpeg,
+                    "image/ktx2" => ImageMime::Ktx2,
                     _ => return None,
                 };
                 Some((i, (bytes.clone(), mime)))
@@ -234,6 +235,7 @@ impl ImagePool {
         let mime = match mime {
             "image/png" => ImageMime::Png,
             "image/jpeg" | "image/jpg" => ImageMime::Jpeg,
+            "image/ktx2" => ImageMime::Ktx2,
             _ => return None,
         };
         Some((bytes, mime))
@@ -533,12 +535,19 @@ fn build_clean_node(
         let mut first = true;
         for primitive in mesh.primitives() {
             let reader = primitive.reader(|b| buffers.get(b.index()).map(|v| v.as_slice()));
-            let positions: Vec<[f32; 3]> = match reader.read_positions() {
-                Some(p) => p.collect(),
+            // Quantization-aware reads (KHR_mesh_quantization): the typed
+            // readers assert F32 and panic on i16/i8-normalized accessors.
+            let positions: Vec<[f32; 3]> = match crate::quant::read_attr_f32::<3>(
+                &primitive,
+                &gltf::Semantic::Positions,
+                buffers,
+            ) {
+                Some(p) => p,
                 None => continue,
             };
             let vcount = positions.len();
-            let normals: Option<Vec<[f32; 3]>> = reader.read_normals().map(|n| n.collect());
+            let normals: Option<Vec<[f32; 3]>> =
+                crate::quant::read_attr_f32::<3>(&primitive, &gltf::Semantic::Normals, buffers);
             // All TEXCOORD_n sets (0,1,2,…), so multi-UV meshes (e.g. an AO map on
             // TEXCOORD_1) round-trip — generalized to N, not just set 0.
             let mut uvs: Vec<Vec<[f32; 2]>> = Vec::new();
@@ -565,7 +574,8 @@ fn build_clean_node(
             // rig glb then preserves the exact tangent basis a normal map was baked
             // against (regenerated tangents shade differently; the symptom is a dark
             // patch where authored ≠ MikkTSpace, e.g. mirrored-UV seams).
-            let tangents: Option<Vec<[f32; 4]>> = reader.read_tangents().map(|t| t.collect());
+            let tangents: Option<Vec<[f32; 4]>> =
+                crate::quant::read_attr_f32::<4>(&primitive, &gltf::Semantic::Tangents, buffers);
             // Morph targets — names only on the main primitive (mesh-level).
             let morph_targets: Vec<MorphTarget> = reader
                 .read_morph_targets()
@@ -820,16 +830,19 @@ pub fn extract_node_mesh(
             }
         }
         let reader = primitive.reader(|b| buffers.get(b.index()).map(|v| v.as_slice()));
-        let prim_positions: Vec<[f32; 3]> = match reader.read_positions() {
-            Some(p) => p.collect(),
-            None => continue, // a primitive with no positions can't contribute.
-        };
+        // Quantization-aware reads — see the sibling site above.
+        let prim_positions: Vec<[f32; 3]> =
+            match crate::quant::read_attr_f32::<3>(&primitive, &gltf::Semantic::Positions, buffers)
+            {
+                Some(p) => p,
+                None => continue, // a primitive with no positions can't contribute.
+            };
         let base = positions.len() as u32;
         let vert_count = prim_positions.len();
         positions.extend(prim_positions);
         any_primitive = true;
 
-        match reader.read_normals() {
+        match crate::quant::read_attr_f32::<3>(&primitive, &gltf::Semantic::Normals, buffers) {
             Some(n) => normals.extend(n),
             None => all_have_normals = false,
         }
@@ -847,7 +860,7 @@ pub fn extract_node_mesh(
         }
         // Authored tangents (vec4 xyz+handedness). Only kept if EVERY primitive has
         // them (else dropped wholesale to stay vertex-aligned → regenerated later).
-        match reader.read_tangents() {
+        match crate::quant::read_attr_f32::<4>(&primitive, &gltf::Semantic::Tangents, buffers) {
             Some(t) => tangents.extend(t),
             None => all_have_tangents = false,
         }

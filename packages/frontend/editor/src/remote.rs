@@ -457,8 +457,12 @@ async fn dispatch(req: Request) -> Response {
             Err(e) => Response::Err(e),
         },
         Request::ExportGlb { node } => glb_response(ctrl.export_glb_bytes(node).await).await,
-        Request::ExportPlayerBundle => {
-            bundle_response(crate::controller::export::bake_player_bundle(&ctrl).await).await
+        Request::ExportPlayerBundle { overrides } => {
+            // Per-call overrides merge onto the persisted options for THIS
+            // bake only (the project's bundle_options are not modified).
+            let options = overrides.map(|patch| patch.apply(ctrl.scene.bundle_options.get()));
+            bundle_response(crate::controller::export::bake_player_bundle(&ctrl, options).await)
+                .await
         }
         Request::SaveProject => {
             // Same persisted form a directory Save writes: `project.toml` first

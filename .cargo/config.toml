@@ -1,6 +1,15 @@
 [target.wasm32-unknown-unknown]
 rustflags = ["--cfg=web_sys_unstable_apis", "--cfg=getrandom_backend=\"wasm_js\""]
 
+# The meshopt crate compiles the official meshoptimizer C++ library via `cc`.
+# Apple clang has no WebAssembly backend ("no available targets are compatible
+# with triple wasm32-unknown-unknown"), so point cc at Homebrew LLVM for this
+# target only. Requires `brew install llvm` (any recent version).
+[env]
+CC_wasm32-unknown-unknown = "/opt/homebrew/opt/llvm/bin/clang"
+CXX_wasm32-unknown-unknown = "/opt/homebrew/opt/llvm/bin/clang++"
+AR_wasm32-unknown-unknown = "/opt/homebrew/opt/llvm/bin/llvm-ar"
+
 # event though we don't really need this for all crates, it's easier to make the IDE happy this way
 [target.'cfg(not(target_arch = "wasm32"))']
 rustflags = ["--cfg=web_sys_unstable_apis"]

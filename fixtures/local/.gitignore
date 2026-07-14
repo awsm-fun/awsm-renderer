@@ -1,0 +1,6 @@
+# fixtures/local/ holds PAID / local-only asset fixtures used for manual and
+# harness verification (e.g. the compression plan's robot models). Their bytes
+# must NEVER be committed. Ignore everything here except this rule + the README.
+*
+!.gitignore
+!README.md

@@ -15,6 +15,7 @@ offscreen-editor-screenshots.md.
 | [ssr-followups](ssr-followups.md) | dormant queue (no active SSR work planned) | Reflections roadmap + what shipped (probe, BVH fallback, ssr_mask, zero-cost-off). All remaining items are future tiers, none are defects: planar reflections (content-triggered), prefiltered scene mips, glass-shell shading aliasing, probe tier 2, BVH thin-emitter hit quality |
 | [atmosphere](atmosphere.md) | designed, not started | Haze as a real feature: view-path fog (effects pass) + reflection-path haze; replaces the arena's probe-baked fake |
 | [crashes](crashes.md) | planned, not started | Editor-tab 70 GB VA-leak crash investigation (soak harness) |
+| [compression](compression.md) | designed, not started | NO Draco. First-class `EXT_meshopt_compression` + `KHR_mesh_quantization` mesh codec (official `meshopt` C-FFI crate cross-compiled to wasm, load+encode) + KTX2/Basis textures that stay GPU-block-compressed into VRAM (player transcodes at load; vendored prebuilt Basis in a worker). KTX2 becomes bundle default. Acceptance: import the two paid robots (re-exported meshopt+quant) |
 
 ## Working rules (unchanged)
 - `task lint` (fmt + clippy -D warnings) + `cargo test --all-features` green at

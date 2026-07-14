@@ -1,0 +1,24 @@
+[package]
+name = "awsm-renderer-codec-basis"
+description = "Async Rust client for the Basis codec Web Worker (web/workers/basis-worker.js) — KTX2 transcode for editor+player, KTX2 encode behind the editor-only `encoder` feature"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+# Editor-only: enables the encode API. The player must never turn this on —
+# it ships the transcoder module alone.
+encoder = []
+
+[dependencies]
+thiserror = { workspace = true }
+futures = { workspace = true }
+wasm-bindgen = { workspace = true }
+wasm-bindgen-futures = { workspace = true }
+js-sys = { workspace = true }
+web-sys = { workspace = true }
+tracing = { workspace = true }

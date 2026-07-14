@@ -69,26 +69,73 @@ pub fn aabb_from_gltf_primitive(
     transform: Option<Mat4>,
 ) -> Option<Aabb> {
     let position_accessor = primitive.get(&gltf::Semantic::Positions)?;
-    let (min_val, max_val) = (position_accessor.min()?, position_accessor.max()?);
-    let (min_arr, max_arr) = (min_val.as_array()?, max_val.as_array()?);
-    if min_arr.len() != 3 || max_arr.len() != 3 {
-        return None;
-    }
-
-    let min = Vec3::new(
-        min_arr[0].as_f64()? as f32,
-        min_arr[1].as_f64()? as f32,
-        min_arr[2].as_f64()? as f32,
-    );
-    let max = Vec3::new(
-        max_arr[0].as_f64()? as f32,
-        max_arr[1].as_f64()? as f32,
-        max_arr[2].as_f64()? as f32,
-    );
+    let (min, max) = position_min_max(&position_accessor)?;
 
     let mut mesh_aabb = Aabb::new(min, max);
     if let Some(transform) = transform {
         mesh_aabb.transform(&transform);
     }
     Some(mesh_aabb)
+}
+
+/// The position accessor's declared min/max as dequantized f32 — shared by
+/// every AABB reader in this crate.
+///
+/// Per the glTF spec, `accessor.min`/`max` hold values in the accessor's
+/// COMPONENT TYPE: a `KHR_mesh_quantization` normalized-i16 POSITION declares
+/// integer bounds up to ±32767. Reading them raw inflates the AABB by the
+/// quantization divisor (breaking culling / LOD radii / camera framing), so
+/// normalized integer bounds are divided down here, mirroring the attribute
+/// path's dequantization; unnormalized quantized positions are used as-is
+/// (their scale rides the node TRS / IBMs).
+pub(crate) fn position_min_max(accessor: &gltf::Accessor<'_>) -> Option<(Vec3, Vec3)> {
+    use gltf::accessor::DataType;
+
+    let (min_val, max_val) = (accessor.min()?, accessor.max()?);
+    let (min_arr, max_arr) = (min_val.as_array()?, max_val.as_array()?);
+    if min_arr.len() != 3 || max_arr.len() != 3 {
+        return None;
+    }
+
+    let dequant: fn(f64) -> f32 = if accessor.normalized() {
+        match accessor.data_type() {
+            DataType::I8 => |v| (v as f32 / 127.0).max(-1.0),
+            DataType::U8 => |v| v as f32 / 255.0,
+            DataType::I16 => |v| (v as f32 / 32767.0).max(-1.0),
+            DataType::U16 => |v| v as f32 / 65535.0,
+            _ => |v| v as f32,
+        }
+    } else {
+        |v| v as f32
+    };
+
+    let read = |arr: &[gltf::json::Value]| -> Option<Vec3> {
+        Some(Vec3::new(
+            dequant(arr[0].as_f64()?),
+            dequant(arr[1].as_f64()?),
+            dequant(arr[2].as_f64()?),
+        ))
+    };
+    Some((read(min_arr)?, read(max_arr)?))
+}
+
+#[cfg(all(test, has_local_fixtures))]
+mod fixture_tests {
+    use super::*;
+
+    const POLICE_GLB: &[u8] = include_bytes!("../../../../fixtures/local/police-meshopt.glb");
+
+    /// The quantized robot's document AABB must come out at model scale, not
+    /// quantized-integer scale: raw normalized-i16 min/max are ±32767, so a
+    /// missed dequantization inflates the box by that factor.
+    #[test]
+    fn quantized_position_bounds_dequantize() {
+        let gltf = crate::loader::parse_gltf_lenient(POLICE_GLB).unwrap();
+        let aabb = aabb_from_gltf_doc(&gltf.document);
+        let size = aabb.size();
+        assert!(
+            size.max_element() > 0.01 && size.max_element() < 100.0,
+            "robot AABB should be model-scale, got {size:?}"
+        );
+    }
 }

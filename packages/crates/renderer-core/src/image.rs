@@ -1,14 +1,16 @@
 //! Image loading and texture upload helpers.
 
-use crate::command::copy_texture::Origin3d;
-use crate::error::Result;
+use crate::command::copy_texture::{Origin3d, TexelCopyBufferLayout, TexelCopyTextureInfo};
+use crate::error::{AwsmCoreError, Result};
 use crate::renderer::AwsmRendererWebGpu;
+use crate::texture::block_format::{
+    is_block_compressed, mip_level_byte_size, rows_per_image, tight_bytes_per_row,
+};
 use crate::texture::mipmap::{generate_mipmaps, MipmapTextureKind};
 use crate::texture::{
     mipmap, Extent3d, TextureAspect, TextureDescriptor, TextureFormat, TextureUsage,
 };
 use std::borrow::Cow;
-#[cfg(feature = "exr")]
 use std::sync::Arc;
 use wasm_bindgen::JsCast;
 
@@ -25,6 +27,114 @@ pub enum ImageData {
         image: web_sys::ImageBitmap,
         options: Option<ImageBitmapOptions>,
     },
+    /// Pre-compressed GPU block data (BC/ETC2/ASTC — e.g. a KTX2/Basis
+    /// transcode result) with a pre-supplied mip chain. Uploaded verbatim via
+    /// `writeTexture`; NEVER goes through `copy_external_image_to_texture`,
+    /// the `srgb_to_linear` compute pass, or compute mip-gen (all invalid on
+    /// compressed formats — sRGB decode is carried by the `*UnormSrgb`
+    /// format instead).
+    Compressed(Arc<CompressedImage>),
+}
+
+/// CPU-side block-compressed texture: one tight-layout byte buffer per mip
+/// level, level 0 first, each exactly `mip_level_byte_size(format, w>>l, h>>l)`
+/// long.
+pub struct CompressedImage {
+    pub format: TextureFormat,
+    pub width: u32,
+    pub height: u32,
+    pub levels: Vec<Vec<u8>>,
+}
+
+impl CompressedImage {
+    /// Validates level count + per-level byte sizes against the format's
+    /// block layout, so malformed transcoder/container output fails here
+    /// (with a real message) instead of as an opaque GPU validation error.
+    pub fn validate(&self) -> Result<()> {
+        if !is_block_compressed(self.format) {
+            return Err(AwsmCoreError::CompressedImage(format!(
+                "{:?} is not a block-compressed format",
+                self.format
+            )));
+        }
+        if self.levels.is_empty() {
+            return Err(AwsmCoreError::CompressedImage(
+                "compressed image has no mip levels".to_string(),
+            ));
+        }
+        let max_levels = mipmap::calculate_mipmap_levels(self.width, self.height);
+        if self.levels.len() as u32 > max_levels {
+            return Err(AwsmCoreError::CompressedImage(format!(
+                "{} mip levels exceeds the {} possible for {}x{}",
+                self.levels.len(),
+                max_levels,
+                self.width,
+                self.height
+            )));
+        }
+        for (level, data) in self.levels.iter().enumerate() {
+            let (w, h) = self.level_size(level as u32);
+            let expected = mip_level_byte_size(self.format, w, h);
+            if data.len() != expected {
+                return Err(AwsmCoreError::CompressedImage(format!(
+                    "mip {level} ({w}x{h} {:?}) is {} bytes, expected {expected}",
+                    self.format,
+                    data.len()
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// Texel dimensions of `level`.
+    pub fn level_size(&self, level: u32) -> (u32, u32) {
+        (
+            std::cmp::max(1, self.width >> level),
+            std::cmp::max(1, self.height >> level),
+        )
+    }
+
+    /// Writes every mip level of this image into `texture` at array layer
+    /// `layer` via `writeTexture` (tight rows — no 256-alignment or staging
+    /// needed for texture writes).
+    pub fn write_to_texture_layer(
+        &self,
+        gpu: &AwsmRendererWebGpu,
+        texture: &web_sys::GpuTexture,
+        layer: u32,
+    ) -> Result<()> {
+        let (block_w, block_h, _) = crate::texture::block_format::block_dims(self.format)
+            .ok_or_else(|| {
+                AwsmCoreError::CompressedImage(format!(
+                    "{:?} is not a block-compressed format",
+                    self.format
+                ))
+            })?;
+        for (level, data) in self.levels.iter().enumerate() {
+            let (w, h) = self.level_size(level as u32);
+            // Copies on compressed textures are validated against the
+            // PHYSICAL mip size (virtual size rounded up to whole blocks):
+            // the 2×2 and 1×1 tail mips of a 4×4-block format must be
+            // written as 4×4, or writeTexture rejects the copy
+            // ("copySize.width (2) is not a multiple of block width (4)").
+            let w_phys = w.div_ceil(block_w) * block_w;
+            let h_phys = h.div_ceil(block_h) * block_h;
+            let destination = TexelCopyTextureInfo::new(texture)
+                .with_mip_level(level as u32)
+                .with_origin(Origin3d::new().with_z(layer));
+            let layout = TexelCopyBufferLayout::new()
+                .with_bytes_per_row(tight_bytes_per_row(self.format, w))
+                .with_rows_per_image(rows_per_image(self.format, h));
+            let size = Extent3d::new(w_phys, Some(h_phys), Some(1));
+            gpu.write_texture(
+                &destination.into(),
+                data.as_slice(),
+                &layout.into(),
+                &size.into(),
+            )?;
+        }
+        Ok(())
+    }
 }
 
 // If we don't set premultiply, the browser will use the default, which may be to apply it - or NOT!
@@ -77,6 +187,9 @@ impl ImageData {
             //
             // Regular images use Rgba8Unorm and get converted via srgb_to_linear() in shaders
             Self::Bitmap { .. } => TextureFormat::Rgba8unorm,
+            // Compressed images carry their exact block format (the sRGB-ness
+            // rides in the format itself, e.g. Bc7RgbaUnormSrgb).
+            Self::Compressed(compressed) => compressed.format,
         }
     }
 
@@ -98,6 +211,11 @@ impl ImageData {
                 .as_ref()
                 .map(|opts| matches!(opts.premultiply_alpha, Some(PremultiplyAlpha::Premultiply)))
                 .unwrap_or(false),
+
+            // Block data is stored straight (non-premultiplied); the flag is
+            // only consumed by `copy_external_image_to_texture`, which
+            // compressed uploads never touch.
+            Self::Compressed(_) => false,
         }
     }
 
@@ -107,6 +225,7 @@ impl ImageData {
             #[cfg(feature = "exr")]
             Self::Exr(exr) => (exr.width as u32, exr.height as u32),
             Self::Bitmap { image, .. } => (image.width(), image.height()),
+            Self::Compressed(compressed) => (compressed.width, compressed.height),
         }
     }
 
@@ -125,6 +244,12 @@ impl ImageData {
                 height: Some(image.height()),
                 depth_or_array_layers: None,
             },
+
+            Self::Compressed(compressed) => Extent3d {
+                width: compressed.width,
+                height: Some(compressed.height),
+                depth_or_array_layers: None,
+            },
         }
     }
 
@@ -138,6 +263,29 @@ impl ImageData {
                 let js_value = image.unchecked_ref();
                 Ok(Cow::Borrowed(js_value))
             }
+
+            // No JS-side object exists — compressed data uploads via
+            // `writeTexture` (`CompressedImage::write_to_texture_layer`),
+            // never via external-image copy. Callers must branch on
+            // `is_compressed()` first.
+            Self::Compressed(_) => Err(AwsmCoreError::CompressedImage(
+                "compressed images have no external-image source; upload via writeTexture"
+                    .to_string(),
+            )),
+        }
+    }
+
+    /// Whether this is pre-compressed block data (uploads via `writeTexture`,
+    /// no external-image copy / sRGB pass / compute mip-gen).
+    pub fn is_compressed(&self) -> bool {
+        matches!(self, Self::Compressed(_))
+    }
+
+    /// The compressed payload, when [`Self::is_compressed`].
+    pub fn as_compressed(&self) -> Option<&Arc<CompressedImage>> {
+        match self {
+            Self::Compressed(compressed) => Some(compressed),
+            _ => None,
         }
     }
 
@@ -163,6 +311,18 @@ impl ImageData {
         // if None, will try to determine from source image options
         premultiply_alpha: Option<bool>,
     ) -> Result<web_sys::GpuTexture> {
+        // Compressed data takes the writeTexture path: pre-supplied mips,
+        // no external-image copy, no storage usage, no compute mip-gen.
+        if let Self::Compressed(compressed) = self {
+            compressed.validate()?;
+            let usage = TextureUsage::new().with_texture_binding().with_copy_dst();
+            let descriptor = TextureDescriptor::new(self.format(), self.extent_3d(), usage)
+                .with_mip_level_count(compressed.levels.len() as u32);
+            let texture = gpu.create_texture(&descriptor.into())?;
+            compressed.write_to_texture_layer(gpu, &texture, 0)?;
+            return Ok(texture);
+        }
+
         let mut usage = TextureUsage::new()
             .with_texture_binding()
             // needed because `copy_external_image_to_texture` renders to the texture internally, part of browser WebGPU implementation
