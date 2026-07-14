@@ -205,6 +205,18 @@ const SCENES: &[SceneSpec] = &[
         features: base_features,
         extra: Extra::None,
     },
+    SceneSpec {
+        // The SPRITE half of the sprite/decal/particle texture-binding lock: a
+        // particle emitter that binds a billboard SPRITE texture (baked to KTX2
+        // in the bundle). The sprite texture MUST transcode + bind on-device —
+        // a silent drop of the emitter's sampled texture leaves the pool short.
+        name: "sprite",
+        min_nodes: 2,
+        expect_meshes: true,
+        expected_min_textures: 1,
+        features: base_features,
+        extra: Extra::None,
+    },
 ];
 
 /// The scene whose bundle carries `prefab = true` roots — the clone-surface
