@@ -382,6 +382,70 @@ mod roundtrip_tests {
         assert_eq!(positions.len(), source.positions.len());
     }
 
+    /// Rig glbs re-exported with embedded KTX2 textures declare
+    /// `KHR_texture_basisu` in `extensionsRequired`. strip+compress must
+    /// tolerate that: the F4 on-device run caught the strict parse REJECTING
+    /// such rigs, silently shipping the uncompressed ~29MB original.
+    #[test]
+    fn strip_and_compress_tolerate_basisu_required() {
+        use awsm_renderer_glb_export::{
+            strip_materials_and_images, ExportImage, ExportMaterial, ImageMime, PbrMaterial, TexRef,
+        };
+
+        let (mut scene, _) = grid_scene();
+        scene.images.push(ExportImage {
+            name: "fake-ktx".into(),
+            bytes: vec![0xCD; 256 * 1024],
+            mime: ImageMime::Png,
+        });
+        scene.nodes[0].material = Some(ExportMaterial::Pbr(PbrMaterial {
+            base_color_texture: Some(TexRef {
+                image: 0,
+                tex_coord: 0,
+                transform: None,
+            }),
+            ..Default::default()
+        }));
+        let plain = write_glb(&scene);
+
+        // Inject the extension declaration into the raw JSON chunk, then
+        // rebuild the GLB container around the edited JSON + original BIN.
+        let json_len = u32::from_le_bytes(plain[12..16].try_into().unwrap()) as usize;
+        let mut root: gltf::json::Value =
+            gltf::json::deserialize::from_slice(&plain[20..20 + json_len]).unwrap();
+        root["extensionsUsed"] = gltf::json::Value::from(vec!["KHR_texture_basisu"]);
+        root["extensionsRequired"] = gltf::json::Value::from(vec!["KHR_texture_basisu"]);
+        let mut json = gltf::json::serialize::to_vec(&root).unwrap();
+        while json.len() % 4 != 0 {
+            json.push(b' ');
+        }
+        let bin_start = 20 + json_len;
+        let bin_chunk = &plain[bin_start..]; // 8-byte chunk header + data
+        let total = 12 + 8 + json.len() + bin_chunk.len();
+        let mut glb = Vec::with_capacity(total);
+        glb.extend_from_slice(&plain[0..8]); // magic + version
+        glb.extend_from_slice(&(total as u32).to_le_bytes());
+        glb.extend_from_slice(&(json.len() as u32).to_le_bytes());
+        glb.extend_from_slice(&plain[16..20]); // JSON chunk type
+        glb.extend_from_slice(&json);
+        glb.extend_from_slice(bin_chunk);
+
+        // Sanity: the strict parse rejects this container (the original bug's
+        // trigger) — the pipeline must succeed anyway.
+        assert!(gltf::Gltf::from_slice(&glb).is_err());
+        let bundle = compress_glb(&strip_materials_and_images(&glb).unwrap()).unwrap();
+        assert!(
+            bundle.len() < 100 * 1024,
+            "strip+compress must shrink the basisu-required glb ({} bytes left)",
+            bundle.len()
+        );
+        let required = required_extensions(&bundle);
+        assert!(
+            !required.contains(&"KHR_texture_basisu".to_string()),
+            "stripped output must not require the dead texture extension"
+        );
+    }
+
     fn materialize(doc: &gltf::Document, blob: &[u8]) -> Vec<Vec<u8>> {
         doc.buffers()
             .map(|b| {

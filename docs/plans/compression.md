@@ -804,6 +804,44 @@ options matrix spot-checks (quantization Off ⇒ F32 accessors; compression Off 
 no meshopt views; texture Off ⇒ webp), per-use texture variants in the bundle,
 two-channel normals rendering correctly on both robots (screenshots).
 
+- [x] DONE (2026-07-14, task mcp-dev on :9085/:9186). Results:
+  - **Caught + fixed a real bug**: rigs declaring `KHR_texture_basisu` in
+    extensionsRequired failed glb-export's strict parse → strip+compress
+    silently fell back, shipping the 29.3MB original since the rig-strip
+    commit. Fix: `parse_glb_lenient` in glb-export (tolerated-required
+    retain + basisu source lift + re-validate, declarations preserved);
+    regression test injects the extension and asserts the pipeline shrinks.
+  - Rig sizes after fix: police 29.3MB → **3.84MB**, astrabot 27.6MB →
+    **3.48MB**; whole two-robot bundle 120.7MB → 71.1MB.
+  - LOD glbs compressed: all 51 declare meshopt+quantization; police lod1
+    142KB (shipped 504KB uncompressed pre-F1).
+  - Options matrix (per-call overrides): quant-off ⇒ F32 POSITIONs +
+    EXT_meshopt only (rig 9.98MB); meshopt-off ⇒ I16 plain views +
+    KHR_mesh_quantization only (15.3MB — plain path proven on a real rig);
+    tex-off ⇒ raster sources → webp, KTX2 sources passthrough (can't
+    re-encode a lossy container losslessly — shipped verbatim, logged), and
+    a per-use override still forces its KTX2 variant.
+  - F2 on-device: mixed-use asset → packed-normal artifact kept the original
+    id + `texture_two_channel_normal = true`; base-color use with the MCP
+    per-use uastc override → deterministic minted variant, ref rewritten.
+  - F3 on-device: console shows `binding compressed texture as Bc5RgUnorm`;
+    sphere A/B (editor classic RGB vs player BC5 two-channel), 1:1 crops:
+    mean px diff 1.31/255, 96% within 8/255 — Z-reconstruct correct, and
+    NOT pixel-identical (different codecs should differ). Both robots
+    screenshot correct through the player path (their ktx2-SOURCE normal
+    maps are passthrough by design ⇒ flag=0 classic regime — two-channel
+    engages for raster-sourced normal maps, verified via the test sphere).
+  - Noted (pre-existing, not fixed here): (a) loading BOTH robots + full LOD
+    chains through load_player_bundle trips the dev-only 512MB
+    `debug_assert` in create_buffer (mesh pool doubles to 1GiB) — release
+    proceeds; consider raising the dev threshold or warn-only. (b)
+    `set_node_texture`/`set_builtin_param` silently no-op ("ok") when the
+    node has a material palette but NO SELECTED variant —
+    `set_texture_use_profile`'s loud reject exposed it; the older tools
+    should probably reject loudly too.
+
+FOLLOW-UP QUEUE COMPLETE.
+
 ## Closed / not queued
 
 - **GPU-quantized vertex formats: CLOSED, not approved.** Dual-layout is dead

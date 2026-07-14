@@ -90,6 +90,64 @@ struct Stream {
     parent_stride: Option<usize>,
 }
 
+/// `extensionsRequired` entries this pipeline handles (or deletes) that the
+/// `gltf` crate build here doesn't feature-gate — a strict `from_slice` parse
+/// rejects a file declaring any of them, even though strip/compress operate on
+/// the raw JSON and never touch the extension payloads. The concrete failure
+/// this fixes: rig glbs re-exported with embedded KTX2 textures declare
+/// `KHR_texture_basisu` as REQUIRED, and the strict parse failed the whole
+/// strip+compress — silently shipping a ~29MB rig instead of ~3MB (caught by
+/// the F4 on-device verification, docs/plans/compression.md). Mirrors
+/// renderer-gltf's `RENDERER_SUPPORTED_EXTENSIONS` treatment.
+const PARSE_TOLERATED_EXTENSIONS: &[&str] = &[
+    "KHR_texture_basisu",
+    "EXT_meshopt_compression",
+    "KHR_mesh_quantization",
+    "KHR_materials_clearcoat",
+    "KHR_materials_sheen",
+    "KHR_materials_anisotropy",
+    "KHR_materials_iridescence",
+    "KHR_materials_dispersion",
+    "KHR_materials_diffuse_transmission",
+];
+
+/// Parse GLB bytes into `(json root, BIN)`, tolerating
+/// [`PARSE_TOLERATED_EXTENSIONS`] in `extensionsRequired`: they are removed
+/// before structural validation (`Document::from_json`) and re-added after,
+/// so the output declares exactly what the input did. `KHR_texture_basisu`
+/// textures omit the core `source` (the extension carries the image index) —
+/// lift it into the core field so validation sees a normal texture; the strip
+/// deletes textures wholesale, so the lift only ever feeds validation.
+fn parse_glb_lenient(glb: &[u8]) -> anyhow::Result<(json::Root, Vec<u8>)> {
+    let parsed = gltf::Gltf::from_slice_without_validation(glb)?;
+    let bin = parsed.blob.clone().unwrap_or_default();
+    let mut root = parsed.document.into_json();
+    let tolerated: Vec<String> = root
+        .extensions_required
+        .iter()
+        .filter(|e| PARSE_TOLERATED_EXTENSIONS.contains(&e.as_str()))
+        .cloned()
+        .collect();
+    root.extensions_required
+        .retain(|e| !PARSE_TOLERATED_EXTENSIONS.contains(&e.as_str()));
+    for texture in &mut root.textures {
+        if texture.source.value() == u32::MAX as usize {
+            let basisu_source = texture
+                .extensions
+                .as_ref()
+                .and_then(|ext| ext.others.get("KHR_texture_basisu"))
+                .and_then(|basisu| basisu.get("source"))
+                .and_then(|source| source.as_u64());
+            if let Some(source) = basisu_source {
+                texture.source = json::Index::new(source as u32);
+            }
+        }
+    }
+    let mut root = gltf::Document::from_json(root)?.into_json();
+    root.extensions_required.extend(tolerated);
+    Ok((root, bin))
+}
+
 /// Strip embedded materials, textures, images, and samplers from a GLB —
 /// for artifacts whose consumer applies its OWN materials (the player bundle
 /// applies scene.toml materials to every rig primitive via
@@ -99,9 +157,7 @@ struct Stream {
 /// next [`compress_glb`] pass (it only carries views something references),
 /// so call this BEFORE compressing.
 pub fn strip_materials_and_images(glb: &[u8]) -> anyhow::Result<Vec<u8>> {
-    let parsed = gltf::Gltf::from_slice(glb)?;
-    let bin = parsed.blob.clone().unwrap_or_default();
-    let mut root = parsed.document.into_json();
+    let (mut root, bin) = parse_glb_lenient(glb)?;
 
     for mesh in &mut root.meshes {
         for prim in &mut mesh.primitives {
@@ -140,9 +196,7 @@ pub fn compress_glb_with(glb: &[u8], options: &CompressOptions) -> anyhow::Resul
     if !options.meshopt && options.quantization == Quantization::Off {
         return Ok(glb.to_vec());
     }
-    let parsed = gltf::Gltf::from_slice(glb)?;
-    let bin = parsed.blob.clone().unwrap_or_default();
-    let mut root = parsed.document.into_json();
+    let (mut root, bin) = parse_glb_lenient(glb)?;
 
     // ── classify accessors ────────────────────────────────────────────────
     #[derive(Clone, Copy, PartialEq)]
