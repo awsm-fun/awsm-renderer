@@ -868,6 +868,17 @@ Pieces:
       Skips: fetch-compaction that would drop unused vertices, shared-accessor
       primitives, non-triangle modes, non-f32 positions. Roundtrip tests
       rewritten order-insensitively (pair-by-position + triangle multisets).
+- [x] wasm browser-load fix (`cxx_alloc_shim` in codec-meshopt): the optimizer
+      entry points are the FIRST meshopt calls that allocate, via C++
+      `operator new`/`operator delete`. On wasm32-unknown-unknown those become
+      unresolved `env` imports → "Failed to resolve module specifier env" at
+      instantiate (invisible to `cargo check/test`, which never link the wasm).
+      `meshopt_setAllocator` does NOT fix it: allocator.cpp initializes its
+      default storage with `{::operator new, ::operator delete}`, a static
+      address-of that keeps the symbols referenced regardless of any runtime
+      override — they must be DEFINED. So define `_Znwm`/`_ZdlPv`/`_ZdlPvm`
+      (no_mangle, Rust global alloc + 16B size header). Verified: rebuilt
+      editor wasm has 0 env imports, symbols defined, editor boots clean.
 - [x] Native fixture-gated parity test (`raw_export_compresses_close_to_gltfpack`,
       gated on astrabot-large + astrabot-meshopt): 188MB raw export →
       reexport_clean_scene → strip+compress = **2.547MB vs gltfpack's 2.409MB

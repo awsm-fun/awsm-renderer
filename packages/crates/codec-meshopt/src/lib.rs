@@ -15,6 +15,79 @@ use thiserror::Error;
 /// meshoptimizer API (encode, optimize, simplify) through one dependency.
 pub use meshopt;
 
+/// meshoptimizer's OPTIMIZER entry points (vertex cache / overdraw / fetch —
+/// the F5 pre-encode reorder) allocate scratch through `meshopt_Allocator`,
+/// whose DEFAULT backend is C++ `operator new` / `operator delete`. On
+/// wasm32-unknown-unknown there is no C++ runtime, so those symbols become
+/// unresolved wasm imports from module "env" and the app module FAILS TO
+/// INSTANTIATE ("Failed to resolve module specifier \"env\""). The
+/// decode/encode surface never allocates, which is why this only surfaced
+/// with the reorder pass — and only in the BROWSER: `cargo check/test` never
+/// links the final wasm, so keep this in mind for any new meshopt API use.
+///
+/// Why NOT `meshopt_setAllocator` (the library's own hook): it swaps the
+/// runtime function pointers, but the default storage is a static initializer
+/// — `static Storage s = {::operator new, ::operator delete}` (allocator.cpp)
+/// — that TAKES THE ADDRESS of `operator new`/`operator delete`. That
+/// address-of reference is baked into the wasm regardless of any runtime
+/// override, so the `_Znwm`/`_ZdlPv` imports remain unresolved and the module
+/// still won't instantiate. The symbols must be DEFINED, not merely bypassed.
+///
+/// So we define the Itanium-mangled symbols here, backed by Rust's global
+/// allocator; the C++ default then resolves straight to them (no
+/// `setAllocator` call needed). A 16-byte size header carries the layout size
+/// into the (unsized) scalar `operator delete`, and keeps the returned pointer
+/// at C++ max_align (16).
+#[cfg(target_arch = "wasm32")]
+mod cxx_alloc_shim {
+    use std::alloc::{alloc, dealloc, handle_alloc_error, Layout};
+
+    const HEADER: usize = 16;
+    const ALIGN: usize = 16;
+
+    fn layout(total: usize) -> Layout {
+        Layout::from_size_align(total, ALIGN).expect("operator new layout")
+    }
+
+    /// C++ `operator new(size_t)`.
+    #[no_mangle]
+    pub extern "C" fn _Znwm(size: usize) -> *mut u8 {
+        let total = size
+            .checked_add(HEADER)
+            .expect("operator new size overflow");
+        unsafe {
+            let base = alloc(layout(total));
+            if base.is_null() {
+                // operator new must not return null (the C++ is compiled
+                // without exceptions) — abort like OOM anywhere else.
+                handle_alloc_error(layout(total));
+            }
+            (base as *mut usize).write(total);
+            base.add(HEADER)
+        }
+    }
+
+    /// C++ `operator delete(void*)`.
+    #[no_mangle]
+    pub extern "C" fn _ZdlPv(ptr: *mut u8) {
+        if ptr.is_null() {
+            return;
+        }
+        unsafe {
+            let base = ptr.sub(HEADER);
+            let total = (base as *const usize).read();
+            dealloc(base, layout(total));
+        }
+    }
+
+    /// C++ sized `operator delete(void*, size_t)` — emitted instead of the
+    /// unsized form under `-fsized-deallocation`; delegate to it.
+    #[no_mangle]
+    pub extern "C" fn _ZdlPvm(ptr: *mut u8, _size: usize) {
+        _ZdlPv(ptr);
+    }
+}
+
 /// `mode` of an `EXT_meshopt_compression` bufferView.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {

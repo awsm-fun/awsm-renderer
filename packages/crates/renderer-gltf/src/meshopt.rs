@@ -925,7 +925,6 @@ mod astrabot_fixture_tests {
 /// gltfpack artifact's geometry size. Gated on both local fixtures.
 #[cfg(all(test, has_local_fixtures_astrabot_large))]
 mod parity_fixture_tests {
-    use super::*;
     use crate::loader::parse_gltf_lenient;
 
     const LARGE: &[u8] = include_bytes!("../../../../fixtures/local/astrabot-large.glb");
