@@ -27,7 +27,7 @@ thread_local! {
 /// Transcode one KTX2 payload to the device's block format (RGBA8 last
 /// resort), returning it sRGB-agnostic under the linear format variant.
 pub(crate) async fn transcode_ktx2_image(bytes: &[u8]) -> anyhow::Result<ImageData> {
-    let (codec, width, height) = sniff_basis_ktx2(bytes).ok_or_else(|| {
+    let sniff = sniff_basis_ktx2(bytes).ok_or_else(|| {
         anyhow::anyhow!("image is not a Basis-supercompressed KTX2 (native KTX2 unsupported here)")
     })?;
 
@@ -39,7 +39,14 @@ pub(crate) async fn transcode_ktx2_image(bytes: &[u8]) -> anyhow::Result<ImageDa
         etc2: support.etc2,
         astc: support.astc,
     };
-    let target = select_transcode_target_checked(caps, codec, width, height);
+    // Opaque ETC1S drops to the 0.5 B/px opaque rung (BC1 / ETC2-RGB).
+    let target = select_transcode_target_checked(
+        caps,
+        sniff.codec,
+        sniff.has_alpha,
+        sniff.width,
+        sniff.height,
+    );
 
     let client = BASIS_CLIENT.with(|c| c.clone());
     let tex = client
@@ -51,7 +58,11 @@ pub(crate) async fn transcode_ktx2_image(bytes: &[u8]) -> anyhow::Result<ImageDa
     let format = texture_format_for_target(target, false)
         .ok_or_else(|| anyhow::anyhow!("no linear upload format for {target:?}"))?;
     tracing::info!(
-        "gltf import: KTX2 image ({codec:?} {width}x{height}) transcoded → {target:?}, {} mips",
+        "gltf import: KTX2 image ({:?} {}x{} alpha={}) transcoded → {target:?}, {} mips",
+        sniff.codec,
+        sniff.width,
+        sniff.height,
+        sniff.has_alpha,
         tex.levels.len()
     );
 

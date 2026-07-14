@@ -271,24 +271,27 @@ async fn fetch_decode(
                 // header, pick the device's block target, transcode in the
                 // Basis worker (off the main thread). Kept sRGB-agnostic —
                 // the binding slot picks the *Unorm/*UnormSrgb variant.
-                let Some((codec, width, height)) = sniff_basis_ktx2(&bytes) else {
+                let Some(sniff) = sniff_basis_ktx2(&bytes) else {
                     tracing::warn!(
                         "scene-loader: texture `{path}` is not a Basis KTX2 (native/uncompressed KTX2 unsupported for materials) — slot left unbound"
                     );
                     return None;
                 };
+                let (codec, width, height) = (sniff.codec, sniff.width, sniff.height);
                 // Two-channel-packed normals ride the two-plane ladder
-                // (BC5 / EAC-RG11); everything else the full-RGBA one.
+                // (BC5 / EAC-RG11); everything else the full-RGBA one — or, for
+                // opaque ETC1S, the 0.5 B/px opaque rung (BC1 / ETC2-RGB).
                 let target = if two_channel {
                     select_normal_transcode_target_checked(caps, codec, width, height)
                 } else {
-                    select_transcode_target_checked(caps, codec, width, height)
+                    select_transcode_target_checked(caps, codec, sniff.has_alpha, width, height)
                 };
                 let client = BASIS_CLIENT.with(|c| c.clone());
                 match client.transcode(&bytes, target).await {
                     Ok(tex) => {
                         tracing::info!(
-                            "scene-loader: texture `{path}` ({codec:?} {width}x{height}) transcoded → {target:?}, {} mips",
+                            "scene-loader: texture `{path}` ({codec:?} {width}x{height} alpha={}) transcoded → {target:?}, {} mips",
+                            sniff.has_alpha,
                             tex.levels.len()
                         );
                         return Some(DecodedImage::Compressed {

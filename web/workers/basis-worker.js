@@ -219,6 +219,12 @@ async function handleEncode(req) {
         trySet('setKTX2SRGBTransferFunc', !!req.srgb);
         trySet('setSRGB', !!req.srgb);
         encoder.setMipGen(!!req.mipmaps);
+        // Detect alpha rather than force it: an opaque source (A all 255) ships
+        // NO alpha slice, so the container reports no alpha and the loader can
+        // pick the 0.5 B/px opaque rung (BC1 / ETC2-RGB — the 8× VRAM win).
+        // This is basisu's default; set it explicitly so the contract is local.
+        trySet('setCheckForAlpha', true);
+        trySet('setForceAlpha', false);
 
         // Worst-case output: raw size + generous container overhead.
         const dst = new Uint8Array(width * height * 4 + (1 << 20));
