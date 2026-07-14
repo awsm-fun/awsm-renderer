@@ -93,7 +93,7 @@ Authoring-command references are `packages/mcp/editor-protocol/src/command.rs:<l
   - [x] **SMAA** recipe: same pattern with `smaa` toggle — **prove pixels change** (turns "can't tell if it's on" into a real assertion). Use a glossy/edge-rich model (Fox is flat — see memory `aa-verify-in-model-viewer`). — covered by `aa-edges/verify.md` (smaa state); HEAD confirmed smaa post-process smooths the same silhouette edges vs no-aa (pixels change).
 - [ ] **Structural locks** (`examples/player-tests/src/checks.rs`):
   - [ ] Add a **texture-binding** assertion: extend `Counts` to read the renderer texture-pool count; add `decals`, `particles`, and a sprite scene to `SCENES` with an `expected_min_textures`; assert bound > 0 and no `slot left unbound`. This locks the sprite/decal/particle silent-drop bug class.
-  - [ ] Add an **opaque-KTX2** on-device lock: the decals/particles bundles carry KTX2 textures; assert they load + bind on-device (transitively exercises the opaque BC1/ETC2-RGB rung + alpha rungs). Optionally tally transcode targets if a cheap hook exists.
+  - [x] Add an **opaque-KTX2** on-device lock: the decals/particles bundles carry KTX2 textures; assert they load + bind on-device (transitively exercises the opaque BC1/ETC2-RGB rung + alpha rungs). Optionally tally transcode targets if a cheap hook exists. — `decals` added to SCENES with expected_min_textures=1; player-tests PASS on-device (pool_textures=3 ≥1) — the KTX2 label sheet transcodes + binds, not silently dropped.
 
 ### Phase 2 — new gap scenes (author + `verify.md`)
 

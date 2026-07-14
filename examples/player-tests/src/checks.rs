@@ -50,6 +50,10 @@ struct SceneSpec {
     min_nodes: usize,
     /// Whether the scene must materialize at least one renderer mesh.
     expect_meshes: bool,
+    /// Minimum GPU pool-textures the scene must bind on-device after load. 0 for
+    /// procedural/untextured scenes; > 0 locks the sprite/decal/particle
+    /// silent-drop bug class (a dropped texture leaves the pool empty).
+    expected_min_textures: usize,
     features: fn() -> RendererFeatures,
     extra: Extra,
 }
@@ -78,6 +82,16 @@ fn lod_features() -> RendererFeatures {
     }
 }
 
+/// Decals need their feature gate on (matching kitchen-sink), else the loader
+/// cleanly skips the projected-decal texture and the texture-binding assert
+/// would be a no-op.
+fn decals_features() -> RendererFeatures {
+    RendererFeatures {
+        decals: true,
+        ..base_features()
+    }
+}
+
 fn nanite_features() -> RendererFeatures {
     RendererFeatures {
         virtual_geometry: true,
@@ -102,6 +116,7 @@ const SCENES: &[SceneSpec] = &[
         name: "kitchen-sink",
         min_nodes: 10,
         expect_meshes: true,
+        expected_min_textures: 0,
         features: kitchen_sink_features,
         extra: Extra::None,
     },
@@ -109,6 +124,7 @@ const SCENES: &[SceneSpec] = &[
         name: "anim-skinned",
         min_nodes: 3,
         expect_meshes: true,
+        expected_min_textures: 0,
         features: base_features,
         extra: Extra::None,
     },
@@ -116,6 +132,7 @@ const SCENES: &[SceneSpec] = &[
         name: "lights-many",
         min_nodes: 40,
         expect_meshes: true,
+        expected_min_textures: 0,
         features: base_features,
         extra: Extra::None,
     },
@@ -123,6 +140,7 @@ const SCENES: &[SceneSpec] = &[
         name: "lod-classic",
         min_nodes: 4,
         expect_meshes: true,
+        expected_min_textures: 0,
         features: lod_features,
         extra: Extra::LodTriDrop,
     },
@@ -130,6 +148,7 @@ const SCENES: &[SceneSpec] = &[
         name: "lod-nanite",
         min_nodes: 3,
         expect_meshes: true,
+        expected_min_textures: 0,
         features: nanite_features,
         extra: Extra::NaniteStreaming,
     },
@@ -142,6 +161,7 @@ const SCENES: &[SceneSpec] = &[
         name: "lod-nanite-open",
         min_nodes: 2,
         expect_meshes: true,
+        expected_min_textures: 0,
         features: nanite_features,
         extra: Extra::NaniteStreaming,
     },
@@ -149,6 +169,7 @@ const SCENES: &[SceneSpec] = &[
         name: "instancing-stress",
         min_nodes: 4,
         expect_meshes: true,
+        expected_min_textures: 0,
         features: base_features,
         extra: Extra::Instancing,
     },
@@ -156,6 +177,31 @@ const SCENES: &[SceneSpec] = &[
         name: "prefab-skinned-morph",
         min_nodes: 3,
         expect_meshes: true,
+        expected_min_textures: 0,
+        features: base_features,
+        extra: Extra::None,
+    },
+    SceneSpec {
+        // Texture-binding lock: the decals bundle carries an opaque KTX2 (the
+        // projected label sheet). It MUST transcode + bind on-device (the
+        // opaque BC1/ETC2-RGB transcode rung); a silent drop leaves the pool
+        // empty. Needs the decals feature or the loader skips the decal.
+        name: "decals",
+        min_nodes: 2,
+        expect_meshes: true,
+        expected_min_textures: 1,
+        features: decals_features,
+        extra: Extra::None,
+    },
+    SceneSpec {
+        // Load-path + counts lock for the GPU particle emitter (procedural,
+        // no external texture → expected_min_textures 0). Locks that a particle
+        // node loads + materializes a mesh without tripping the census/leak
+        // asserts.
+        name: "particles",
+        min_nodes: 2,
+        expect_meshes: true,
+        expected_min_textures: 0,
         features: base_features,
         extra: Extra::None,
     },
@@ -231,9 +277,14 @@ struct Counts {
     render_pipelines: usize,
     compute_pipelines: usize,
     shaders: usize,
+    /// GPU pool-texture count (`Textures::resource_counts().0`). A scene that
+    /// authors textures (decals KTX2, sampled materials, sprite sheets) must
+    /// materialize them here — a silent-drop bug leaves this at 0.
+    pool_textures: usize,
 }
 
 fn counts(renderer: &AwsmRenderer) -> Counts {
+    let (pool_textures, _cubemaps, _samplers) = renderer.textures.resource_counts();
     Counts {
         meshes: renderer.meshes.len(),
         mesh_resources: renderer.meshes.resource_count(),
@@ -242,6 +293,7 @@ fn counts(renderer: &AwsmRenderer) -> Counts {
         render_pipelines: renderer.pipelines.render.len(),
         compute_pipelines: renderer.pipelines.compute.len(),
         shaders: renderer.shaders.len(),
+        pool_textures,
     }
 }
 
@@ -366,9 +418,10 @@ fn counts_check(
     let nodes = loaded.nodes.len();
     let meshes = renderer.meshes.len();
     let tris = renderer.meshes.visible_triangle_count();
+    let (pool_textures, cubemaps, _samplers) = renderer.textures.resource_counts();
     let detail = format!(
-        "nodes={nodes} (authored={authored}, expected ≥{}), renderer meshes={meshes}, visible_tris={tris}",
-        spec.min_nodes
+        "nodes={nodes} (authored={authored}, expected ≥{}), renderer meshes={meshes}, visible_tris={tris}, pool_textures={pool_textures} (expected ≥{}), cubemaps={cubemaps}",
+        spec.min_nodes, spec.expected_min_textures
     );
     if nodes == 0 || nodes < spec.min_nodes {
         return Err(anyhow!("node count out of range — {detail}"));
@@ -380,6 +433,14 @@ fn counts_check(
     }
     if spec.expect_meshes && meshes == 0 {
         return Err(anyhow!("no renderer meshes — {detail}"));
+    }
+    // Texture-binding lock: a scene that authors textures must materialize them
+    // in the GPU pool. A silent drop (sprite/decal/particle bug class) leaves
+    // the pool short of what the bundle declares.
+    if pool_textures < spec.expected_min_textures {
+        return Err(anyhow!(
+            "texture pool under-bound — a declared texture was silently dropped — {detail}"
+        ));
     }
     Ok(detail)
 }
