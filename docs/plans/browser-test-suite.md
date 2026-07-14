@@ -77,7 +77,7 @@ Authoring-command references are `packages/mcp/editor-protocol/src/command.rs:<l
 
 ### Phase 1 — skill + recipes over existing scenes + structural locks (fast, high value)
 
-- [ ] **Skill upgrade** to the 3-layer orchestration + scope prompt (spec above).
+- [x] **Skill upgrade** to the 3-layer orchestration + scope prompt (spec above). — rewrote `SKILL.md`: enumerate + AskUserQuestion scope prompt (Everything/Visual/Structural/Audits/Pick), Layer C→B→A ordering, per-layer procedures, gotchas.
 - [ ] **`verify.md` for existing scenes** (no authoring; just author the recipe + confirm each renders correctly once):
   - [ ] `pbr-extensions` — each ext sphere visibly distinct from plain PBR (transmission/clearcoat/sheen/iridescence/dispersion/anisotropy/specular/ior/emissive_strength/diffuse_transmission).
   - [ ] `shadows-all` — directional cascade + spot + point/cube all cast contact-tight shadows; no Peter-Pan gap, no donut/hole under lowered meshes.
