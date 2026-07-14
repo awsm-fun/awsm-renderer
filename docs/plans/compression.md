@@ -523,12 +523,17 @@ BC5/EAC-RG (in-shader Z reconstruct) is a Phase-6 opt. **Block dims multiple of
 
 ## Phase 6 — Hardening, tests, perf, GPU-quantized formats
 
-- [ ] **True-first-class GPU optimization:** keep quantized vertex formats through
+- [x] **True-first-class GPU optimization:** keep quantized vertex formats through
       the visibility/geometry packing (WebGPU `unorm/snorm 8/16`) instead of
       expanding to f32 — measure the VRAM win; browser-verify the vertex-format
       change.
-      📋 **SCOPED 2026-07-14, implementation deferred behind the rest of
-      Phase 6** — recon verdict: NOT a contained change. The geometry pool is
+      ⛔ **RESOLVED = CLOSED, NOT APPROVED (2026-07-14)** — see "Closed / not
+      queued" at the end of this file: rejected under David's strict zero-loss
+      bar (the only single-layout variant, oct16 normals/tangents, carries a
+      measurably-nonzero ~0.002° angular error). Revive only with his explicit
+      sign-off on that error. The scoping recon below is retained for whoever
+      picks it up then.
+      📋 SCOPED 2026-07-14 — recon verdict: NOT a contained change. The geometry pool is
       consumed by BOTH fixed-function vertex fetch (~7 pipeline layouts; the
       easy half — snorm16x4/snorm8x4/unorm16x2 convert natively) AND raw
       `array<f32>` storage-buffer vertex pulling hardcoded in ~6 WGSL helpers
@@ -745,6 +750,13 @@ F2 complete pending F4 on-device verification.
 Noted while implementing (pre-existing, NOT touched): sprite/decal
 `Option<TextureRef>` fields are never collected by the bundle bake — their
 textures don't ship in bundles at all today. Separate follow-up.
+✅ **FIXED 2026-07-14 (ae24b78b + a8c14b30):** `collect_texture_assets` +
+`for_each_baked_texture_use` now walk `NodeKind::Sprite/Decal/ParticleEmitter`
+`.texture`, and a `verify_texture_refs_shipped` completeness guard refuses any
+export where a referenced texture (material OR sprite/decal/particle) has no
+shipped file — "never editor-has-it, player-silently-fails". Native test
+`export_guard_catches_unshipped_sprite_decal_particle_textures`; the `decals`
+test-scene bundle (itself broken by this gap) was regenerated end-to-end.
 
 David's case: one texture asset used as a NORMAL map by a PBR material and as
 something else by a custom/Dynamic material. Today `Ktx2Profile::Auto` marks
@@ -915,6 +927,25 @@ Pieces:
       with IBMs meshopt-encoded; NormalTangentTest (NO authored tangents)
       renders correct normal-mapped bumps from RUNTIME-generated tangents.
       Tests: `derived_tangents_not_baked`, `ibm_accessor_is_meshopt_encoded`.
+
+## F6. Opaque-KTX2 8× rung (added + shipped 2026-07-14, 927ef555)
+
+The 4× texture win (RGBA-capable ETC2-RGBA / BC7 / ASTC, 1 B/px) had an idle
+8× sibling: opaque-only block formats **ETC2-RGB / BC1 at 0.5 B/px**. basisu
+already drops the alpha slice for opaque sources (`check_for_alpha`), so opaque
+KTX2s were already *produced* — but `select_transcode_target` ignored alpha and
+always picked the RGBA rung, wasting half the VRAM on every opaque color
+texture. Fix is **load-time only** (no encoder change, no dropdown variant, no
+import detection, no stored state): `sniff_basis_ktx2` returns
+`Ktx2Sniff { codec, w, h, has_alpha }` — `has_alpha` read for ETC1S from the
+BasisLZ SGD `imageDesc[0].alphaSliceByteLength` (byte `sgdByteOffset(u64@64)
++ 36`) — and opaque ETC1S transcodes to `Etc1Rgb`/`Bc1`. **Structurally
+footgun-free:** the opaque rung is picked ONLY when the encoder proved there is
+no alpha, so it can never silently drop it; textures with real alpha keep the
+RGBA rung. UASTC unaffected (ASTC/BC7 are 1 B/px regardless); astc-only stays on
+the RGBA ladder (no sub-1 B/px ASTC mode). On-device verified: opaque → `alpha=
+false → Etc1Rgb`, AlphaBlendLabels → `alpha=true → Etc2Rgba`, no GPU errors.
+Tests: `opaque_etc1s_takes_the_half_rate_rung`, `sniffs_etc1s_alpha_from_the_sgd`.
 
 ## Closed / not queued
 
