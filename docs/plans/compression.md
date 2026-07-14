@@ -450,9 +450,12 @@ BC5/EAC-RG (in-shader Z reconstruct) is a Phase-6 opt. **Block dims multiple of
       Wired into the editor bundle bake (`controller/export.rs`) for the
       per-mesh `assets/<id>.glb` bakes — dedup stays on uncompressed bytes,
       compression failure falls back to plain glb with a warn (never fails a
-      bake); per-mesh size line traced. NOT yet applied to rig glbs
-      (skinned save-format) or the standalone scene-glb exports — deliberate,
-      revisit after the exit round-trip. Round-trip test (always-on,
+      bake); per-mesh size line traced. (Originally NOT applied to rig glbs;
+      RESOLVED by the follow-up queue — F1 routes bundle rig copies + coarse
+      LOD glbs through the same strip/compress under BundleOptions, F4 fixed
+      the rig-strip parse bug: rigs now police 3.84MB / astrabot 3.48MB.
+      Standalone scene-glb exports remain the only path not routed through it.)
+      Round-trip test (always-on,
       synthetic grid, renderer-gltf dev-dep on glb-export): encode →
       parse_gltf_lenient → decode pass → positions reproduce through the
       wrapper TRS within s/32767×2, normals within dot>0.98, triangles
@@ -581,12 +584,13 @@ BC5/EAC-RG (in-shader Z reconstruct) is a Phase-6 opt. **Block dims multiple of
       import pipeline) rather than the model-tests/player-tests browser
       harnesses — same coverage, native speed; the on-device robot runs
       remain the Phase-4/5 acceptance records.
-- [ ] Optional: two-channel normals (BC5/EAC-RG) with in-shader Z reconstruction.
-      ⏸ DEFERRED 2026-07-14 alongside the GPU-quantized vertex formats — both
-      are shader-touching opts of the same family (the ladder + formats
-      already support BC5/EAC-RG linear-only; what's missing is the in-shader
-      Z reconstruct + per-slot two-channel selection). Bundle them into the
-      sliced follow-up above.
+- [x] Optional: two-channel normals (BC5/EAC-RG) with in-shader Z reconstruction.
+      ✅ SHIPPED as follow-up **F3** (this box was deferred earlier the same day,
+      then F3 delivered exactly it): CPU-side X→RGB/Y→A pack, BC5/EAC-RG11
+      transcode ladder, per-USE two-channel selection (rides F2), and WGSL
+      `z = sqrt(1-x²-y²)` reconstruct in both color-calc paths. On-device
+      verified in the F4 run (Bc5RgUnorm bind; sphere A/B mean px diff 1.31/255).
+      See the F3 section below.
 - [x] Verify 4–8× texture-memory reduction + bundle geometry shrink; transcode +
       meshopt-decode never on the render hot path; no per-frame allocations added.
       ✅ 2026-07-14 — **Texture VRAM: exactly 4.0×** on the real police
