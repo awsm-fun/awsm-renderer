@@ -107,6 +107,65 @@ impl MaterialDef {
         self.extensions.texture_refs(&mut out);
         out
     }
+
+    /// Visit every texture USE this material carries — each slot's ref paired
+    /// with its semantic role ([`TextureColorKind`]), mirroring the player's
+    /// per-slot bind semantics (scene-loader `resolve_material` /
+    /// `bind_extension_textures`: `Normal` where the player binds normal-kind
+    /// mips, `is_srgb()` matching its sRGB flag). The bundle bake resolves each
+    /// use's KTX2 encoding from the kind and rewrites `TextureRef::asset` to
+    /// per-encoding variant artifacts in the same walk
+    /// (docs/plans/compression.md F2). Kept in lockstep with
+    /// [`Self::texture_refs`] by the `texture_uses_match_texture_refs` test.
+    pub fn for_each_texture_use_mut(
+        &mut self,
+        mut f: impl FnMut(TextureColorKind, &mut TextureRef),
+    ) {
+        use TextureColorKind as K;
+        let mut visit = |kind: K, slot: &mut Option<TextureRef>| {
+            if let Some(t) = slot {
+                f(kind, t);
+            }
+        };
+        visit(K::Albedo, &mut self.base_color_texture);
+        visit(K::MetallicRoughness, &mut self.metallic_roughness_texture);
+        visit(K::Emissive, &mut self.emissive_texture);
+        visit(K::Normal, &mut self.normal_texture);
+        visit(K::Occlusion, &mut self.occlusion_texture);
+        let ext = &mut self.extensions;
+        if let Some(e) = &mut ext.specular {
+            visit(K::Specular, &mut e.tex);
+            visit(K::SpecularColor, &mut e.color_tex);
+        }
+        if let Some(e) = &mut ext.transmission {
+            visit(K::Transmission, &mut e.tex);
+        }
+        if let Some(e) = &mut ext.diffuse_transmission {
+            visit(K::Transmission, &mut e.tex);
+            visit(K::SpecularColor, &mut e.color_tex);
+        }
+        if let Some(e) = &mut ext.volume {
+            visit(K::VolumeThickness, &mut e.thickness_tex);
+        }
+        if let Some(e) = &mut ext.clearcoat {
+            visit(K::Specular, &mut e.tex);
+            visit(K::MetallicRoughness, &mut e.roughness_tex);
+            visit(K::Normal, &mut e.normal_tex);
+        }
+        if let Some(e) = &mut ext.sheen {
+            visit(K::SpecularColor, &mut e.color_tex);
+            visit(K::MetallicRoughness, &mut e.roughness_tex);
+        }
+        if let Some(e) = &mut ext.anisotropy {
+            // The player binds anisotropy direction maps with normal-kind mips;
+            // they deserve the same UASTC treatment.
+            visit(K::Normal, &mut e.tex);
+        }
+        if let Some(e) = &mut ext.iridescence {
+            visit(K::Specular, &mut e.tex);
+            visit(K::VolumeThickness, &mut e.thickness_tex);
+        }
+    }
 }
 
 /// Per-field texture-ref collection, implemented as a no-op for scalar field
@@ -490,4 +549,102 @@ pub const MESH_FILE_EXTENSION: &str = "mesh.bin";
 /// (or whatever directory layout they use).
 pub fn mesh_asset_filename(asset_id: super::assets::AssetId) -> String {
     format!("{}.{}", asset_id.0, MESH_FILE_EXTENSION)
+}
+
+#[cfg(test)]
+mod texture_use_tests {
+    use super::*;
+    use crate::primitive::TextureRef;
+    use crate::AssetId;
+
+    /// Every slot `texture_refs()` enumerates must also be visited (with a
+    /// kind) by `for_each_texture_use_mut` — the drift guard for new
+    /// `ext_struct!` texture slots, which auto-enumerate in `texture_refs()`
+    /// but need a manual kind mapping in the use walk.
+    #[test]
+    fn texture_uses_match_texture_refs() {
+        let t = || Some(TextureRef::new(AssetId::new()));
+        let mut def = MaterialDef {
+            base_color_texture: t(),
+            metallic_roughness_texture: t(),
+            emissive_texture: t(),
+            normal_texture: t(),
+            occlusion_texture: t(),
+            extensions: PbrExtensions {
+                emissive_strength: Some(Default::default()),
+                ior: Some(Default::default()),
+                specular: Some(SpecularExt {
+                    tex: t(),
+                    color_tex: t(),
+                    ..Default::default()
+                }),
+                transmission: Some(TransmissionExt {
+                    tex: t(),
+                    ..Default::default()
+                }),
+                diffuse_transmission: Some(DiffuseTransmissionExt {
+                    tex: t(),
+                    color_tex: t(),
+                    ..Default::default()
+                }),
+                volume: Some(VolumeExt {
+                    thickness_tex: t(),
+                    ..Default::default()
+                }),
+                clearcoat: Some(ClearcoatExt {
+                    tex: t(),
+                    roughness_tex: t(),
+                    normal_tex: t(),
+                    ..Default::default()
+                }),
+                sheen: Some(SheenExt {
+                    color_tex: t(),
+                    roughness_tex: t(),
+                    ..Default::default()
+                }),
+                dispersion: Some(Default::default()),
+                anisotropy: Some(AnisotropyExt {
+                    tex: t(),
+                    ..Default::default()
+                }),
+                iridescence: Some(IridescenceExt {
+                    tex: t(),
+                    thickness_tex: t(),
+                    ..Default::default()
+                }),
+            },
+            ..Default::default()
+        };
+        let ref_assets: Vec<AssetId> = def.texture_refs().iter().map(|t| t.asset).collect();
+        let mut use_assets = Vec::new();
+        def.for_each_texture_use_mut(|_, t| use_assets.push(t.asset));
+        let sorted = |mut v: Vec<AssetId>| {
+            v.sort_by_key(|id| id.0);
+            v
+        };
+        assert_eq!(
+            sorted(ref_assets),
+            sorted(use_assets),
+            "for_each_texture_use_mut must visit exactly the slots texture_refs() enumerates \
+             — add the kind mapping for the new ext_struct! texture slot"
+        );
+    }
+
+    /// The normal slot resolves as Normal-kind; base color as sRGB Albedo.
+    #[test]
+    fn slot_kinds_are_stable() {
+        let mut def = MaterialDef {
+            base_color_texture: Some(TextureRef::new(AssetId::new())),
+            normal_texture: Some(TextureRef::new(AssetId::new())),
+            ..Default::default()
+        };
+        let mut kinds = Vec::new();
+        def.for_each_texture_use_mut(|k, _| kinds.push(k));
+        assert_eq!(
+            kinds,
+            vec![TextureColorKind::Albedo, TextureColorKind::Normal]
+        );
+        assert!(TextureColorKind::Albedo.is_srgb());
+        assert!(!TextureColorKind::Normal.is_srgb());
+    }
 }

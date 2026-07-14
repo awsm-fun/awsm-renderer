@@ -714,6 +714,28 @@ modal** (options appear when relevant, remembered in the project), plus MCP
 
 ## F2. Per-USE-SITE texture encoding (fixes an aliasing bug in Auto)
 
+Progress:
+- [x] Data model + resolution + bake: `TextureRef.export_profile`
+      (`Option<TextureUseProfile>`, custom-Deserialize extended);
+      `MaterialDef::for_each_texture_use_mut` (slot → `TextureColorKind`,
+      drift-guarded against `texture_refs()`); pure `resolve_texture_use`
+      precedence chain host-tested in editor-protocol; bake walks the BAKED
+      scene (built-in inline + custom `texture_overrides` w/ slot kinds from
+      the material library), groups uses by (asset, uastc, srgb), primary
+      encoding keeps the original id, variants mint DETERMINISTIC ids
+      (`AssetId::derive_variant`) + baked asset-table entries, refs rewritten,
+      per-use override stripped from the baked doc. Encode sRGB flag is now
+      slot-correct per use (MR/occlusion encode linear — was `!normal` per
+      asset).
+- [ ] Inspector: slot-site override UI + per-texture profile override
+      (Auto/ETC1S/UASTC) in the asset inspector.
+- [ ] MCP: per-use override setter (+ per-texture profile already exposed via
+      set_texture_export modes).
+
+Noted while implementing (pre-existing, NOT touched): sprite/decal
+`Option<TextureRef>` fields are never collected by the bundle bake — their
+textures don't ship in bundles at all today. Separate follow-up.
+
 David's case: one texture asset used as a NORMAL map by a PBR material and as
 something else by a custom/Dynamic material. Today `Ktx2Profile::Auto` marks
 the whole ASSET normal if ANY use is a normal slot — wrong for the other use.

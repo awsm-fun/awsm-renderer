@@ -38,8 +38,8 @@ mod transport;
 
 pub use anim_ui::{AnimSel, AnimView, StepKind};
 pub use assets::{
-    asset_disk_path, asset_filename, AssetEntry, AssetSource, AssetTable, BufferDef, Ktx2Profile,
-    TextureExport,
+    asset_disk_path, asset_filename, resolve_texture_use, AssetEntry, AssetSource, AssetTable,
+    BufferDef, Ktx2Profile, ResolvedTextureUse, TextureExport,
 };
 pub use bake::{lower_mesh, project_to_scene};
 pub use command::{

@@ -140,6 +140,65 @@ pub enum Ktx2Profile {
     Uastc,
 }
 
+/// One texture USE's resolved bundle encoding — the output of
+/// [`resolve_texture_use`], the bake's use-level precedence chain
+/// (docs/plans/compression.md F2).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ResolvedTextureUse {
+    /// This use wants a KTX2 artifact with these codec params. Distinct
+    /// `(uastc, srgb)` pairs of the same asset become distinct variant
+    /// artifacts at bake.
+    Ktx2 { uastc: bool, srgb: bool },
+    /// This use rides the asset-level (non-KTX2) artifact — same bytes for
+    /// every such use of the asset.
+    AssetLevel(TextureExport),
+}
+
+/// Resolve ONE texture use's bundle encoding:
+/// **use override > per-texture pref > slot-based Auto > global**.
+///
+/// - `use_override` — the ref's [`TextureUseProfile`]
+///   (`awsm_renderer_scene::TextureRef::export_profile`), highest precedence.
+/// - `per_texture` — the asset's authored [`TextureExport`] pref.
+/// - `kind` — the slot's semantic role: `Normal` picks UASTC under Auto;
+///   `is_srgb()` picks the encode colorspace (per-USE, so one asset used as
+///   color somewhere and data elsewhere encodes each correctly).
+/// - `global` — the project [`BundleOptions`](crate::BundleOptions) texture
+///   default.
+pub fn resolve_texture_use(
+    use_override: Option<awsm_renderer_scene::TextureUseProfile>,
+    per_texture: Option<TextureExport>,
+    kind: awsm_renderer_scene::TextureColorKind,
+    global: crate::TextureCompression,
+) -> ResolvedTextureUse {
+    use awsm_renderer_scene::TextureUseProfile;
+    let srgb = kind.is_srgb();
+    if let Some(profile) = use_override {
+        return ResolvedTextureUse::Ktx2 {
+            uastc: profile == TextureUseProfile::Uastc,
+            srgb,
+        };
+    }
+    let auto = ResolvedTextureUse::Ktx2 {
+        uastc: kind == awsm_renderer_scene::TextureColorKind::Normal,
+        srgb,
+    };
+    match per_texture {
+        Some(TextureExport::Ktx2 { profile }) => match profile {
+            Ktx2Profile::Auto => auto,
+            Ktx2Profile::Etc1s => ResolvedTextureUse::Ktx2 { uastc: false, srgb },
+            Ktx2Profile::Uastc => ResolvedTextureUse::Ktx2 { uastc: true, srgb },
+        },
+        Some(other) => ResolvedTextureUse::AssetLevel(other),
+        None => match global {
+            crate::TextureCompression::Ktx2 => auto,
+            crate::TextureCompression::Off => {
+                ResolvedTextureUse::AssetLevel(TextureExport::WebpLossless)
+            }
+        },
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
@@ -344,5 +403,109 @@ impl AssetTable {
 
     pub fn remove(&mut self, id: AssetId) {
         self.entries.remove(&id);
+    }
+}
+
+#[cfg(test)]
+mod resolve_texture_use_tests {
+    use super::*;
+    use crate::TextureCompression;
+    use awsm_renderer_scene::{TextureColorKind as K, TextureUseProfile};
+
+    const KTX2_GLOBAL: TextureCompression = TextureCompression::Ktx2;
+
+    fn ktx2(uastc: bool, srgb: bool) -> ResolvedTextureUse {
+        ResolvedTextureUse::Ktx2 { uastc, srgb }
+    }
+
+    /// Slot-based Auto under the global default: Normal → UASTC/linear,
+    /// color slots → ETC1S/sRGB, data slots → ETC1S/linear.
+    #[test]
+    fn global_auto_resolves_by_slot() {
+        for (kind, want) in [
+            (K::Normal, ktx2(true, false)),
+            (K::Albedo, ktx2(false, true)),
+            (K::Emissive, ktx2(false, true)),
+            (K::MetallicRoughness, ktx2(false, false)),
+            (K::Occlusion, ktx2(false, false)),
+        ] {
+            assert_eq!(resolve_texture_use(None, None, kind, KTX2_GLOBAL), want);
+        }
+    }
+
+    /// The aliasing case the feature exists for: ONE asset used as a normal
+    /// map by one material and as albedo by another resolves DIFFERENTLY per
+    /// use (distinct artifacts at bake), instead of the whole asset going
+    /// normal because any use was a normal slot.
+    #[test]
+    fn mixed_uses_resolve_independently() {
+        let normal_use = resolve_texture_use(None, None, K::Normal, KTX2_GLOBAL);
+        let color_use = resolve_texture_use(None, None, K::Albedo, KTX2_GLOBAL);
+        assert_eq!(normal_use, ktx2(true, false));
+        assert_eq!(color_use, ktx2(false, true));
+        assert_ne!(normal_use, color_use);
+    }
+
+    /// Per-texture pref beats slot Auto; forced profiles keep per-use sRGB.
+    #[test]
+    fn per_texture_pref_beats_slot_auto() {
+        let pref = Some(TextureExport::Ktx2 {
+            profile: Ktx2Profile::Uastc,
+        });
+        assert_eq!(
+            resolve_texture_use(None, pref, K::Albedo, KTX2_GLOBAL),
+            ktx2(true, true),
+        );
+        let pref = Some(TextureExport::Ktx2 {
+            profile: Ktx2Profile::Etc1s,
+        });
+        assert_eq!(
+            resolve_texture_use(None, pref, K::Normal, KTX2_GLOBAL),
+            ktx2(false, false),
+        );
+        // Auto pref = same as no pref (slot decides).
+        let pref = Some(TextureExport::default());
+        assert_eq!(
+            resolve_texture_use(None, pref, K::Normal, KTX2_GLOBAL),
+            ktx2(true, false),
+        );
+    }
+
+    /// Use-site override beats everything, including a non-KTX2 per-texture pref.
+    #[test]
+    fn use_override_beats_all() {
+        assert_eq!(
+            resolve_texture_use(
+                Some(TextureUseProfile::Uastc),
+                Some(TextureExport::WebpLossless),
+                K::Albedo,
+                TextureCompression::Off,
+            ),
+            ktx2(true, true),
+        );
+        assert_eq!(
+            resolve_texture_use(
+                Some(TextureUseProfile::Etc1s),
+                Some(TextureExport::Ktx2 {
+                    profile: Ktx2Profile::Uastc
+                }),
+                K::Normal,
+                KTX2_GLOBAL,
+            ),
+            ktx2(false, false),
+        );
+    }
+
+    /// Non-KTX2 prefs and the Off global ride the asset-level path.
+    #[test]
+    fn asset_level_paths() {
+        assert_eq!(
+            resolve_texture_use(None, Some(TextureExport::Source), K::Albedo, KTX2_GLOBAL),
+            ResolvedTextureUse::AssetLevel(TextureExport::Source),
+        );
+        assert_eq!(
+            resolve_texture_use(None, None, K::Normal, TextureCompression::Off),
+            ResolvedTextureUse::AssetLevel(TextureExport::WebpLossless),
+        );
     }
 }

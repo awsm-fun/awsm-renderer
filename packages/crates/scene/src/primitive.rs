@@ -117,6 +117,26 @@ pub struct TextureRef {
     /// track. Composes over `transform.offset` as the base; `None` = no flow.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flow: Option<[f32; 2]>,
+    /// Per-USE bundle-export KTX2 codec override — the highest-precedence rung
+    /// of the bake's use-level resolution (use override > per-texture pref >
+    /// slot Auto > global). Authoring data: the bundle bake consumes it and
+    /// rewrites refs to per-encoding variant artifacts, so the player never
+    /// reads it at runtime. `None` = inherit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub export_profile: Option<TextureUseProfile>,
+}
+
+/// Forced KTX2 codec for ONE use-site of a texture ([`TextureRef::export_profile`]).
+/// Absence (`None` on the ref) means "resolve normally" — there is no `Auto`
+/// variant here on purpose.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub enum TextureUseProfile {
+    /// Force ETC1S (smallest) for this use.
+    Etc1s,
+    /// Force UASTC (highest quality) for this use.
+    Uastc,
 }
 
 impl TextureRef {
@@ -128,6 +148,7 @@ impl TextureRef {
             transform: None,
             sampler: None,
             flow: None,
+            export_profile: None,
         }
     }
 }
@@ -155,6 +176,8 @@ impl<'de> serde::Deserialize<'de> for TextureRef {
                 sampler: Option<TextureSampler>,
                 #[serde(default)]
                 flow: Option<[f32; 2]>,
+                #[serde(default)]
+                export_profile: Option<TextureUseProfile>,
             },
         }
         Ok(match Repr::deserialize(d)? {
@@ -165,12 +188,14 @@ impl<'de> serde::Deserialize<'de> for TextureRef {
                 transform,
                 sampler,
                 flow,
+                export_profile,
             } => TextureRef {
                 asset,
                 uv_index,
                 transform,
                 sampler,
                 flow,
+                export_profile,
             },
         })
     }

@@ -51,6 +51,25 @@ impl AssetId {
     pub fn is_nil(&self) -> bool {
         self.0.is_nil()
     }
+
+    /// Deterministically derive a DISTINCT id from this one and a tag —
+    /// stable across processes/exports (hash-based, not random), so repeated
+    /// bakes mint the same variant ids. Used by the bundle bake to mint
+    /// per-encoding texture variant artifacts (docs/plans/compression.md F2):
+    /// `id.derive_variant("ktx2-u1-s0")` names the UASTC/linear artifact of a
+    /// texture asset. The same (id, tag) pair always yields the same result;
+    /// different tags (or ids) yield different results.
+    pub fn derive_variant(self, tag: &str) -> Self {
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        ("asset-variant", self.0.as_u128(), tag).hash(&mut h);
+        let hi = h.finish();
+        // Keep hashing into the same hasher for the low word so the two
+        // halves stay decorrelated.
+        "asset-variant-lo".hash(&mut h);
+        let lo = h.finish();
+        Self(Uuid::from_u128(((hi as u128) << 64) | lo as u128))
+    }
 }
 
 impl Default for AssetId {
@@ -373,5 +392,21 @@ impl AssetTable {
 
     pub fn remove(&mut self, id: AssetId) {
         self.entries.remove(&id);
+    }
+}
+
+#[cfg(test)]
+mod derive_variant_tests {
+    use super::*;
+
+    #[test]
+    fn deterministic_and_distinct() {
+        let base = AssetId(Uuid::from_u128(0x1234_5678_9abc_def0_1122_3344_5566_7788));
+        let a = base.derive_variant("ktx2-u1-s0");
+        let b = base.derive_variant("ktx2-u1-s0");
+        assert_eq!(a, b, "same (id, tag) must derive the same variant id");
+        assert_ne!(a, base);
+        assert_ne!(a, base.derive_variant("ktx2-u0-s1"));
+        assert_ne!(a, AssetId(Uuid::from_u128(7)).derive_variant("ktx2-u1-s0"));
     }
 }

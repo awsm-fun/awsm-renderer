@@ -32,7 +32,7 @@ use awsm_renderer_editor_protocol::dynamic_material::MaterialInstance;
 use awsm_renderer_editor_protocol::{
     AssetId, AssetSource, CameraConfig, CameraProjection, CrossSectionDef, LightConfig,
     MaterialAlphaMode, MaterialDef, MaterialShading, NodeId, NodeKind, SweepAlongCurveDef,
-    SweepUvMode, TextureDef, TextureExport, TextureRef,
+    SweepUvMode, TextureColorKind, TextureDef, TextureExport, TextureRef,
 };
 use awsm_renderer_glb_export::{
     write_glb, AlphaMode, AnimInterp, AnimPath, ExportAnimChannel, ExportAnimation, ExportCamera,
@@ -248,132 +248,319 @@ pub async fn bake_player_bundle(
         files.push(BundleFile::new(path, contents.into_bytes()));
     }
 
-    // 3. Textures the materials reference → assets/<id>.png (built-in + custom-WGSL).
+    // 3. Textures the materials reference, resolved PER USE
+    //    (docs/plans/compression.md F2: use override > per-texture pref >
+    //    slot-based Auto > global). Distinct resolved KTX2 codecs of one asset
+    //    become distinct artifacts: the most-used encoding keeps the asset's
+    //    id (so unrewritten stragglers still load something sane), the rest
+    //    mint DETERMINISTIC variant ids (`AssetId::derive_variant`) whose
+    //    entries join the baked asset table and whose refs are rewritten —
+    //    the player just loads `assets/<variant>.ktx2` like any texture.
     let roots: Vec<Arc<Node>> = ctrl.scene.nodes.lock_ref().iter().cloned().collect();
-    let mut ids: Vec<AssetId> = Vec::new();
-    let mut seen: HashSet<AssetId> = HashSet::new();
-    let mut normal_assets: HashSet<AssetId> = HashSet::new();
-    for n in &roots {
-        collect_texture_assets(n, &mut ids, &mut seen);
-        collect_custom_texture_assets(ctrl, n, &mut ids, &mut seen);
-        collect_normal_texture_assets(n, &mut normal_assets);
-    }
-    for id in ids {
-        // Referenced by a material ⇒ MUST ship, losslessly, or the export
-        // fails. No quiet skip and no lossy fallback (see `texture_source_bytes`).
-        let (_name, bytes, mime) = texture_source_bytes(&ctrl.scene, id).ok_or_else(|| {
-            format!(
-                "bundle texture {id}: no original source bytes in the session cache — \
-                 re-import the texture (or reload the saved project) and re-export"
-            )
-        })?;
-        // Per-texture bundle-export preference (authored on the asset, persisted
-        // in the project; `None` ⇒ the default lossless WebP). This re-encodes
-        // the image under its REAL extension and records the resulting encoding
-        // on the runtime asset entry, so the player derives `assets/<id>.<ext>` +
-        // its decode path from data. Encode failure warns and ships the source
-        // bytes + their real encoding, so a bake never silently drops a texture.
-        let pref = project
-            .assets
-            .entries
-            .get(&id)
-            .and_then(|e| e.texture_export)
-            .unwrap_or(default_texture_export(&bundle_options));
-        let (encoding, bytes) = match pref {
-            TextureExport::Source => (texture_encoding_from_mime(mime), bytes),
-            TextureExport::WebpLossless => match encode_webp_lossless(&bytes, mime) {
-                Some(webp) => (awsm_renderer_scene::TextureEncoding::Webp, webp),
-                None => {
-                    tracing::warn!(
-                        "bundle texture {id}: lossless WebP encode failed — shipping source {}",
-                        mime.ext()
-                    );
-                    (texture_encoding_from_mime(mime), bytes)
-                }
-            },
-            TextureExport::WebpLossy { quality } => {
-                match encode_webp(&bytes, mime.as_str(), quality as f64).await {
-                    Some(webp) => (awsm_renderer_scene::TextureEncoding::Webp, webp),
-                    None => {
-                        tracing::warn!(
-                            "bundle texture {id}: lossy WebP encode failed — shipping source {}",
-                            mime.ext()
-                        );
-                        (texture_encoding_from_mime(mime), bytes)
-                    }
+    {
+        use awsm_renderer_editor_protocol::{resolve_texture_use, ResolvedTextureUse};
+
+        // Custom-material slot semantics: (material id, slot name) → color
+        // kind; plus which library materials are built-in (their baked refs
+        // live in the flattened `instance.inline`, custom refs in
+        // `instance.texture_overrides` — mirrors the old collectors).
+        let mut builtin_materials: HashSet<AssetId> = HashSet::new();
+        let mut custom_slot_kinds: HashMap<(AssetId, String), TextureColorKind> = HashMap::new();
+        for m in ctrl.custom_materials.lock_ref().iter() {
+            if m.builtin.get_cloned().is_some() {
+                builtin_materials.insert(m.id);
+            } else {
+                for slot in m.textures.lock_ref().iter() {
+                    custom_slot_kinds.insert((m.id, slot.name.clone()), slot.color_kind);
                 }
             }
-            TextureExport::Ktx2 { profile } => {
-                use awsm_renderer_editor_protocol::Ktx2Profile;
-                use awsm_renderer_glb_export::ImageMime;
-                // Imported KTX2 → passthrough verbatim, regardless of profile.
-                if matches!(mime, ImageMime::Ktx2) {
-                    (awsm_renderer_scene::TextureEncoding::Ktx2, bytes)
+        }
+
+        // One walk primitive over the BAKED scene's texture uses (the
+        // authoritative post-flatten refs — rewrites here land in scene.toml).
+        fn for_each_baked_texture_use(
+            nodes: &mut [awsm_renderer_editor_protocol::EditorNode],
+            builtin_materials: &HashSet<AssetId>,
+            custom_slot_kinds: &HashMap<(AssetId, String), TextureColorKind>,
+            f: &mut impl FnMut(TextureColorKind, &mut awsm_renderer_editor_protocol::TextureRef),
+        ) {
+            for node in nodes {
+                if let Some(variants) = node.kind.material_variants_mut() {
+                    for v in variants {
+                        if builtin_materials.contains(&v.instance.asset) {
+                            v.instance.inline.for_each_texture_use_mut(|k, t| f(k, t));
+                        } else {
+                            for (name, t) in v.instance.texture_overrides.iter_mut() {
+                                let kind = custom_slot_kinds
+                                    .get(&(v.instance.asset, name.clone()))
+                                    .copied()
+                                    .unwrap_or_default();
+                                f(kind, t);
+                            }
+                        }
+                    }
+                }
+                for_each_baked_texture_use(
+                    &mut node.children,
+                    builtin_materials,
+                    custom_slot_kinds,
+                    f,
+                );
+            }
+        }
+
+        // Pass A — resolve every use, group per asset. `Ktx2Key` = the codec
+        // params a KTX2 artifact is encoded with; `asset_level` marks assets
+        // with ≥1 non-KTX2 use (those keep the original id for the
+        // asset-level artifact, so every KTX2 group mints a variant).
+        type Ktx2Key = (bool, bool); // (uastc, srgb)
+        let mut ktx2_uses: HashMap<AssetId, HashMap<Ktx2Key, usize>> = HashMap::new();
+        let mut asset_level: HashMap<AssetId, TextureExport> = HashMap::new();
+        let per_texture_pref = |asset: AssetId| {
+            project
+                .assets
+                .entries
+                .get(&asset)
+                .and_then(|e| e.texture_export)
+        };
+        let global = bundle_options.texture_compression;
+        for_each_baked_texture_use(
+            &mut scene.nodes,
+            &builtin_materials,
+            &custom_slot_kinds,
+            &mut |kind, tref| match resolve_texture_use(
+                tref.export_profile,
+                per_texture_pref(tref.asset),
+                kind,
+                global,
+            ) {
+                ResolvedTextureUse::Ktx2 { uastc, srgb } => {
+                    *ktx2_uses
+                        .entry(tref.asset)
+                        .or_default()
+                        .entry((uastc, srgb))
+                        .or_default() += 1;
+                }
+                ResolvedTextureUse::AssetLevel(pref) => {
+                    asset_level.insert(tref.asset, pref);
+                }
+            },
+        );
+
+        // Artifact assignment: (asset, key) → artifact id. The primary KTX2
+        // group (most uses; ties by key) keeps the original id unless an
+        // asset-level artifact already claims it.
+        let mut artifacts: HashMap<(AssetId, Ktx2Key), AssetId> = HashMap::new();
+        for (&asset, keys) in &ktx2_uses {
+            let mut ordered: Vec<(Ktx2Key, usize)> = keys.iter().map(|(k, n)| (*k, *n)).collect();
+            ordered.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+            let has_asset_level = asset_level.contains_key(&asset);
+            for (index, (key, _count)) in ordered.into_iter().enumerate() {
+                let artifact = if index == 0 && !has_asset_level {
+                    asset
                 } else {
-                    match decode_rgba(&bytes, mime) {
-                        Some((rgba, w, h)) if w % 4 == 0 && h % 4 == 0 => {
-                            let uastc = match profile {
-                                Ktx2Profile::Auto => normal_assets.contains(&id),
-                                Ktx2Profile::Etc1s => false,
-                                Ktx2Profile::Uastc => true,
-                            };
-                            let params = awsm_renderer_codec_basis::EncodeParams {
-                                uastc,
-                                // sRGB/perceptual for color; linear for data
-                                // maps (the player's slot picks the format).
-                                srgb: !normal_assets.contains(&id),
-                                mipmaps: true,
-                                quality: 190,
-                                zstd: true,
-                            };
-                            let client = BASIS_ENCODER.with(|c| c.clone());
-                            match client.encode(&rgba, w, h, &params).await {
-                                Ok(ktx2) => {
-                                    tracing::info!(
-                                        "bundle texture {id}: {w}x{h} → KTX2 {} ({} bytes)",
-                                        if uastc { "UASTC" } else { "ETC1S" },
-                                        ktx2.len()
-                                    );
-                                    (awsm_renderer_scene::TextureEncoding::Ktx2, ktx2)
-                                }
-                                Err(e) => {
-                                    tracing::warn!(
-                                        "bundle texture {id}: KTX2 encode failed ({e}) — falling back to lossless WebP"
-                                    );
-                                    match encode_webp_lossless(&bytes, mime) {
-                                        Some(webp) => {
-                                            (awsm_renderer_scene::TextureEncoding::Webp, webp)
-                                        }
-                                        None => (texture_encoding_from_mime(mime), bytes),
-                                    }
-                                }
-                            }
-                        }
-                        Some((_, w, h)) => {
-                            // WebGPU requires block-compressed base dimensions
-                            // to be multiples of 4 — fall back per plan.
-                            tracing::info!(
-                                "bundle texture {id}: {w}x{h} not a multiple of 4 — lossless WebP instead of KTX2"
-                            );
-                            match encode_webp_lossless(&bytes, mime) {
-                                Some(webp) => (awsm_renderer_scene::TextureEncoding::Webp, webp),
-                                None => (texture_encoding_from_mime(mime), bytes),
-                            }
-                        }
+                    asset.derive_variant(&format!("ktx2-u{}-s{}", key.0 as u8, key.1 as u8))
+                };
+                artifacts.insert((asset, key), artifact);
+            }
+        }
+
+        // Pass B — rewrite refs to their artifact ids (and strip the
+        // authoring-only per-use override from the baked doc). Resolution is
+        // pure, so pass A and this pass agree per use.
+        for_each_baked_texture_use(
+            &mut scene.nodes,
+            &builtin_materials,
+            &custom_slot_kinds,
+            &mut |kind, tref| {
+                if let ResolvedTextureUse::Ktx2 { uastc, srgb } = resolve_texture_use(
+                    tref.export_profile,
+                    per_texture_pref(tref.asset),
+                    kind,
+                    global,
+                ) {
+                    tref.asset = artifacts[&(tref.asset, (uastc, srgb))];
+                }
+                tref.export_profile = None;
+            },
+        );
+
+        // Pass C — encode one artifact per (asset, encoding), deterministic
+        // order. Source bytes are always fetched by the ORIGINAL asset id
+        // (variant ids exist only in the baked output).
+        enum ArtifactEncode {
+            Ktx2 { uastc: bool, srgb: bool },
+            Asset(TextureExport),
+        }
+        let mut bake_list: Vec<(AssetId, AssetId, ArtifactEncode)> = Vec::new();
+        for ((asset, key), artifact) in &artifacts {
+            bake_list.push((
+                *artifact,
+                *asset,
+                ArtifactEncode::Ktx2 {
+                    uastc: key.0,
+                    srgb: key.1,
+                },
+            ));
+        }
+        for (asset, pref) in &asset_level {
+            bake_list.push((*asset, *asset, ArtifactEncode::Asset(*pref)));
+        }
+        bake_list.sort_by_key(|(artifact, ..)| artifact.0);
+
+        for (artifact_id, source_id, encode) in bake_list {
+            // Referenced by a material ⇒ MUST ship, losslessly, or the export
+            // fails. No quiet skip, no lossy fallback (see `texture_source_bytes`).
+            let (_name, bytes, mime) =
+                texture_source_bytes(&ctrl.scene, source_id).ok_or_else(|| {
+                    format!(
+                        "bundle texture {source_id}: no original source bytes in the session \
+                         cache — re-import the texture (or reload the saved project) and \
+                         re-export"
+                    )
+                })?;
+            // Encode under the artifact's resolved parameters. Failures warn
+            // and fall back (KTX2 → lossless WebP → source bytes), recording
+            // whatever actually shipped — a bake never silently drops a texture.
+            let (encoding, bytes) = match encode {
+                ArtifactEncode::Asset(TextureExport::Source) => {
+                    (texture_encoding_from_mime(mime), bytes)
+                }
+                ArtifactEncode::Asset(TextureExport::WebpLossless) => {
+                    match encode_webp_lossless(&bytes, mime) {
+                        Some(webp) => (awsm_renderer_scene::TextureEncoding::Webp, webp),
                         None => {
                             tracing::warn!(
-                                "bundle texture {id}: decode failed — shipping source {}",
+                                "bundle texture {artifact_id}: lossless WebP encode failed — \
+                                 shipping source {}",
                                 mime.ext()
                             );
                             (texture_encoding_from_mime(mime), bytes)
                         }
                     }
                 }
+                ArtifactEncode::Asset(TextureExport::WebpLossy { quality }) => {
+                    match encode_webp(&bytes, mime.as_str(), quality as f64).await {
+                        Some(webp) => (awsm_renderer_scene::TextureEncoding::Webp, webp),
+                        None => {
+                            tracing::warn!(
+                                "bundle texture {artifact_id}: lossy WebP encode failed — \
+                                 shipping source {}",
+                                mime.ext()
+                            );
+                            (texture_encoding_from_mime(mime), bytes)
+                        }
+                    }
+                }
+                // Asset-level KTX2 can't occur (a KTX2 pref resolves per use),
+                // but route it through the per-use encoder as slot-neutral
+                // color if it ever does.
+                ArtifactEncode::Asset(TextureExport::Ktx2 { .. }) | ArtifactEncode::Ktx2 { .. } => {
+                    let (uastc, srgb) = match encode {
+                        ArtifactEncode::Ktx2 { uastc, srgb } => (uastc, srgb),
+                        _ => (false, true),
+                    };
+                    use awsm_renderer_glb_export::ImageMime;
+                    // Imported KTX2 → passthrough verbatim, regardless of profile.
+                    if matches!(mime, ImageMime::Ktx2) {
+                        (awsm_renderer_scene::TextureEncoding::Ktx2, bytes)
+                    } else {
+                        match decode_rgba(&bytes, mime) {
+                            Some((rgba, w, h)) if w % 4 == 0 && h % 4 == 0 => {
+                                let params = awsm_renderer_codec_basis::EncodeParams {
+                                    uastc,
+                                    // Per-USE colorspace: sRGB for color slots,
+                                    // linear for data maps — the slot kind
+                                    // decided this in resolution.
+                                    srgb,
+                                    mipmaps: true,
+                                    quality: 190,
+                                    zstd: true,
+                                };
+                                let client = BASIS_ENCODER.with(|c| c.clone());
+                                match client.encode(&rgba, w, h, &params).await {
+                                    Ok(ktx2) => {
+                                        tracing::info!(
+                                            "bundle texture {artifact_id}: {w}x{h} → KTX2 {} \
+                                             ({} bytes){}",
+                                            if uastc { "UASTC" } else { "ETC1S" },
+                                            ktx2.len(),
+                                            if artifact_id != source_id {
+                                                format!(" [variant of {source_id}]")
+                                            } else {
+                                                String::new()
+                                            }
+                                        );
+                                        (awsm_renderer_scene::TextureEncoding::Ktx2, ktx2)
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            "bundle texture {artifact_id}: KTX2 encode failed \
+                                             ({e}) — falling back to lossless WebP"
+                                        );
+                                        match encode_webp_lossless(&bytes, mime) {
+                                            Some(webp) => {
+                                                (awsm_renderer_scene::TextureEncoding::Webp, webp)
+                                            }
+                                            None => (texture_encoding_from_mime(mime), bytes),
+                                        }
+                                    }
+                                }
+                            }
+                            Some((_, w, h)) => {
+                                // WebGPU requires block-compressed base dimensions
+                                // to be multiples of 4 — fall back per plan.
+                                tracing::info!(
+                                    "bundle texture {artifact_id}: {w}x{h} not a multiple of 4 \
+                                     — lossless WebP instead of KTX2"
+                                );
+                                match encode_webp_lossless(&bytes, mime) {
+                                    Some(webp) => {
+                                        (awsm_renderer_scene::TextureEncoding::Webp, webp)
+                                    }
+                                    None => (texture_encoding_from_mime(mime), bytes),
+                                }
+                            }
+                            None => {
+                                tracing::warn!(
+                                    "bundle texture {artifact_id}: decode failed — shipping \
+                                     source {}",
+                                    mime.ext()
+                                );
+                                (texture_encoding_from_mime(mime), bytes)
+                            }
+                        }
+                    }
+                }
+            };
+            files.push(BundleFile::asset(
+                format!("{artifact_id}.{}", encoding.ext()),
+                bytes,
+            ));
+            if artifact_id == source_id {
+                if let Some(entry) = scene.assets.entries.get_mut(&artifact_id) {
+                    entry.texture_encoding = Some(encoding);
+                }
+            } else {
+                // Mint the variant's baked asset-table entry: same source
+                // (provenance/labels), no content hash (the bytes differ from
+                // the original's), the encoding that actually shipped.
+                let mut entry = scene
+                    .assets
+                    .entries
+                    .get(&source_id)
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        awsm_renderer_scene::AssetEntry::new(
+                            awsm_renderer_scene::AssetSource::Filename(format!("{source_id}")),
+                        )
+                    });
+                entry.content_hash = String::new();
+                entry.gltf_material_asset_ids = Vec::new();
+                entry.gltf_image_asset_ids = Vec::new();
+                entry.texture_encoding = Some(encoding);
+                scene.assets.entries.insert(artifact_id, entry);
             }
-        };
-        files.push(BundleFile::asset(format!("{id}.{}", encoding.ext()), bytes));
-        if let Some(entry) = scene.assets.entries.get_mut(&id) {
-            entry.texture_encoding = Some(encoding);
         }
     }
 
@@ -537,17 +724,6 @@ fn compress_options(
         },
     }
 }
-
-/// The global texture default under the project's [`BundleOptions`]:
-/// `Ktx2` ⇒ KTX2 with the Auto profile; `Off` ⇒ lossless WebP (pixel-exact,
-/// never raw source dumps). Per-texture prefs override this either way.
-fn default_texture_export(options: &awsm_renderer_editor_protocol::BundleOptions) -> TextureExport {
-    match options.texture_compression {
-        awsm_renderer_editor_protocol::TextureCompression::Ktx2 => TextureExport::default(),
-        awsm_renderer_editor_protocol::TextureCompression::Off => TextureExport::WebpLossless,
-    }
-}
-
 /// Rewrite `NodeKind::Mesh` geometry refs in the baked node tree per the
 /// content-dedup remap (duplicate asset id → the canonical id whose glb
 /// actually ships). Only static `Mesh` nodes carry a [`MeshRef`]; skinned /
@@ -696,44 +872,6 @@ fn emit_buffer_overrides(
     let mut seen = HashSet::new();
     walk(nodes, files, &mut seen);
 }
-
-/// Walk a subtree collecting the (unique, ordered) texture asset ids referenced
-/// by **custom-WGSL** material instances' `texture_overrides`. Built-in/PBR
-/// material textures are skipped — those are embedded in `scene_glb` already.
-//
-// TODO: this only gathers `texture_overrides`; a custom material whose declared
-// texture slot uses its default (un-overridden) texture is not covered here.
-// Resolving declared-slot defaults is a follow-on.
-fn collect_custom_texture_assets(
-    ctrl: &super::EditorController,
-    node: &Node,
-    ids: &mut Vec<AssetId>,
-    seen: &mut HashSet<AssetId>,
-) {
-    let kind = node.kind.get_cloned();
-    // Every palette entry's custom-WGSL overrides ship, not just the selected
-    // one — the player builds all variants.
-    for v in kind.material_variants().into_iter().flatten() {
-        let inst = &v.instance;
-        // A custom-WGSL material is one whose asset resolves to a custom-material
-        // entry with NO built-in variant (the inverse of `collect_texture_assets`).
-        let is_builtin =
-            crate::controller::custom_material::find_material(&ctrl.custom_materials, inst.asset)
-                .map(|m| m.builtin.get_cloned().is_some())
-                .unwrap_or(false);
-        if !is_builtin {
-            for t in inst.texture_overrides.values() {
-                if seen.insert(t.asset) {
-                    ids.push(t.asset);
-                }
-            }
-        }
-    }
-    for c in node.children.lock_ref().iter() {
-        collect_custom_texture_assets(ctrl, c, ids, seen);
-    }
-}
-
 /// `node.id → depth-first index`, matching `write_glb`'s node flattening (so
 /// animation channels reference the right glTF node).
 fn build_index_map(scene: &Scene) -> HashMap<NodeId, usize> {
@@ -1127,38 +1265,6 @@ fn texture_encoding_from_mime(
         ImageMime::Ktx2 => TextureEncoding::Ktx2,
     }
 }
-
-/// Which texture assets are bound to NORMAL-map slots (base or clearcoat) on
-/// any referencing material — the `Ktx2Profile::Auto` bake encodes those as
-/// UASTC (data maps corrupt visibly under ETC1S) and everything else as ETC1S.
-fn collect_normal_texture_assets(node: &Node, out: &mut HashSet<AssetId>) {
-    let kind = node.kind.get_cloned();
-    let instances: Vec<&awsm_renderer_editor_protocol::dynamic_material::MaterialInstance> = kind
-        .material_variants()
-        .map(|vs| vs.iter().map(|v| &v.instance).collect())
-        .unwrap_or_default();
-    for inst in instances {
-        let merged = crate::engine::bridge::node_sync::builtin_merged(inst)
-            .unwrap_or_else(|| inst.inline.clone());
-        for t in [
-            merged.normal_texture.as_ref(),
-            merged
-                .extensions
-                .clearcoat
-                .as_ref()
-                .and_then(|e| e.normal_tex.as_ref()),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            out.insert(t.asset);
-        }
-    }
-    for c in node.children.lock_ref().iter() {
-        collect_normal_texture_assets(c, out);
-    }
-}
-
 thread_local! {
     /// Basis ENCODER worker client — editor-only (the `encoder` cargo feature
     /// + the encoder module URL exist only here). Lazy: spawned on the first

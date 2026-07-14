@@ -1000,13 +1000,7 @@ impl EditorController {
                 // §14: bind/clear the billboard sprite texture. Some(Some) binds,
                 // Some(None) clears, None leaves it untouched.
                 if let Some(tex) = texture {
-                    def.texture = tex.map(|asset| awsm_renderer_editor_protocol::TextureRef {
-                        asset,
-                        uv_index: 0,
-                        transform: None,
-                        sampler: None,
-                        flow: None,
-                    });
+                    def.texture = tex.map(awsm_renderer_editor_protocol::TextureRef::new);
                 }
                 // Delegate to SetKind for identical re-materialize + inverse.
                 Box::pin(self.apply_inner(EditorCommand::SetKind {
@@ -8108,13 +8102,7 @@ fn patch_builtin_texture(
         return false;
     };
     let inline = &mut inst.inline;
-    let tref = texture.map(|asset| awsm_renderer_editor_protocol::TextureRef {
-        asset,
-        uv_index: 0,
-        transform: None,
-        sampler: None,
-        flow: None,
-    });
+    let tref = texture.map(awsm_renderer_editor_protocol::TextureRef::new);
     match slot {
         S::BaseColor => inline.base_color_texture = tref,
         S::MetallicRoughness => inline.metallic_roughness_texture = tref,
@@ -8684,6 +8672,7 @@ fn ensure_import_texture(
         transform: binding.transform,
         sampler: binding.sampler,
         flow: None,
+        export_profile: None,
     };
     if let Some(id) = tex_for_key.get(&key) {
         return Some(mk(*id));
