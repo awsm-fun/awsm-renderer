@@ -674,7 +674,13 @@ Progress:
 - [x] MCP `set_bundle_options` + per-call overrides on `export_player_bundle`
       (`Request::ExportPlayerBundle{overrides}` merges the patch onto persisted
       options without modifying them); parity allowlist + docs/mcp-parity.md row.
-- [ ] Pre-export modal.
+- [x] Pre-export modal ("Export player bundle…" menu → options modal → dir
+      picker; Export click = the picker's user gesture; Smart threshold shown
+      only under Smart; persists via SetBundleOptions AND hands the options
+      straight to the bake so it can't race the dispatch). DOM-level check
+      rides the F4 mcp-dev run.
+
+F1 complete pending F4 on-device verification.
 
 `BundleOptions` in editor-protocol, **persisted in project.toml** (serde
 defaults; no back-compat constraints — David), edited via a **pre-export

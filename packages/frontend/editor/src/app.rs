@@ -461,13 +461,135 @@ fn export_scene_glb() {
     });
 }
 
+/// Pre-export options modal (docs/plans/compression.md F1): shows the
+/// project-persisted [`BundleOptions`], persists edits via `SetBundleOptions`
+/// (undoable, remembered in the project), then hands the chosen options
+/// straight to the bake — so the export can't race the dispatch — and
+/// proceeds to the directory picker. The picker consumes the Export-button
+/// click as its user gesture (see `export_player_bundle`).
+fn open_export_player_bundle() {
+    use awsm_renderer_editor_protocol::{
+        BundleOptions, BundleOptionsPatch, MeshCompression, MeshQuantization, TextureCompression,
+    };
+    Modal::open(|| {
+        let current = controller().scene.bundle_options.get();
+        let mesh_compression = Mutable::new(
+            match current.mesh_compression {
+                MeshCompression::Off => "off",
+                MeshCompression::Meshopt => "meshopt",
+            }
+            .to_string(),
+        );
+        let quantization = Mutable::new(
+            match current.mesh_quantization {
+                MeshQuantization::Off => "off",
+                MeshQuantization::Always => "always",
+                MeshQuantization::Smart => "smart",
+            }
+            .to_string(),
+        );
+        let threshold = Mutable::new(current.smart_threshold_mm as f64);
+        let textures = Mutable::new(
+            match current.texture_compression {
+                TextureCompression::Off => "off",
+                TextureCompression::Ktx2 => "ktx2",
+            }
+            .to_string(),
+        );
+
+        let options_row = |label: &str, control: Dom| {
+            html!("div", {
+                .style("display", "flex")
+                .style("align-items", "center")
+                .style("justify-content", "space-between")
+                .style("gap", "12px")
+                .child(html!("span", {
+                    .style("font-size", "12.5px")
+                    .style("color", "var(--text-1)")
+                    .text(label)
+                }))
+                .child(html!("div", { .style("width", "200px").child(control) }))
+            })
+        };
+
+        ModalCard::new("Export player bundle")
+            .width(460.0)
+            .child(html!("div", {
+                .style("display", "flex").style("flex-direction", "column").style("gap", "10px")
+                .child(html!("span", {
+                    .style("font-size", "12.5px").style("color", "var(--text-2)").style("line-height", "1.5")
+                    .text("Bundle compression options — remembered in the project. Per-texture \
+                           encodings set in the inspector override the texture default.")
+                }))
+                .child(options_row("Mesh compression", select(mesh_compression.clone(), vec![
+                    ("meshopt".to_string(), "meshopt streams".to_string()),
+                    ("off".to_string(), "Off".to_string()),
+                ])))
+                .child(options_row("Mesh quantization", select(quantization.clone(), vec![
+                    ("smart".to_string(), "Smart (size-guarded)".to_string()),
+                    ("always".to_string(), "Always".to_string()),
+                    ("off".to_string(), "Off".to_string()),
+                ])))
+                // Advanced: only relevant under Smart — quantize only while the
+                // grid step (half-extent / 32767) stays at or under this.
+                .child_signal(quantization.signal_cloned().map(clone!(threshold => move |q| {
+                    (q == "smart").then(|| options_row("Max quantization step", NumField::new(threshold.get())
+                        .min(0.0)
+                        .step(0.05)
+                        .suffix("mm")
+                        .on_change(clone!(threshold => move |v| threshold.set(v)))
+                        .render()))
+                })))
+                .child(options_row("Textures", select(textures.clone(), vec![
+                    ("ktx2".to_string(), "KTX2 (GPU compressed)".to_string()),
+                    ("off".to_string(), "Lossless WebP".to_string()),
+                ])))
+            }))
+            .footer(html!("div", {
+                .style("display", "flex").style("gap", "8px")
+                .child(Btn::new().label("Cancel").variant(BtnVariant::Ghost).on_click(Modal::close).render())
+                .child(Btn::new().label("Export\u{2026}").icon("mesh").variant(BtnVariant::Primary)
+                    .on_click(clone!(mesh_compression, quantization, threshold, textures => move || {
+                        let options = BundleOptions {
+                            mesh_compression: match mesh_compression.get_cloned().as_str() {
+                                "off" => MeshCompression::Off,
+                                _ => MeshCompression::Meshopt,
+                            },
+                            mesh_quantization: match quantization.get_cloned().as_str() {
+                                "off" => MeshQuantization::Off,
+                                "always" => MeshQuantization::Always,
+                                _ => MeshQuantization::Smart,
+                            },
+                            smart_threshold_mm: (threshold.get() as f32).max(0.0),
+                            texture_compression: match textures.get_cloned().as_str() {
+                                "off" => TextureCompression::Off,
+                                _ => TextureCompression::Ktx2,
+                            },
+                        };
+                        // Persist for next time (no-ops when unchanged); the
+                        // bake below carries `options` directly.
+                        spawn_local(async move {
+                            let _ = controller()
+                                .dispatch(EditorCommand::SetBundleOptions {
+                                    patch: BundleOptionsPatch::replace(&options),
+                                })
+                                .await;
+                        });
+                        Modal::close();
+                        export_player_bundle(options);
+                    })).render())
+            }))
+            .render()
+    });
+}
+
 /// Assemble a player bundle (`scene.toml` + an `assets/` directory: geometry-only
 /// glbs, custom-material wgsl folders, referenced textures, LOD/cluster files) and
 /// write every file into a picked directory via the File System Access handle.
 /// Reuses `bake_player_bundle`'s `assemble_bundle` layout so the editor and the
 /// runtime/player loader never drift.
-fn export_player_bundle() {
-    spawn_local(async {
+fn export_player_bundle(options: awsm_renderer_editor_protocol::BundleOptions) {
+    spawn_local(async move {
         // Pick FIRST: the directory picker needs a live user gesture, so nothing
         // async may precede it — baking before the picker consumed the gesture and
         // the picker then threw "must be in response to a user gesture". Once a
@@ -483,7 +605,7 @@ fn export_player_bundle() {
                 ));
                 let bundle = match crate::controller::export::bake_player_bundle(
                     &controller(),
-                    None,
+                    Some(options),
                 )
                 .await
                 {
@@ -1722,7 +1844,7 @@ fn overflow_button(ctrl: &EditorController) -> Dom {
         .child(DropButton::new().icon("more").variant(BtnVariant::Quiet).chevron(false)
             .items(|close| vec![
                 MenuItem::new("Export scene as GLB\u{2026}").icon("mesh").on_click(clone!(close => move || { export_scene_glb(); (close.borrow_mut())(); })).render(),
-                MenuItem::new("Export player bundle\u{2026}").icon("mesh").on_click(clone!(close => move || { export_player_bundle(); (close.borrow_mut())(); })).render(),
+                MenuItem::new("Export player bundle\u{2026}").icon("mesh").on_click(clone!(close => move || { open_export_player_bundle(); (close.borrow_mut())(); })).render(),
                 MenuItem::new("Settings\u{2026}").icon("settings").on_click(clone!(close => move || { controller().settings_open.set_neq(true); (close.borrow_mut())(); })).render(),
                 MenuItem::new("About AwsmRenderer\u{2026}").icon("help").on_click(clone!(close => move || { open_about(); (close.borrow_mut())(); })).render(),
                 MenuItem::new("Purge unused assets").icon("trash").on_click(clone!(close => move || { purge_unused_assets(); (close.borrow_mut())(); })).render(),
