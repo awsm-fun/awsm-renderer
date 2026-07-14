@@ -2912,6 +2912,30 @@ impl EditorController {
                     "target id not found — command not applied (check ids against get_snapshot)",
                 )),
             },
+            EditorCommand::SetTextureUseProfile {
+                node,
+                slot,
+                profile,
+            } => match mutate::find_by_id(&self.scene, node) {
+                Some(n) => {
+                    let prev = n.kind.get_cloned();
+                    let mut next = prev.clone();
+                    // Reject loudly: no silent no-op when nothing is bound at
+                    // the named slot. A bake-only knob — but `kind.set` keeps
+                    // the stored kind + undo path consistent with its peers.
+                    patch_texture_use_profile(&mut next, &slot, profile)
+                        .map_err(crate::error::EditorError::msg)?;
+                    n.kind.set(next);
+                    self.scene.bump_revision();
+                    Ok(Some(EditorCommand::SetKind {
+                        id: node,
+                        kind: Box::new(prev),
+                    }))
+                }
+                None => Err(crate::error::EditorError::msg(
+                    "target id not found — command not applied (check ids against get_snapshot)",
+                )),
+            },
             EditorCommand::SetNodeTextureTransform {
                 node,
                 slot,
@@ -8198,6 +8222,40 @@ fn patch_builtin_texture_transform(
         tref.uv_index = uv;
     }
     Ok(())
+}
+
+/// Set (or clear) the per-USE bundle-export profile on a node's texture slot
+/// ref: built-in slot names first, else a custom-material texture override
+/// slot (docs/plans/compression.md F2). `Err` when no material is assigned or
+/// nothing is bound at the slot — never a silent no-op.
+fn patch_texture_use_profile(
+    kind: &mut NodeKind,
+    slot: &str,
+    profile: Option<awsm_renderer_editor_protocol::TextureUseProfile>,
+) -> Result<(), String> {
+    let Some(inst) = node_material_mut(kind) else {
+        return Err(
+            "node has no material assigned — assign one and bind a texture first".to_string(),
+        );
+    };
+    let tref = match slot {
+        "base_color" => inst.inline.base_color_texture.as_mut(),
+        "metallic_roughness" => inst.inline.metallic_roughness_texture.as_mut(),
+        "normal" => inst.inline.normal_texture.as_mut(),
+        "occlusion" => inst.inline.occlusion_texture.as_mut(),
+        "emissive" => inst.inline.emissive_texture.as_mut(),
+        custom => inst.texture_overrides.get_mut(custom),
+    };
+    match tref {
+        Some(t) => {
+            t.export_profile = profile;
+            Ok(())
+        }
+        None => Err(format!(
+            "texture slot `{slot}` has no texture bound — bind one first \
+             (set_node_texture / set_material_texture)"
+        )),
+    }
 }
 
 /// Bind (or clear) a texture override on a node's assigned custom material.

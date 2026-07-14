@@ -446,6 +446,14 @@ mod wire_roundtrip_tests {
                 },
             ),
             (
+                "set_texture_use_profile",
+                EditorCommand::SetTextureUseProfile {
+                    node: NodeId::new(),
+                    slot: "normal".to_string(),
+                    profile: Some(awsm_renderer_scene::TextureUseProfile::Uastc),
+                },
+            ),
+            (
                 "set_bundle_options",
                 EditorCommand::SetBundleOptions {
                     patch: crate::project::BundleOptionsPatch {

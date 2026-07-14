@@ -727,10 +727,16 @@ Progress:
       per-use override stripped from the baked doc. Encode sRGB flag is now
       slot-correct per use (MR/occlusion encode linear — was `!normal` per
       asset).
-- [ ] Inspector: slot-site override UI + per-texture profile override
-      (Auto/ETC1S/UASTC) in the asset inspector.
-- [ ] MCP: per-use override setter (+ per-texture profile already exposed via
-      set_texture_export modes).
+- [x] Inspector: "· Bundle codec" (Inherit/ETC1S/UASTC) row on every bound
+      texture slot — built-in core + extension slots (rides `edit_slot`) AND
+      custom-material texture overrides; asset inspector's KTX2 mode gains a
+      Profile select (Auto/ETC1S/UASTC — was hardcoded Auto).
+- [x] MCP: `set_texture_use_profile` tool + `EditorCommand::SetTextureUseProfile`
+      (builtin slot names or custom slot names; extension slots via patch_kind
+      on the ref's `export_profile`; loud reject when unbound; undoable).
+      Parity allowlist + docs/mcp-parity.md row.
+
+F2 complete pending F4 on-device verification.
 
 Noted while implementing (pre-existing, NOT touched): sprite/decal
 `Option<TextureRef>` fields are never collected by the bundle bake — their

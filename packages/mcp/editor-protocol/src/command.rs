@@ -1061,6 +1061,22 @@ pub enum EditorCommand {
         texture: Option<AssetId>,
     },
 
+    /// Set (or clear) the per-USE bundle-export KTX2 profile override on a
+    /// mesh node's texture slot ref — the highest-precedence rung of the
+    /// bake's use-level texture resolution (docs/plans/compression.md F2:
+    /// use override > per-texture pref > slot-based Auto > global). `slot` is
+    /// a built-in slot name (`base_color` | `metallic_roughness` | `normal` |
+    /// `occlusion` | `emissive`) or, when none matches, a custom-material
+    /// texture slot name. The slot must already have a texture bound —
+    /// rejected loudly otherwise. `profile: None` clears back to inherited
+    /// resolution. An authoring/bake knob only (the live render is
+    /// unaffected). Inverse: restore the node's prior kind.
+    SetTextureUseProfile {
+        node: NodeId,
+        slot: String,
+        profile: Option<awsm_renderer_scene::TextureUseProfile>,
+    },
+
     /// Patch the UV transform / flow / sampler-wrap of a mesh node's
     /// **built-in/inline** material texture slot (§1) — the typed companion to
     /// `SetBuiltinTexture`. **Patch semantics**: only the provided fields change.
@@ -1629,6 +1645,7 @@ impl EditorCommand {
             EditorCommand::SetVertexOverrides { .. } => "Set vertex overrides",
             EditorCommand::BakeAll {} => "Bake all meshes",
             EditorCommand::SetBuiltinTexture { .. } => "Bind texture",
+            EditorCommand::SetTextureUseProfile { .. } => "Set texture use profile",
             EditorCommand::SetNodeTextureTransform { .. } => "Set texture transform",
             EditorCommand::SetCustomMaterialAlphaMode { .. } => "Set alpha mode",
             EditorCommand::SetCustomMaterialDoubleSided { .. } => "Set double-sided",

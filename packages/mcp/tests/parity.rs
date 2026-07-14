@@ -197,6 +197,7 @@ const EXPECTED_COMMANDS: &[&str] = &[
     "set_solo_root",
     "set_strip_repeat",
     "set_texture_export",
+    "set_texture_use_profile",
     "set_track_keys",
     "set_track_mute",
     "set_track_sampler",

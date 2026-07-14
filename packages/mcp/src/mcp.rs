@@ -219,6 +219,19 @@ pub struct ExportBundleParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct SetTextureUseProfileParams {
+    /// Mesh node UUID whose material's texture slot to override.
+    pub node: String,
+    /// Slot: a built-in name (base_color | metallic_roughness | normal |
+    /// occlusion | emissive) or, when none matches, a custom-material texture
+    /// slot name.
+    pub slot: String,
+    /// etc1s | uastc | inherit (clears the per-use override back to normal
+    /// resolution: per-texture pref > slot Auto > global).
+    pub profile: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct SetBundleOptionsParams {
     /// Bundle mesh stream encoding (EXT_meshopt_compression): off | meshopt.
     /// Omitted fields keep their current value.
@@ -3789,6 +3802,33 @@ impl EditorMcp {
         }
         self.dispatch(EditorCommand::SetBundleOptions { patch })
             .await
+    }
+
+    #[tool(
+        description = "Set (or clear) the PER-USE bundle-export KTX2 profile override on ONE texture slot of a mesh node's material — the highest-precedence rung of the bake's use-level texture resolution (use override > per-texture pref via set_texture_export > slot-based Auto > global bundle option). Use when one texture ASSET serves different roles across materials (e.g. a normal map somewhere, plain color elsewhere) and one use needs a forced codec: the bake mints a separate KTX2 variant artifact per distinct resolved encoding. slot: base_color | metallic_roughness | normal | occlusion | emissive, or (when none matches) a custom-material texture slot name; KHR-extension slots aren't addressable here — patch their ref's `export_profile` via patch_kind instead. profile: etc1s | uastc | inherit (clears the override). The slot must already have a texture bound (set_node_texture / set_material_texture) — rejected loudly otherwise. Authoring/bake knob only (live render unaffected); takes effect on the next export_player_bundle. Undoable."
+    )]
+    async fn set_texture_use_profile(
+        &self,
+        Parameters(p): Parameters<SetTextureUseProfileParams>,
+    ) -> Result<CallToolResult, McpError> {
+        use awsm_renderer_editor_protocol::TextureUseProfile;
+        let profile = match p.profile.as_str() {
+            "etc1s" => Some(TextureUseProfile::Etc1s),
+            "uastc" => Some(TextureUseProfile::Uastc),
+            "inherit" | "default" => None,
+            other => {
+                return Err(McpError::invalid_params(
+                    format!("unknown profile `{other}` — expected etc1s | uastc | inherit"),
+                    None,
+                ))
+            }
+        };
+        self.dispatch(EditorCommand::SetTextureUseProfile {
+            node: parse_node(&p.node)?,
+            slot: p.slot,
+            profile,
+        })
+        .await
     }
 
     #[tool(
