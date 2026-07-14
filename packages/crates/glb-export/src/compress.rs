@@ -208,8 +208,9 @@ pub fn compress_glb_with(glb: &[u8], options: &CompressOptions) -> anyhow::Resul
         Indices,
         Joints,      // u16 → u8 when every joint index fits (core glTF type)
         Weights,     // f32 → u8-normalized, per-vertex renormalized (core glTF)
-        OtherVertex, // colors etc. — meshopt yes, quantize no
-        Raw,         // IBMs, animation samplers, morph deltas, unknown
+        OtherVertex, // colors etc. — meshopt yes (vertex byteStride), quantize no
+        Raw,         // IBMs, animation samplers, morph deltas, unknown — meshopt
+                     // yes (lossless, NO vertex byteStride), quantize no
     }
     let acc_count = root.accessors.len();
     let mut roles = vec![Role::Raw; acc_count];
@@ -658,6 +659,24 @@ pub fn compress_glb_with(glb: &[u8], options: &CompressOptions) -> anyhow::Resul
                     mode: Mode::Attributes,
                     filter: None,
                     parent_stride: Some(elem),
+                })
+            }
+            // Non-vertex fixed-stride accessors — IBMs (folded), animation
+            // samplers (input times + output values), morph deltas, anything
+            // else. meshopt-encode them LOSSLESSLY too (Attributes codec is
+            // byte-exact) so no accessor bytes pass through raw; only embedded
+            // images do. These are NOT vertex attributes, so the fallback view
+            // carries NO byteStride (`parent_stride: None`) — the EXT object's
+            // byteStride drives the decode. The player's decode pass handles
+            // them transparently (it decodes any meshopt bufferView).
+            Role::Raw if options.meshopt && elem % 4 == 0 && (4..=256).contains(&elem) => {
+                Some(Stream {
+                    logical: data,
+                    stride: elem,
+                    count,
+                    mode: Mode::Attributes,
+                    filter: None,
+                    parent_stride: None,
                 })
             }
             _ => None,

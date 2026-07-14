@@ -446,6 +446,76 @@ mod roundtrip_tests {
         }
     }
 
+    /// Non-vertex accessors (here: the skin's inverseBindMatrices) are now
+    /// meshopt-encoded too — no f32 accessor passes through raw. Asserts the
+    /// IBM accessor's bufferView carries the `EXT_meshopt_compression` object
+    /// (compressed, not a plain re-append) AND still decodes to the folded
+    /// dequant matrix. Guards the "only embedded images ship raw" rule.
+    #[test]
+    fn ibm_accessor_is_meshopt_encoded() {
+        use awsm_renderer_glb_export::ExportSkin;
+
+        let mut mesh = MeshData::default();
+        for i in 0..12u32 {
+            let f = i as f32;
+            mesh.positions
+                .push([f * 0.3 - 1.5, (f * 0.7).sin() * 2.0, f * 0.1 + 5.0]);
+        }
+        mesh.indices = (0..12u32).collect();
+        mesh.compute_vertex_normals();
+        let n = mesh.positions.len();
+
+        let mut skinned = ExportNode::new("skinned").with_mesh(mesh.clone());
+        skinned.skin = Some(0);
+        skinned.joints = Some(vec![[0u16, 0, 0, 0]; n]);
+        skinned.weights = Some(vec![[1.0f32, 0.0, 0.0, 0.0]; n]);
+        let identity: [f32; 16] = glam::Mat4::IDENTITY.to_cols_array();
+        let scene = GlbScene {
+            nodes: vec![ExportNode::new("joint0"), skinned],
+            animations: vec![],
+            skins: vec![ExportSkin {
+                joints: vec![0],
+                inverse_bind_matrices: vec![identity],
+                skeleton: Some(0),
+            }],
+            images: vec![],
+            env: None,
+        };
+        let compressed = compress_glb(&write_glb(&scene)).unwrap();
+        let gltf = parse_gltf_lenient(&compressed).unwrap();
+        let doc = &gltf.document;
+
+        // The IBM accessor's bufferView must carry the meshopt extension.
+        let skin = doc.skins().next().expect("skin");
+        let ibm_acc = skin.inverse_bind_matrices().expect("IBM accessor");
+        let ibm_view = ibm_acc.view().expect("IBM view");
+        assert!(
+            ibm_view
+                .extension_value("EXT_meshopt_compression")
+                .is_some(),
+            "IBM bufferView must be meshopt-encoded, not a raw re-append"
+        );
+
+        // ...and it still decodes to the (folded) dequant matrix.
+        let blob = gltf.blob.clone().unwrap();
+        let mut buffers = materialize(doc, &blob);
+        decode_meshopt_buffer_views(doc, &mut buffers).unwrap();
+        let base = ibm_view.offset() + ibm_acc.offset();
+        let mut cols = [0f32; 16];
+        for (i, c) in buffers[ibm_view.buffer().index()][base..base + 64]
+            .chunks_exact(4)
+            .enumerate()
+        {
+            cols[i] = f32::from_le_bytes(c.try_into().unwrap());
+        }
+        let ibm = glam::Mat4::from_cols_array(&cols);
+        // uniform positive dequant scale on the diagonal, finite translation.
+        assert!(
+            ibm.x_axis.x > 0.0 && ibm.x_axis.x.is_finite(),
+            "IBM' sane: {ibm:?}"
+        );
+    }
+
     /// A skin with NO inverseBindMatrices accessor has nowhere to fold the
     /// dequant — its meshes must skip quantization (positions stay F32),
     /// never quantize-and-corrupt.
