@@ -306,6 +306,28 @@ pub async fn bake_player_bundle(
                         }
                     }
                 }
+                // Sprite / decal / particle-emitter textures live in their own
+                // `texture` field (NOT a material) — they were silently dropped
+                // from bundles before this walk visited them, so the player
+                // rendered them untextured. They are always sRGB albedo color.
+                match &mut node.kind {
+                    NodeKind::Sprite(def) => {
+                        if let Some(t) = def.texture.as_mut() {
+                            f(TextureColorKind::Albedo, false, t);
+                        }
+                    }
+                    NodeKind::Decal(def) => {
+                        if let Some(t) = def.texture.as_mut() {
+                            f(TextureColorKind::Albedo, false, t);
+                        }
+                    }
+                    NodeKind::ParticleEmitter(def) => {
+                        if let Some(t) = def.texture.as_mut() {
+                            f(TextureColorKind::Albedo, false, t);
+                        }
+                    }
+                    _ => {}
+                }
                 for_each_baked_texture_use(
                     &mut node.children,
                     builtin_materials,
@@ -753,7 +775,104 @@ pub async fn bake_player_bundle(
     //    environment references no KTX and emits nothing here.
     files.extend(env_ktx_bundle_files(ctrl).await?);
 
+    // 8. Completeness guard — "editor has it ⇒ the bundle ships it". Every
+    //    texture the baked scene references (materials AND sprite/decal/particle)
+    //    must have shipped as an asset file; a reference with no bytes renders
+    //    untextured in the player, silently. Fail the export loudly instead.
+    verify_texture_refs_shipped(&scene, &files)?;
+
     assemble_bundle(&scene, files).map_err(|e| e.to_string())
+}
+
+/// Bundle-completeness guard: every texture asset referenced by the baked
+/// scene must appear as a shipped `assets/<id>.<ext>` file. A referenced
+/// texture with no shipped bytes is silent content loss — the player's
+/// on-demand `load_texture` 404s and the sprite/decal/material renders
+/// untextured. This turns that into a loud, actionable export failure. Covers
+/// material slots AND the sprite/decal/particle `texture` fields (whose refs
+/// were the concrete gap this guard was written to backstop).
+fn verify_texture_refs_shipped(
+    scene: &awsm_renderer_editor_protocol::Scene,
+    files: &[awsm_renderer_editor_protocol::BundleFile],
+) -> Result<(), String> {
+    // Asset ids that shipped: parse the `assets/<uuid>.<ext>` file stems.
+    let shipped: HashSet<AssetId> = files
+        .iter()
+        .filter_map(|f| {
+            let stem = f.path.strip_prefix("assets/")?.split('.').next()?;
+            uuid::Uuid::parse_str(stem).ok().map(AssetId)
+        })
+        .collect();
+
+    fn check(
+        t: &TextureRef,
+        shipped: &HashSet<AssetId>,
+        seen: &mut HashSet<AssetId>,
+        missing: &mut Vec<AssetId>,
+    ) {
+        if seen.insert(t.asset) && !shipped.contains(&t.asset) {
+            missing.push(t.asset);
+        }
+    }
+
+    fn walk(
+        nodes: &[awsm_renderer_editor_protocol::EditorNode],
+        shipped: &HashSet<AssetId>,
+        seen: &mut HashSet<AssetId>,
+        missing: &mut Vec<AssetId>,
+    ) {
+        for node in nodes {
+            if let Some(variants) = node.kind.material_variants() {
+                for v in variants {
+                    for t in v.instance.inline.texture_refs() {
+                        check(t, shipped, seen, missing);
+                    }
+                    for t in v.instance.texture_overrides.values() {
+                        check(t, shipped, seen, missing);
+                    }
+                }
+            }
+            match &node.kind {
+                NodeKind::Sprite(d) => {
+                    if let Some(t) = &d.texture {
+                        check(t, shipped, seen, missing);
+                    }
+                }
+                NodeKind::Decal(d) => {
+                    if let Some(t) = &d.texture {
+                        check(t, shipped, seen, missing);
+                    }
+                }
+                NodeKind::ParticleEmitter(d) => {
+                    if let Some(t) = &d.texture {
+                        check(t, shipped, seen, missing);
+                    }
+                }
+                _ => {}
+            }
+            walk(&node.children, shipped, seen, missing);
+        }
+    }
+
+    let mut seen = HashSet::new();
+    let mut missing = Vec::new();
+    walk(&scene.nodes, &shipped, &mut seen, &mut missing);
+
+    if missing.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "bundle export incomplete: {} referenced texture(s) have no shipped bytes \
+             ({}). They would render untextured in the player. This usually means their \
+             source bytes aren't cached — re-import the texture(s) and export again.",
+            missing.len(),
+            missing
+                .iter()
+                .map(|id| id.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))
+    }
 }
 
 /// Map the project-level [`BundleOptions`] mesh knobs onto the glb-export
@@ -1212,6 +1331,19 @@ fn collect_texture_assets(node: &Node, ids: &mut Vec<AssetId>, seen: &mut HashSe
                     ids.push(t.asset);
                 }
             }
+        }
+    }
+    // Sprite / decal / particle-emitter textures are NOT materials — collect
+    // their `texture` refs too, else they never ship (rendered untextured).
+    let own_texture = match &kind {
+        NodeKind::Sprite(d) => d.texture.as_ref(),
+        NodeKind::Decal(d) => d.texture.as_ref(),
+        NodeKind::ParticleEmitter(d) => d.texture.as_ref(),
+        _ => None,
+    };
+    if let Some(t) = own_texture {
+        if seen.insert(t.asset) {
+            ids.push(t.asset);
         }
     }
     for c in node.children.lock_ref().iter() {
@@ -1795,6 +1927,89 @@ mod tests {
             decoded.as_raw(),
             rgba.as_raw(),
             "lossless WebP must be pixel-identical for data maps"
+        );
+    }
+
+    /// The completeness guard catches the sprite/decal/particle texture gap:
+    /// their `texture` fields live outside materials, so a bake that forgets
+    /// them would ship a bundle whose player renders them untextured. The
+    /// guard must FAIL loudly naming each unshipped texture, and PASS once the
+    /// bytes ship. This is the "editor has it ⇒ the bundle ships it" backstop.
+    #[test]
+    fn export_guard_catches_unshipped_sprite_decal_particle_textures() {
+        use awsm_renderer_editor_protocol::{
+            particle::ParticleEmitterDef, BundleFile, DecalConfig, EditorNode, NodeId, Scene,
+            SpriteDef,
+        };
+
+        fn tref(asset: AssetId) -> TextureRef {
+            TextureRef {
+                asset,
+                uv_index: 0,
+                transform: None,
+                sampler: None,
+                flow: None,
+                export_profile: None,
+            }
+        }
+        fn node(name: &str, kind: NodeKind) -> EditorNode {
+            EditorNode {
+                id: NodeId::new(),
+                name: name.into(),
+                transform: Default::default(),
+                kind,
+                locked: false,
+                visible: true,
+                prefab: false,
+                children: vec![],
+            }
+        }
+
+        let (sprite_tex, decal_tex, particle_tex) =
+            (AssetId::new(), AssetId::new(), AssetId::new());
+        let sprite = node(
+            "s",
+            NodeKind::Sprite(SpriteDef {
+                texture: Some(tref(sprite_tex)),
+                ..Default::default()
+            }),
+        );
+        let decal = node(
+            "d",
+            NodeKind::Decal(DecalConfig {
+                texture: Some(tref(decal_tex)),
+                ..Default::default()
+            }),
+        );
+        let particle = node(
+            "p",
+            NodeKind::ParticleEmitter(ParticleEmitterDef {
+                texture: Some(tref(particle_tex)),
+                ..Default::default()
+            }),
+        );
+        let scene = Scene {
+            nodes: vec![sprite, decal, particle],
+            ..Default::default()
+        };
+
+        // Nothing shipped → the guard fails, naming all three ids.
+        let err = verify_texture_refs_shipped(&scene, &[]).unwrap_err();
+        for id in [sprite_tex, decal_tex, particle_tex] {
+            assert!(
+                err.contains(&id.to_string()),
+                "guard must name the unshipped texture {id}; got: {err}"
+            );
+        }
+
+        // All three shipped as assets/<id>.png → the guard passes.
+        let files: Vec<BundleFile> = [sprite_tex, decal_tex, particle_tex]
+            .iter()
+            .map(|id| BundleFile::asset(format!("{id}.png"), vec![0u8; 4]))
+            .collect();
+        assert!(
+            verify_texture_refs_shipped(&scene, &files).is_ok(),
+            "guard must pass once every referenced texture ships"
         );
     }
 }
