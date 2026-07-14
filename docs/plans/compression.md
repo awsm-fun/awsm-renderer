@@ -647,3 +647,99 @@ BC5/EAC-RG (in-shader Z reconstruct) is a Phase-6 opt. **Block dims multiple of
   (Basis encoder + worker are editor-only; player carries only the small Basis
   transcoder + in-Rust meshopt+quant decode).
 - Verify with the real robots — import + screenshot both — before Phase 4 is done.
+
+---
+
+# FOLLOW-UP QUEUE (locked with David, 2026-07-14) — implement in a fresh session
+
+All decisions below are settled; do not relitigate. Working rules at the top of
+this file still apply (lint+test green per commit, browser-verify shader
+changes, `task mcp-dev`, never commit fixtures/local bytes).
+
+## F1. Bundle export options
+
+`BundleOptions` in editor-protocol, **persisted in project.toml** (serde
+defaults; no back-compat constraints — David), edited via a **pre-export
+modal** (options appear when relevant, remembered in the project), plus MCP
+`set_bundle_options` tool AND optional per-call overrides on
+`export_player_bundle`:
+
+- `mesh_compression: Off | Meshopt` — default `Meshopt`.
+- `mesh_quantization: Off | Always | Smart` — default `Smart`.
+  - Structural guards (morph targets, multi-skin/mixed-use meshes, IBM-less
+    skins, out-of-[0,1] UVs) are CORRECTNESS, not policy — they apply even
+    under `Always`.
+  - `Smart` = structurally possible AND quantization step (max-half-extent /
+    32767, i.e. extent/65534) ≤ `smart_threshold_mm`.
+- `smart_threshold_mm: f32` — default `0.1`, advanced field in the modal.
+- `texture_compression: Off | Ktx2` — default `Ktx2`. `Off` = lossless WebP
+  (pixel-exact), never raw source dumps. Per-texture prefs override the global
+  either way (precedence: per-USE override > per-texture pref > slot-based
+  Auto > global).
+- The knobs are INDEPENDENT: `quantization` without `meshopt` is valid
+  (KHR_mesh_quantization alone) — needs a new `compress_glb` path emitting
+  quantized accessors into plain views (today quantize+meshopt are one pass).
+- Scope: applies to base mesh glbs, bundle rig copies, and **coarse LOD chain
+  glbs** — lod1–3 currently ship UNCOMPRESSED and larger than their compressed
+  base (police: lod1 504KB vs base 251KB); route them through the same
+  strip(no-op)/compress under the same options. The player already decodes
+  them via `from_glb_bytes` → decode pass, so no loader work.
+  NOT clusters.bin (recorded in docs/nanite-lod.md as its own follow-up).
+- Rig stripping (`strip_materials_and_images`) stays UNCONDITIONAL — dead
+  bytes, nothing to configure.
+
+## F2. Per-USE-SITE texture encoding (fixes an aliasing bug in Auto)
+
+David's case: one texture asset used as a NORMAL map by a PBR material and as
+something else by a custom/Dynamic material. Today `Ktx2Profile::Auto` marks
+the whole ASSET normal if ANY use is a normal slot — wrong for the other use.
+
+- Profile resolution moves from asset-level to **use-level**: each material
+  texture reference resolves (use-site override > per-texture pref >
+  slot-based Auto > global). Add an optional profile override on the texture
+  reference type (editor-protocol `TextureRef` and the custom-material
+  binding equivalent), exposed in the editor at the MATERIAL slot UI and via
+  MCP.
+- Bake: group uses by `(asset, resolved profile)`; encode ONE artifact per
+  distinct pair. Variant artifacts get **minted asset entries in the baked
+  asset table** (mirror of the mesh-dedup canonicalization, in reverse) and
+  the scene.toml texture refs are rewritten to the variant ids — the player
+  needs ZERO new concepts, it just loads `assets/<variant-id>.ktx2` per ref.
+  sRGB-per-use already works at bind time (format variant); the CODEC is what
+  needs per-use artifacts.
+- Inspector: also surface the per-texture profile override (Auto/ETC1S/UASTC)
+  — MCP has the modes, the inspector currently only offers "KTX2 (auto)".
+- Two-channel normals (F3) rides this same per-use machinery (normal uses →
+  two-channel encode).
+
+## F3. Two-channel normals (locked in — quality win, ~zero cost)
+
+Encode side: normal-use textures pack X→RGB, Y→A (CPU-side swizzle before the
+worker encode if the vendored encoder JS lacks setSwizzle), UASTC, linear.
+Ladder: new `select_normal_transcode_target` — BC5 (bc caps) / EAC-RG11
+(etc2) / fall back to today's full-RGB path (astc/rgba32). Runtime: normal-slot
+transcode happens at BIND time (slot semantics known there; prefetch keeps raw
+ktx2 bytes for normal-flagged uses) with a per-material two-channel flag into
+the shader; WGSL Z-reconstruct (`z = sqrt(1 - x² - y²)`, exact for unit
+normals). SHADER-INTERFACE CHANGE → full browser verification required.
+
+## F4. Combined on-device verification (one mcp-dev run at the end)
+
+Export the police scene with default options → verify: rig size (was 27.9MB,
+strip+compress landed but unmeasured — expect ~3-4MB), LOD glbs now compressed,
+options matrix spot-checks (quantization Off ⇒ F32 accessors; compression Off ⇒
+no meshopt views; texture Off ⇒ webp), per-use texture variants in the bundle,
+two-channel normals rendering correctly on both robots (screenshots).
+
+## Closed / not queued
+
+- **GPU-quantized vertex formats: CLOSED, not approved.** Dual-layout is dead
+  (per-pixel mesh resolution in deferred material passes ⇒ per-mesh format
+  flags are genuinely divergent per-invocation; fixed-function variant would
+  double pipeline permutations). The only surviving variant — ONE canonical
+  layout with oct16 normals/tangents (56→40B, max angular error ~0.002°,
+  measurably nonzero) — was presented and NOT approved under the strict
+  zero-loss bar. Revive only with David's explicit sign-off on that error.
+- Wire quantization stays (bundle-time only; project saves are the lossless
+  f32 master; one grid application per bake, never accumulating). The `Smart`
+  mode IS the agreed guard for large-extent meshes.

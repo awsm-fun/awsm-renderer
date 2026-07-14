@@ -300,3 +300,25 @@ with two heavy nanite meshes resident + drawing at once (see
 The historical "known follow-ups" are now both closed (degenerate-topology robustness
 above; multiple simultaneous meshes here). The plan
 [`plans/nanite-follow-up.md`](./plans/nanite-follow-up.md) records the full breakdown.
+
+## Follow-up: `clusters.bin` wire compression (recorded 2026-07-14)
+
+The compression feature (docs/plans/compression.md) left cluster DAGs untouched:
+`assets/<id>.clusters.bin` is our own serialization (parsed with `serde_json` at
+load), so none of the meshopt/KHR_mesh_quantization machinery applies. The gap
+is large: in the police-robot bundle the biggest cluster file is **4.0MB against
+a 251KB meshopt-compressed base glb** — clusters dominate that asset's wire
+footprint.
+
+Ordered follow-up (own task, not part of the bundle-options work):
+1. **Serialization first**: move `ClusterMesh` off JSON to a compact binary
+   (bincode/postcard) — likely the biggest single win, zero precision questions.
+2. **Per-cluster quantization grids**: nanite-standard — each cluster quantizes
+   positions against its own bounds (tiny extents ⇒ tiny error), sidestepping
+   the whole-mesh precision concerns that shaped the bundle quantization
+   "smart" mode.
+3. **meshopt raw-stream encode** (`meshopt_encodeVertexBuffer` on the cluster
+   vertex/index streams) over the quantized data.
+
+When implemented, gate it behind the bundle options' `Mesh compression` knob so
+the export surface stays one concept.
