@@ -891,24 +891,30 @@ Pieces:
       runtime generates them at load, gated on normal-map usage — see the
       tangent-policy change below); only AUTHORED tangents ship. Was 1.057 with
       derived tangents baked.
-- [x] Former "deferred candidates" — DROPPED after scrutiny (2026-07-14, David
-      pushed on both; neither is worth doing):
-      - **per-skin IBM dedup/encode (0.133 vs 0.081MB):** WIRE SIZE ONLY, ~52KB,
-        ZERO player runtime cost. IBMs decode to identical f32 mat4-per-joint at
-        load regardless; per-frame skinning cost is driven by joint COUNT, not
-        the IBM stream's wire encoding. Also collides with the dequant-into-IBM
-        fold. No runtime upside → not worth the risk.
-      - **quantized-passthrough for unedited imports:** WRONG LEVER. Our
-        POSITION/NORMAL/TEXCOORD/INDEX bytes are already byte-equal to gltfpack
-        (quantization is NOT deficient). Passthrough would only be smaller
-        because we BAKE MikkTSpace tangents (`write.rs`: generated for any
-        mesh with normals+UVs) that gltfpack leaves for the runtime to compute
-        — a deliberate wire-vs-runtime tradeoff, not a defect. If the tangent
-        bytes ever matter, the targeted fix is narrow: skip tangent baking when
-        NO material on the mesh samples a normal map (those tangents are never
-        read). A provenance-tracking passthrough system is the wrong shape.
-      F5 at ratio 1.057 is DONE; the residual is a design choice + ~52KB of
-      no-runtime-impact wire.
+- [x] Coherence pass (2026-07-14, David pushed: not the bytes — a bundle you
+      can reason about, no unexplained costs). Replaced the two "deferred
+      candidates" (quantized-passthrough + IBM dedup, both misframed) with the
+      real fixes:
+      - **Stop baking DERIVED tangents.** `write.rs` baked MikkTSpace tangents
+        for any normals+UVs mesh — but the runtime population path
+        (`meshes.rs`) already generates them at load via the IDENTICAL
+        `awsm-renderer-tangents` function, gated on normal-map usage. Same
+        deterministic function ⇒ no determinism benefit to baking; it was
+        byte-identical redundant data (worse: baked from pre-quant geometry).
+        Now only AUTHORED tangents ship (can't be reproduced — the dark-patch
+        fix stays); derived ones are the runtime's job. Parity **1.057 → 0.942**
+        (we now BEAT gltfpack — that gap WAS these redundant tangents).
+      - **meshopt-encode IBM / animation / morph accessors.** They passed
+        through raw while every vertex stream compressed — an unexplained
+        exception. Now they encode losslessly (Attributes codec is byte-exact,
+        player-transparent; NOT vertex attrs so fallback view has no
+        byteStride). IBM after the dequant fold. Rule is now one sentence, no
+        exceptions: every mesh/skin/animation f32 accessor is meshopt-encoded;
+        only embedded images ship raw. Parity → 0.941.
+      On-device verified (chrome MCP, real assets): CesiumMan skins correctly
+      with IBMs meshopt-encoded; NormalTangentTest (NO authored tangents)
+      renders correct normal-mapped bumps from RUNTIME-generated tangents.
+      Tests: `derived_tangents_not_baked`, `ibm_accessor_is_meshopt_encoded`.
 
 ## Closed / not queued
 
