@@ -83,7 +83,7 @@ Authoring-command references are `packages/mcp/editor-protocol/src/command.rs:<l
   - [x] `shadows-all` — directional cascade + spot + point/cube all cast contact-tight shadows; no Peter-Pan gap, no donut/hole under lowered meshes. — verify.md written; HEAD confirmed all 3 light types cast, lowered-box contact-tight (no donut).
   - [x] Punctual lights — covered by `shadows-all` (spot+point) + `lights-many` + the seeded directional; recipe confirms each type illuminates + falls off correctly. — `lights-many/verify.md` written; HEAD confirmed all 36 point lights contribute distinct row-cycling pools (froxel reverse-Z lock holds), pillars directionally lit.
   - [x] `ssr`, `mirror`, `ssr-arena` — orbit to grazing angles; reflections continuous, track emitters, clean silhouettes; mirror pixel-shaped; arena floor mirrors rings, occluder stays soft maroon (not black). — 3 verify.md written; HEAD confirmed: ssr columns continuous + toggle removes reflections; mirror pixel-shaped incl thin torus; arena floor mirrors neon rings, occluder soft (not black).
-  - [ ] `anim-skinned` — mid-stride at t=0.5, no T-pose, no candy-wrapper collapse.
+  - [x] `anim-skinned` — mid-stride at t=0.5, no T-pose, no candy-wrapper collapse. — verify.md written (2 paths: load-project persisted pose + author.js replay for live scrubbing); HEAD confirmed mid-stride walk, textured, shadow, no candy-wrapper. Noted: set_frame_time does NOT re-scrub a loaded project (clip tracks target stale post-load node ids).
   - [ ] `anim-morph` — two morph indices driven independently.
   - [ ] `anim-blend` — blended pose distinct from either source.
   - [ ] `builtin-overrides` — 4 spheres, one shared asset, visibly different tunings (uniform overrides).
