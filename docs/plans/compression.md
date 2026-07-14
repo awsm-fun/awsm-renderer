@@ -665,10 +665,16 @@ Progress:
       Smart demotion by grid step (skin-union aware); `KHR_mesh_quantization` /
       `EXT_meshopt_compression` declared independently; both-off = passthrough.
       Option-matrix roundtrip tests in renderer-gltf.
-- [ ] `BundleOptions` in editor-protocol, persisted in project.toml; wired through
-      `bake_player_bundle` (base meshes + rigs + coarse LOD glbs) + texture Off ⇒ WebP-lossless.
+- [x] `BundleOptions` in editor-protocol (`bundle_options` in project.toml, serde
+      defaults); reactive `scene.bundle_options`; `EditorCommand::SetBundleOptions`
+      takes a `BundleOptionsPatch` (ShadowsPatch pattern, undoable); wired through
+      `bake_player_bundle` — base meshes + rigs + coarse LOD glbs (LOD levels now
+      compress at emission; session cache keeps uncompressed levels so option flips
+      can't serve stale bytes) + texture Off ⇒ WebP-lossless default.
+- [x] MCP `set_bundle_options` + per-call overrides on `export_player_bundle`
+      (`Request::ExportPlayerBundle{overrides}` merges the patch onto persisted
+      options without modifying them); parity allowlist + docs/mcp-parity.md row.
 - [ ] Pre-export modal.
-- [ ] MCP `set_bundle_options` + per-call overrides on `export_player_bundle`.
 
 `BundleOptions` in editor-protocol, **persisted in project.toml** (serde
 defaults; no back-compat constraints — David), edited via a **pre-export

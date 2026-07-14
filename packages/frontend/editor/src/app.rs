@@ -481,14 +481,18 @@ fn export_player_bundle() {
                     "Preparing player bundle for {}/…",
                     dir.name()
                 ));
-                let bundle =
-                    match crate::controller::export::bake_player_bundle(&controller()).await {
-                        Ok(bundle) => bundle,
-                        Err(e) => {
-                            Toast::error(format!("Export bundle failed: {e}"));
-                            return;
-                        }
-                    };
+                let bundle = match crate::controller::export::bake_player_bundle(
+                    &controller(),
+                    None,
+                )
+                .await
+                {
+                    Ok(bundle) => bundle,
+                    Err(e) => {
+                        Toast::error(format!("Export bundle failed: {e}"));
+                        return;
+                    }
+                };
                 activity.set_label(format!("Exporting bundle to {}/…", dir.name()));
                 let count = bundle.len();
                 for file in &bundle {

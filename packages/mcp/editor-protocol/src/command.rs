@@ -24,6 +24,7 @@ use awsm_renderer_meshgen::recipe::{Modifier, ModifierStack};
 
 use crate::assets::{AssetEntry, TextureExport};
 use crate::mesh_def::{CapturedMesh, VertexOverrides};
+use crate::project::BundleOptionsPatch;
 
 use crate::anim_ui::{AnimSel, AnimView, StepKind};
 use crate::node_spec::{InsertSpec, NodeSpec};
@@ -466,6 +467,13 @@ pub enum EditorCommand {
         id: AssetId,
         export: Option<TextureExport>,
     },
+
+    /// Patch the project's player-bundle export options (mesh compression /
+    /// quantization / texture default — see
+    /// [`BundleOptions`](crate::BundleOptions)): `None` fields preserve.
+    /// Persisted in project.toml; consulted by every bundle bake. Inverse: a
+    /// `SetBundleOptions` replacing the previous options wholesale.
+    SetBundleOptions { patch: BundleOptionsPatch },
 
     /// Delete every asset NOT reachable from the live scene (no node material /
     /// mesh / texture / buffer binding, environment KTX, or animation target
@@ -1585,6 +1593,7 @@ impl EditorCommand {
                 "Delete asset"
             }
             EditorCommand::SetTextureExport { .. } => "Set texture export",
+            EditorCommand::SetBundleOptions { .. } => "Set bundle options",
             EditorCommand::SetAssetSelection { .. } => "Select asset",
             EditorCommand::AddCustomMaterial { .. } => "New material",
             EditorCommand::AddBuiltinMaterial { .. } => "New material",

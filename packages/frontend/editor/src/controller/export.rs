@@ -89,6 +89,7 @@ pub async fn export_scene_glb(ctrl: &super::EditorController) -> Result<Vec<u8>,
 /// `scene.toml` SkinnedMesh nodes reference it by `skin.source` → `assets/<source>.glb`.
 pub async fn bake_player_bundle(
     ctrl: &super::EditorController,
+    options_override: Option<awsm_renderer_editor_protocol::BundleOptions>,
 ) -> Result<Vec<awsm_renderer_editor_protocol::BundleFile>, String> {
     use awsm_renderer_editor_protocol::{
         assemble_bundle, mesh_glb_filename, BundleFile, RuntimeMesh,
@@ -96,6 +97,10 @@ pub async fn bake_player_bundle(
     use awsm_renderer_editor_protocol::{lower_mesh, project_to_scene};
 
     let project = crate::controller::persistence::to_editor_project(ctrl);
+    // Project-persisted export options, with an optional per-call override
+    // (MCP `export_player_bundle`) that does NOT touch the persisted value.
+    let bundle_options = options_override.unwrap_or(project.bundle_options);
+    let compress = compress_options(&bundle_options);
     let mut scene = project_to_scene(&project);
     // Flatten each node's built-in assignment to the MERGED def the editor
     // actually renders with (`builtin_merged`: shared variant ∪ per-mesh
@@ -186,7 +191,11 @@ pub async fn bake_player_bundle(
     }
     for canon in canonicals {
         let lod_files = if canon.lod_wanted {
-            crate::controller::lod_bake::bake_static_lod(&canon.id.0.to_string(), &canon.mesh)
+            crate::controller::lod_bake::bake_static_lod(
+                &canon.id.0.to_string(),
+                &canon.mesh,
+                &compress,
+            )
         } else {
             Vec::new()
         };
@@ -194,13 +203,14 @@ pub async fn bake_player_bundle(
         // at load only when the `virtual_geometry` feature is on.
         let cluster_files =
             crate::controller::lod_bake::bake_static_clusters(&canon.id.0.to_string(), &canon.mesh);
-        // Bundle meshes ship meshopt+quantized (docs/plans/compression.md);
-        // the canonical DEDUP above stays on the uncompressed bytes. A
-        // failed compression falls back to the plain glb — never fail a bake.
-        let mesh_glb = match awsm_renderer_glb_export::compress_glb(&canon.glb) {
+        // Bundle meshes ship under the project's BundleOptions (default
+        // meshopt + Smart quantization — docs/plans/compression.md); the
+        // canonical DEDUP above stays on the uncompressed bytes. A failed
+        // compression falls back to the plain glb — never fail a bake.
+        let mesh_glb = match awsm_renderer_glb_export::compress_glb_with(&canon.glb, &compress) {
             Ok(compressed) => {
                 tracing::info!(
-                    "bundle mesh {}: {} -> {} bytes (meshopt+quant)",
+                    "bundle mesh {}: {} -> {} bytes",
                     canon.id,
                     canon.glb.len(),
                     compressed.len()
@@ -268,7 +278,7 @@ pub async fn bake_player_bundle(
             .entries
             .get(&id)
             .and_then(|e| e.texture_export)
-            .unwrap_or_default();
+            .unwrap_or(default_texture_export(&bundle_options));
         let (encoding, bytes) = match pref {
             TextureExport::Source => (texture_encoding_from_mime(mime), bytes),
             TextureExport::WebpLossless => match encode_webp_lossless(&bytes, mime) {
@@ -392,7 +402,7 @@ pub async fn bake_player_bundle(
         if let Some(glb) = crate::engine::bridge::skinned_bake_cache::get_rig_glb(src) {
             // Bake LOD levels (from the rig glb bytes) before `glb` is moved.
             let lod_files = if lod_skinned.contains(&src) {
-                crate::controller::lod_bake::bake_skinned_lod(&src.0.to_string(), &glb)
+                crate::controller::lod_bake::bake_skinned_lod(&src.0.to_string(), &glb, &compress)
             } else {
                 Vec::new()
             };
@@ -400,15 +410,19 @@ pub async fn bake_player_bundle(
             // (the player applies scene.toml materials to every rig primitive
             // — the bundle already ships the textures as assets/*.ktx2, so
             // the embedded copies were pure duplication that even got
-            // transcoded-and-dropped at load) and then meshopt+quant
-            // compresses like every other bundle mesh. The SAVE-format rig in
-            // the project stays untouched. Fallbacks never fail a bake.
-            let bundle_rig = awsm_renderer_glb_export::strip_materials_and_images(&glb)
-                .and_then(|stripped| awsm_renderer_glb_export::compress_glb(&stripped));
+            // transcoded-and-dropped at load) and then compresses under the
+            // project's BundleOptions like every other bundle mesh. The strip
+            // stays UNCONDITIONAL (dead bytes, nothing to configure). The
+            // SAVE-format rig in the project stays untouched. Fallbacks never
+            // fail a bake.
+            let bundle_rig =
+                awsm_renderer_glb_export::strip_materials_and_images(&glb).and_then(|stripped| {
+                    awsm_renderer_glb_export::compress_glb_with(&stripped, &compress)
+                });
             let bundle_rig = match bundle_rig {
                 Ok(out) => {
                     tracing::info!(
-                        "bundle rig {src}: {} -> {} bytes (stripped + meshopt+quant)",
+                        "bundle rig {src}: {} -> {} bytes (stripped + compressed)",
                         glb.len(),
                         out.len()
                     );
@@ -503,6 +517,35 @@ pub async fn bake_player_bundle(
     files.extend(env_ktx_bundle_files(ctrl).await?);
 
     assemble_bundle(&scene, files).map_err(|e| e.to_string())
+}
+
+/// Map the project-level [`BundleOptions`] mesh knobs onto the glb-export
+/// codec options.
+fn compress_options(
+    options: &awsm_renderer_editor_protocol::BundleOptions,
+) -> awsm_renderer_glb_export::CompressOptions {
+    use awsm_renderer_editor_protocol::{MeshCompression, MeshQuantization};
+    use awsm_renderer_glb_export::Quantization;
+    awsm_renderer_glb_export::CompressOptions {
+        meshopt: options.mesh_compression == MeshCompression::Meshopt,
+        quantization: match options.mesh_quantization {
+            MeshQuantization::Off => Quantization::Off,
+            MeshQuantization::Always => Quantization::Always,
+            MeshQuantization::Smart => Quantization::Smart {
+                threshold_mm: options.smart_threshold_mm,
+            },
+        },
+    }
+}
+
+/// The global texture default under the project's [`BundleOptions`]:
+/// `Ktx2` ⇒ KTX2 with the Auto profile; `Off` ⇒ lossless WebP (pixel-exact,
+/// never raw source dumps). Per-texture prefs override this either way.
+fn default_texture_export(options: &awsm_renderer_editor_protocol::BundleOptions) -> TextureExport {
+    match options.texture_compression {
+        awsm_renderer_editor_protocol::TextureCompression::Ktx2 => TextureExport::default(),
+        awsm_renderer_editor_protocol::TextureCompression::Off => TextureExport::WebpLossless,
+    }
 }
 
 /// Rewrite `NodeKind::Mesh` geometry refs in the baked node tree per the

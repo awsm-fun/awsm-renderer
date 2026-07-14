@@ -84,6 +84,7 @@ dedicated tool reaches it indirectly · **dispatch** = escape hatch only ·
 | `delete_asset` | `delete_asset` | tool | |
 | `restore_asset` | — | dispatch | Undo-inverse of `delete_asset` (carries the captured entry). Internal; fine as dispatch-only. |
 | `set_texture_export` | `set_texture_export` | tool | Per-texture bundle-bake encoding: `webp_lossless` (pixel-identical default) \| `webp_lossy{quality}` \| `source` \| `default` (clears the override). Takes effect on the next `export_player_bundle`; the tool description warns lossy is never safe for data maps (normal / metallic-roughness / occlusion). Still NO read-back (get_snapshot's textures list omits it; persisted record = the asset entry in `project.toml`) — documented in the tool description. |
+| `set_bundle_options` | `set_bundle_options` | tool | Patch the project-persisted player-bundle export options (`mesh_compression` off\|meshopt, `mesh_quantization` off\|always\|smart, `smart_threshold_mm`, `texture_compression` off\|ktx2); omitted fields preserve. `export_player_bundle` also takes the same fields as per-call overrides that do NOT touch the persisted options. NO query read-back (persisted record = `bundle_options` in `project.toml`). |
 | `purge_unused_assets` | `purge_unused` | tool | |
 | `set_asset_selection` | — | dispatch | Transient Content-Browser UI selection; irrelevant to agents. Fine as dispatch-only. |
 

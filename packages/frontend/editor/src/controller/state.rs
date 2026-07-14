@@ -1313,7 +1313,7 @@ impl EditorController {
                 // populate are still running. RAII — drops on every exit path.
                 let _load_guard = CompileGuard::new();
                 // 1. Bake the CURRENT project — must read it before we clear.
-                let files = crate::controller::export::bake_player_bundle(self)
+                let files = crate::controller::export::bake_player_bundle(self, None)
                     .await
                     .map_err(|e| crate::error::EditorError::msg(format!("bake: {e}")))?;
                 // 2. Split scene.toml out; the rest is the asset map
@@ -1669,6 +1669,20 @@ impl EditorController {
                 };
                 self.scene.bump_revision();
                 Ok(Some(EditorCommand::SetTextureExport { id, export: prev }))
+            }
+            EditorCommand::SetBundleOptions { patch } => {
+                // Patch semantics live in `BundleOptionsPatch::apply` (host-
+                // tested in editor-protocol): `None` preserves, `Some` sets.
+                let prev = self.scene.bundle_options.get();
+                let next = patch.apply(prev);
+                if prev == next {
+                    return Ok(None); // no-op — don't churn undo history
+                }
+                self.scene.bundle_options.set(next);
+                self.scene.bump_revision();
+                Ok(Some(EditorCommand::SetBundleOptions {
+                    patch: awsm_renderer_editor_protocol::BundleOptionsPatch::replace(&prev),
+                }))
             }
             EditorCommand::PurgeUnusedAssets => {
                 // Delete every asset the live scene no longer references. The

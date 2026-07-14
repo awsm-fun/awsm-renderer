@@ -50,7 +50,10 @@ pub use history::{estimate_command_bytes, BoundedHistory, DEFAULT_HISTORY_BUDGET
 pub use merge_patch::{coerce_patch, json_merge_patch};
 pub use mesh_def::{CapturedMesh, CapturedSource, MeshDef, VertexOverrides};
 pub use node_spec::{kind_tag, InsertSpec, NodeQuery, NodeSpec};
-pub use project::{EditorProject, StoredMaterial, StoredSlot};
+pub use project::{
+    BundleOptions, BundleOptionsPatch, EditorProject, MeshCompression, MeshQuantization,
+    StoredMaterial, StoredSlot, TextureCompression,
+};
 pub use query::{
     AnimationSnapshot, ClipSnapshot, CompileDiagnostics, CompileError, EditorQuery, EditorSnapshot,
     EnvSlotSnapshot, EnvironmentSnapshot, MapResult, MaterialSnapshot, PixelsResult,

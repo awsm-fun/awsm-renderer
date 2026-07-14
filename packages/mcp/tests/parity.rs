@@ -146,6 +146,7 @@ const EXPECTED_COMMANDS: &[&str] = &[
     "set_builtin_alpha_mode",
     "set_builtin_param",
     "set_builtin_texture",
+    "set_bundle_options",
     "set_camera_clip",
     "set_camera_orbit",
     "set_camera_projection",

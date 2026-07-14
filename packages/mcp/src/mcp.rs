@@ -201,6 +201,84 @@ pub struct TransformWhereParams {
 pub struct ExportBundleParams {
     /// Bundle name (publish dir / manifest label).
     pub name: String,
+    /// Per-call override of the project's bundle mesh compression for THIS
+    /// export only (persisted options untouched): off | meshopt. Omit to use
+    /// the project setting.
+    #[serde(default)]
+    pub mesh_compression: Option<String>,
+    /// Per-call override of mesh quantization: off | always | smart.
+    #[serde(default)]
+    pub mesh_quantization: Option<String>,
+    /// Per-call override of the Smart quantization threshold in millimetres.
+    #[serde(default)]
+    pub smart_threshold_mm: Option<f64>,
+    /// Per-call override of the bundle texture default: off (= lossless WebP)
+    /// | ktx2.
+    #[serde(default)]
+    pub texture_compression: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct SetBundleOptionsParams {
+    /// Bundle mesh stream encoding (EXT_meshopt_compression): off | meshopt.
+    /// Omitted fields keep their current value.
+    #[serde(default)]
+    pub mesh_compression: Option<String>,
+    /// Mesh quantization policy (KHR_mesh_quantization): off | always | smart.
+    /// Structural guards (morph targets, multi-skin/mixed-use meshes, IBM-less
+    /// skins, out-of-[0,1] UVs) always apply — even under `always`.
+    #[serde(default)]
+    pub mesh_quantization: Option<String>,
+    /// `smart` threshold: quantize only when the position grid step
+    /// (max half-extent / 32767) stays at or under this many millimetres.
+    #[serde(default)]
+    pub smart_threshold_mm: Option<f64>,
+    /// Bundle texture default: off (= lossless WebP, pixel-exact) | ktx2.
+    /// Per-texture prefs (set_texture_export) override this either way.
+    #[serde(default)]
+    pub texture_compression: Option<String>,
+}
+
+/// Parse the shared optional bundle-options fields (used by both
+/// `set_bundle_options` and `export_player_bundle` overrides) into a patch.
+fn bundle_options_patch(
+    mesh_compression: Option<&str>,
+    mesh_quantization: Option<&str>,
+    smart_threshold_mm: Option<f64>,
+    texture_compression: Option<&str>,
+) -> Result<awsm_renderer_editor_protocol::BundleOptionsPatch, McpError> {
+    use awsm_renderer_editor_protocol::{MeshCompression, MeshQuantization, TextureCompression};
+    let bad = |field: &str, got: &str, expected: &str| {
+        McpError::invalid_params(
+            format!("unknown {field} `{got}` — expected {expected}"),
+            None,
+        )
+    };
+    Ok(awsm_renderer_editor_protocol::BundleOptionsPatch {
+        mesh_compression: mesh_compression
+            .map(|s| match s {
+                "off" => Ok(MeshCompression::Off),
+                "meshopt" => Ok(MeshCompression::Meshopt),
+                other => Err(bad("mesh_compression", other, "off | meshopt")),
+            })
+            .transpose()?,
+        mesh_quantization: mesh_quantization
+            .map(|s| match s {
+                "off" => Ok(MeshQuantization::Off),
+                "always" => Ok(MeshQuantization::Always),
+                "smart" => Ok(MeshQuantization::Smart),
+                other => Err(bad("mesh_quantization", other, "off | always | smart")),
+            })
+            .transpose()?,
+        smart_threshold_mm: smart_threshold_mm.map(|v| v as f32),
+        texture_compression: texture_compression
+            .map(|s| match s {
+                "off" => Ok(TextureCompression::Off),
+                "ktx2" => Ok(TextureCompression::Ktx2),
+                other => Err(bad("texture_compression", other, "off | ktx2")),
+            })
+            .transpose()?,
+    })
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -1980,13 +2058,20 @@ impl EditorMcp {
 
     #[tool(
         annotations(read_only_hint = true),
-        description = "Bake the whole project to a player runtime bundle DIRECTORY on disk: a `scene.toml` (the runtime scene — node hierarchy + transforms + material instances + lights/cameras + our animation clips + environment, meshes referenced by id) plus an `assets/` directory: one geometry-only `assets/<id>.glb` per non-primitive mesh (bare primitives stay procedural in scene.toml), custom-material wgsl folders, and referenced textures. Materials + animations are NOT in the glbs (they're ours, applied by the player from scene.toml + clips). A read; the files ride the `/bundle/<id>/<path>` side-channel and land in a temp directory — NEVER inlined in this result. Returns `{name, bundle_dir, files:[{path, byte_len}], total_bytes, url_base}`: read/copy the bundle from `bundle_dir`, or fetch files over HTTP at `<server>/<url_base>/<path>`."
+        description = "Bake the whole project to a player runtime bundle DIRECTORY on disk: a `scene.toml` (the runtime scene — node hierarchy + transforms + material instances + lights/cameras + our animation clips + environment, meshes referenced by id) plus an `assets/` directory: one geometry-only `assets/<id>.glb` per non-primitive mesh (bare primitives stay procedural in scene.toml), custom-material wgsl folders, and referenced textures. Materials + animations are NOT in the glbs (they're ours, applied by the player from scene.toml + clips). A read; the files ride the `/bundle/<id>/<path>` side-channel and land in a temp directory — NEVER inlined in this result. Returns `{name, bundle_dir, files:[{path, byte_len}], total_bytes, url_base}`: read/copy the bundle from `bundle_dir`, or fetch files over HTTP at `<server>/<url_base>/<path>`. Optional per-call bundle-option overrides (mesh_compression/mesh_quantization/smart_threshold_mm/texture_compression — same vocabulary as set_bundle_options) apply to THIS export only; the project-persisted options are not modified."
     )]
     async fn export_player_bundle(
         &self,
         Parameters(p): Parameters<ExportBundleParams>,
     ) -> Result<CallToolResult, McpError> {
-        match self.req(Request::ExportPlayerBundle).await? {
+        let patch = bundle_options_patch(
+            p.mesh_compression.as_deref(),
+            p.mesh_quantization.as_deref(),
+            p.smart_threshold_mm,
+            p.texture_compression.as_deref(),
+        )?;
+        let overrides = (patch != Default::default()).then_some(patch);
+        match self.req(Request::ExportPlayerBundle { overrides }).await? {
             Response::Bundle(handle) => {
                 let dir = crate::http::bundle_dir(&handle.id);
                 // Confirm the uploads actually landed before reporting success.
@@ -3680,6 +3765,30 @@ impl EditorMcp {
             export,
         })
         .await
+    }
+
+    #[tool(
+        description = "Patch the project's PLAYER-BUNDLE export options (persisted in project.toml; consulted by every export_player_bundle). Omitted fields keep their current value. mesh_compression: off | meshopt (EXT_meshopt_compression stream encoding, default meshopt). mesh_quantization: off | always | smart (KHR_mesh_quantization; default smart = quantize only when the position grid step max-half-extent/32767 stays at or under smart_threshold_mm, default 0.1). Structural guards (morph targets, multi-skin/mixed-use meshes, IBM-less skins, out-of-[0,1] UVs) always apply, even under `always` — they are correctness, not policy. The two mesh knobs are independent: quantization without meshopt emits plain quantized bufferViews. texture_compression: ktx2 (default) | off (= lossless WebP, pixel-exact — never raw source dumps); per-texture prefs (set_texture_export) override the global either way. Applies to base mesh glbs, bundle rig copies, and coarse LOD chain glbs. Undoable. For a one-off export with different options, use export_player_bundle's per-call overrides instead."
+    )]
+    async fn set_bundle_options(
+        &self,
+        Parameters(p): Parameters<SetBundleOptionsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let patch = bundle_options_patch(
+            p.mesh_compression.as_deref(),
+            p.mesh_quantization.as_deref(),
+            p.smart_threshold_mm,
+            p.texture_compression.as_deref(),
+        )?;
+        if patch == Default::default() {
+            return Err(McpError::invalid_params(
+                "no fields given — pass at least one of mesh_compression | mesh_quantization | \
+                 smart_threshold_mm | texture_compression",
+                None,
+            ));
+        }
+        self.dispatch(EditorCommand::SetBundleOptions { patch })
+            .await
     }
 
     #[tool(

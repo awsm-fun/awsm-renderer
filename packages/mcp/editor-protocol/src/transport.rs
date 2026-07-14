@@ -53,8 +53,12 @@ pub enum Request {
     /// `assets/` directory). Like [`Request::ExportGlb`], the file bytes never
     /// ride the control link (or the agent's token stream): the editor POSTs
     /// each file to the server's `/bundle/<id>/<path>` side-channel and replies
-    /// with a small [`BundleHandle`] manifest.
-    ExportPlayerBundle,
+    /// with a small [`BundleHandle`] manifest. `overrides` (per-call, optional)
+    /// merges onto the project-persisted [`crate::BundleOptions`] for THIS bake
+    /// only — the persisted options are not modified.
+    ExportPlayerBundle {
+        overrides: Option<crate::project::BundleOptionsPatch>,
+    },
     /// Serialize the open project to its persisted form — the same
     /// `project.toml` + `assets/*` side files a directory Save writes. Like
     /// [`Request::ExportPlayerBundle`], the file bytes never ride the control
@@ -441,6 +445,16 @@ mod wire_roundtrip_tests {
                     len: 2.0,
                 },
             ),
+            (
+                "set_bundle_options",
+                EditorCommand::SetBundleOptions {
+                    patch: crate::project::BundleOptionsPatch {
+                        mesh_quantization: Some(crate::project::MeshQuantization::Always),
+                        smart_threshold_mm: Some(0.25),
+                        ..Default::default()
+                    },
+                },
+            ),
         ];
         for (label, cmd) in cmds {
             // The serde tag must be the snake_case `cmd` discriminator.
@@ -503,7 +517,19 @@ mod wire_roundtrip_tests {
             },
             "export_glb_node",
         );
-        assert_roundtrips(&Request::ExportPlayerBundle, "export_player_bundle");
+        assert_roundtrips(
+            &Request::ExportPlayerBundle { overrides: None },
+            "export_player_bundle",
+        );
+        assert_roundtrips(
+            &Request::ExportPlayerBundle {
+                overrides: Some(crate::project::BundleOptionsPatch {
+                    texture_compression: Some(crate::project::TextureCompression::Off),
+                    ..Default::default()
+                }),
+            },
+            "export_player_bundle_overrides",
+        );
         assert_roundtrips(&Request::SaveProject, "save_project");
         assert_roundtrips(&Request::Mode, "mode");
     }
