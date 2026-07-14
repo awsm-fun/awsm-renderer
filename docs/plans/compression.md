@@ -842,6 +842,42 @@ two-channel normals rendering correctly on both robots (screenshots).
 
 FOLLOW-UP QUEUE COMPLETE.
 
+## F5. gltfpack parity (added 2026-07-14, David)
+
+Goal: importing a RAW export (`fixtures/local/astrabot-large.glb`, 188MB) and
+bundling from the editor should get CLOSE to the gltfpack artifact
+(`astrabot-meshopt.glb`, 14.46MB total) — comparing bundle TOTALS (our
+textures ship as separate assets).
+
+Diagnosis (per-stream, astrabot): our POSITION/TEXCOORD/NORMAL/INDICES bytes
+are ALREADY byte-equal to gltfpack's. The former 27% rig-size gap was:
+- WEIGHTS shipped f32 (1.015MB vs gltfpack's 0.258MB u8-normalized) — 70%.
+- TANGENT +0.26MB — legitimate new data (MikkTSpace at import; source has none).
+- JOINTS u16 vs u8, IBM 0.133 vs 0.081 (likely per-skin IBM duplication) — minor.
+
+Pieces:
+- [x] Quantize skin WEIGHTS → u8-normalized (per-vertex renormalized to sum
+      255) + JOINTS → u8 when max joint < 256. CORE glTF component types (no
+      new extension). Gated on `mesh_quantization != Off`. Player skin path
+      already accepts u8/u16/u32 joints + u8/u16-normalized/f32 weights.
+- [x] Pre-encode meshopt optimization passes (`reorder_primitives` in
+      compress.rs): optimizeVertexCache → optimizeOverdraw (1.05) →
+      optimizeVertexFetch remap applied to EVERY per-vertex stream of the
+      primitive (attributes + morph targets) + rewritten indices. No-op on
+      already-optimized (gltfpack-sourced) input; the win is raw exports.
+      Skips: fetch-compaction that would drop unused vertices, shared-accessor
+      primitives, non-triangle modes, non-f32 positions. Roundtrip tests
+      rewritten order-insensitively (pair-by-position + triangle multisets).
+- [x] Native fixture-gated parity test (`raw_export_compresses_close_to_gltfpack`,
+      gated on astrabot-large + astrabot-meshopt): 188MB raw export →
+      reexport_clean_scene → strip+compress = **2.547MB vs gltfpack's 2.409MB
+      geometry — ratio 1.057** (asserted ≤ 1.25). GOAL MET. Editor adds
+      MikkTSpace tangents on top (+~0.26MB, data gltfpack doesn't ship).
+- [ ] (deferred candidates) per-skin IBM dedup (0.133 vs 0.081MB — most of
+      the remaining 5.7%); quantized-passthrough for unedited imported meshes
+      (zero-generation geometry — would also carry source tangent-free
+      encoding verbatim).
+
 ## Closed / not queued
 
 - **GPU-quantized vertex formats: CLOSED, not approved.** Dual-layout is dead

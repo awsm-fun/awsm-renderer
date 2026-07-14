@@ -183,11 +183,11 @@ mod roundtrip_tests {
             crate::populate::mesh::read_vec3_dequant(&prim, &gltf::Semantic::Positions, &buffers)
                 .unwrap();
         let tol = s[0] / 32767.0 * 2.0;
-        for (got, want) in positions.iter().zip(&mesh.positions) {
-            for k in 0..3 {
-                assert!((got[k] * s[k] + t[k] - want[k]).abs() <= tol);
-            }
-        }
+        let world: Vec<[f32; 3]> = positions
+            .iter()
+            .map(|g| [g[0] * s[0] + t[0], g[1] * s[1] + t[1], g[2] * s[2] + t[2]])
+            .collect();
+        pair_by_position(&world, &mesh.positions, tol);
     }
 
     /// Skinned round-trip: the dequant transform must fold into the skin's
@@ -266,14 +266,73 @@ mod roundtrip_tests {
         // Bind pose with identity joint world: position = IBM' × v_quant.
         let scale = ibm.x_axis.x; // uniform dequant scale
         let tol = scale / 32767.0 * 2.0;
-        for (q, want) in positions.iter().zip(&mesh.positions) {
-            let v = ibm.transform_point3(glam::Vec3::from_array(*q));
-            for k in 0..3 {
-                assert!(
-                    (v[k] - want[k]).abs() <= tol,
-                    "skinned position {v:?} vs {want:?} (tol {tol})"
-                );
+        let world: Vec<[f32; 3]> = positions
+            .iter()
+            .map(|q| ibm.transform_point3(glam::Vec3::from_array(*q)).to_array())
+            .collect();
+        pair_by_position(&world, &mesh.positions, tol);
+    }
+
+    /// Skin WEIGHTS quantize to u8-normalized with each vertex renormalized
+    /// to sum exactly 255, and JOINTS drop to u8 when they fit (gltfpack
+    /// parity, plan F5 — this was 70% of the rig-size gap).
+    #[test]
+    fn skin_weights_and_joints_quantize() {
+        use awsm_renderer_glb_export::ExportSkin;
+
+        let mut mesh = MeshData::default();
+        for i in 0..12u32 {
+            let f = i as f32;
+            mesh.positions.push([f * 0.2 - 1.0, (f * 0.5).sin(), 0.5]);
+        }
+        mesh.indices = (0..12u32).collect();
+        mesh.compute_vertex_normals();
+        let n = mesh.positions.len();
+
+        let mut skinned = ExportNode::new("skinned").with_mesh(mesh.clone());
+        skinned.skin = Some(0);
+        skinned.joints = Some(vec![[0u16, 1, 0, 0]; n]);
+        // Deliberately awkward weights: rounding must renormalize to 255.
+        skinned.weights = Some(vec![[0.7f32, 0.2, 0.06, 0.04]; n]);
+
+        let identity: [f32; 16] = glam::Mat4::IDENTITY.to_cols_array();
+        let scene = GlbScene {
+            nodes: vec![ExportNode::new("j0"), ExportNode::new("j1"), skinned],
+            animations: vec![],
+            skins: vec![ExportSkin {
+                joints: vec![0, 1],
+                inverse_bind_matrices: vec![identity, identity],
+                skeleton: Some(0),
+            }],
+            images: vec![],
+            env: None,
+        };
+        let compressed = compress_glb(&write_glb(&scene)).unwrap();
+        let gltf = parse_gltf_lenient(&compressed).unwrap();
+        let doc = &gltf.document;
+        let blob = gltf.blob.clone().unwrap();
+        let mut buffers = materialize(doc, &blob);
+        decode_meshopt_buffer_views(doc, &mut buffers).unwrap();
+
+        let prim = doc.meshes().next().unwrap().primitives().next().unwrap();
+        let w_acc = prim.get(&gltf::Semantic::Weights(0)).unwrap();
+        assert_eq!(w_acc.data_type(), gltf::accessor::DataType::U8);
+        assert!(w_acc.normalized());
+        let j_acc = prim.get(&gltf::Semantic::Joints(0)).unwrap();
+        assert_eq!(j_acc.data_type(), gltf::accessor::DataType::U8);
+
+        let reader = prim.reader(|b| buffers.get(b.index()).map(|v| &v[..]));
+        for w in reader.read_weights(0).unwrap().into_u8() {
+            // Renormalized: quantized weights sum to exactly 255 (partition
+            // of unity), each within 1 step of the source.
+            assert_eq!(w.iter().map(|&v| v as u32).sum::<u32>(), 255, "{w:?}");
+            let src = [0.7f32, 0.2, 0.06, 0.04];
+            for k in 0..4 {
+                assert!((w[k] as f32 / 255.0 - src[k]).abs() <= 1.5 / 255.0);
             }
+        }
+        for j in reader.read_joints(0).unwrap().into_u16() {
+            assert_eq!(j, [0, 1, 0, 0]);
         }
     }
 
@@ -525,48 +584,88 @@ mod roundtrip_tests {
                 .expect("quantized positions readable");
         assert_eq!(positions.len(), source.positions.len());
         let tolerance = scale[0] / 32767.0 * 2.0;
-        for (got, want) in positions.iter().zip(&source.positions) {
-            for k in 0..3 {
-                let world = got[k] * scale[k] + translation[k];
-                assert!(
-                    (world - want[k]).abs() <= tolerance,
-                    "position {world} vs {} (tol {tolerance})",
-                    want[k]
-                );
-            }
-        }
+        let world: Vec<[f32; 3]> = positions
+            .iter()
+            .map(|g| {
+                [
+                    g[0] * scale[0] + translation[0],
+                    g[1] * scale[1] + translation[1],
+                    g[2] * scale[2] + translation[2],
+                ]
+            })
+            .collect();
+        let pairing = pair_by_position(&world, &source.positions, tolerance);
 
-        // Normals: octahedral round-trip stays within ~1 degree.
+        // Normals: octahedral round-trip stays within ~1 degree (paired by
+        // position — the reorder pass permutes vertex order).
         let normals =
             crate::populate::mesh::read_vec3_dequant(&prim, &gltf::Semantic::Normals, &buffers)
                 .expect("quantized normals readable");
         let source_normals = source.normals.as_ref().unwrap();
-        for (got, want) in normals.iter().zip(source_normals) {
+        for (i, want) in source_normals.iter().enumerate() {
+            let got = normals[pairing[i]];
             let len = (got[0] * got[0] + got[1] * got[1] + got[2] * got[2]).sqrt();
             let dot = (got[0] * want[0] + got[1] * want[1] + got[2] * want[2]) / len.max(1e-6);
             assert!(dot > 0.98, "normal deviated (dot {dot})");
         }
 
-        // Indices: same triangles (index codec preserves order for sequential
-        // grid strips; compare as sets of rotation-normalized triangles).
+        // Indices: same triangle multiset in SOURCE vertex ids (winding
+        // preserved; triangle + vertex order both permuted by the reorder).
         let reader = prim.reader(|b| buffers.get(b.index()).map(|v| &v[..]));
         let indices: Vec<u32> = reader.read_indices().unwrap().into_u32().collect();
         assert_eq!(indices.len(), source.indices.len());
-        fn norm(t: &[u32]) -> [u32; 3] {
-            let m = (0..3).min_by_key(|&i| t[i]).unwrap();
-            [t[m], t[(m + 1) % 3], t[(m + 2) % 3]]
-        }
-        for (a, b) in indices.chunks_exact(3).zip(source.indices.chunks_exact(3)) {
-            assert_eq!(norm(a), norm(b));
-        }
+        let remapped = remap_to_source_ids(&indices, &pairing, world.len());
+        assert_eq!(
+            triangle_multiset(&remapped),
+            triangle_multiset(&source.indices)
+        );
 
         // UVs (u16-normalized): the gltf typed reader handles unorm16.
         let uvs: Vec<[f32; 2]> = reader.read_tex_coords(0).unwrap().into_f32().collect();
-        for (got, want) in uvs.iter().zip(&source.uvs[0]) {
+        for (i, want) in source.uvs[0].iter().enumerate() {
+            let got = uvs[pairing[i]];
             for k in 0..2 {
                 assert!((got[k] - want[k]).abs() <= 2.0 / 65535.0);
             }
         }
+    }
+
+    /// The pre-encode reorder pass (gltfpack parity, plan F5) permutes vertex
+    /// AND triangle order, so fidelity is checked by VALUE: pair each source
+    /// vertex with the decoded vertex whose (world-space) position matches
+    /// within `tol` per component. Panics when a source vertex has no match.
+    fn pair_by_position(decoded: &[[f32; 3]], source: &[[f32; 3]], tol: f32) -> Vec<usize> {
+        source
+            .iter()
+            .map(|want| {
+                decoded
+                    .iter()
+                    .position(|got| (0..3).all(|k| (got[k] - want[k]).abs() <= tol))
+                    .unwrap_or_else(|| panic!("no decoded vertex within {tol} of {want:?}"))
+            })
+            .collect()
+    }
+
+    /// Rotation-normalized triangle multiset over vertex ids — winding
+    /// preserved, triangle order ignored.
+    fn triangle_multiset(indices: &[u32]) -> std::collections::BTreeMap<[u32; 3], usize> {
+        let mut out = std::collections::BTreeMap::new();
+        for t in indices.chunks_exact(3) {
+            let m = (0..3).min_by_key(|&i| t[i]).unwrap();
+            *out.entry([t[m], t[(m + 1) % 3], t[(m + 2) % 3]])
+                .or_default() += 1;
+        }
+        out
+    }
+
+    /// Decoded indices remapped into SOURCE vertex ids via the position
+    /// pairing, for triangle-set comparison against the source indices.
+    fn remap_to_source_ids(indices: &[u32], pairing: &[usize], decoded_len: usize) -> Vec<u32> {
+        let mut inverse = vec![u32::MAX; decoded_len];
+        for (source_id, &decoded_id) in pairing.iter().enumerate() {
+            inverse[decoded_id] = source_id as u32;
+        }
+        indices.iter().map(|&i| inverse[i as usize]).collect()
     }
 
     fn required_extensions(glb: &[u8]) -> Vec<String> {
@@ -627,11 +726,11 @@ mod roundtrip_tests {
             crate::populate::mesh::read_vec3_dequant(&prim, &gltf::Semantic::Positions, &buffers)
                 .unwrap();
         let tol = s[0] / 32767.0 * 2.0;
-        for (got, want) in positions.iter().zip(&source.positions) {
-            for k in 0..3 {
-                assert!((got[k] * s[k] + t[k] - want[k]).abs() <= tol);
-            }
-        }
+        let world: Vec<[f32; 3]> = positions
+            .iter()
+            .map(|g| [g[0] * s[0] + t[0], g[1] * s[1] + t[1], g[2] * s[2] + t[2]])
+            .collect();
+        let pairing = pair_by_position(&world, &source.positions, tol);
 
         // Normals: direct i16-normalized, no filter — near-exact.
         let norm_acc = prim.get(&gltf::Semantic::Normals).unwrap();
@@ -639,15 +738,21 @@ mod roundtrip_tests {
         let normals =
             crate::populate::mesh::read_vec3_dequant(&prim, &gltf::Semantic::Normals, &buffers)
                 .unwrap();
-        for (got, want) in normals.iter().zip(source.normals.as_ref().unwrap()) {
+        for (i, want) in source.normals.as_ref().unwrap().iter().enumerate() {
+            let got = normals[pairing[i]];
             let dot = got[0] * want[0] + got[1] * want[1] + got[2] * want[2];
             assert!(dot > 0.9999, "snorm16 normal deviated (dot {dot})");
         }
 
-        // Indices stay raw (index codec is meshopt-only).
+        // Indices stay raw bytes (index codec is meshopt-only) but the
+        // reorder pass still permutes them — compare triangle multisets.
         let reader = prim.reader(|b| buffers.get(b.index()).map(|v| &v[..]));
         let indices: Vec<u32> = reader.read_indices().unwrap().into_u32().collect();
-        assert_eq!(indices, source.indices);
+        let remapped = remap_to_source_ids(&indices, &pairing, world.len());
+        assert_eq!(
+            triangle_multiset(&remapped),
+            triangle_multiset(&source.indices)
+        );
     }
 
     /// meshopt WITHOUT quantization: streams encode losslessly, accessors stay
@@ -684,10 +789,16 @@ mod roundtrip_tests {
         let pos_acc = prim.get(&gltf::Semantic::Positions).unwrap();
         assert_eq!(pos_acc.data_type(), gltf::accessor::DataType::F32);
 
-        // meshopt alone is lossless: exact f32 round-trip.
+        // meshopt alone is lossless: the exact f32 VALUES survive (the
+        // reorder pass permutes order — compare as sorted multisets).
         let reader = prim.reader(|b| buffers.get(b.index()).map(|v| &v[..]));
         let positions: Vec<[f32; 3]> = reader.read_positions().unwrap().collect();
-        assert_eq!(positions, source.positions);
+        let key = |p: &[f32; 3]| (p[0].to_bits(), p[1].to_bits(), p[2].to_bits());
+        let mut got = positions.clone();
+        let mut want = source.positions.clone();
+        got.sort_by_key(key);
+        want.sort_by_key(key);
+        assert_eq!(got, want);
     }
 
     /// Smart mode: a mesh whose grid step exceeds the threshold keeps F32
@@ -806,6 +917,71 @@ mod astrabot_fixture_tests {
                 }
             }
         }
+    }
+}
+
+/// gltfpack parity (plan F5): the RAW Blender export, pushed through OUR
+/// pipeline (clean-rig re-export → strip → compress), must land close to the
+/// gltfpack artifact's geometry size. Gated on both local fixtures.
+#[cfg(all(test, has_local_fixtures_astrabot_large))]
+mod parity_fixture_tests {
+    use super::*;
+    use crate::loader::parse_gltf_lenient;
+
+    const LARGE: &[u8] = include_bytes!("../../../../fixtures/local/astrabot-large.glb");
+    const PACKED: &[u8] = include_bytes!("../../../../fixtures/local/astrabot-meshopt.glb");
+
+    /// Total bytes of bufferViews referenced by images (the embedded texture
+    /// payload) — subtracted to compare GEOMETRY against geometry.
+    fn image_bytes(glb: &[u8]) -> usize {
+        let json_len = u32::from_le_bytes(glb[12..16].try_into().unwrap()) as usize;
+        let raw: gltf::json::Value =
+            gltf::json::deserialize::from_slice(&glb[20..20 + json_len]).unwrap();
+        let views = raw["bufferViews"].as_array().cloned().unwrap_or_default();
+        raw["images"]
+            .as_array()
+            .map(|imgs| {
+                imgs.iter()
+                    .filter_map(|img| img["bufferView"].as_u64())
+                    .filter_map(|v| views.get(v as usize))
+                    .filter_map(|v| v["byteLength"].as_u64())
+                    .sum::<u64>() as usize
+            })
+            .unwrap_or(0)
+    }
+
+    #[test]
+    fn raw_export_compresses_close_to_gltfpack() {
+        use awsm_renderer_glb_export::{
+            compress_glb, reexport_clean_scene, strip_materials_and_images, write_glb,
+        };
+
+        // Parse WITHOUT decoding the (huge) embedded textures.
+        let gltf = parse_gltf_lenient(LARGE).expect("large fixture parses");
+        let blob = gltf.blob.clone().expect("GLB BIN");
+        let buffers = vec![blob];
+        let scene = reexport_clean_scene(&gltf.document, &buffers).expect("clean-rig re-export");
+        let ours = compress_glb(&strip_materials_and_images(&write_glb(&scene)).unwrap())
+            .expect("strip+compress");
+
+        let gltfpack_geometry = PACKED.len() - image_bytes(PACKED);
+        let ratio = ours.len() as f64 / gltfpack_geometry as f64;
+        println!(
+            "parity: ours {} bytes vs gltfpack geometry {} bytes (ratio {ratio:.3})",
+            ours.len(),
+            gltfpack_geometry
+        );
+        assert!(
+            ratio <= 1.25,
+            "our pipeline must land within 25% of gltfpack's geometry \
+             ({} vs {gltfpack_geometry}, ratio {ratio:.3})",
+            ours.len()
+        );
+        assert!(
+            ratio >= 0.4,
+            "suspiciously small output ({} bytes) — did the re-export drop meshes?",
+            ours.len()
+        );
     }
 }
 

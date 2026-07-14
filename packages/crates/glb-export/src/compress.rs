@@ -206,7 +206,9 @@ pub fn compress_glb_with(glb: &[u8], options: &CompressOptions) -> anyhow::Resul
         Tangent,
         TexCoord,
         Indices,
-        OtherVertex, // colors / joints / weights — meshopt yes, quantize no
+        Joints,      // u16 → u8 when every joint index fits (core glTF type)
+        Weights,     // f32 → u8-normalized, per-vertex renormalized (core glTF)
+        OtherVertex, // colors etc. — meshopt yes, quantize no
         Raw,         // IBMs, animation samplers, morph deltas, unknown
     }
     let acc_count = root.accessors.len();
@@ -226,6 +228,8 @@ pub fn compress_glb_with(glb: &[u8], options: &CompressOptions) -> anyhow::Resul
                     Checked::Valid(json::mesh::Semantic::Normals) => Role::Normal,
                     Checked::Valid(json::mesh::Semantic::Tangents) => Role::Tangent,
                     Checked::Valid(json::mesh::Semantic::TexCoords(_)) => Role::TexCoord,
+                    Checked::Valid(json::mesh::Semantic::Joints(_)) => Role::Joints,
+                    Checked::Valid(json::mesh::Semantic::Weights(_)) => Role::Weights,
                     _ => Role::OtherVertex,
                 };
                 roles[acc.value()] = role;
@@ -280,7 +284,7 @@ pub fn compress_glb_with(glb: &[u8], options: &CompressOptions) -> anyhow::Resul
         }
     }
 
-    let read_accessor = |acc: &json::Accessor| -> anyhow::Result<&[u8]> {
+    let read_raw = |acc: &json::Accessor| -> anyhow::Result<&[u8]> {
         let view_index = acc
             .buffer_view
             .ok_or_else(|| anyhow::anyhow!("accessor without bufferView"))?
@@ -294,6 +298,28 @@ pub fn compress_glb_with(glb: &[u8], options: &CompressOptions) -> anyhow::Resul
         bin.get(start..start + len)
             .ok_or_else(|| anyhow::anyhow!("accessor range out of BIN bounds"))
     };
+
+    // ── pre-encode reordering (gltfpack parity, plan F5) ──────────────────
+    // Per primitive: vertex-cache triangle reorder → overdraw reorder →
+    // vertex-fetch remap applied to EVERY per-vertex stream (attributes +
+    // morph targets) with the indices rewritten to match. The meshopt vertex
+    // codec compresses deltas over the resulting locality, which is a large
+    // part of gltfpack's ratio on raw exports; on already-optimized input the
+    // passes are no-ops. A TERMINAL transform: only the bundle artifact is
+    // reordered, never the saved project. `reordered` overrides accessor
+    // bytes for every downstream read (bounds, quantize, encode).
+    let reordered: HashMap<usize, Vec<u8>> =
+        reorder_primitives(&root, |acc| read_raw(acc).map(|d| d.to_vec()))?;
+    // Takes the accessor ref alongside its index so the closure captures only
+    // `reordered` + `read_raw` (whose capture is the bufferView table —
+    // disjoint from `root.accessors`, which the stream pass mutates).
+    let read_accessor =
+        |index: usize, acc: &json::Accessor| -> anyhow::Result<std::borrow::Cow<'_, [u8]>> {
+            if let Some(bytes) = reordered.get(&index) {
+                return Ok(std::borrow::Cow::Borrowed(bytes.as_slice()));
+            }
+            read_raw(acc).map(std::borrow::Cow::Borrowed)
+        };
 
     // Per-mesh position bounds → per-mesh dequant (center, uniform half-extent).
     let mut mesh_bounds: HashMap<usize, (Vec3, Vec3)> = HashMap::new();
@@ -317,7 +343,7 @@ pub fn compress_glb_with(glb: &[u8], options: &CompressOptions) -> anyhow::Resul
                 ok = false;
                 break;
             }
-            for chunk in read_accessor(acc)?.chunks_exact(12) {
+            for chunk in read_accessor(pos.value(), acc)?.chunks_exact(12) {
                 let v = Vec3::new(
                     f32::from_le_bytes(chunk[0..4].try_into().unwrap()),
                     f32::from_le_bytes(chunk[4..8].try_into().unwrap()),
@@ -421,7 +447,7 @@ pub fn compress_glb_with(glb: &[u8], options: &CompressOptions) -> anyhow::Resul
             continue;
         };
         let dequant = Mat4::from_translation(center) * Mat4::from_scale(Vec3::splat(s));
-        let data = read_accessor(&root.accessors[ibm_acc_index])?;
+        let data = read_accessor(ibm_acc_index, &root.accessors[ibm_acc_index])?;
         let mut out = Vec::with_capacity(data.len());
         for chunk in data.chunks_exact(64) {
             let mut cols = [0f32; 16];
@@ -449,7 +475,7 @@ pub fn compress_glb_with(glb: &[u8], options: &CompressOptions) -> anyhow::Resul
         }
         let data: Vec<u8> = match ibm_patched.get(&index) {
             Some(patched) => patched.clone(),
-            None => read_accessor(acc)?.to_vec(),
+            None => read_accessor(index, &root.accessors[index])?.to_vec(),
         };
         let count = acc.count.0 as usize;
         let comp = acc.component_type.unwrap().0;
@@ -566,9 +592,63 @@ pub fn compress_glb_with(glb: &[u8], options: &CompressOptions) -> anyhow::Resul
                     parent_stride: Some(4),
                 })
             }
+            // Skin WEIGHTS → u8-normalized VEC4, per-vertex renormalized so
+            // the quantized weights still sum to exactly 255 (partition of
+            // unity survives). CORE glTF component type — no extension — and
+            // no dequant carrier needed (absolute values), so the structural
+            // mesh guards don't apply. gltfpack parity (plan F5): this was
+            // 70% of the rig-size gap (f32 weights vs gltfpack's u8).
+            Role::Weights
+                if quantize_requested
+                    && comp == accessor::ComponentType::F32
+                    && multiplicity == 4 =>
+            {
+                let logical = quantize_weights_unorm8(&data, count);
+                let acc = &mut root.accessors[index];
+                acc.component_type =
+                    Checked::Valid(accessor::GenericComponentType(accessor::ComponentType::U8));
+                acc.normalized = true;
+                Some(Stream {
+                    logical,
+                    stride: 4,
+                    count,
+                    mode: Mode::Attributes,
+                    filter: None,
+                    parent_stride: Some(4),
+                })
+            }
+            // Skin JOINTS u16 → u8 when every joint index fits (CORE type).
+            Role::Joints
+                if quantize_requested
+                    && comp == accessor::ComponentType::U16
+                    && multiplicity == 4
+                    && joints_fit_u8(&data) =>
+            {
+                let logical: Vec<u8> = data
+                    .chunks_exact(2)
+                    .map(|c| u16::from_le_bytes(c.try_into().unwrap()) as u8)
+                    .collect();
+                let acc = &mut root.accessors[index];
+                acc.component_type =
+                    Checked::Valid(accessor::GenericComponentType(accessor::ComponentType::U8));
+                Some(Stream {
+                    logical,
+                    stride: 4,
+                    count,
+                    mode: Mode::Attributes,
+                    filter: None,
+                    parent_stride: Some(4),
+                })
+            }
             // Everything else vertex-shaped still meshopt-encodes when its
             // element size is stride-legal (4..=256, multiple of 4).
-            Role::Normal | Role::Tangent | Role::TexCoord | Role::Position | Role::OtherVertex
+            Role::Normal
+            | Role::Tangent
+            | Role::TexCoord
+            | Role::Position
+            | Role::Joints
+            | Role::Weights
+            | Role::OtherVertex
                 if options.meshopt && elem % 4 == 0 && (4..=256).contains(&elem) =>
             {
                 Some(Stream {
@@ -740,7 +820,7 @@ pub fn compress_glb_with(glb: &[u8], options: &CompressOptions) -> anyhow::Resul
                 // raw re-append (IBMs use patched bytes)
                 let data: Vec<u8> = match ibm_patched.get(&index) {
                     Some(patched) => patched.clone(),
-                    None => read_accessor(&root.accessors[index])?.to_vec(),
+                    None => read_accessor(index, &root.accessors[index])?.to_vec(),
                 };
                 align4(&mut real);
                 let offset = real.len();
@@ -811,6 +891,187 @@ pub fn compress_glb_with(glb: &[u8], options: &CompressOptions) -> anyhow::Resul
         serde_json::to_vec(&root)?,
         real,
     ))
+}
+
+/// Per-primitive pre-encode reordering (gltfpack parity — docs/plans/
+/// compression.md F5): vertex-cache triangle reorder → overdraw reorder
+/// (threshold 1.05) → vertex-fetch remap applied to every per-vertex stream
+/// (attributes + morph targets) with indices rewritten to match. Returns
+/// accessor-index → replacement bytes; accessors it doesn't touch read their
+/// original bytes. Skips (leaving the primitive untouched, never failing the
+/// bake): non-triangle modes, primitives sharing accessors with another
+/// primitive, non-f32 positions, out-of-range indices, and the fetch remap
+/// when it would COMPACT unused vertices (accessor counts + exact min/max
+/// would churn — the triangle-order wins are kept in that case).
+fn reorder_primitives(
+    root: &json::Root,
+    read: impl Fn(&json::Accessor) -> anyhow::Result<Vec<u8>>,
+) -> anyhow::Result<HashMap<usize, Vec<u8>>> {
+    // Accessor usage counts: reordering is only safe when this primitive
+    // exclusively owns every accessor it would rewrite.
+    let mut usage = vec![0u32; root.accessors.len()];
+    let prim_vertex_accs = |prim: &json::mesh::Primitive| -> Vec<usize> {
+        let mut accs: Vec<usize> = prim.attributes.values().map(|a| a.value()).collect();
+        if let Some(targets) = &prim.targets {
+            for t in targets {
+                for a in [t.positions, t.normals, t.tangents].into_iter().flatten() {
+                    accs.push(a.value());
+                }
+            }
+        }
+        accs
+    };
+    for mesh in &root.meshes {
+        for prim in &mesh.primitives {
+            if let Some(i) = prim.indices {
+                usage[i.value()] += 1;
+            }
+            for a in prim_vertex_accs(prim) {
+                usage[a] += 1;
+            }
+        }
+    }
+
+    let mut out: HashMap<usize, Vec<u8>> = HashMap::new();
+    for mesh in &root.meshes {
+        for prim in &mesh.primitives {
+            if !matches!(prim.mode, Checked::Valid(json::mesh::Mode::Triangles)) {
+                continue;
+            }
+            let Some(indices_index) = prim.indices.map(|i| i.value()) else {
+                continue;
+            };
+            let Some(pos_index) = prim
+                .attributes
+                .get(&Checked::Valid(json::mesh::Semantic::Positions))
+                .map(|a| a.value())
+            else {
+                continue;
+            };
+            let vertex_accs = prim_vertex_accs(prim);
+            if usage[indices_index] > 1 || vertex_accs.iter().any(|&a| usage[a] > 1) {
+                continue;
+            }
+            let acc_ok = |i: usize| {
+                let a = &root.accessors[i];
+                a.buffer_view.is_some() && a.sparse.is_none()
+            };
+            if !acc_ok(indices_index) || !vertex_accs.iter().all(|&a| acc_ok(a)) {
+                continue;
+            }
+
+            let idx_acc = &root.accessors[indices_index];
+            let icount = idx_acc.count.0 as usize;
+            let idx_comp = idx_acc.component_type.unwrap().0;
+            if icount % 3 != 0 {
+                continue;
+            }
+            let idx_bytes = read(idx_acc)?;
+            let mut indices: Vec<u32> = match idx_comp {
+                accessor::ComponentType::U16 => idx_bytes
+                    .chunks_exact(2)
+                    .map(|c| u16::from_le_bytes(c.try_into().unwrap()) as u32)
+                    .collect(),
+                accessor::ComponentType::U32 => idx_bytes
+                    .chunks_exact(4)
+                    .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
+                    .collect(),
+                _ => continue,
+            };
+
+            let pos_acc = &root.accessors[pos_index];
+            if pos_acc.component_type.unwrap().0 != accessor::ComponentType::F32
+                || type_multiplicity(pos_acc.type_.unwrap()) != 3
+            {
+                continue;
+            }
+            let vertex_count = pos_acc.count.0 as usize;
+            if vertex_count == 0 || indices.iter().any(|&i| i as usize >= vertex_count) {
+                continue;
+            }
+
+            // 1. Post-transform vertex-cache order.
+            unsafe {
+                ffi::meshopt_optimizeVertexCache(
+                    indices.as_mut_ptr(),
+                    indices.as_ptr(),
+                    icount,
+                    vertex_count,
+                );
+            }
+            // 2. Overdraw order (within cache constraints). Positions copy
+            //    into an aligned f32 buffer — the raw accessor bytes are only
+            //    byte-aligned.
+            let positions: Vec<f32> = read(pos_acc)?
+                .chunks_exact(4)
+                .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+                .collect();
+            unsafe {
+                ffi::meshopt_optimizeOverdraw(
+                    indices.as_mut_ptr(),
+                    indices.as_ptr(),
+                    icount,
+                    positions.as_ptr(),
+                    vertex_count,
+                    12,
+                    1.05,
+                );
+            }
+            // 3. Vertex-fetch remap — only when it wouldn't compact.
+            let mut remap = vec![0u32; vertex_count];
+            let unique = unsafe {
+                ffi::meshopt_optimizeVertexFetchRemap(
+                    remap.as_mut_ptr(),
+                    indices.as_ptr(),
+                    icount,
+                    vertex_count,
+                )
+            };
+            if unique == vertex_count {
+                for i in &mut indices {
+                    *i = remap[*i as usize];
+                }
+                for &ai in &vertex_accs {
+                    let acc = &root.accessors[ai];
+                    if acc.count.0 as usize != vertex_count {
+                        // Inconsistent stream length — leave this stream in
+                        // source order would desync it; bail on the remap by
+                        // restoring identity for the whole primitive instead.
+                        anyhow::bail!(
+                            "primitive vertex streams disagree on count ({} vs {vertex_count})",
+                            acc.count.0
+                        );
+                    }
+                    let elem = component_size(acc.component_type.unwrap().0)
+                        * type_multiplicity(acc.type_.unwrap());
+                    let src = read(acc)?;
+                    let mut dst = vec![0u8; src.len()];
+                    for v in 0..vertex_count {
+                        let d = remap[v] as usize;
+                        dst[d * elem..(d + 1) * elem]
+                            .copy_from_slice(&src[v * elem..(v + 1) * elem]);
+                    }
+                    out.insert(ai, dst);
+                }
+            }
+            // Rewritten indices (cache+overdraw order, remapped when fetch ran).
+            let mut bytes = Vec::with_capacity(idx_bytes.len());
+            match idx_comp {
+                accessor::ComponentType::U16 => {
+                    for i in &indices {
+                        bytes.extend_from_slice(&(*i as u16).to_le_bytes());
+                    }
+                }
+                _ => {
+                    for i in &indices {
+                        bytes.extend_from_slice(&i.to_le_bytes());
+                    }
+                }
+            }
+            out.insert(indices_index, bytes);
+        }
+    }
+    Ok(out)
 }
 
 fn default_node() -> json::Node {
@@ -932,6 +1193,38 @@ fn quantize_snorm16(data: &[u8], count: usize, components: usize) -> Vec<u8> {
         if components == 3 {
             out.extend_from_slice(&[0, 0]); // pad to stride 8
         }
+    }
+    out
+}
+
+/// True when every u16 joint index fits in a byte (< 256 joints).
+fn joints_fit_u8(data: &[u8]) -> bool {
+    data.chunks_exact(2)
+        .all(|c| u16::from_le_bytes(c.try_into().unwrap()) < 256)
+}
+
+/// f32 VEC4 skin weights → u8-normalized VEC4, renormalized per vertex so the
+/// quantized weights sum to exactly 255 (the rounding residual lands on the
+/// largest weight) — skinning keeps its partition of unity. All-zero weight
+/// sets (padding on rigid vertices) pass through as zeros.
+fn quantize_weights_unorm8(data: &[u8], count: usize) -> Vec<u8> {
+    let mut out = Vec::with_capacity(count * 4);
+    for i in 0..count {
+        let at = i * 16;
+        let mut w = [0f32; 4];
+        for (k, slot) in w.iter_mut().enumerate() {
+            *slot = f32::from_le_bytes(data[at + k * 4..at + k * 4 + 4].try_into().unwrap());
+        }
+        let mut q = [0i32; 4];
+        for k in 0..4 {
+            q[k] = (w[k].clamp(0.0, 1.0) * 255.0).round() as i32;
+        }
+        let sum: i32 = q.iter().sum();
+        if sum > 0 && sum != 255 {
+            let largest = (0..4).max_by(|&a, &b| w[a].total_cmp(&w[b])).unwrap();
+            q[largest] = (q[largest] + (255 - sum)).clamp(0, 255);
+        }
+        out.extend(q.map(|v| v as u8));
     }
     out
 }
