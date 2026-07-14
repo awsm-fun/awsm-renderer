@@ -20,6 +20,15 @@
 //! treatment) but their streams still meshopt-encode. Non-[0,1] UVs stay f32
 //! (a per-primitive `KHR_texture_transform` remap would collide with authored
 //! transforms) — also still meshopt-encoded.
+//!
+//! The two halves are independent ([`CompressOptions`]): quantization without
+//! meshopt emits the quantized accessors into PLAIN bufferViews
+//! (`KHR_mesh_quantization` alone) — except normals/tangents, whose octahedral
+//! packing is a meshopt decode filter, so the plain path quantizes them
+//! per-component to i16-normalized instead. meshopt without quantization
+//! encodes the raw f32 streams. The structural eligibility guards (morph
+//! targets, multi-skin / mixed-use meshes, IBM-less skins, out-of-[0,1] UVs)
+//! are correctness, not policy — they apply under every mode.
 
 use std::collections::{HashMap, HashSet};
 
@@ -30,6 +39,37 @@ use gltf::json::{self, accessor};
 
 const EXT: &str = "EXT_meshopt_compression";
 const QUANT: &str = "KHR_mesh_quantization";
+
+/// Encode knobs for [`compress_glb_with`]. The two halves are independent —
+/// any combination is a valid wire format (both off = passthrough).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct CompressOptions {
+    /// meshopt-encode every mesh stream (`EXT_meshopt_compression`).
+    pub meshopt: bool,
+    pub quantization: Quantization,
+}
+
+/// Quantization policy (`KHR_mesh_quantization`). Structural guards apply
+/// even under `Always` — they are correctness, not policy.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Quantization {
+    Off,
+    Always,
+    /// Quantize only when the position grid step (max half-extent / 32767)
+    /// stays at or under `threshold_mm`.
+    Smart {
+        threshold_mm: f32,
+    },
+}
+
+impl Default for CompressOptions {
+    fn default() -> Self {
+        Self {
+            meshopt: true,
+            quantization: Quantization::Smart { threshold_mm: 0.1 },
+        }
+    }
+}
 
 /// How a compressed logical stream is encoded on the wire.
 #[derive(Clone, Copy, PartialEq)]
@@ -86,10 +126,20 @@ pub fn strip_materials_and_images(glb: &[u8]) -> anyhow::Result<Vec<u8>> {
     ))
 }
 
-/// Compress a GLB produced by [`crate::write_glb`]: quantize eligible meshes
-/// and meshopt-encode every mesh stream. Non-mesh bufferViews (embedded
-/// images) pass through untouched. Returns a new GLB.
+/// Compress a GLB produced by [`crate::write_glb`] with default options:
+/// quantize eligible meshes (Smart threshold) and meshopt-encode every mesh
+/// stream. Non-mesh bufferViews (embedded images) pass through untouched.
+/// Returns a new GLB.
 pub fn compress_glb(glb: &[u8]) -> anyhow::Result<Vec<u8>> {
+    compress_glb_with(glb, &CompressOptions::default())
+}
+
+/// [`compress_glb`] with explicit [`CompressOptions`]. Both knobs off returns
+/// the input unchanged.
+pub fn compress_glb_with(glb: &[u8], options: &CompressOptions) -> anyhow::Result<Vec<u8>> {
+    if !options.meshopt && options.quantization == Quantization::Off {
+        return Ok(glb.to_vec());
+    }
     let parsed = gltf::Gltf::from_slice(glb)?;
     let bin = parsed.blob.clone().unwrap_or_default();
     let mut root = parsed.document.into_json();
@@ -108,7 +158,8 @@ pub fn compress_glb(glb: &[u8]) -> anyhow::Result<Vec<u8>> {
     let acc_count = root.accessors.len();
     let mut roles = vec![Role::Raw; acc_count];
     // meshes eligible for QUANTIZATION (all-f32 positions, no morph targets)
-    let mut quantize_mesh = vec![true; root.meshes.len()];
+    let quantize_requested = options.quantization != Quantization::Off;
+    let mut quantize_mesh = vec![quantize_requested; root.meshes.len()];
 
     for (mesh_index, mesh) in root.meshes.iter().enumerate() {
         for prim in &mesh.primitives {
@@ -262,6 +313,21 @@ pub fn compress_glb(glb: &[u8]) -> anyhow::Result<Vec<u8>> {
         }
     }
 
+    // Smart mode: demote meshes whose position grid step (half-extent /
+    // 32767) exceeds the threshold. Skinned meshes carry their skin-union
+    // extent, so a too-large skin demotes all of its meshes together.
+    if let Quantization::Smart { threshold_mm } = options.quantization {
+        let max_extent = threshold_mm * 1e-3 * 32767.0;
+        mesh_transform.retain(|&mesh, &mut (_, s)| {
+            let keep = s <= max_extent;
+            if !keep {
+                quantize_mesh[mesh] = false;
+            }
+            keep
+        });
+        skin_transform.retain(|_, &mut (_, s)| s <= max_extent);
+    }
+
     // accessor → quantize transform (positions only need it; per accessor via
     // owning mesh).
     let mut acc_transform: HashMap<usize, (Vec3, f32)> = HashMap::new();
@@ -319,7 +385,8 @@ pub fn compress_glb(glb: &[u8]) -> anyhow::Result<Vec<u8>> {
 
     // ── build per-accessor streams (quantized or raw) ─────────────────────
     let mut streams: Vec<Option<Stream>> = Vec::with_capacity(acc_count);
-    let mut any_compressed = false;
+    let mut any_meshopt = false;
+    let mut any_quantized = false;
     for index in 0..acc_count {
         let acc = &root.accessors[index];
         if acc.buffer_view.is_none() || acc.sparse.is_some() {
@@ -337,7 +404,8 @@ pub fn compress_glb(glb: &[u8]) -> anyhow::Result<Vec<u8>> {
 
         let stream = match roles[index] {
             Role::Indices
-                if count % 3 == 0
+                if options.meshopt
+                    && count % 3 == 0
                     && matches!(
                         comp,
                         accessor::ComponentType::U16 | accessor::ComponentType::U32
@@ -361,6 +429,7 @@ pub fn compress_glb(glb: &[u8]) -> anyhow::Result<Vec<u8>> {
                 acc.normalized = true;
                 acc.min = Some(serde_json::json!(qmin));
                 acc.max = Some(serde_json::json!(qmax));
+                any_quantized = true;
                 Some(Stream {
                     logical,
                     stride: 8,
@@ -370,34 +439,57 @@ pub fn compress_glb(glb: &[u8]) -> anyhow::Result<Vec<u8>> {
                     parent_stride: Some(8),
                 })
             }
+            // Octahedral packing is a meshopt DECODE filter — without meshopt,
+            // normals/tangents quantize per-component to i16-normalized
+            // (KHR_mesh_quantization-legal, comparable precision).
             Role::Normal if acc_quantize[index] && comp == accessor::ComponentType::F32 => {
-                let logical = oct_encode(&data, count, 3);
+                let acc_comp = if options.meshopt {
+                    accessor::ComponentType::I8
+                } else {
+                    accessor::ComponentType::I16
+                };
+                let logical = if options.meshopt {
+                    oct_encode(&data, count, 3)
+                } else {
+                    quantize_snorm16(&data, count, 3)
+                };
+                let stride = if options.meshopt { 4 } else { 8 };
                 let acc = &mut root.accessors[index];
-                acc.component_type =
-                    Checked::Valid(accessor::GenericComponentType(accessor::ComponentType::I8));
+                acc.component_type = Checked::Valid(accessor::GenericComponentType(acc_comp));
                 acc.normalized = true;
+                any_quantized = true;
                 Some(Stream {
                     logical,
-                    stride: 4,
+                    stride,
                     count,
                     mode: Mode::Attributes,
-                    filter: Some("OCTAHEDRAL"),
-                    parent_stride: Some(4),
+                    filter: options.meshopt.then_some("OCTAHEDRAL"),
+                    parent_stride: Some(stride),
                 })
             }
             Role::Tangent if acc_quantize[index] && comp == accessor::ComponentType::F32 => {
-                let logical = oct_encode(&data, count, 4);
+                let acc_comp = if options.meshopt {
+                    accessor::ComponentType::I8
+                } else {
+                    accessor::ComponentType::I16
+                };
+                let logical = if options.meshopt {
+                    oct_encode(&data, count, 4)
+                } else {
+                    quantize_snorm16(&data, count, 4)
+                };
+                let stride = if options.meshopt { 4 } else { 8 };
                 let acc = &mut root.accessors[index];
-                acc.component_type =
-                    Checked::Valid(accessor::GenericComponentType(accessor::ComponentType::I8));
+                acc.component_type = Checked::Valid(accessor::GenericComponentType(acc_comp));
                 acc.normalized = true;
+                any_quantized = true;
                 Some(Stream {
                     logical,
-                    stride: 4,
+                    stride,
                     count,
                     mode: Mode::Attributes,
-                    filter: Some("OCTAHEDRAL"),
-                    parent_stride: Some(4),
+                    filter: options.meshopt.then_some("OCTAHEDRAL"),
+                    parent_stride: Some(stride),
                 })
             }
             Role::TexCoord
@@ -410,6 +502,7 @@ pub fn compress_glb(glb: &[u8]) -> anyhow::Result<Vec<u8>> {
                 acc.component_type =
                     Checked::Valid(accessor::GenericComponentType(accessor::ComponentType::U16));
                 acc.normalized = true;
+                any_quantized = true;
                 Some(Stream {
                     logical,
                     stride: 4,
@@ -422,7 +515,7 @@ pub fn compress_glb(glb: &[u8]) -> anyhow::Result<Vec<u8>> {
             // Everything else vertex-shaped still meshopt-encodes when its
             // element size is stride-legal (4..=256, multiple of 4).
             Role::Normal | Role::Tangent | Role::TexCoord | Role::Position | Role::OtherVertex
-                if elem % 4 == 0 && (4..=256).contains(&elem) =>
+                if options.meshopt && elem % 4 == 0 && (4..=256).contains(&elem) =>
             {
                 Some(Stream {
                     logical: data,
@@ -435,8 +528,8 @@ pub fn compress_glb(glb: &[u8]) -> anyhow::Result<Vec<u8>> {
             }
             _ => None,
         };
-        if stream.is_some() {
-            any_compressed = true;
+        if stream.is_some() && options.meshopt {
+            any_meshopt = true;
         }
         streams.push(stream);
     }
@@ -520,6 +613,26 @@ pub fn compress_glb(glb: &[u8]) -> anyhow::Result<Vec<u8>> {
         let acc_view = root.accessors[index].buffer_view.map(|v| v.value());
         let Some(_old_view) = acc_view else { continue };
         let new_view_index = match stream_slot {
+            Some(stream) if !options.meshopt => {
+                // plain-view quantized stream (KHR_mesh_quantization alone):
+                // the logical bytes land directly in the real BIN.
+                align4(&mut real);
+                let offset = real.len();
+                real.extend_from_slice(&stream.logical);
+                let view = json::buffer::View {
+                    buffer: json::Index::new(0),
+                    byte_length: USize64(stream.logical.len() as u64),
+                    byte_offset: Some(USize64(offset as u64)),
+                    byte_stride: stream.parent_stride.map(json::buffer::Stride),
+                    name: None,
+                    target: None,
+                    extensions: Default::default(),
+                    extras: Default::default(),
+                };
+                let idx = new_views.len();
+                new_views.push(view);
+                idx
+            }
             Some(stream) => {
                 // encode
                 let encoded = match stream.mode {
@@ -608,7 +721,7 @@ pub fn compress_glb(glb: &[u8]) -> anyhow::Result<Vec<u8>> {
         extensions: Default::default(),
         extras: Default::default(),
     }];
-    if any_compressed {
+    if any_meshopt {
         let mut fallback_ext = serde_json::Map::new();
         let mut fb = serde_json::Map::new();
         fb.insert("fallback".into(), serde_json::json!(true));
@@ -622,14 +735,20 @@ pub fn compress_glb(glb: &[u8]) -> anyhow::Result<Vec<u8>> {
             }),
             extras: Default::default(),
         });
-        for ext in [EXT, QUANT] {
-            if !root.extensions_used.iter().any(|e| e == ext) {
-                root.extensions_used.push(ext.to_string());
-            }
-            if !root.extensions_required.iter().any(|e| e == ext) {
-                root.extensions_required.push(ext.to_string());
-            }
+    }
+    let mut declare = |ext: &str| {
+        if !root.extensions_used.iter().any(|e| e == ext) {
+            root.extensions_used.push(ext.to_string());
         }
+        if !root.extensions_required.iter().any(|e| e == ext) {
+            root.extensions_required.push(ext.to_string());
+        }
+    };
+    if any_meshopt {
+        declare(EXT);
+    }
+    if any_quantized {
+        declare(QUANT);
     }
     root.buffers = buffers;
 
@@ -740,6 +859,25 @@ fn oct_encode(data: &[u8], count: usize, components: usize) -> Vec<u8> {
     let mut out = vec![0u8; count * 4];
     unsafe {
         ffi::meshopt_encodeFilterOct(out.as_mut_ptr().cast(), count, 4, 8, input.as_ptr());
+    }
+    out
+}
+
+/// f32 VEC3/VEC4 unit-range values → i16-normalized, stride 8 (VEC3 pads 2
+/// bytes; VEC4 is exactly 8). The plain-view stand-in for the octahedral
+/// meshopt filter, which needs a meshopt decode pass to reverse.
+fn quantize_snorm16(data: &[u8], count: usize, components: usize) -> Vec<u8> {
+    let mut out = Vec::with_capacity(count * 8);
+    for i in 0..count {
+        let at = i * components * 4;
+        for k in 0..components {
+            let v = f32::from_le_bytes(data[at + k * 4..at + k * 4 + 4].try_into().unwrap());
+            let q = (v.clamp(-1.0, 1.0) * 32767.0).round() as i16;
+            out.extend_from_slice(&q.to_le_bytes());
+        }
+        if components == 3 {
+            out.extend_from_slice(&[0, 0]); // pad to stride 8
+        }
     }
     out
 }

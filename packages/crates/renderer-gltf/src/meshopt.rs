@@ -504,6 +504,202 @@ mod roundtrip_tests {
             }
         }
     }
+
+    fn required_extensions(glb: &[u8]) -> Vec<String> {
+        let json_len = u32::from_le_bytes(glb[12..16].try_into().unwrap()) as usize;
+        let raw: gltf::json::Value =
+            gltf::json::deserialize::from_slice(&glb[20..20 + json_len]).unwrap();
+        raw["extensionsRequired"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Quantization WITHOUT meshopt: `KHR_mesh_quantization` alone, quantized
+    /// accessors in plain bufferViews (no decode pass needed), normals as
+    /// direct i16-normalized (octahedral is meshopt-filter-only).
+    #[test]
+    fn quantize_only_emits_plain_views() {
+        use awsm_renderer_glb_export::{compress_glb_with, CompressOptions, Quantization};
+
+        let (scene, source) = grid_scene();
+        let compressed = compress_glb_with(
+            &write_glb(&scene),
+            &CompressOptions {
+                meshopt: false,
+                quantization: Quantization::Always,
+            },
+        )
+        .unwrap();
+
+        let required = required_extensions(&compressed);
+        assert!(required.contains(&"KHR_mesh_quantization".to_string()));
+        assert!(!required.contains(&"EXT_meshopt_compression".to_string()));
+
+        let gltf = parse_gltf_lenient(&compressed).unwrap();
+        let doc = &gltf.document;
+        let blob = gltf.blob.clone().unwrap();
+        let mut buffers = materialize(doc, &blob);
+        assert_eq!(
+            decode_meshopt_buffer_views(doc, &mut buffers).unwrap(),
+            0,
+            "plain-view output must not carry meshopt views"
+        );
+
+        let wrapper = doc
+            .nodes()
+            .find(|n| n.name() == Some("dequant") && n.mesh().is_some())
+            .expect("dequant wrapper");
+        let (t, _r, s) = wrapper.transform().decomposed();
+        let prim = wrapper.mesh().unwrap().primitives().next().unwrap();
+
+        let pos_acc = prim.get(&gltf::Semantic::Positions).unwrap();
+        assert_eq!(pos_acc.data_type(), gltf::accessor::DataType::I16);
+        let positions =
+            crate::populate::mesh::read_vec3_dequant(&prim, &gltf::Semantic::Positions, &buffers)
+                .unwrap();
+        let tol = s[0] / 32767.0 * 2.0;
+        for (got, want) in positions.iter().zip(&source.positions) {
+            for k in 0..3 {
+                assert!((got[k] * s[k] + t[k] - want[k]).abs() <= tol);
+            }
+        }
+
+        // Normals: direct i16-normalized, no filter — near-exact.
+        let norm_acc = prim.get(&gltf::Semantic::Normals).unwrap();
+        assert_eq!(norm_acc.data_type(), gltf::accessor::DataType::I16);
+        let normals =
+            crate::populate::mesh::read_vec3_dequant(&prim, &gltf::Semantic::Normals, &buffers)
+                .unwrap();
+        for (got, want) in normals.iter().zip(source.normals.as_ref().unwrap()) {
+            let dot = got[0] * want[0] + got[1] * want[1] + got[2] * want[2];
+            assert!(dot > 0.9999, "snorm16 normal deviated (dot {dot})");
+        }
+
+        // Indices stay raw (index codec is meshopt-only).
+        let reader = prim.reader(|b| buffers.get(b.index()).map(|v| &v[..]));
+        let indices: Vec<u32> = reader.read_indices().unwrap().into_u32().collect();
+        assert_eq!(indices, source.indices);
+    }
+
+    /// meshopt WITHOUT quantization: streams encode losslessly, accessors stay
+    /// F32, and `KHR_mesh_quantization` is NOT declared.
+    #[test]
+    fn meshopt_only_keeps_f32_accessors() {
+        use awsm_renderer_glb_export::{compress_glb_with, CompressOptions, Quantization};
+
+        let (scene, source) = grid_scene();
+        let compressed = compress_glb_with(
+            &write_glb(&scene),
+            &CompressOptions {
+                meshopt: true,
+                quantization: Quantization::Off,
+            },
+        )
+        .unwrap();
+
+        let required = required_extensions(&compressed);
+        assert!(required.contains(&"EXT_meshopt_compression".to_string()));
+        assert!(!required.contains(&"KHR_mesh_quantization".to_string()));
+
+        let gltf = parse_gltf_lenient(&compressed).unwrap();
+        let doc = &gltf.document;
+        let blob = gltf.blob.clone().unwrap();
+        let mut buffers = materialize(doc, &blob);
+        assert!(decode_meshopt_buffer_views(doc, &mut buffers).unwrap() > 0);
+
+        assert!(
+            !doc.nodes().any(|n| n.name() == Some("dequant")),
+            "no quantization ⇒ no dequant wrapper"
+        );
+        let prim = doc.meshes().next().unwrap().primitives().next().unwrap();
+        let pos_acc = prim.get(&gltf::Semantic::Positions).unwrap();
+        assert_eq!(pos_acc.data_type(), gltf::accessor::DataType::F32);
+
+        // meshopt alone is lossless: exact f32 round-trip.
+        let reader = prim.reader(|b| buffers.get(b.index()).map(|v| &v[..]));
+        let positions: Vec<[f32; 3]> = reader.read_positions().unwrap().collect();
+        assert_eq!(positions, source.positions);
+    }
+
+    /// Smart mode: a mesh whose grid step exceeds the threshold keeps F32
+    /// positions (still meshopt-encoded); a small mesh under the same options
+    /// quantizes.
+    #[test]
+    fn smart_threshold_demotes_large_extents() {
+        use awsm_renderer_glb_export::{compress_glb_with, CompressOptions, Quantization};
+
+        // grid_scene spans x ∈ [-2, 2] ⇒ half-extent 2m ⇒ step ~0.061mm.
+        let (small_scene, _) = grid_scene();
+        // Scale ×4 ⇒ half-extent 8m ⇒ step ~0.24mm > 0.1mm threshold.
+        let (mut big_scene, _) = grid_scene();
+        for node in &mut big_scene.nodes {
+            if let Some(mesh) = &mut node.mesh {
+                for p in &mut mesh.positions {
+                    for v in p.iter_mut() {
+                        *v *= 4.0;
+                    }
+                }
+            }
+        }
+
+        let options = CompressOptions {
+            meshopt: true,
+            quantization: Quantization::Smart { threshold_mm: 0.1 },
+        };
+        let position_type = |glb: &[u8]| {
+            let gltf = parse_gltf_lenient(glb).unwrap();
+            let prim = gltf
+                .document
+                .meshes()
+                .next()
+                .unwrap()
+                .primitives()
+                .next()
+                .unwrap();
+            prim.get(&gltf::Semantic::Positions).unwrap().data_type()
+        };
+
+        let small = compress_glb_with(&write_glb(&small_scene), &options).unwrap();
+        assert_eq!(position_type(&small), gltf::accessor::DataType::I16);
+
+        let big = compress_glb_with(&write_glb(&big_scene), &options).unwrap();
+        assert_eq!(
+            position_type(&big),
+            gltf::accessor::DataType::F32,
+            "8m half-extent must demote under a 0.1mm Smart threshold"
+        );
+        assert!(
+            required_extensions(&big).contains(&"EXT_meshopt_compression".to_string()),
+            "demoted mesh still meshopt-encodes"
+        );
+        assert!(
+            !required_extensions(&big).contains(&"KHR_mesh_quantization".to_string()),
+            "nothing quantized ⇒ KHR_mesh_quantization must not be required"
+        );
+    }
+
+    /// Both knobs off: byte-identical passthrough.
+    #[test]
+    fn both_off_is_passthrough() {
+        use awsm_renderer_glb_export::{compress_glb_with, CompressOptions, Quantization};
+
+        let (scene, _) = grid_scene();
+        let plain = write_glb(&scene);
+        let out = compress_glb_with(
+            &plain,
+            &CompressOptions {
+                meshopt: false,
+                quantization: Quantization::Off,
+            },
+        )
+        .unwrap();
+        assert_eq!(plain, out);
+    }
 }
 
 /// Astrabot — the second paid robot — through the same decode plumbing, so

@@ -658,6 +658,18 @@ changes, `task mcp-dev`, never commit fixtures/local bytes).
 
 ## F1. Bundle export options
 
+Progress:
+- [x] Codec layer: `CompressOptions { meshopt, quantization: Off|Always|Smart{threshold_mm} }`
+      in glb-export; `compress_glb_with`; plain-view quantize-without-meshopt path
+      (normals/tangents → direct i16-normalized since OCT is a meshopt filter);
+      Smart demotion by grid step (skin-union aware); `KHR_mesh_quantization` /
+      `EXT_meshopt_compression` declared independently; both-off = passthrough.
+      Option-matrix roundtrip tests in renderer-gltf.
+- [ ] `BundleOptions` in editor-protocol, persisted in project.toml; wired through
+      `bake_player_bundle` (base meshes + rigs + coarse LOD glbs) + texture Off ⇒ WebP-lossless.
+- [ ] Pre-export modal.
+- [ ] MCP `set_bundle_options` + per-call overrides on `export_player_bundle`.
+
 `BundleOptions` in editor-protocol, **persisted in project.toml** (serde
 defaults; no back-compat constraints — David), edited via a **pre-export
 modal** (options appear when relevant, remembered in the project), plus MCP
