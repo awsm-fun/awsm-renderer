@@ -1,0 +1,21 @@
+{
+  "name": "New Material 1",
+  "version": 1,
+  "alpha_mode": "opaque",
+  "double_sided": true,
+  "uniforms": [],
+  "textures": [
+    {
+      "name": "tex",
+      "default": null,
+      "color_kind": "albedo"
+    }
+  ],
+  "buffers": [],
+  "shader_includes": [
+    "textures"
+  ],
+  "fragment_inputs": [
+    "uv"
+  ]
+}
