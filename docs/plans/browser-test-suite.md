@@ -80,7 +80,7 @@ Authoring-command references are `packages/mcp/editor-protocol/src/command.rs:<l
 - [x] **Skill upgrade** to the 3-layer orchestration + scope prompt (spec above). — rewrote `SKILL.md`: enumerate + AskUserQuestion scope prompt (Everything/Visual/Structural/Audits/Pick), Layer C→B→A ordering, per-layer procedures, gotchas.
 - [ ] **`verify.md` for existing scenes** (no authoring; just author the recipe + confirm each renders correctly once):
   - [x] `pbr-extensions` — each ext sphere visibly distinct from plain PBR (transmission/clearcoat/sheen/iridescence/dispersion/anisotropy/specular/ior/emissive_strength/diffuse_transmission). — verify.md written; HEAD re-render confirmed all 12 variants distinct (13 buckets/13 materials).
-  - [ ] `shadows-all` — directional cascade + spot + point/cube all cast contact-tight shadows; no Peter-Pan gap, no donut/hole under lowered meshes.
+  - [x] `shadows-all` — directional cascade + spot + point/cube all cast contact-tight shadows; no Peter-Pan gap, no donut/hole under lowered meshes. — verify.md written; HEAD confirmed all 3 light types cast, lowered-box contact-tight (no donut).
   - [ ] Punctual lights — covered by `shadows-all` (spot+point) + `lights-many` + the seeded directional; recipe confirms each type illuminates + falls off correctly.
   - [ ] `ssr`, `mirror`, `ssr-arena` — orbit to grazing angles; reflections continuous, track emitters, clean silhouettes; mirror pixel-shaped; arena floor mirrors rings, occluder stays soft maroon (not black).
   - [ ] `anim-skinned` — mid-stride at t=0.5, no T-pose, no candy-wrapper collapse.
