@@ -1,6 +1,6 @@
 # Browser test suite — comprehensive on-device verification
 
-**Status:** planned, not started. This is the SSOT for building it. It is written to be executed **autonomously from a brand-new session** (assume you remember nothing and the machine may have just rebooted — nothing is running).
+**Status:** ✅ SHIPPED (2026-07-14, branch `skills`) — every P1/P2/P3 box below is checked; the suite is built and green (Layer C `cargo test` + `task lint`; Layer B player-tests 29/29; Layer A all 25 `verify.md` scenes PASS on-device). Kept (not deleted with other shipped plans) because it is the **SSOT the `awsm-renderer-browser-tests` skill points to** — the design record for how the three layers fit together. The executable how-to lives in `.agents/skills/awsm-renderer-browser-tests/SKILL.md`; this file is the rationale behind it.
 
 ## Goal
 
