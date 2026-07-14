@@ -700,7 +700,22 @@ fn settings_drawer() -> Dom {
                     NumField::new(s.cam_clip_near.get())
                         .min(0.0001)
                         .step(0.01)
-                        .on_change(|v| controller().settings.cam_clip_near.set_neq(v.max(0.0001)))
+                        .on_change(|v| {
+                            // Route through the command so the change is logged /
+                            // MCP-visible like any other edit (settings_sync then
+                            // pushes it into the camera). Direct `.set_neq` here
+                            // bypassed EditorCommand.
+                            let near = v.max(0.0001);
+                            spawn_local(async move {
+                                let _ = controller()
+                                    .dispatch(EditorCommand::SetCameraClip {
+                                        manual: None,
+                                        near: Some(near),
+                                        far: None,
+                                    })
+                                    .await;
+                            })
+                        })
                         .render(),
                 ))
                 .child(row(
@@ -708,7 +723,18 @@ fn settings_drawer() -> Dom {
                     NumField::new(s.cam_clip_far.get())
                         .min(0.01)
                         .step(10.0)
-                        .on_change(|v| controller().settings.cam_clip_far.set_neq(v.max(0.01)))
+                        .on_change(|v| {
+                            let far = v.max(0.01);
+                            spawn_local(async move {
+                                let _ = controller()
+                                    .dispatch(EditorCommand::SetCameraClip {
+                                        manual: None,
+                                        near: None,
+                                        far: Some(far),
+                                    })
+                                    .await;
+                            })
+                        })
                         .render(),
                 ))
                 .child(html!("div", {
