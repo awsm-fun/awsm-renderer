@@ -61,21 +61,24 @@ return OpaqueShadingOutput(vc.rgb * diff, 1.0);`;
   await d({ cmd: 'patch_kind', id: ID(0x20), patch: { instancer: { mesh: meshAsset } } });
   await d({ cmd: 'add_material_variant', node: ID(0x20), material: cmat, id: ID(0x30), name: 'attr' });
   await d({ cmd: 'select_material_variant', node: ID(0x20), variant: ID(0x30) });
-  // 12 instances in a row, each with a DISTINCT per-instance color (rainbow).
+  // 12 instances in a 3×4 grid, each with a DISTINCT per-instance color
+  // (rainbow by index) — the grid fills the native portrait canvas aspect.
   const transforms = [], colors = [];
-  const N = 12;
+  const N = 12, COLS = 3, ROWS = 4, SP = 2.4;
   for (let i = 0; i < N; i++) {
+    const cx = (i % COLS) - (COLS - 1) / 2;
+    const cz = Math.floor(i / COLS) - (ROWS - 1) / 2;
     const hue = i / N;
     const r = 0.5 + 0.5 * Math.cos(6.283 * (hue + 0.0));
     const g = 0.5 + 0.5 * Math.cos(6.283 * (hue + 0.333));
     const b = 0.5 + 0.5 * Math.cos(6.283 * (hue + 0.666));
-    transforms.push({ translation: [(i - (N - 1) / 2) * 1.6, 0.6, 0], rotation: [0, 0, 0, 1], scale: [1, 1, 1] });
+    transforms.push({ translation: [cx * SP, 0.6, cz * SP], rotation: [0, 0, 0, 1], scale: [1, 1, 1] });
     colors.push([r, g, b, 1]);
   }
   await d({ cmd: 'set_instancer_transforms', node: ID(0x20), transforms, per_instance_colors: colors });
   await d({ cmd: 'rename', id: ID(0x20), name: 'attr-instancer' });
   await d({ cmd: 'set_selection', ids: [] });
-  await d({ cmd: 'set_camera_orbit', yaw: 0.0, pitch: 0.42, radius: 28, look_at: [0, 0.6, 0] });
+  await d({ cmd: 'set_camera_orbit', yaw: 0.18, pitch: 0.55, radius: 17.5, look_at: [0, 0.4, 0] });
   await d({ cmd: 'set_view_options', grid: false, gizmos: false, light_gizmos: false });
   await new Promise(r => setTimeout(r, 800));
   await q({ query: 'wait_render_settled' });

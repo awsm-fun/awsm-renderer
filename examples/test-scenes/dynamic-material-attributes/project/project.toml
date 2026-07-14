@@ -58,6 +58,38 @@ temporal = false
 temporal_weight = 0.8999999761581421
 bvh_reflections = false
 
+[assets.00000000-0000-4000-8000-000000000001]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+
+[assets.00000000-0000-4000-8000-000000000001.source.mesh]
+label = "Plane"
+editable = true
+
+[assets.00000000-0000-4000-8000-000000000001.source.mesh.source.primitive.plane]
+width = 30.0
+depth = 30.0
+segments_x = 1
+segments_z = 1
+
+[assets.00000000-0000-4000-8000-000000000001.source.mesh.stack]
+modifiers = []
+
+[assets.00000000-0000-4000-8000-000000000001.source.mesh.stack.base.primitive.plane]
+width = 30.0
+depth = 30.0
+segments_x = 1
+segments_z = 1
+
+[assets.00000000-0000-4000-8000-000000000001.source.mesh.overrides.positions]
+
+[assets.00000000-0000-4000-8000-000000000001.source.mesh.overrides.colors]
+
+[assets.00000000-0000-4000-8000-000000000001.source.mesh.overrides.normals]
+
+[assets.00000000-0000-4000-8000-000000000001.source.mesh.overrides.uvs]
+
 [assets.00000000-0000-4000-8000-000000000010]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
@@ -91,38 +123,6 @@ dims = [
 [assets.00000000-0000-4000-8000-000000000010.source.mesh.overrides.normals]
 
 [assets.00000000-0000-4000-8000-000000000010.source.mesh.overrides.uvs]
-
-[assets.00000000-0000-4000-8000-000000000001]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-
-[assets.00000000-0000-4000-8000-000000000001.source.mesh]
-label = "Plane"
-editable = true
-
-[assets.00000000-0000-4000-8000-000000000001.source.mesh.source.primitive.plane]
-width = 30.0
-depth = 30.0
-segments_x = 1
-segments_z = 1
-
-[assets.00000000-0000-4000-8000-000000000001.source.mesh.stack]
-modifiers = []
-
-[assets.00000000-0000-4000-8000-000000000001.source.mesh.stack.base.primitive.plane]
-width = 30.0
-depth = 30.0
-segments_x = 1
-segments_z = 1
-
-[assets.00000000-0000-4000-8000-000000000001.source.mesh.overrides.positions]
-
-[assets.00000000-0000-4000-8000-000000000001.source.mesh.overrides.colors]
-
-[assets.00000000-0000-4000-8000-000000000001.source.mesh.overrides.normals]
-
-[assets.00000000-0000-4000-8000-000000000001.source.mesh.overrides.uvs]
 
 [[custom_materials]]
 id = "00000000-0000-4000-8000-000000000005"
@@ -227,7 +227,7 @@ smart_threshold_mm = 0.10000000149011612
 texture_compression = "ktx2"
 
 [[nodes]]
-id = "4c8ec89a-1ef0-4d26-9948-d1fe5951fb6f"
+id = "da633307-03e1-4a57-9dcb-ad5447d50d63"
 name = "Directional Light"
 locked = false
 visible = true
@@ -493,81 +493,9 @@ per_instance_colors = [
 
 [[nodes.kind.instancer.transforms]]
 translation = [
-    -8.800000190734863,
-    0.6000000238418579,
-    0.0,
-]
-rotation = [
-    0.0,
-    0.0,
-    0.0,
-    1.0,
-]
-scale = [
-    1.0,
-    1.0,
-    1.0,
-]
-
-[[nodes.kind.instancer.transforms]]
-translation = [
-    -7.199999809265137,
-    0.6000000238418579,
-    0.0,
-]
-rotation = [
-    0.0,
-    0.0,
-    0.0,
-    1.0,
-]
-scale = [
-    1.0,
-    1.0,
-    1.0,
-]
-
-[[nodes.kind.instancer.transforms]]
-translation = [
-    -5.599999904632568,
-    0.6000000238418579,
-    0.0,
-]
-rotation = [
-    0.0,
-    0.0,
-    0.0,
-    1.0,
-]
-scale = [
-    1.0,
-    1.0,
-    1.0,
-]
-
-[[nodes.kind.instancer.transforms]]
-translation = [
-    -4.0,
-    0.6000000238418579,
-    0.0,
-]
-rotation = [
-    0.0,
-    0.0,
-    0.0,
-    1.0,
-]
-scale = [
-    1.0,
-    1.0,
-    1.0,
-]
-
-[[nodes.kind.instancer.transforms]]
-translation = [
     -2.4000000953674316,
     0.6000000238418579,
-    0.0,
+    -3.5999999046325684,
 ]
 rotation = [
     0.0,
@@ -583,27 +511,9 @@ scale = [
 
 [[nodes.kind.instancer.transforms]]
 translation = [
-    -0.800000011920929,
+    0.0,
     0.6000000238418579,
-    0.0,
-]
-rotation = [
-    0.0,
-    0.0,
-    0.0,
-    1.0,
-]
-scale = [
-    1.0,
-    1.0,
-    1.0,
-]
-
-[[nodes.kind.instancer.transforms]]
-translation = [
-    0.800000011920929,
-    0.6000000238418579,
-    0.0,
+    -3.5999999046325684,
 ]
 rotation = [
     0.0,
@@ -621,7 +531,7 @@ scale = [
 translation = [
     2.4000000953674316,
     0.6000000238418579,
-    0.0,
+    -3.5999999046325684,
 ]
 rotation = [
     0.0,
@@ -637,9 +547,9 @@ scale = [
 
 [[nodes.kind.instancer.transforms]]
 translation = [
-    4.0,
+    -2.4000000953674316,
     0.6000000238418579,
-    0.0,
+    -1.2000000476837158,
 ]
 rotation = [
     0.0,
@@ -655,9 +565,9 @@ scale = [
 
 [[nodes.kind.instancer.transforms]]
 translation = [
-    5.599999904632568,
-    0.6000000238418579,
     0.0,
+    0.6000000238418579,
+    -1.2000000476837158,
 ]
 rotation = [
     0.0,
@@ -673,9 +583,9 @@ scale = [
 
 [[nodes.kind.instancer.transforms]]
 translation = [
-    7.199999809265137,
+    2.4000000953674316,
     0.6000000238418579,
-    0.0,
+    -1.2000000476837158,
 ]
 rotation = [
     0.0,
@@ -691,9 +601,99 @@ scale = [
 
 [[nodes.kind.instancer.transforms]]
 translation = [
-    8.800000190734863,
+    -2.4000000953674316,
     0.6000000238418579,
+    1.2000000476837158,
+]
+rotation = [
     0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[[nodes.kind.instancer.transforms]]
+translation = [
+    0.0,
+    0.6000000238418579,
+    1.2000000476837158,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[[nodes.kind.instancer.transforms]]
+translation = [
+    2.4000000953674316,
+    0.6000000238418579,
+    1.2000000476837158,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[[nodes.kind.instancer.transforms]]
+translation = [
+    -2.4000000953674316,
+    0.6000000238418579,
+    3.5999999046325684,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[[nodes.kind.instancer.transforms]]
+translation = [
+    0.0,
+    0.6000000238418579,
+    3.5999999046325684,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[[nodes.kind.instancer.transforms]]
+translation = [
+    2.4000000953674316,
+    0.6000000238418579,
+    3.5999999046325684,
 ]
 rotation = [
     0.0,

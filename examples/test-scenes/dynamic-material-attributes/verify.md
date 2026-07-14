@@ -12,20 +12,21 @@ drive:
      (Or `load_project_from_url {base_url: http://localhost:9084/dynamic-material-attributes/project}`
      — note the bundle carries no per-instance colors table unless re-driven; prefer replay.)
   2. `set_view_options {grid:false, gizmos:false, light_gizmos:false}`;
-     `set_camera_orbit {yaw:0.0, pitch:0.42, radius:28, look_at:[0,0.6,0]}`;
+     `set_camera_orbit {yaw:0.18, pitch:0.55, radius:17.5, look_at:[0,0.4,0]}`;
      `wait_render_settled`; screenshot (state `rainbow`).
 
-  Twelve box instances from ONE instancer sharing ONE custom material with ONE
-  uniform. Each instance's color arrives as PER-INSTANCE ATTRIBUTE data
-  (`per_instance_colors` → vertex-color channel 0), read by the shader via
-  `material_vertex_color(input, 0u)`. This is the attribute path — contrast
-  `dynamic-materials` (per-instance UNIFORM override) and
+  Twelve box instances (a 3×4 grid) from ONE instancer sharing ONE custom
+  material with ONE uniform. Each instance's color arrives as PER-INSTANCE
+  ATTRIBUTE data (`per_instance_colors` → vertex-color channel 0), read by the
+  shader via `material_vertex_color(input, 0u)`. This is the attribute path —
+  contrast `dynamic-materials` (per-instance UNIFORM override) and
   `dynamic-material-textures` (texture slot).
 
 expect:
-  - A row of 12 boxes each a DISTINCT color spanning a full rainbow
-    (magenta → purple → blue → cyan → green → lime → yellow, left to right) —
-    the per-instance colors, driven by attribute data.
+  - A 3×4 grid of 12 boxes, each a DISTINCT color spanning a full rainbow
+    (index 0→11 sweeps magenta → purple → blue → cyan → green → lime → yellow →
+    orange) — the per-instance colors, driven by attribute data. No two boxes
+    share a color.
   - The material has only ONE uniform (`ambient`), identical for every instance,
     so it CANNOT be the source of the divergence — the rainbow proves the color
     comes from the per-instance vertex-color channel.

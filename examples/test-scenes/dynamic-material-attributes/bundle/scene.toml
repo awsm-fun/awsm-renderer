@@ -89,7 +89,7 @@ folder = "assets/materials/new-material-2-00000000-0000-4000-8000-000000000005"
 layers = []
 
 [[nodes]]
-id = "4c8ec89a-1ef0-4d26-9948-d1fe5951fb6f"
+id = "da633307-03e1-4a57-9dcb-ad5447d50d63"
 name = "Directional Light"
 locked = false
 visible = true
@@ -355,81 +355,9 @@ per_instance_colors = [
 
 [[nodes.kind.instancer.transforms]]
 translation = [
-    -8.800000190734863,
-    0.6000000238418579,
-    0.0,
-]
-rotation = [
-    0.0,
-    0.0,
-    0.0,
-    1.0,
-]
-scale = [
-    1.0,
-    1.0,
-    1.0,
-]
-
-[[nodes.kind.instancer.transforms]]
-translation = [
-    -7.199999809265137,
-    0.6000000238418579,
-    0.0,
-]
-rotation = [
-    0.0,
-    0.0,
-    0.0,
-    1.0,
-]
-scale = [
-    1.0,
-    1.0,
-    1.0,
-]
-
-[[nodes.kind.instancer.transforms]]
-translation = [
-    -5.599999904632568,
-    0.6000000238418579,
-    0.0,
-]
-rotation = [
-    0.0,
-    0.0,
-    0.0,
-    1.0,
-]
-scale = [
-    1.0,
-    1.0,
-    1.0,
-]
-
-[[nodes.kind.instancer.transforms]]
-translation = [
-    -4.0,
-    0.6000000238418579,
-    0.0,
-]
-rotation = [
-    0.0,
-    0.0,
-    0.0,
-    1.0,
-]
-scale = [
-    1.0,
-    1.0,
-    1.0,
-]
-
-[[nodes.kind.instancer.transforms]]
-translation = [
     -2.4000000953674316,
     0.6000000238418579,
-    0.0,
+    -3.5999999046325684,
 ]
 rotation = [
     0.0,
@@ -445,27 +373,9 @@ scale = [
 
 [[nodes.kind.instancer.transforms]]
 translation = [
-    -0.800000011920929,
+    0.0,
     0.6000000238418579,
-    0.0,
-]
-rotation = [
-    0.0,
-    0.0,
-    0.0,
-    1.0,
-]
-scale = [
-    1.0,
-    1.0,
-    1.0,
-]
-
-[[nodes.kind.instancer.transforms]]
-translation = [
-    0.800000011920929,
-    0.6000000238418579,
-    0.0,
+    -3.5999999046325684,
 ]
 rotation = [
     0.0,
@@ -483,7 +393,7 @@ scale = [
 translation = [
     2.4000000953674316,
     0.6000000238418579,
-    0.0,
+    -3.5999999046325684,
 ]
 rotation = [
     0.0,
@@ -499,9 +409,9 @@ scale = [
 
 [[nodes.kind.instancer.transforms]]
 translation = [
-    4.0,
+    -2.4000000953674316,
     0.6000000238418579,
-    0.0,
+    -1.2000000476837158,
 ]
 rotation = [
     0.0,
@@ -517,9 +427,9 @@ scale = [
 
 [[nodes.kind.instancer.transforms]]
 translation = [
-    5.599999904632568,
-    0.6000000238418579,
     0.0,
+    0.6000000238418579,
+    -1.2000000476837158,
 ]
 rotation = [
     0.0,
@@ -535,9 +445,9 @@ scale = [
 
 [[nodes.kind.instancer.transforms]]
 translation = [
-    7.199999809265137,
+    2.4000000953674316,
     0.6000000238418579,
-    0.0,
+    -1.2000000476837158,
 ]
 rotation = [
     0.0,
@@ -553,9 +463,99 @@ scale = [
 
 [[nodes.kind.instancer.transforms]]
 translation = [
-    8.800000190734863,
+    -2.4000000953674316,
     0.6000000238418579,
+    1.2000000476837158,
+]
+rotation = [
     0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[[nodes.kind.instancer.transforms]]
+translation = [
+    0.0,
+    0.6000000238418579,
+    1.2000000476837158,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[[nodes.kind.instancer.transforms]]
+translation = [
+    2.4000000953674316,
+    0.6000000238418579,
+    1.2000000476837158,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[[nodes.kind.instancer.transforms]]
+translation = [
+    -2.4000000953674316,
+    0.6000000238418579,
+    3.5999999046325684,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[[nodes.kind.instancer.transforms]]
+translation = [
+    0.0,
+    0.6000000238418579,
+    3.5999999046325684,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[[nodes.kind.instancer.transforms]]
+translation = [
+    2.4000000953674316,
+    0.6000000238418579,
+    3.5999999046325684,
 ]
 rotation = [
     0.0,
