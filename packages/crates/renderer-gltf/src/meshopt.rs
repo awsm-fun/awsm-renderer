@@ -336,6 +336,116 @@ mod roundtrip_tests {
         }
     }
 
+    /// The pre-encode reorder (plan F5) permutes vertex order; JOINTS/WEIGHTS
+    /// ride the SAME remap as POSITION, so a vertex's skin data must still
+    /// track its position after the permutation. The sibling quantize tests
+    /// use uniform skin data (any permutation looks identical) — this one
+    /// varies JOINTS per vertex so a stream desync would actually corrupt the
+    /// output. Joints and weights go through one identical remap loop, so
+    /// pinning joints guards the whole mechanism.
+    #[test]
+    fn reorder_keeps_skin_streams_synced_with_position() {
+        use awsm_renderer_glb_export::ExportSkin;
+
+        // 24 verts / 8 triangles. Distinct positions; triangles emitted in
+        // REVERSE so vertex-cache/fetch optimization produces a non-identity
+        // remap (an identity remap would make this test vacuous).
+        let n = 24usize;
+        let mut mesh = MeshData::default();
+        for i in 0..n as u32 {
+            let f = i as f32;
+            mesh.positions
+                .push([f * 0.13 - 1.5, (f * 0.6).sin() * 1.5, f * 0.07 + 4.0]);
+        }
+        mesh.indices = (0..8u32)
+            .rev()
+            .flat_map(|t| [t * 3, t * 3 + 1, t * 3 + 2])
+            .collect();
+        mesh.compute_vertex_normals();
+
+        // JOINTS vary per vertex over a 4-joint skin (all identity IBMs, so
+        // bind-pose position recovery stays joint-independent: world = dequant
+        // × q regardless of which joints a vertex references).
+        let joints: Vec<[u16; 4]> = (0..n)
+            .map(|i| [(i % 4) as u16, ((i + 1) % 4) as u16, 0, 0])
+            .collect();
+        let mut skinned = ExportNode::new("skinned").with_mesh(mesh.clone());
+        skinned.skin = Some(0);
+        skinned.joints = Some(joints.clone());
+        skinned.weights = Some(vec![[1.0f32, 0.0, 0.0, 0.0]; n]);
+
+        let identity: [f32; 16] = glam::Mat4::IDENTITY.to_cols_array();
+        let scene = GlbScene {
+            nodes: vec![
+                ExportNode::new("j0"),
+                ExportNode::new("j1"),
+                ExportNode::new("j2"),
+                ExportNode::new("j3"),
+                skinned,
+            ],
+            animations: vec![],
+            skins: vec![ExportSkin {
+                joints: vec![0, 1, 2, 3],
+                inverse_bind_matrices: vec![identity; 4],
+                skeleton: Some(0),
+            }],
+            images: vec![],
+            env: None,
+        };
+
+        let compressed = compress_glb(&write_glb(&scene)).unwrap();
+        let gltf = parse_gltf_lenient(&compressed).unwrap();
+        let doc = &gltf.document;
+        let blob = gltf.blob.clone().unwrap();
+        let mut buffers = materialize(doc, &blob);
+        decode_meshopt_buffer_views(doc, &mut buffers).unwrap();
+
+        let skinned_node = doc
+            .nodes()
+            .find(|nd| nd.mesh().is_some() && nd.skin().is_some())
+            .expect("skinned node");
+        let prim = skinned_node.mesh().unwrap().primitives().next().unwrap();
+        let positions =
+            crate::populate::mesh::read_vec3_dequant(&prim, &gltf::Semantic::Positions, &buffers)
+                .unwrap();
+
+        // Recover world bind position through the (dequant-folded) IBM — all
+        // IBMs identical, so any joint works.
+        let skin = skinned_node.skin().unwrap();
+        let ibm_acc = skin.inverse_bind_matrices().expect("IBM accessor");
+        let view = ibm_acc.view().unwrap();
+        let base = view.offset() + ibm_acc.offset();
+        let mut cols = [0f32; 16];
+        for (i, c) in buffers[view.buffer().index()][base..base + 64]
+            .chunks_exact(4)
+            .enumerate()
+        {
+            cols[i] = f32::from_le_bytes(c.try_into().unwrap());
+        }
+        let ibm = glam::Mat4::from_cols_array(&cols);
+        let tol = ibm.x_axis.x / 32767.0 * 2.0;
+        let world: Vec<[f32; 3]> = positions
+            .iter()
+            .map(|q| ibm.transform_point3(glam::Vec3::from_array(*q)).to_array())
+            .collect();
+
+        // pairing[source_idx] = decoded_idx.
+        let pairing = pair_by_position(&world, &mesh.positions, tol);
+        assert!(
+            pairing.iter().enumerate().any(|(i, &d)| i != d),
+            "reorder should have permuted vertex order; got identity — test is vacuous"
+        );
+
+        let reader = prim.reader(|b| buffers.get(b.index()).map(|v| &v[..]));
+        let decoded_joints: Vec<[u16; 4]> = reader.read_joints(0).unwrap().into_u16().collect();
+        for (src_idx, &dec_idx) in pairing.iter().enumerate() {
+            assert_eq!(
+                decoded_joints[dec_idx], joints[src_idx],
+                "vertex at source position {src_idx} (decoded {dec_idx}) lost its joints in the reorder"
+            );
+        }
+    }
+
     /// A skin with NO inverseBindMatrices accessor has nowhere to fold the
     /// dequant — its meshes must skip quantization (positions stay F32),
     /// never quantize-and-corrupt.
