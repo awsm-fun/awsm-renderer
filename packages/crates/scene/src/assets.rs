@@ -261,6 +261,15 @@ pub struct AssetEntry {
     /// texture's source MIME.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub texture_encoding: Option<TextureEncoding>,
+    /// For a KTX2 texture artifact: the image is TWO-CHANNEL-PACKED tangent
+    /// normal data (X replicated into RGB, Y in A — docs/plans/compression.md
+    /// F3). The player transcodes such artifacts to a two-plane target
+    /// (BC5 / EAC-RG11) when the device supports one and sets the material's
+    /// Z-reconstruct shader flag. `false` (and absent, for bundles baked
+    /// before the field) = a regular full-RGB image. Set by the bundle bake
+    /// on normal-use KTX2 artifacts only.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub texture_two_channel_normal: bool,
 }
 
 impl AssetEntry {
@@ -275,6 +284,7 @@ impl AssetEntry {
             gltf_image_asset_ids: Vec::new(),
             content_hash: String::new(),
             texture_encoding: None,
+            texture_two_channel_normal: false,
         }
     }
 
@@ -289,6 +299,7 @@ impl AssetEntry {
             gltf_image_asset_ids: Vec::new(),
             content_hash,
             texture_encoding: None,
+            texture_two_channel_normal: false,
         }
     }
 }

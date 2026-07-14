@@ -29,6 +29,7 @@ struct PbrMaterialHeaderRaw {
 
     debug_bitmask: u32,
     ssr_mask: f32,
+    normal_packing: u32,
 
     // 12 u32 relative indices (word indices relative to header start)
     vertex_color_info_relative_index: u32,
@@ -70,6 +71,11 @@ struct PbrMaterial {
     // F0 — 0 opts out of receiving SSR entirely (IBL kept via the
     // crossfade), fractional damps. Independent of roughness.
     ssr_mask: f32,
+    // Two-channel-normal packing, two bit-pairs (bits 0-1 = main normal,
+    // bits 2-3 = clearcoat normal): 0 = full-RGB normal, 1 = X/Y in .rg
+    // (BC5 / EAC-RG11), 2 = packed RGBA (X in .rgb, Y in .a). Non-zero
+    // pairs reconstruct Z = sqrt(1 - x*x - y*y).
+    normal_packing: u32,
 
     // absolute indices in global `materials` (0 == absent)
     vertex_color_info_index: u32,
@@ -104,14 +110,15 @@ struct PbrMaterial {
 // emissive_factor (3)
 // debug_bitmask (1)
 // ssr_mask (1)
-// = 40 words
-const PBR_CORE_WORDS: u32 = 40u;
+// normal_packing (1)
+// = 41 words
+const PBR_CORE_WORDS: u32 = 41u;
 
 // Then we reserve 12 u32 indices right after the core:
 const PBR_FEATURE_INDEX_WORDS: u32 = 12u;
 
 // Total fixed header words (core + indices)
-const PBR_HEADER_WORDS: u32 = PBR_CORE_WORDS + PBR_FEATURE_INDEX_WORDS; // 50
+const PBR_HEADER_WORDS: u32 = PBR_CORE_WORDS + PBR_FEATURE_INDEX_WORDS; // 53
 
 fn pbr_get_material(byte_offset: u32) -> PbrMaterial {
     // word 0 at byte_offset is shader_id; header starts right after it
@@ -145,6 +152,7 @@ fn pbr_get_material(byte_offset: u32) -> PbrMaterial {
 
     let debug_bitmask = material_load_u32(base_index + 38u);
     let ssr_mask = material_load_f32(base_index + 39u);
+    let normal_packing = material_load_u32(base_index + 40u);
 
     // 12 relative indices live immediately after the core words:
     let fi = base_index + PBR_CORE_WORDS;
@@ -171,6 +179,7 @@ fn pbr_get_material(byte_offset: u32) -> PbrMaterial {
 
         debug_bitmask,
         ssr_mask,
+        normal_packing,
 
         material_load_u32(fi + 0u),  // vertex_color_info
         material_load_u32(fi + 1u),  // emissive_strength
@@ -208,6 +217,7 @@ fn pbr_get_material(byte_offset: u32) -> PbrMaterial {
 
         debug_bitmask,
         header.ssr_mask,
+        header.normal_packing,
 
         abs_index(base_index, header.vertex_color_info_relative_index),
         abs_index(base_index, header.emissive_strength_relative_index),

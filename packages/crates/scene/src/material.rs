@@ -157,9 +157,13 @@ impl MaterialDef {
             visit(K::MetallicRoughness, &mut e.roughness_tex);
         }
         if let Some(e) = &mut ext.anisotropy {
-            // The player binds anisotropy direction maps with normal-kind mips;
-            // they deserve the same UASTC treatment.
-            visit(K::Normal, &mut e.tex);
+            // Anisotropy direction maps are linear DATA, not tangent normals:
+            // they must never ride the two-channel normal packing (their
+            // shader sampling isn't Z-reconstruct-aware), so they resolve as
+            // MetallicRoughness-kind (ETC1S under Auto — the pre-F2 shipped
+            // behavior) even though the player binds them with normal-kind
+            // mips.
+            visit(K::MetallicRoughness, &mut e.tex);
         }
         if let Some(e) = &mut ext.iridescence {
             visit(K::Specular, &mut e.tex);

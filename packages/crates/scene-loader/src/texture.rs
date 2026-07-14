@@ -11,14 +11,15 @@
 //! loader's embedded-image path (`bitmap::load_u8` → `ImageData::Bitmap` →
 //! `textures.add_image`) and the editor's `sampler_for` / `apply_textures`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use awsm_renderer::materials::MaterialTexture;
 use awsm_renderer::textures::{SamplerCacheKey, SamplerKey, TextureKey};
 use awsm_renderer::AwsmRenderer;
 use awsm_renderer_codec_basis::selection::{
-    select_transcode_target_checked, sniff_basis_ktx2, texture_format_for_target, TranscodeCaps,
+    select_normal_transcode_target_checked, select_transcode_target_checked, sniff_basis_ktx2,
+    target_is_two_plane, texture_format_for_target, TranscodeCaps,
 };
 use awsm_renderer_codec_basis::{
     BasisWorkerClient, BasisWorkerConfig, TranscodeTarget, TranscodedLevel,
@@ -68,6 +69,11 @@ pub struct TextureCache {
     /// Which block-compressed families the device supports — drives the KTX2
     /// transcode-target ladder. Captured once at cache construction.
     caps: TranscodeCaps,
+    /// Assets the bake flagged as TWO-CHANNEL-packed normal maps (X→RGB,
+    /// Y→A — docs/plans/compression.md F3). They transcode down the
+    /// two-plane ladder (BC5 / EAC-RG11) and set the material's Z-reconstruct
+    /// flag via [`Self::normal_packing`].
+    two_channel: HashSet<AssetId>,
 }
 
 /// A fetched + decoded bundle image, not yet staged in the pool.
@@ -108,10 +114,18 @@ impl TextureCache {
             .iter()
             .filter_map(|(id, entry)| entry.texture_encoding.map(|enc| (*id, enc)))
             .collect();
+        let two_channel = scene
+            .assets
+            .entries
+            .iter()
+            .filter(|(_, entry)| entry.texture_two_channel_normal)
+            .map(|(id, _)| *id)
+            .collect();
         // Device caps drive the KTX2/Basis transcode-target ladder.
         let support = renderer.gpu.texture_compression();
         Self {
             encodings,
+            two_channel,
             caps: TranscodeCaps {
                 bc: support.bc,
                 etc2: support.etc2,
@@ -127,6 +141,32 @@ impl TextureCache {
         self.encodings.get(&asset).copied().unwrap_or_default()
     }
 
+    /// The two-channel-normal shader packing for `asset`, valid after it
+    /// decoded: `0` = regular full-RGB normal, `1` = X/Y in `.rg` (a
+    /// two-plane BC5 / EAC-RG11 transcode), `2` = the packed RGBA layout
+    /// survived (X in `.rgb`, Y in `.a` — ASTC/RGBA8 fallback rungs).
+    /// Feeds the per-material Z-reconstruct flag
+    /// (docs/plans/compression.md F3).
+    pub fn normal_packing(&self, asset: AssetId) -> u32 {
+        if !self.two_channel.contains(&asset) {
+            return 0;
+        }
+        match self.decoded.get(&asset) {
+            Some(Some(DecodedImage::Compressed { target, .. })) => {
+                if target_is_two_plane(*target) {
+                    1
+                } else {
+                    2
+                }
+            }
+            // Flagged but decoded as a raster: the bake only flags KTX2
+            // artifacts, so this shouldn't happen — but the packed layout
+            // would still read via .r/.a.
+            Some(Some(DecodedImage::Bitmap { .. })) => 2,
+            _ => 0,
+        }
+    }
+
     /// Concurrently fetch + decode `ids` (deduped by the caller), reporting
     /// `(done, total)` per completion. Assets already decoded are skipped, so
     /// calling this twice (or after on-demand fills) never refetches.
@@ -140,22 +180,21 @@ impl TextureCache {
         // Resolve each pending asset's encoding up front so the fetch futures
         // capture a plain `TextureEncoding` (not `&self`).
         let caps = self.caps;
-        let pending: Vec<(AssetId, TextureEncoding)> = ids
+        let pending: Vec<(AssetId, TextureEncoding, bool)> = ids
             .into_iter()
             .filter(|id| !self.decoded.contains_key(id))
-            .map(|id| (id, self.encoding(id)))
+            .map(|id| (id, self.encoding(id), self.two_channel.contains(&id)))
             .collect();
         let total = pending.len();
         if total == 0 {
             return;
         }
         on_progress(0, total);
-        let mut stream = futures::stream::iter(
-            pending
-                .into_iter()
-                .map(|(id, enc)| async move { (id, fetch_decode(assets, id, enc, caps).await) }),
-        )
-        .buffer_unordered(PREFETCH_CONCURRENCY);
+        let mut stream =
+            futures::stream::iter(pending.into_iter().map(|(id, enc, two_ch)| async move {
+                (id, fetch_decode(assets, id, enc, caps, two_ch).await)
+            }))
+            .buffer_unordered(PREFETCH_CONCURRENCY);
         let mut done = 0;
         while let Some((id, decoded)) = stream.next().await {
             self.decoded.insert(id, decoded);
@@ -176,6 +215,7 @@ async fn fetch_decode(
     asset: AssetId,
     encoding: TextureEncoding,
     caps: TranscodeCaps,
+    two_channel: bool,
 ) -> Option<DecodedImage> {
     let path = format!("{ASSETS_DIR}/{asset}.{}", encoding.ext());
 
@@ -237,7 +277,13 @@ async fn fetch_decode(
                     );
                     return None;
                 };
-                let target = select_transcode_target_checked(caps, codec, width, height);
+                // Two-channel-packed normals ride the two-plane ladder
+                // (BC5 / EAC-RG11); everything else the full-RGBA one.
+                let target = if two_channel {
+                    select_normal_transcode_target_checked(caps, codec, width, height)
+                } else {
+                    select_transcode_target_checked(caps, codec, width, height)
+                };
                 let client = BASIS_CLIENT.with(|c| c.clone());
                 match client.transcode(&bytes, target).await {
                     Ok(tex) => {
@@ -328,12 +374,14 @@ pub async fn load_texture(
             // Resolve the encoding before the mutable `decoded` borrow below.
             let encoding = cache.encoding(tref.asset);
             let caps = cache.caps;
+            let cache_two_channel = cache.two_channel.contains(&tref.asset);
             let decoded = match cache.decoded.entry(tref.asset) {
                 std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
                 // Not prefetched (e.g. a slot the collector doesn't know about)
                 // — fall back to the old on-demand path, cached for next time.
                 std::collections::hash_map::Entry::Vacant(v) => {
-                    v.insert(fetch_decode(assets, tref.asset, encoding, caps).await)
+                    let two_ch = cache_two_channel;
+                    v.insert(fetch_decode(assets, tref.asset, encoding, caps, two_ch).await)
                 }
             };
             let key = decoded.as_ref().and_then(|d| match d {

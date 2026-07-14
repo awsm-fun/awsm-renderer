@@ -282,20 +282,26 @@ pub async fn bake_player_bundle(
             nodes: &mut [awsm_renderer_editor_protocol::EditorNode],
             builtin_materials: &HashSet<AssetId>,
             custom_slot_kinds: &HashMap<(AssetId, String), TextureColorKind>,
-            f: &mut impl FnMut(TextureColorKind, &mut awsm_renderer_editor_protocol::TextureRef),
+            // (slot kind, is-a-BUILT-IN-material use, the ref). Built-in
+            // normal slots are the only two-channel packing candidates —
+            // custom-WGSL materials sample with user-authored code that
+            // can't Z-reconstruct.
+            f: &mut impl FnMut(TextureColorKind, bool, &mut awsm_renderer_editor_protocol::TextureRef),
         ) {
             for node in nodes {
                 if let Some(variants) = node.kind.material_variants_mut() {
                     for v in variants {
                         if builtin_materials.contains(&v.instance.asset) {
-                            v.instance.inline.for_each_texture_use_mut(|k, t| f(k, t));
+                            v.instance
+                                .inline
+                                .for_each_texture_use_mut(|k, t| f(k, true, t));
                         } else {
                             for (name, t) in v.instance.texture_overrides.iter_mut() {
                                 let kind = custom_slot_kinds
                                     .get(&(v.instance.asset, name.clone()))
                                     .copied()
                                     .unwrap_or_default();
-                                f(kind, t);
+                                f(kind, false, t);
                             }
                         }
                     }
@@ -313,7 +319,9 @@ pub async fn bake_player_bundle(
         // params a KTX2 artifact is encoded with; `asset_level` marks assets
         // with ≥1 non-KTX2 use (those keep the original id for the
         // asset-level artifact, so every KTX2 group mints a variant).
-        type Ktx2Key = (bool, bool); // (uastc, srgb)
+        // The packed flag marks TWO-CHANNEL normal data (X→RGB, Y→A; F3) —
+        // only built-in normal-slot uses opt in.
+        type Ktx2Key = (bool, bool, bool); // (uastc, srgb, packed)
         let mut ktx2_uses: HashMap<AssetId, HashMap<Ktx2Key, usize>> = HashMap::new();
         let mut asset_level: HashMap<AssetId, TextureExport> = HashMap::new();
         let per_texture_pref = |asset: AssetId| {
@@ -328,17 +336,18 @@ pub async fn bake_player_bundle(
             &mut scene.nodes,
             &builtin_materials,
             &custom_slot_kinds,
-            &mut |kind, tref| match resolve_texture_use(
+            &mut |kind, builtin, tref| match resolve_texture_use(
                 tref.export_profile,
                 per_texture_pref(tref.asset),
                 kind,
                 global,
             ) {
                 ResolvedTextureUse::Ktx2 { uastc, srgb } => {
+                    let packed = builtin && kind == TextureColorKind::Normal;
                     *ktx2_uses
                         .entry(tref.asset)
                         .or_default()
-                        .entry((uastc, srgb))
+                        .entry((uastc, srgb, packed))
                         .or_default() += 1;
                 }
                 ResolvedTextureUse::AssetLevel(pref) => {
@@ -359,7 +368,12 @@ pub async fn bake_player_bundle(
                 let artifact = if index == 0 && !has_asset_level {
                     asset
                 } else {
-                    asset.derive_variant(&format!("ktx2-u{}-s{}", key.0 as u8, key.1 as u8))
+                    asset.derive_variant(&format!(
+                        "ktx2-u{}-s{}{}",
+                        key.0 as u8,
+                        key.1 as u8,
+                        if key.2 { "-n2" } else { "" }
+                    ))
                 };
                 artifacts.insert((asset, key), artifact);
             }
@@ -372,14 +386,15 @@ pub async fn bake_player_bundle(
             &mut scene.nodes,
             &builtin_materials,
             &custom_slot_kinds,
-            &mut |kind, tref| {
+            &mut |kind, builtin, tref| {
                 if let ResolvedTextureUse::Ktx2 { uastc, srgb } = resolve_texture_use(
                     tref.export_profile,
                     per_texture_pref(tref.asset),
                     kind,
                     global,
                 ) {
-                    tref.asset = artifacts[&(tref.asset, (uastc, srgb))];
+                    let packed = builtin && kind == TextureColorKind::Normal;
+                    tref.asset = artifacts[&(tref.asset, (uastc, srgb, packed))];
                 }
                 tref.export_profile = None;
             },
@@ -389,7 +404,11 @@ pub async fn bake_player_bundle(
         // order. Source bytes are always fetched by the ORIGINAL asset id
         // (variant ids exist only in the baked output).
         enum ArtifactEncode {
-            Ktx2 { uastc: bool, srgb: bool },
+            Ktx2 {
+                uastc: bool,
+                srgb: bool,
+                packed: bool,
+            },
             Asset(TextureExport),
         }
         let mut bake_list: Vec<(AssetId, AssetId, ArtifactEncode)> = Vec::new();
@@ -400,6 +419,7 @@ pub async fn bake_player_bundle(
                 ArtifactEncode::Ktx2 {
                     uastc: key.0,
                     srgb: key.1,
+                    packed: key.2,
                 },
             ));
         }
@@ -422,33 +442,36 @@ pub async fn bake_player_bundle(
             // Encode under the artifact's resolved parameters. Failures warn
             // and fall back (KTX2 → lossless WebP → source bytes), recording
             // whatever actually shipped — a bake never silently drops a texture.
-            let (encoding, bytes) = match encode {
+            // `two_channel` records that the shipped bytes really ARE the
+            // packed normal encode (fallbacks/passthrough ship unpacked
+            // source-derived bytes, so they must not set the shader flag).
+            let (encoding, bytes, two_channel) = match encode {
                 ArtifactEncode::Asset(TextureExport::Source) => {
-                    (texture_encoding_from_mime(mime), bytes)
+                    (texture_encoding_from_mime(mime), bytes, false)
                 }
                 ArtifactEncode::Asset(TextureExport::WebpLossless) => {
                     match encode_webp_lossless(&bytes, mime) {
-                        Some(webp) => (awsm_renderer_scene::TextureEncoding::Webp, webp),
+                        Some(webp) => (awsm_renderer_scene::TextureEncoding::Webp, webp, false),
                         None => {
                             tracing::warn!(
                                 "bundle texture {artifact_id}: lossless WebP encode failed — \
                                  shipping source {}",
                                 mime.ext()
                             );
-                            (texture_encoding_from_mime(mime), bytes)
+                            (texture_encoding_from_mime(mime), bytes, false)
                         }
                     }
                 }
                 ArtifactEncode::Asset(TextureExport::WebpLossy { quality }) => {
                     match encode_webp(&bytes, mime.as_str(), quality as f64).await {
-                        Some(webp) => (awsm_renderer_scene::TextureEncoding::Webp, webp),
+                        Some(webp) => (awsm_renderer_scene::TextureEncoding::Webp, webp, false),
                         None => {
                             tracing::warn!(
                                 "bundle texture {artifact_id}: lossy WebP encode failed — \
                                  shipping source {}",
                                 mime.ext()
                             );
-                            (texture_encoding_from_mime(mime), bytes)
+                            (texture_encoding_from_mime(mime), bytes, false)
                         }
                     }
                 }
@@ -456,17 +479,37 @@ pub async fn bake_player_bundle(
                 // but route it through the per-use encoder as slot-neutral
                 // color if it ever does.
                 ArtifactEncode::Asset(TextureExport::Ktx2 { .. }) | ArtifactEncode::Ktx2 { .. } => {
-                    let (uastc, srgb) = match encode {
-                        ArtifactEncode::Ktx2 { uastc, srgb } => (uastc, srgb),
-                        _ => (false, true),
+                    let (uastc, srgb, packed) = match encode {
+                        ArtifactEncode::Ktx2 {
+                            uastc,
+                            srgb,
+                            packed,
+                        } => (uastc, srgb, packed),
+                        _ => (false, true, false),
                     };
                     use awsm_renderer_glb_export::ImageMime;
-                    // Imported KTX2 → passthrough verbatim, regardless of profile.
+                    // Imported KTX2 → passthrough verbatim, regardless of
+                    // profile — and UNPACKED (we can't re-swizzle a finished
+                    // container), so the shader flag stays off.
                     if matches!(mime, ImageMime::Ktx2) {
-                        (awsm_renderer_scene::TextureEncoding::Ktx2, bytes)
+                        (awsm_renderer_scene::TextureEncoding::Ktx2, bytes, false)
                     } else {
                         match decode_rgba(&bytes, mime) {
-                            Some((rgba, w, h)) if w % 4 == 0 && h % 4 == 0 => {
+                            Some((mut rgba, w, h)) if w % 4 == 0 && h % 4 == 0 => {
+                                // Two-channel normal packing (F3): X replicated
+                                // into RGB, Y into A — the layout the Basis
+                                // transcoder's BC5/EAC-RG11 targets pull their
+                                // two planes from (the vendored encoder has no
+                                // swizzle API, so pack CPU-side).
+                                if packed {
+                                    for px in rgba.chunks_exact_mut(4) {
+                                        let (x, y) = (px[0], px[1]);
+                                        px[0] = x;
+                                        px[1] = x;
+                                        px[2] = x;
+                                        px[3] = y;
+                                    }
+                                }
                                 let params = awsm_renderer_codec_basis::EncodeParams {
                                     uastc,
                                     // Per-USE colorspace: sRGB for color slots,
@@ -481,9 +524,10 @@ pub async fn bake_player_bundle(
                                 match client.encode(&rgba, w, h, &params).await {
                                     Ok(ktx2) => {
                                         tracing::info!(
-                                            "bundle texture {artifact_id}: {w}x{h} → KTX2 {} \
+                                            "bundle texture {artifact_id}: {w}x{h} → KTX2 {}{} \
                                              ({} bytes){}",
                                             if uastc { "UASTC" } else { "ETC1S" },
+                                            if packed { " two-channel-normal" } else { "" },
                                             ktx2.len(),
                                             if artifact_id != source_id {
                                                 format!(" [variant of {source_id}]")
@@ -491,7 +535,7 @@ pub async fn bake_player_bundle(
                                                 String::new()
                                             }
                                         );
-                                        (awsm_renderer_scene::TextureEncoding::Ktx2, ktx2)
+                                        (awsm_renderer_scene::TextureEncoding::Ktx2, ktx2, packed)
                                     }
                                     Err(e) => {
                                         tracing::warn!(
@@ -499,10 +543,14 @@ pub async fn bake_player_bundle(
                                              ({e}) — falling back to lossless WebP"
                                         );
                                         match encode_webp_lossless(&bytes, mime) {
-                                            Some(webp) => {
-                                                (awsm_renderer_scene::TextureEncoding::Webp, webp)
+                                            Some(webp) => (
+                                                awsm_renderer_scene::TextureEncoding::Webp,
+                                                webp,
+                                                false,
+                                            ),
+                                            None => {
+                                                (texture_encoding_from_mime(mime), bytes, false)
                                             }
-                                            None => (texture_encoding_from_mime(mime), bytes),
                                         }
                                     }
                                 }
@@ -516,9 +564,9 @@ pub async fn bake_player_bundle(
                                 );
                                 match encode_webp_lossless(&bytes, mime) {
                                     Some(webp) => {
-                                        (awsm_renderer_scene::TextureEncoding::Webp, webp)
+                                        (awsm_renderer_scene::TextureEncoding::Webp, webp, false)
                                     }
-                                    None => (texture_encoding_from_mime(mime), bytes),
+                                    None => (texture_encoding_from_mime(mime), bytes, false),
                                 }
                             }
                             None => {
@@ -527,7 +575,7 @@ pub async fn bake_player_bundle(
                                      source {}",
                                     mime.ext()
                                 );
-                                (texture_encoding_from_mime(mime), bytes)
+                                (texture_encoding_from_mime(mime), bytes, false)
                             }
                         }
                     }
@@ -540,6 +588,7 @@ pub async fn bake_player_bundle(
             if artifact_id == source_id {
                 if let Some(entry) = scene.assets.entries.get_mut(&artifact_id) {
                     entry.texture_encoding = Some(encoding);
+                    entry.texture_two_channel_normal = two_channel;
                 }
             } else {
                 // Mint the variant's baked asset-table entry: same source
@@ -559,6 +608,7 @@ pub async fn bake_player_bundle(
                 entry.gltf_material_asset_ids = Vec::new();
                 entry.gltf_image_asset_ids = Vec::new();
                 entry.texture_encoding = Some(encoding);
+                entry.texture_two_channel_normal = two_channel;
                 scene.assets.entries.insert(artifact_id, entry);
             }
         }

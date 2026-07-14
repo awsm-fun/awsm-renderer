@@ -43,6 +43,8 @@ pub fn project_to_scene(project: &EditorProject) -> Scene {
                 // (see `controller::export`). `None` here ⇒ the loader defaults to
                 // PNG, which is what this lowering path has always emitted.
                 texture_encoding: None,
+                // Likewise bake-set, on normal-use KTX2 artifacts only.
+                texture_two_channel_normal: false,
             },
         );
     }

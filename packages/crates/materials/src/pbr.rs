@@ -45,6 +45,13 @@ pub struct PbrMaterial {
     /// value), fractional values damp them artistically. Decouples "how
     /// glossy it looks" (roughness) from "does SSR own its reflection".
     pub ssr_mask: f32,
+    /// Two-channel-normal shader packing (docs/plans/compression.md F3),
+    /// two bit-pairs: bits 0-1 = the main normal map, bits 2-3 = the
+    /// clearcoat normal map. Per pair: 0 = regular full-RGB normal, 1 = X/Y
+    /// in `.rg` (BC5 / EAC-RG11 transcode), 2 = packed RGBA layout (X in
+    /// `.rgb`, Y in `.a`). The shader reconstructs Z = sqrt(1 - x² - y²)
+    /// for non-zero pairs. Runtime uniform — never splits pipelines.
+    pub normal_packing: u32,
 
     // Non-core features and extensions
     pub vertex_color_info: Option<PbrMaterialVertexColorInfo>,
@@ -424,6 +431,7 @@ impl PbrMaterial {
             iridescence: None,
             debug: PbrMaterialDebug::None,
             ssr_mask: 1.0,
+            normal_packing: 0,
             alpha_mode,
             double_sided,
         }
@@ -582,6 +590,8 @@ impl MaterialShader for PbrMaterial {
         // ssr_mask rides at the END of the core header (word 39) so no
         // existing offset shifts — see PBR_CORE_WORDS in pbr_material.wgsl.
         write(data, self.ssr_mask.into());
+        // normal_packing appends after it (word 40) for the same reason.
+        write(data, self.normal_packing.into());
 
         // Feature indices.
         #[derive(Default, Debug)]

@@ -766,6 +766,27 @@ the whole ASSET normal if ANY use is a normal slot — wrong for the other use.
 
 ## F3. Two-channel normals (locked in — quality win, ~zero cost)
 
+Progress:
+- [x] Implemented end-to-end; MUST browser-verify in F4 (shader change; no
+      offline WGSL validation exists for the built-in templates).
+  - Encode: CPU-side X→RGB/Y→A swizzle in the bake (vendored encoder JS has
+    no swizzle API); only BUILT-IN normal-slot uses pack (custom-WGSL
+    materials sample with user code that can't Z-reconstruct; anisotropy
+    direction maps re-kinded to MetallicRoughness so they never pack). The
+    packed bit joins the F2 grouping key → its own variant artifact.
+  - Runtime: `AssetEntry.texture_two_channel_normal` (bake-set, only when the
+    packed KTX2 encode actually shipped — fallbacks/passthrough stay false) →
+    TextureCache seeds it → `select_normal_transcode_target[_checked]`
+    (BC5 / EAC-RG11 / regular ladder fallback, host-tested). PREFETCH already
+    picks the right target (per-artifact flag makes the planned bind-time
+    deferral unnecessary — the artifact IS the use, post-F2).
+  - Shader: `PbrMaterial.normal_packing` u32 (bits 0-1 main, 2-3 clearcoat;
+    per pair 0=RGB, 1=.rg two-plane, 2=.r/.a packed RGBA), core header word
+    40, PBR_CORE_WORDS 40→41; shared unpack helper in BOTH color-calc paths
+    (opaque compute + transparent forward, main + clearcoat) reconstructs
+    z = sqrt(1-x²-y²). No vertex-interface change (flag rides the material
+    storage buffer).
+
 Encode side: normal-use textures pack X→RGB, Y→A (CPU-side swizzle before the
 worker encode if the vendored encoder JS lacks setSwizzle), UASTC, linear.
 Ladder: new `select_normal_transcode_target` — BC5 (bc caps) / EAC-RG11

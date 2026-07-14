@@ -122,6 +122,43 @@ pub fn select_transcode_target_checked(
     select_transcode_target(caps, codec)
 }
 
+/// Pick the transcode target for a TWO-CHANNEL-packed normal map (X→RGB,
+/// Y→A at encode — docs/plans/compression.md F3): BC5 on BC hardware,
+/// EAC-RG11 on ETC2 hardware (both two-plane formats the Basis transcoder
+/// fills from the packed RGB+A planes), else the regular full-RGBA ladder —
+/// the packed layout survives there (X in RGB, Y in A), the shader's
+/// Z-reconstruct just reads Y from `.a` instead of `.g`.
+pub fn select_normal_transcode_target(caps: TranscodeCaps, codec: SourceCodec) -> TranscodeTarget {
+    if caps.bc {
+        TranscodeTarget::Bc5
+    } else if caps.etc2 {
+        TranscodeTarget::EacRg11
+    } else {
+        select_transcode_target(caps, codec)
+    }
+}
+
+/// [`select_normal_transcode_target`] with the multiple-of-4 guard folded in.
+pub fn select_normal_transcode_target_checked(
+    caps: TranscodeCaps,
+    codec: SourceCodec,
+    width: u32,
+    height: u32,
+) -> TranscodeTarget {
+    if !dims_block_compatible(width, height) {
+        return TranscodeTarget::Rgba32;
+    }
+    select_normal_transcode_target(caps, codec)
+}
+
+/// True when a transcode target delivers a two-channel-packed normal's X/Y in
+/// `.rg` (the dedicated two-plane formats); false = the packed RGBA layout
+/// survives verbatim (X in `.rgb`, Y in `.a`). Drives the per-material shader
+/// flag's channel-layout bit.
+pub fn target_is_two_plane(target: TranscodeTarget) -> bool {
+    matches!(target, TranscodeTarget::Bc5 | TranscodeTarget::EacRg11)
+}
+
 /// The WebGPU texture format a transcode target uploads as. `srgb` comes from
 /// the material slot (base color / emissive = true; normal / MR / occlusion =
 /// false) — on compressed formats the sRGB decode rides HERE, in the format,
@@ -194,6 +231,34 @@ mod tests {
         // No caps: RGBA8 last resort.
         assert_eq!(select_transcode_target(NONE, Uastc), Rgba32);
         assert_eq!(select_transcode_target(NONE, Etc1s), Rgba32);
+    }
+
+    /// Two-channel normals: BC5 on BC hardware, EAC-RG11 on ETC2, and the
+    /// regular RGBA ladder (packed layout intact) everywhere else.
+    #[test]
+    fn normal_ladder() {
+        use SourceCodec::*;
+        use TranscodeTarget::*;
+        assert_eq!(select_normal_transcode_target(DESKTOP, Uastc), Bc5);
+        assert_eq!(select_normal_transcode_target(APPLE, Uastc), Bc5);
+        assert_eq!(select_normal_transcode_target(MOBILE, Uastc), EacRg11);
+        // No two-plane caps: falls back to the full-RGBA ladder.
+        assert_eq!(select_normal_transcode_target(NONE, Uastc), Rgba32);
+        let astc_only = TranscodeCaps {
+            bc: false,
+            etc2: false,
+            astc: true,
+        };
+        assert_eq!(select_normal_transcode_target(astc_only, Uastc), Astc4x4);
+        // Non-multiple-of-4 dims: RGBA8, like the color path.
+        assert_eq!(
+            select_normal_transcode_target_checked(DESKTOP, Uastc, 100, 30),
+            Rgba32
+        );
+        assert!(target_is_two_plane(Bc5));
+        assert!(target_is_two_plane(EacRg11));
+        assert!(!target_is_two_plane(Astc4x4));
+        assert!(!target_is_two_plane(Rgba32));
     }
 
     #[test]

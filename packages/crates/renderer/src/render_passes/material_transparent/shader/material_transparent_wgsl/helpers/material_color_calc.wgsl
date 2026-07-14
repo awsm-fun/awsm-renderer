@@ -71,7 +71,7 @@ fn pbr_get_material_color(
     // Clearcoat
     let clearcoat_factor = pbr_clearcoat(clearcoat, fragment_input);
     let clearcoat_roughness_factor = pbr_clearcoat_roughness(clearcoat, fragment_input);
-    let clearcoat_normal_value = pbr_clearcoat_normal(clearcoat, world_normal, world_tangent, fragment_input);
+    let clearcoat_normal_value = pbr_clearcoat_normal(clearcoat, world_normal, world_tangent, fragment_input, (material.normal_packing >> 2u) & 3u);
 
     // Sheen
     let sheen_color_factor = pbr_sheen_color(sheen, fragment_input);
@@ -157,6 +157,24 @@ fn pbr_material_metallic_roughness(
 }
 
 // Apply normal mapping using interpolated tangent space basis from vertex shader
+// Unpack a sampled normal-map texel to tangent space, honoring the two-channel
+// packing pair (docs/plans/compression.md F3): 0 = full RGB (Z from .b),
+// 1 = X/Y in .rg (a BC5 / EAC-RG11 transcode), 2 = the packed RGBA layout
+// (X in .rgb, Y in .a — ASTC/RGBA8 fallback). Two-channel modes reconstruct
+// z = sqrt(1 - x*x - y*y), exact for unit normals.
+fn pbr_unpack_tangent_normal(tex: vec4<f32>, packing: u32, scale: f32) -> vec3<f32> {
+    var x = tex.r * 2.0 - 1.0;
+    var y = tex.g * 2.0 - 1.0;
+    var z = tex.b * 2.0 - 1.0;
+    if packing != 0u {
+        if packing == 2u {
+            y = tex.a * 2.0 - 1.0;
+        }
+        z = sqrt(max(1.0 - x * x - y * y, 0.0));
+    }
+    return vec3<f32>(x * scale, y * scale, z);
+}
+
 // Much simpler than compute version - relies on vertex shader providing correct tangents
 fn pbr_normal(
     material: PbrMaterial,
@@ -169,10 +187,10 @@ fn pbr_normal(
     // Sample normal map and unpack from [0,1] to [-1,1] range
     let uv = texture_uv(material.normal_tex_info, fragment_input);
     let tex = texture_pool_sample(material.normal_tex_info, uv);
-    let tangent_normal = vec3<f32>(
-        (tex.r * 2.0 - 1.0) * material.normal_scale,
-        (tex.g * 2.0 - 1.0) * material.normal_scale,
-        tex.b * 2.0 - 1.0,
+    let tangent_normal = pbr_unpack_tangent_normal(
+        tex,
+        material.normal_packing & 3u,
+        material.normal_scale,
     );
 
     // Build TBN matrix from interpolated vertex data
@@ -311,7 +329,8 @@ fn pbr_clearcoat_normal(
     clearcoat: PbrClearcoat,
     world_normal: vec3<f32>,
     world_tangent: vec4<f32>,
-    fragment_input: FragmentInput
+    fragment_input: FragmentInput,
+    packing: u32,
 ) -> vec3<f32> {
     // If no clearcoat normal texture, use geometry normal
     if !clearcoat.normal_tex_info.exists {
@@ -321,10 +340,10 @@ fn pbr_clearcoat_normal(
     // Sample clearcoat normal map and unpack from [0,1] to [-1,1] range
     let uv = texture_uv(clearcoat.normal_tex_info, fragment_input);
     let tex = texture_pool_sample(clearcoat.normal_tex_info, uv);
-    let tangent_normal = vec3<f32>(
-        (tex.r * 2.0 - 1.0) * clearcoat.normal_scale,
-        (tex.g * 2.0 - 1.0) * clearcoat.normal_scale,
-        tex.b * 2.0 - 1.0,
+    let tangent_normal = pbr_unpack_tangent_normal(
+        tex,
+        packing,
+        clearcoat.normal_scale,
     );
 
     // Build TBN matrix from interpolated vertex data

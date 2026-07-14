@@ -241,6 +241,7 @@ fn pbr_get_material_color{{ mipmap.suffix() }}(
         ),
         {% if mipmap.is_gradient() %}gradients.clearcoat_normal,{% endif %}
         geometry_tbn,
+        (material.normal_packing >> 2u) & 3u,
     );
 
     // Sheen sampling
@@ -423,6 +424,24 @@ fn _pbr_material_metallic_roughness_color{{ mipmap.suffix() }}(
     return color;
 }
 
+// Unpack a sampled normal-map texel to tangent space, honoring the two-channel
+// packing pair (docs/plans/compression.md F3): 0 = full RGB (Z from .b),
+// 1 = X/Y in .rg (a BC5 / EAC-RG11 transcode), 2 = the packed RGBA layout
+// (X in .rgb, Y in .a — ASTC/RGBA8 fallback). Two-channel modes reconstruct
+// z = sqrt(1 - x*x - y*y), exact for unit normals.
+fn _pbr_unpack_tangent_normal{{ mipmap.suffix() }}(tex: vec4<f32>, packing: u32, scale: f32) -> vec3<f32> {
+    var x = tex.r * 2.0 - 1.0;
+    var y = tex.g * 2.0 - 1.0;
+    var z = tex.b * 2.0 - 1.0;
+    if packing != 0u {
+        if packing == 2u {
+            y = tex.a * 2.0 - 1.0;
+        }
+        z = sqrt(max(1.0 - x * x - y * y, 0.0));
+    }
+    return vec3<f32>(x * scale, y * scale, z);
+}
+
 // Normal mapping - transforms normal texture from tangent to world space using geometry TBN
 // The TBN is passed from the geometry pass (already interpolated and transformed)
 fn _pbr_normal_color{{ mipmap.suffix() }}(
@@ -436,10 +455,10 @@ fn _pbr_normal_color{{ mipmap.suffix() }}(
     // geometry normal, glTF's defined no-normal-map result.
     // Sample normal map and unpack from [0,1] to [-1,1] range
     let tex = {{ mipmap.sample_fn() }}(material.normal_tex_info, attribute_uv{% if mipmap.is_gradient() %}, uv_derivs{% endif %});
-    let tangent_normal = vec3<f32>(
-        (tex.r * 2.0 - 1.0) * material.normal_scale,
-        (tex.g * 2.0 - 1.0) * material.normal_scale,
-        tex.b * 2.0 - 1.0,
+    let tangent_normal = _pbr_unpack_tangent_normal{{ mipmap.suffix() }}(
+        tex,
+        material.normal_packing & 3u,
+        material.normal_scale,
     );
 
     // Transform the tangent-space normal to world space using the TBN matrix from geometry pass
@@ -575,6 +594,7 @@ fn _pbr_clearcoat_normal{{ mipmap.suffix() }}(
     attribute_uv: vec2<f32>,
     {% if mipmap.is_gradient() %}uv_derivs: UvDerivs,{% endif %}
     geometry_tbn: TBN,
+    packing: u32,
 ) -> vec3<f32> {
     // If no clearcoat normal texture, use geometry normal
     if !clearcoat.normal_tex_info.exists {
@@ -583,10 +603,10 @@ fn _pbr_clearcoat_normal{{ mipmap.suffix() }}(
 
     // Sample clearcoat normal map and unpack from [0,1] to [-1,1] range
     let tex = {{ mipmap.sample_fn() }}(clearcoat.normal_tex_info, attribute_uv{% if mipmap.is_gradient() %}, uv_derivs{% endif %});
-    let tangent_normal = vec3<f32>(
-        (tex.r * 2.0 - 1.0) * clearcoat.normal_scale,
-        (tex.g * 2.0 - 1.0) * clearcoat.normal_scale,
-        tex.b * 2.0 - 1.0,
+    let tangent_normal = _pbr_unpack_tangent_normal{{ mipmap.suffix() }}(
+        tex,
+        packing,
+        clearcoat.normal_scale,
     );
 
     // Transform the tangent-space normal to world space using the TBN matrix from geometry pass
