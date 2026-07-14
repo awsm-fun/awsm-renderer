@@ -8,6 +8,19 @@ skybox = "built_in_default"
 specular = "built_in_default"
 irradiance = "built_in_default"
 
+[environment.probe]
+enabled = false
+center = [
+    0.0,
+    0.0,
+    0.0,
+]
+half_extents = [
+    10.0,
+    10.0,
+    10.0,
+]
+
 [shadows]
 sscs_enabled = false
 sscs_step_count = 16
@@ -40,40 +53,11 @@ max_distance = 100.0
 thickness = 1.0
 max_steps = 96
 spread_cutoff = 0.6000000238418579
-edge_fade = 0.10000000149011612
+edge_fade = 0.03999999910593033
 resolution_scale = 0.5
 temporal = false
 temporal_weight = 0.8999999761581421
-
-[assets.00000000-0000-4000-8000-00000000000c]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-
-[assets.00000000-0000-4000-8000-00000000000c.source.mesh]
-label = "Sphere"
-editable = true
-
-[assets.00000000-0000-4000-8000-00000000000c.source.mesh.source.primitive.sphere]
-radius = 0.8999999761581421
-segments_long = 32
-segments_lat = 24
-
-[assets.00000000-0000-4000-8000-00000000000c.source.mesh.stack]
-modifiers = []
-
-[assets.00000000-0000-4000-8000-00000000000c.source.mesh.stack.base.primitive.sphere]
-radius = 0.8999999761581421
-segments_long = 32
-segments_lat = 24
-
-[assets.00000000-0000-4000-8000-00000000000c.source.mesh.overrides.positions]
-
-[assets.00000000-0000-4000-8000-00000000000c.source.mesh.overrides.colors]
-
-[assets.00000000-0000-4000-8000-00000000000c.source.mesh.overrides.normals]
-
-[assets.00000000-0000-4000-8000-00000000000c.source.mesh.overrides.uvs]
+bvh_reflections = false
 
 [assets.00000000-0000-4000-8000-00000000000d]
 gltf_material_asset_ids = []
@@ -104,66 +88,6 @@ segments_lat = 24
 [assets.00000000-0000-4000-8000-00000000000d.source.mesh.overrides.normals]
 
 [assets.00000000-0000-4000-8000-00000000000d.source.mesh.overrides.uvs]
-
-[assets.00000000-0000-4000-8000-00000000000a]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-
-[assets.00000000-0000-4000-8000-00000000000a.source.mesh]
-label = "Sphere"
-editable = true
-
-[assets.00000000-0000-4000-8000-00000000000a.source.mesh.source.primitive.sphere]
-radius = 0.8999999761581421
-segments_long = 32
-segments_lat = 24
-
-[assets.00000000-0000-4000-8000-00000000000a.source.mesh.stack]
-modifiers = []
-
-[assets.00000000-0000-4000-8000-00000000000a.source.mesh.stack.base.primitive.sphere]
-radius = 0.8999999761581421
-segments_long = 32
-segments_lat = 24
-
-[assets.00000000-0000-4000-8000-00000000000a.source.mesh.overrides.positions]
-
-[assets.00000000-0000-4000-8000-00000000000a.source.mesh.overrides.colors]
-
-[assets.00000000-0000-4000-8000-00000000000a.source.mesh.overrides.normals]
-
-[assets.00000000-0000-4000-8000-00000000000a.source.mesh.overrides.uvs]
-
-[assets.00000000-0000-4000-8000-00000000000b]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-
-[assets.00000000-0000-4000-8000-00000000000b.source.mesh]
-label = "Sphere"
-editable = true
-
-[assets.00000000-0000-4000-8000-00000000000b.source.mesh.source.primitive.sphere]
-radius = 0.8999999761581421
-segments_long = 32
-segments_lat = 24
-
-[assets.00000000-0000-4000-8000-00000000000b.source.mesh.stack]
-modifiers = []
-
-[assets.00000000-0000-4000-8000-00000000000b.source.mesh.stack.base.primitive.sphere]
-radius = 0.8999999761581421
-segments_long = 32
-segments_lat = 24
-
-[assets.00000000-0000-4000-8000-00000000000b.source.mesh.overrides.positions]
-
-[assets.00000000-0000-4000-8000-00000000000b.source.mesh.overrides.colors]
-
-[assets.00000000-0000-4000-8000-00000000000b.source.mesh.overrides.normals]
-
-[assets.00000000-0000-4000-8000-00000000000b.source.mesh.overrides.uvs]
 
 [assets.00000000-0000-4000-8000-000000000001]
 gltf_material_asset_ids = []
@@ -196,6 +120,105 @@ segments_z = 1
 [assets.00000000-0000-4000-8000-000000000001.source.mesh.overrides.normals]
 
 [assets.00000000-0000-4000-8000-000000000001.source.mesh.overrides.uvs]
+
+[assets.00000000-0000-4000-8000-00000000000b]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+
+[assets.00000000-0000-4000-8000-00000000000b.source.mesh]
+label = "Sphere"
+editable = true
+
+[assets.00000000-0000-4000-8000-00000000000b.source.mesh.source.primitive.sphere]
+radius = 0.8999999761581421
+segments_long = 32
+segments_lat = 24
+
+[assets.00000000-0000-4000-8000-00000000000b.source.mesh.stack]
+modifiers = []
+
+[assets.00000000-0000-4000-8000-00000000000b.source.mesh.stack.base.primitive.sphere]
+radius = 0.8999999761581421
+segments_long = 32
+segments_lat = 24
+
+[assets.00000000-0000-4000-8000-00000000000b.source.mesh.overrides.positions]
+
+[assets.00000000-0000-4000-8000-00000000000b.source.mesh.overrides.colors]
+
+[assets.00000000-0000-4000-8000-00000000000b.source.mesh.overrides.normals]
+
+[assets.00000000-0000-4000-8000-00000000000b.source.mesh.overrides.uvs]
+
+[assets.00000000-0000-4000-8000-0000000000f0]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = "9c22b05c5b136d03c5621a8765e50a8322be6c35b9de53e9fe22685840d7f469"
+
+[assets.00000000-0000-4000-8000-0000000000f0.source.texture.raster]
+display_name = "CesiumLogoFlat.png"
+color_kind = "albedo"
+
+[assets.00000000-0000-4000-8000-00000000000a]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+
+[assets.00000000-0000-4000-8000-00000000000a.source.mesh]
+label = "Sphere"
+editable = true
+
+[assets.00000000-0000-4000-8000-00000000000a.source.mesh.source.primitive.sphere]
+radius = 0.8999999761581421
+segments_long = 32
+segments_lat = 24
+
+[assets.00000000-0000-4000-8000-00000000000a.source.mesh.stack]
+modifiers = []
+
+[assets.00000000-0000-4000-8000-00000000000a.source.mesh.stack.base.primitive.sphere]
+radius = 0.8999999761581421
+segments_long = 32
+segments_lat = 24
+
+[assets.00000000-0000-4000-8000-00000000000a.source.mesh.overrides.positions]
+
+[assets.00000000-0000-4000-8000-00000000000a.source.mesh.overrides.colors]
+
+[assets.00000000-0000-4000-8000-00000000000a.source.mesh.overrides.normals]
+
+[assets.00000000-0000-4000-8000-00000000000a.source.mesh.overrides.uvs]
+
+[assets.00000000-0000-4000-8000-00000000000c]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+
+[assets.00000000-0000-4000-8000-00000000000c.source.mesh]
+label = "Sphere"
+editable = true
+
+[assets.00000000-0000-4000-8000-00000000000c.source.mesh.source.primitive.sphere]
+radius = 0.8999999761581421
+segments_long = 32
+segments_lat = 24
+
+[assets.00000000-0000-4000-8000-00000000000c.source.mesh.stack]
+modifiers = []
+
+[assets.00000000-0000-4000-8000-00000000000c.source.mesh.stack.base.primitive.sphere]
+radius = 0.8999999761581421
+segments_long = 32
+segments_lat = 24
+
+[assets.00000000-0000-4000-8000-00000000000c.source.mesh.overrides.positions]
+
+[assets.00000000-0000-4000-8000-00000000000c.source.mesh.overrides.colors]
+
+[assets.00000000-0000-4000-8000-00000000000c.source.mesh.overrides.normals]
+
+[assets.00000000-0000-4000-8000-00000000000c.source.mesh.overrides.uvs]
 
 [[editor_materials]]
 id = "00000000-0000-4000-8000-000000000002"
@@ -246,6 +269,7 @@ emissive = [
 ]
 normal_scale = 1.0
 occlusion_strength = 1.0
+ssr_mask = 1.0
 double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
@@ -256,8 +280,14 @@ shading = "pbr"
 [anim_mixer]
 layers = []
 
+[bundle_options]
+mesh_compression = "meshopt"
+mesh_quantization = "smart"
+smart_threshold_mm = 0.10000000149011612
+texture_compression = "ktx2"
+
 [[nodes]]
-id = "f23fee88-2fcc-42e6-8468-33d2147ae115"
+id = "624427cb-90df-419c-b612-052b8b1b6ee3"
 name = "Directional Light"
 locked = false
 visible = true
@@ -360,6 +390,7 @@ emissive = [
 ]
 normal_scale = 1.0
 occlusion_strength = 1.0
+ssr_mask = 1.0
 double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
@@ -382,7 +413,7 @@ enabled = true
 
 [[nodes]]
 id = "00000000-0000-4000-8000-00000000000a"
-name = "plastic-red"
+name = "textured-logo"
 locked = false
 visible = true
 prefab = false
@@ -412,7 +443,7 @@ selected_variant = "00000000-0000-4000-8000-000000000014"
 
 [[nodes.kind.mesh.material_variants]]
 id = "00000000-0000-4000-8000-000000000014"
-name = "plastic-red"
+name = "textured-logo"
 
 [nodes.kind.mesh.material_variants.instance]
 asset = "00000000-0000-4000-8000-000000000002"
@@ -420,13 +451,13 @@ asset = "00000000-0000-4000-8000-000000000002"
 [nodes.kind.mesh.material_variants.instance.inline]
 label = ""
 base_color = [
-    0.800000011920929,
-    0.10000000149011612,
-    0.10000000149011612,
+    1.0,
+    1.0,
+    1.0,
     1.0,
 ]
 metallic = 0.0
-roughness = 0.3499999940395355
+roughness = 0.5
 emissive = [
     0.0,
     0.0,
@@ -434,10 +465,14 @@ emissive = [
 ]
 normal_scale = 1.0
 occlusion_strength = 1.0
+ssr_mask = 1.0
 double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
 shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.base_color_texture]
+asset = "00000000-0000-4000-8000-0000000000f0"
 
 [nodes.kind.mesh.material_variants.instance.inline.extensions]
 
@@ -508,6 +543,7 @@ emissive = [
 ]
 normal_scale = 1.0
 occlusion_strength = 1.0
+ssr_mask = 1.0
 double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
@@ -582,6 +618,7 @@ emissive = [
 ]
 normal_scale = 1.0
 occlusion_strength = 1.0
+ssr_mask = 1.0
 double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
@@ -656,6 +693,7 @@ emissive = [
 ]
 normal_scale = 1.0
 occlusion_strength = 1.0
+ssr_mask = 1.0
 double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"

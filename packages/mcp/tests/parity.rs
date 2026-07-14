@@ -262,6 +262,111 @@ const EXPECTED_QUERIES: &[&str] = &[
     "wait_render_settled",
 ];
 
+/// The wire tag in the FIRST table cell of a `docs/mcp-parity.md` row, if any.
+/// Rows look like `` | `insert` | … | tool | … | ``; header / separator rows
+/// (no leading backtick cell) and prose lines return `None`.
+fn parity_row_tag(line: &str) -> Option<String> {
+    let s = line.trim_start().strip_prefix('|')?.trim_start();
+    let s = s.strip_prefix('`')?;
+    let end = s.find('`')?;
+    let tag = &s[..end];
+    (!tag.is_empty()
+        && tag
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'))
+    .then(|| tag.to_string())
+}
+
+/// The first-column wire tags of the matrix section that starts at the
+/// `section` header and ends at the next `end` header, in `docs/mcp-parity.md`.
+fn parity_doc_section(section: &str, end: &str) -> Vec<String> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("docs")
+        .join("mcp-parity.md");
+    let text =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let mut in_section = false;
+    let mut tags = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed == section {
+            in_section = true;
+            continue;
+        }
+        if in_section && trimmed == end {
+            break;
+        }
+        if in_section {
+            if let Some(tag) = parity_row_tag(line) {
+                tags.push(tag);
+            }
+        }
+    }
+    assert!(
+        !tags.is_empty(),
+        "no matrix rows found under `{section}` in docs/mcp-parity.md — the section \
+         header or table shape changed; update parity_doc_section"
+    );
+    tags
+}
+
+/// Coverage direction of the parity guard: every wire tag has a ROW in
+/// `docs/mcp-parity.md` (and no matrix row names a tag that isn't a real
+/// variant). The existing `*_wire_tags_match_allowlist` tests pin the allowlist
+/// to the enum, so doc == allowlist transitively means doc == enum — "command
+/// added, no MCP tool/doc" fails here.
+///
+/// NOT checked here (prose-hard, manually reviewed on the checklist in
+/// docs/mcp-parity.md): the per-row **exposure tier** / dedicated-tool column,
+/// param-shape + description accuracy, and that each dedicated `#[tool]` in
+/// `packages/mcp/src/mcp.rs` actually constructs an existing command variant
+/// (guaranteed at compile time — the tool bodies build typed `EditorCommand`s,
+/// so a renamed/removed variant is a build error in that crate).
+fn assert_doc_covers(kind: &str, doc_tags: &[String], expected: &[&str]) {
+    let doc: std::collections::BTreeSet<&str> = doc_tags.iter().map(String::as_str).collect();
+    let expected_set: std::collections::BTreeSet<&str> = expected.iter().copied().collect();
+    let missing_rows: Vec<&&str> = expected_set.difference(&doc).collect();
+    let stale_rows: Vec<&&str> = doc.difference(&expected_set).collect();
+    assert!(
+        missing_rows.is_empty() && stale_rows.is_empty(),
+        "docs/mcp-parity.md {kind} matrix drifted from the wire protocol.\n\
+         Wire tags with NO row in the matrix (add one — dedicated tool or \
+         dispatch-only rationale): {missing_rows:?}\n\
+         Matrix rows naming a non-existent tag (typo / removed variant): {stale_rows:?}",
+    );
+    // A duplicate row for the same tag would let one drift unnoticed behind the
+    // set comparison.
+    assert_eq!(
+        doc_tags.len(),
+        doc.len(),
+        "docs/mcp-parity.md {kind} matrix has duplicate rows: {:?}",
+        {
+            let mut seen = std::collections::BTreeSet::new();
+            doc_tags
+                .iter()
+                .filter(|t| !seen.insert((*t).clone()))
+                .collect::<Vec<_>>()
+        }
+    );
+}
+
+#[test]
+fn parity_doc_has_a_row_for_every_command() {
+    let doc = parity_doc_section("## EditorCommand matrix", "## EditorQuery matrix");
+    assert_doc_covers("EditorCommand", &doc, EXPECTED_COMMANDS);
+}
+
+#[test]
+fn parity_doc_has_a_row_for_every_query() {
+    let doc = parity_doc_section(
+        "## EditorQuery matrix",
+        "## Tools with no wire counterpart (local / transport-level)",
+    );
+    assert_doc_covers("EditorQuery", &doc, EXPECTED_QUERIES);
+}
+
 #[test]
 fn editor_command_wire_tags_match_allowlist() {
     let root = serde_json::to_value(schemars::schema_for!(

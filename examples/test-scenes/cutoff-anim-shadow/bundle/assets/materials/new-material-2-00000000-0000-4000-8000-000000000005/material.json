@@ -1,0 +1,31 @@
+{
+  "name": "New Material 2",
+  "version": 1,
+  "alpha_mode": {
+    "mask": {
+      "cutoff": 0.5
+    }
+  },
+  "double_sided": true,
+  "uniforms": [
+    {
+      "name": "tint",
+      "ty": "vec3",
+      "default": {
+        "kind": "vec3",
+        "value": [
+          0.85,
+          0.3,
+          0.12
+        ]
+      }
+    }
+  ],
+  "textures": [],
+  "buffers": [],
+  "shader_includes": [],
+  "fragment_inputs": [
+    "normals",
+    "view_dir"
+  ]
+}

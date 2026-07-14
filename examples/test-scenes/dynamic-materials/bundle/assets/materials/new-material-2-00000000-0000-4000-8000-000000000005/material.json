@@ -10,18 +10,26 @@
       "default": {
         "kind": "vec3",
         "value": [
-          0.2,
-          0.4,
-          0.9
+          0.55,
+          0.7,
+          1.0
         ]
       }
     }
   ],
-  "textures": [],
+  "textures": [
+    {
+      "name": "tex",
+      "default": null,
+      "color_kind": "albedo"
+    }
+  ],
   "buffers": [],
-  "shader_includes": [],
+  "shader_includes": [
+    "textures"
+  ],
   "fragment_inputs": [
     "normals",
-    "view_dir"
+    "uv"
   ]
 }

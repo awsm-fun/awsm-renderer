@@ -49,9 +49,19 @@ async () => {
   await d({ cmd: 'set_camera_orbit', yaw: 0.7, pitch: 0.4, radius: 0.12, look_at: [0, 0, 0] });
   await d({ cmd: 'set_view_options', grid: false, gizmos: false, light_gizmos: false, skeleton_viz: false });
   await q({ query: 'wait_render_settled' });
-  const w = (await q({ query: 'morph_data', nodes: [node] })).entries[node].weights;
-  if (Math.abs(w[0] - 0.5) > 0.01 || Math.abs(w[1] - 0.5) > 0.01) {
-    throw new Error(`per-index morph compose broken: weights ${JSON.stringify(w)} (expected [0.5, 0.5])`);
+  // The morph-weight CPU state settles a few frames AFTER set_playhead +
+  // wait_render_settled (the mixer writes it during the update tick), so an
+  // eager single read catches transitional weights (e.g. [0.68, 0]). Poll
+  // until both indices reach the expected [0.5, 0.5] compose; a GENUINE break
+  // never converges and this still throws (with the last value) after timeout.
+  let w;
+  for (let tries = 0; ; tries++) {
+    w = (await q({ query: 'morph_data', nodes: [node] })).entries[node].weights;
+    if (Math.abs(w[0] - 0.5) <= 0.01 && Math.abs(w[1] - 0.5) <= 0.01) break;
+    if (tries > 40) {
+      throw new Error(`per-index morph compose broken: weights ${JSON.stringify(w)} (expected [0.5, 0.5])`);
+    }
+    await new Promise(r => setTimeout(r, 100));
   }
   return 'anim-morph authored; weights ' + JSON.stringify(w);
 }

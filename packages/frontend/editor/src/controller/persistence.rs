@@ -1133,6 +1133,25 @@ pub async fn save_to_dir(ctrl: &EditorController, dir: &crate::fs::ProjectDir) -
     Ok(())
 }
 
+/// Drop the session-local byte/key caches a fresh page wouldn't have, at the
+/// START of a load transaction — before the `restore_*` steps repopulate them
+/// for the incoming project. Loading a project is ONE transaction that must
+/// leave the same state whether the page is fresh or a project was already
+/// open. Without this, a second load in the same session reuses stale
+/// registrations keyed by asset id: raster assets are masked because
+/// `restore_textures` overwrites their `TEXTURE_KEYS` entries with fresh keys,
+/// but PROCEDURAL textures have no restore step (they regenerate lazily at bind
+/// time), so a dangling key survives and `resolve_texture`'s cache-hit path
+/// binds a torn-down GPU texture → the slot renders untextured (the white
+/// procedural-checker after loading a second project whose asset ids collide,
+/// which every test scene does via fixed deterministic UUIDs). `ReloadProjectInMemory`
+/// already does this teardown; the real dir/URL load paths did not.
+fn clear_stale_session_caches() {
+    crate::engine::bridge::material::clear_texture_keys();
+    crate::engine::bridge::texture_cache::clear();
+    crate::engine::bridge::buffer_cache::clear();
+}
+
 /// Load a project from a picked directory: reads `project.toml` + rebuilds the
 /// live scene. Custom-material bodies (wgsl / alpha / vertex / uniforms / textures /
 /// includes) ride the inline `StoredMaterial` in `project.toml` and are restored into
@@ -1148,6 +1167,9 @@ pub async fn load_from_dir(
         .map_err(|e| EditorError::Msg(e.to_string()))?;
     let project: EditorProject =
         toml::from_str(&body).map_err(|e| EditorError::Msg(format!("parse project.toml: {e}")))?;
+    // Cold-load teardown: drop stale session key/byte caches BEFORE the restores
+    // repopulate them for this project (see `clear_stale_session_caches`).
+    clear_stale_session_caches();
     // Populate the mesh store before nodes materialize (see `restore_mesh_bytes`).
     restore_mesh_bytes(&project, |path| async move {
         dir.read_bytes(&path).await.map_err(|e| e.to_string())
@@ -1320,6 +1342,9 @@ pub async fn load_project_from_url(ctrl: &EditorController, base_url: &str) -> E
         .map_err(|e| EditorError::Msg(format!("read {url}: {e}")))?;
     let project: EditorProject =
         toml::from_str(&body).map_err(|e| EditorError::Msg(format!("parse {url}: {e}")))?;
+    // Cold-load teardown: drop stale session key/byte caches BEFORE the restores
+    // repopulate them for this project (see `clear_stale_session_caches`).
+    clear_stale_session_caches();
     // Fetch captured-mesh side files over HTTP before nodes materialize.
     restore_mesh_bytes(&project, |path| {
         let file_url = format!("{base}/{path}");

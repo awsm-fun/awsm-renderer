@@ -1,0 +1,25 @@
+{
+  "name": "New Material 2",
+  "version": 1,
+  "alpha_mode": "opaque",
+  "double_sided": false,
+  "uniforms": [
+    {
+      "name": "ambient",
+      "ty": "f32",
+      "default": {
+        "kind": "f32",
+        "value": 0.35
+      }
+    }
+  ],
+  "textures": [],
+  "buffers": [],
+  "shader_includes": [
+    "vertex_color"
+  ],
+  "fragment_inputs": [
+    "normals",
+    "vertex_color"
+  ]
+}
