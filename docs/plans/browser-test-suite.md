@@ -20,7 +20,7 @@ The skill orchestrates all three and **prompts for scope** (`all / visual / stru
 
 Nothing is running after a reboot. Before any test work:
 
-1. **Repo + branch.** `cd /Users/dakom/Documents/AWSMFUN/AWSM-REPOS/renderer`. Work on branch **`browser-test-suite`** (create off `skills` if it doesn't exist — `skills` carries the committed skill: `git checkout skills && git pull --ff-only 2>/dev/null; git checkout -b browser-test-suite 2>/dev/null || git checkout browser-test-suite`). Commit incrementally so progress survives session boundaries.
+1. **Repo + branch.** `cd /Users/dakom/Documents/AWSMFUN/AWSM-REPOS/renderer`. Work on branch **`skills`** (`git checkout skills && git pull --ff-only 2>/dev/null`) — it carries the committed skill + this plan, and everything for this effort stays on it. Commit incrementally so progress survives session boundaries.
 
 2. **Ensure the skill is discoverable.** The committed source is `.agents/skills/awsm-renderer-browser-tests/SKILL.md`. The discovery symlink in `.claude/skills/` is gitignored + harness-volatile; if missing, recreate: `mkdir -p .claude/skills && ln -sfn ../../.agents/skills/awsm-renderer-browser-tests .claude/skills/awsm-renderer-browser-tests`.
 
