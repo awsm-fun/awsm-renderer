@@ -50,6 +50,42 @@ struct Stream {
     parent_stride: Option<usize>,
 }
 
+/// Strip embedded materials, textures, images, and samplers from a GLB —
+/// for artifacts whose consumer applies its OWN materials (the player bundle
+/// applies scene.toml materials to every rig primitive via
+/// `GltfMaterialSource::Single`, so the rig's embedded content is dead
+/// weight: its images were being fetched, transcoded, and pooled at load,
+/// then never referenced). Orphaned image bufferViews are dropped by the
+/// next [`compress_glb`] pass (it only carries views something references),
+/// so call this BEFORE compressing.
+pub fn strip_materials_and_images(glb: &[u8]) -> anyhow::Result<Vec<u8>> {
+    let parsed = gltf::Gltf::from_slice(glb)?;
+    let bin = parsed.blob.clone().unwrap_or_default();
+    let mut root = parsed.document.into_json();
+
+    for mesh in &mut root.meshes {
+        for prim in &mut mesh.primitives {
+            // Optional per spec — absent means the default material, which
+            // the player replaces anyway.
+            prim.material = None;
+        }
+    }
+    root.materials.clear();
+    root.textures.clear();
+    root.images.clear();
+    root.samplers.clear();
+    // Nothing textured remains; drop the now-unused declarations (material
+    // extensions died with `materials`).
+    let stale = |e: &String| e == "KHR_texture_basisu" || e.starts_with("KHR_materials_");
+    root.extensions_used.retain(|e| !stale(e));
+    root.extensions_required.retain(|e| !stale(e));
+
+    Ok(crate::write::glb_from_parts(
+        serde_json::to_vec(&root)?,
+        bin,
+    ))
+}
+
 /// Compress a GLB produced by [`crate::write_glb`]: quantize eligible meshes
 /// and meshopt-encode every mesh stream. Non-mesh bufferViews (embedded
 /// images) pass through untouched. Returns a new GLB.
@@ -447,10 +483,20 @@ pub fn compress_glb(glb: &[u8]) -> anyhow::Result<Vec<u8>> {
     let mut new_views: Vec<json::buffer::View> = Vec::new();
     let mut old_view_remap: HashMap<usize, usize> = HashMap::new();
 
-    // pass-through views first (images etc.)
+    // pass-through views first (images etc.). Views referenced by NOTHING
+    // (e.g. image bytes orphaned by `strip_materials_and_images`) are
+    // dropped — their bytes never enter the new BIN.
+    let image_views: HashSet<usize> = root
+        .images
+        .iter()
+        .filter_map(|img| img.buffer_view.map(|v| v.value()))
+        .collect();
     for (view_index, view) in root.buffer_views.iter().enumerate() {
         if accessor_views.contains(&view_index) {
             continue;
+        }
+        if !image_views.contains(&view_index) {
+            continue; // orphan — drop
         }
         let start = view.byte_offset.unwrap_or_default().0 as usize;
         let len = view.byte_length.0 as usize;

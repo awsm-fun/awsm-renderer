@@ -38,7 +38,7 @@ mod tangents;
 mod write;
 
 pub use awsm_renderer_meshgen::MeshData;
-pub use compress::compress_glb;
+pub use compress::{compress_glb, strip_materials_and_images};
 pub use extract::{
     extract_node_mesh, extract_node_mesh_from_bytes, extract_node_mesh_with_skin_from_bytes,
     extract_texture_images, extract_texture_images_from_bytes,

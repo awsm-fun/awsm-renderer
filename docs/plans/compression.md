@@ -499,10 +499,20 @@ BC5/EAC-RG (in-shader Z reconstruct) is a Phase-6 opt. **Block dims multiple of
   per slot), zero errors, and the robot renders correctly from the reload
   (screenshot: armor + police chest emblem + proportions match the
   authored render). Round-trip tests green (synthetic grid + full suite).
-  📌 Residuals recorded: (1) the 1 uncompressed glb is the 29MB SKINNED RIG
-  reexport (uncompressed f32 + embedded ktx2) — larger than the 10.7MB
-  original source; compressing rig glbs is the highest-value follow-up
-  (Phase 6 hardening or its own pass). (2) `load_player_bundle` gotchas for
+  📌 Residuals recorded: (1) ✅ RESOLVED 2026-07-14 (David: "lock it in") —
+  the 27.9MB rig was 20.5MB uncompressed f32 accessors + **7.3MB embedded
+  KTX2 images the player decodes and never uses** (78 wasted transcodes/
+  load: rig materials are overridden by scene.toml via
+  `GltfMaterialSource::Single`; the bundle already ships the same textures
+  as assets/*.ktx2 — verified double-shipping). Bundle rigs now go through
+  `strip_materials_and_images` (new in glb-export: drops materials/
+  textures/images/samplers + per-primitive material refs; stale
+  basisu/materials extension declarations scrubbed) + `compress_glb`
+  (whose passthrough now drops orphaned bufferViews so image BYTES leave
+  the BIN). SAVE-format rigs untouched; LOD bake still sees original
+  bytes; fallback ships the original on error. Round-trip test locks it
+  (512KB fake image → gone; geometry still decodes). Real-world rig size
+  after: measure at the next on-device bundle export. (2) `load_player_bundle` gotchas for
   future runs: it takes NO url (bakes the CURRENT project); the editor tree
   is empty after it (runtime objects only — `frame_node` can't target them;
   use `reset_camera` + viewport zoom); its "textures are follow-ons" doc

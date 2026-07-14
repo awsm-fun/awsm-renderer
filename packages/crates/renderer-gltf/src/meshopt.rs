@@ -323,6 +323,65 @@ mod roundtrip_tests {
         );
     }
 
+    /// Bundle-rig shape: `strip_materials_and_images` + `compress_glb` must
+    /// drop the embedded image BYTES (not just the JSON refs), remove
+    /// materials/textures, keep the geometry decodable, and shrink the file.
+    #[test]
+    fn strip_and_compress_drops_embedded_image_bytes() {
+        use awsm_renderer_glb_export::{
+            strip_materials_and_images, ExportImage, ExportMaterial, ImageMime, PbrMaterial, TexRef,
+        };
+
+        let (mut scene, source) = grid_scene();
+        // A fat fake "texture" so the byte-drop is unmistakable.
+        scene.images.push(ExportImage {
+            name: "fake".into(),
+            bytes: vec![0xAB; 512 * 1024],
+            mime: ImageMime::Png,
+        });
+        scene.nodes[0].material = Some(ExportMaterial::Pbr(PbrMaterial {
+            base_color_texture: Some(TexRef {
+                image: 0,
+                tex_coord: 0,
+                transform: None,
+            }),
+            ..Default::default()
+        }));
+
+        let plain = write_glb(&scene);
+        assert!(plain.len() > 512 * 1024, "image embedded in the plain glb");
+        let bundle = compress_glb(&strip_materials_and_images(&plain).unwrap()).unwrap();
+        assert!(
+            bundle.len() < 100 * 1024,
+            "image bytes must be gone ({} bytes left)",
+            bundle.len()
+        );
+
+        let gltf = parse_gltf_lenient(&bundle).unwrap();
+        let doc = &gltf.document;
+        assert_eq!(doc.images().count(), 0);
+        assert_eq!(doc.textures().count(), 0);
+        assert_eq!(doc.materials().count(), 0);
+        assert!(doc
+            .meshes()
+            .flat_map(|m| m.primitives())
+            .all(|p| p.material().index().is_none()));
+
+        // Geometry still round-trips through the decode path.
+        let blob = gltf.blob.clone().unwrap();
+        let mut buffers = materialize(doc, &blob);
+        assert!(decode_meshopt_buffer_views(doc, &mut buffers).unwrap() > 0);
+        let wrapper = doc
+            .nodes()
+            .find(|n| n.name() == Some("dequant") && n.mesh().is_some())
+            .unwrap();
+        let prim = wrapper.mesh().unwrap().primitives().next().unwrap();
+        let positions =
+            crate::populate::mesh::read_vec3_dequant(&prim, &gltf::Semantic::Positions, &buffers)
+                .unwrap();
+        assert_eq!(positions.len(), source.positions.len());
+    }
+
     fn materialize(doc: &gltf::Document, blob: &[u8]) -> Vec<Vec<u8>> {
         doc.buffers()
             .map(|b| {

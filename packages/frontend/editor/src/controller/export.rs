@@ -396,9 +396,34 @@ pub async fn bake_player_bundle(
             } else {
                 Vec::new()
             };
+            // The BUNDLE copy of the rig sheds its embedded materials/images
+            // (the player applies scene.toml materials to every rig primitive
+            // — the bundle already ships the textures as assets/*.ktx2, so
+            // the embedded copies were pure duplication that even got
+            // transcoded-and-dropped at load) and then meshopt+quant
+            // compresses like every other bundle mesh. The SAVE-format rig in
+            // the project stays untouched. Fallbacks never fail a bake.
+            let bundle_rig = awsm_renderer_glb_export::strip_materials_and_images(&glb)
+                .and_then(|stripped| awsm_renderer_glb_export::compress_glb(&stripped));
+            let bundle_rig = match bundle_rig {
+                Ok(out) => {
+                    tracing::info!(
+                        "bundle rig {src}: {} -> {} bytes (stripped + meshopt+quant)",
+                        glb.len(),
+                        out.len()
+                    );
+                    out
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "bundle rig {src}: strip/compress failed ({e}); shipping original"
+                    );
+                    glb
+                }
+            };
             files.push(BundleFile::asset(
                 awsm_renderer_editor_protocol::mesh_glb_filename(src),
-                glb,
+                bundle_rig,
             ));
             files.extend(lod_files);
         }
