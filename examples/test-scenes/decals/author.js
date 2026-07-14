@@ -37,6 +37,15 @@ async () => {
   await d({ cmd: 'add_builtin_material', id: matFloor, shading: 'pbr' });
   await d({ cmd: 'add_builtin_material', id: matBox, shading: 'pbr' });
   await d({ cmd: 'import_texture_from_url', id: tex, url: 'http://localhost:9082/glTF-Sample-Assets/Models/AlphaBlendModeTest/glTF/AlphaBlendLabels.png' });
+  // Wait for the import to land before binding it as a decal — a fresh
+  // author.js replay races the import otherwise (the decal projects an empty
+  // slot → blank). The baked project/ already has the texture settled.
+  for (let tries = 0; ; tries++) {
+    const cs = await q({ query: 'save_census' });
+    if ((cs.texture_assets ?? 0) >= 1) break;
+    if (tries > 120) throw new Error(`texture import never landed: ${JSON.stringify(cs)}`);
+    await new Promise(r => setTimeout(r, 250));
+  }
   const mk = async (idStr, spec, pos, mat, name, vId, base, rough) => {
     await d({ cmd: 'insert', id: idStr, spec, parent: null });
     await d({ cmd: 'set_transform', id: idStr, transform: { translation: pos, rotation: [0, 0, 0, 1], scale: [1, 1, 1] } });

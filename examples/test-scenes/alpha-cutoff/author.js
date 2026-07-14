@@ -26,6 +26,16 @@ async () => {
   await d({ cmd: 'new_project' });
   const tex = ID(0xf0);
   await d({ cmd: 'import_texture_from_url', id: tex, url: 'http://localhost:9082/glTF-Sample-Assets/Models/AlphaBlendModeTest/glTF/AlphaBlendLabels.png' });
+  // Wait for the import to land in the asset table before binding it — a fresh
+  // author.js replay races the import otherwise (the mask panels bind an
+  // empty slot → blank/untextured). The baked project/ is unaffected (the
+  // texture already settled at bake), so verify.md's load_project drive is fine.
+  for (let tries = 0; ; tries++) {
+    const cs = await q({ query: 'save_census' });
+    if ((cs.texture_assets ?? 0) >= 1) break;
+    if (tries > 120) throw new Error(`texture import never landed: ${JSON.stringify(cs)}`);
+    await new Promise(r => setTimeout(r, 250));
+  }
   const matLo = ID(2), matHi = ID(3), matBlend = ID(4), matFloor = ID(5);
   await d({ cmd: 'add_builtin_material', id: matFloor, shading: 'pbr' });
   for (const [m, mode] of [[matLo, { mask: { cutoff: 0.25 } }], [matHi, { mask: { cutoff: 0.75 } }], [matBlend, 'blend']]) {

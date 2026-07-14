@@ -90,13 +90,30 @@ drifted (a command with no MCP tool/doc row, or a UI mutation bypassing
 3. **Open a fresh tab** to `http://localhost:9091` via the browser MCP. Never
    reuse another session's tab. Filter scenes with `?scenes=a,b`; feed the
    nanite streaming budget with `?stream` / `?streambudget=N`.
-4. **Wait for completion.** Poll the console until a line contains
-   `PLAYER-TESTS COMPLETE:` (up to ~2 min — many scenes, real GPU uploads). It
-   always emits that line, even on panic (`aborted (panic)`), so waiting never
-   hangs.
-5. **Read the result — do NOT dump the whole console** (huge; overflows
-   context). `list_console_messages` saves to a file when large; grep it for
-   `PLAYER-TEST |PLAYER-TESTS COMPLETE`.
+4. **Wait for completion via the DOM HUD, not the console.** The harness mirrors
+   its aggregate to a `#hud` element (`report.rs::set_hud`) as well as the
+   console, and the DOM read is pagination-free and robust — the preferred
+   chrome-devtools path. Poll with `evaluate_script`
+   (`() => document.getElementById('hud')?.textContent ?? ''`) until the text
+   contains `COMPLETE` (up to ~2 min — many scenes, real GPU uploads). The HUD
+   reads `player-tests: COMPLETE <pass>/<total>`; on a panic the console
+   terminator is `PLAYER-TESTS COMPLETE: aborted (panic)`, so also break if the
+   text stops advancing — waiting never hangs.
+5. **Read the result — chrome-devtools only, never claude-in-chrome.**
+   - *Aggregate* (`<pass>/<total>`): the `#hud` textContent from step 4 IS the
+     result. If `<pass> == <total>` every check is green — done, no console read.
+   - *Per-test FAIL detail* (only in the console, as `PLAYER-TEST <name>: FAIL —
+     <detail>`): only needed when `<pass> < <total>`. `list_console_messages` has
+     **no** server-side pattern filter and paginates ~20/page, so do NOT page the
+     whole console. Instead, capture the lines in-page: BEFORE the run emits them,
+     inject a hook with `evaluate_script` right after `navigate_page`
+     (the wasm build+init buys a few seconds) —
+     `() => { window.__pt = []; const o = console.log.bind(console); console.log = (...a) => { const s = a.join(' '); if (s.includes('PLAYER-TEST')) window.__pt.push(s); o(...a); }; return 'hooked'; }` —
+     then after COMPLETE read `() => window.__pt` for the full array. If the hook
+     missed the start, `list_console_messages` (it saves to a file when large;
+     grep that file for `PLAYER-TEST .*FAIL`) is the bounded fallback for just the
+     FAIL lines. This is the robust chrome-devtools-only substitute for a
+     console pattern filter — do not reach for claude-in-chrome to read logs.
 6. **Report** `<pass>/<total>` + every `FAIL — <detail>` verbatim. PASS only
    when `<pass> == <total>` and no `FAIL`/`aborted` line appears.
 
@@ -104,9 +121,15 @@ drifted (a command with no MCP tool/doc row, or a UI mutation bypassing
 
 For each selected `examples/test-scenes/<scene>/verify.md`:
 
-1. **Bring up the editor + MCP:** `task mcp-dev` (editor :9085 + MCP :9186) plus
-   the media servers `task media-local` (:9082) + `task media-additional-assets`
-   (:9083) for import-backed scenes. Wait for the trunk build to settle.
+1. **Bring up the editor + MCP:** `task mcp-dev` — it already starts editor :9085
+   + MCP :9186 **and** both media servers `media-local` :9082 +
+   `media-additional-assets` :9083 as deps (import-backed scenes need them). Do
+   NOT also launch `task media-local`/`media-additional-assets` standalone — they
+   bind the same ports and the whole `mcp-dev` group panics on
+   `Address already in use`. If you already have standalone media servers running
+   from an earlier step, free 9082/9083 first (`lsof -ti :9082 -ti :9083 | xargs
+   kill`) and let `mcp-dev` own them. Wait for the trunk build to settle
+   (`grep '✅ success'` the task's log; poll `:9085` for 200).
 2. **Open a fresh editor tab** at `http://localhost:9085/?mcp=http://127.0.0.1:9186`
    via Chrome DevTools MCP. Never reuse another session's tab.
 3. **Read `verify.md`** — it has three sections: `drive:` (ordered steps to pose
@@ -143,6 +166,31 @@ background servers running for re-runs (offer to stop them).
   fails at device/upload, check the browser, not the bundles.
 - **Renderer tracing** (`tracing::info!/warn!`) surfaces in the **browser
   console**, not the editor's log buffer. (memory: `renderer-tracing-in-browser-console`)
+- **Media servers die mid-session.** Import-backed scenes (Fox, Duck,
+  AlphaBlendLabels, anything via `import_*_from_url`) fetch from :9082/:9083; if
+  those crashed, a fresh `author.js` replay fails with "import did not settle" /
+  blank textures while `load_project` (baked bytes) still works. Health-check
+  before an import-backed replay: `curl -s -o /dev/null -w '%{http_code}'
+  http://localhost:9082/` — a non-200 means restart the media tier (via
+  `task mcp-dev`, which owns those ports — see Layer A step 1).
+- **Import-then-bind races (author.js).** `import_texture_from_url` is
+  fire-and-forget; binding the texture (or a decal) immediately after races the
+  import and the slot renders blank on a fresh replay. Poll
+  `save_census.texture_assets` until the count lands before binding (see
+  `dynamic-material-textures/author.js`). Baked `project/` is unaffected (the
+  texture settled at bake), so `verify.md`'s `load_project` drive stays green.
+- **Procedural textures + repeated loads in ONE session.** Test scenes reuse
+  fixed deterministic asset UUIDs, so driving many scenes through one editor tab
+  with successive `load_project_from_url` collides asset ids. The load
+  transaction now clears the stale texture-key/byte caches
+  (`persistence::clear_stale_session_caches`), so a procedural checker renders
+  correctly on the 2nd+ load — but if you see a proc texture render **white**
+  after several loads, suspect a stale-key regression there (raster textures are
+  masked by `restore_textures`; procedural ones regenerate lazily and expose it).
+- **Animated CPU state settles a few frames after `set_playhead`.** Queries like
+  `morph_data` read transitional values if fired immediately after
+  `wait_render_settled`. Poll the query until it stabilizes (bounded, with a
+  timeout that still throws on a real break) rather than a single eager read.
 - **Goldens** (`examples/test-scenes/<scene>/golden.png`) are window-dependent
   visual references, deliberately **not** byte-exact CI locks — regenerate by
   replaying `author.js`; explain any golden change in the commit.
