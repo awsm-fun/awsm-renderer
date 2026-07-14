@@ -6,6 +6,19 @@ skybox = "built_in_default"
 specular = "built_in_default"
 irradiance = "built_in_default"
 
+[environment.probe]
+enabled = false
+center = [
+    0.0,
+    0.0,
+    0.0,
+]
+half_extents = [
+    10.0,
+    10.0,
+    10.0,
+]
+
 [shadows]
 sscs_enabled = false
 sscs_step_count = 16
@@ -38,10 +51,11 @@ max_distance = 100.0
 thickness = 1.0
 max_steps = 96
 spread_cutoff = 0.6000000238418579
-edge_fade = 0.10000000149011612
+edge_fade = 0.03999999910593033
 resolution_scale = 0.5
 temporal = false
 temporal_weight = 0.8999999761581421
+bvh_reflections = false
 
 [assets.00000000-0000-4000-8000-000000000001]
 gltf_material_asset_ids = []
@@ -54,15 +68,25 @@ depth = 10.0
 segments_x = 1
 segments_z = 1
 
-[assets.00000000-0000-4000-8000-000000000010]
+[assets.00000000-0000-4000-8000-0000000000f1]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
-content_hash = ""
+content_hash = "8aedb428cbb815dffea650fe75bff032ea240f00ccad2f64dc8f62a0c5e30313"
+texture_encoding = "ktx2"
 
-[assets.00000000-0000-4000-8000-000000000010.source.mesh.primitive.sphere]
-radius = 1.0
-segments_long = 32
-segments_lat = 24
+[assets.00000000-0000-4000-8000-0000000000f1.source.texture.raster]
+display_name = "DuckCM.png"
+color_kind = "albedo"
+
+[assets.00000000-0000-4000-8000-0000000000f0]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = "9c22b05c5b136d03c5621a8765e50a8322be6c35b9de53e9fe22685840d7f469"
+texture_encoding = "ktx2"
+
+[assets.00000000-0000-4000-8000-0000000000f0.source.texture.raster]
+display_name = "CesiumLogoFlat.png"
+color_kind = "albedo"
 
 [assets.00000000-0000-4000-8000-000000000011]
 gltf_material_asset_ids = []
@@ -70,6 +94,16 @@ gltf_image_asset_ids = []
 content_hash = ""
 
 [assets.00000000-0000-4000-8000-000000000011.source.mesh.primitive.sphere]
+radius = 1.0
+segments_long = 32
+segments_lat = 24
+
+[assets.00000000-0000-4000-8000-000000000010]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+
+[assets.00000000-0000-4000-8000-000000000010.source.mesh.primitive.sphere]
 radius = 1.0
 segments_long = 32
 segments_lat = 24
@@ -83,7 +117,7 @@ folder = "assets/materials/new-material-2-00000000-0000-4000-8000-000000000005"
 layers = []
 
 [[nodes]]
-id = "da2cce19-9b0b-4a5a-a40c-c7a4fc1f6adc"
+id = "e4b8e30b-c471-4a9d-9620-7d117e216b7d"
 name = "Directional Light"
 locked = false
 visible = true
@@ -186,6 +220,7 @@ emissive = [
 ]
 normal_scale = 1.0
 occlusion_strength = 1.0
+ssr_mask = 1.0
 double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
@@ -208,7 +243,7 @@ enabled = true
 
 [[nodes]]
 id = "00000000-0000-4000-8000-000000000010"
-name = "shared-tint"
+name = "shared-tex"
 locked = false
 visible = true
 prefab = false
@@ -260,6 +295,7 @@ emissive = [
 ]
 normal_scale = 1.0
 occlusion_strength = 1.0
+ssr_mask = 1.0
 double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
@@ -269,7 +305,8 @@ shading = "pbr"
 
 [nodes.kind.mesh.material_variants.instance.uniform_overrides]
 
-[nodes.kind.mesh.material_variants.instance.texture_overrides]
+[nodes.kind.mesh.material_variants.instance.texture_overrides.tex]
+asset = "00000000-0000-4000-8000-0000000000f0"
 
 [nodes.kind.mesh.material_variants.instance.buffer_overrides]
 
@@ -282,7 +319,7 @@ enabled = true
 
 [[nodes]]
 id = "00000000-0000-4000-8000-000000000011"
-name = "override-tint"
+name = "override-tex"
 locked = false
 visible = true
 prefab = false
@@ -334,6 +371,7 @@ emissive = [
 ]
 normal_scale = 1.0
 occlusion_strength = 1.0
+ssr_mask = 1.0
 double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
@@ -345,11 +383,12 @@ shading = "pbr"
 kind = "vec3"
 value = [
     1.0,
+    0.75,
     0.5,
-    0.10000000149011612,
 ]
 
-[nodes.kind.mesh.material_variants.instance.texture_overrides]
+[nodes.kind.mesh.material_variants.instance.texture_overrides.tex]
+asset = "00000000-0000-4000-8000-0000000000f1"
 
 [nodes.kind.mesh.material_variants.instance.buffer_overrides]
 
