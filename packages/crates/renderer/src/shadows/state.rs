@@ -8,10 +8,9 @@
 
 use awsm_renderer_core::{
     bind_groups::{
-        BindGroupDescriptor, BindGroupEntry, BindGroupLayoutResource, BindGroupResource,
-        BufferBindingLayout, BufferBindingType,
+        BindGroupLayoutResource, BufferBindingLayout, BufferBindingType,
     },
-    buffers::{BufferBinding, BufferDescriptor, BufferUsage},
+    buffers::{BufferDescriptor, BufferUsage},
     error::AwsmCoreError,
     renderer::AwsmRendererWebGpu,
     sampler::{FilterMode, SamplerDescriptor},
@@ -42,7 +41,7 @@ use crate::{
         consts::{
             clamp_point_shadow_resolution, MAX_SHADOW_DESCRIPTORS, MAX_SHADOW_VIEWS,
             POINT_SHADOW_NEAR, SHADOW_ATLAS_MAX_SIZE, SHADOW_DESCRIPTOR_BYTES,
-            SHADOW_GLOBALS_BYTES, SHADOW_INDEX_NONE, SHADOW_VIEW_BYTES, SHADOW_VIEW_STRIDE,
+            SHADOW_GLOBALS_BYTES, SHADOW_INDEX_NONE, SHADOW_VIEW_STRIDE,
         },
         error::AwsmShadowError,
         evsm,
@@ -755,17 +754,12 @@ impl Shadows {
             },
         )?;
 
-        let shadow_view_bind_group = {
-            let layout = bind_group_layouts.get(shadow_view_bind_group_layout_key)?;
-            let entries = vec![BindGroupEntry::new(
-                0,
-                BindGroupResource::Buffer(
-                    BufferBinding::new(&shadow_view_buffer).with_size(SHADOW_VIEW_BYTES),
-                ),
-            )];
-            let descriptor = BindGroupDescriptor::new(layout, Some("Shadow View"), entries);
-            gpu.create_bind_group(&descriptor.into())
-        };
+        let shadow_view_bind_group = crate::shadows::helpers::build_shadow_view_bind_group(
+            gpu,
+            bind_group_layouts,
+            shadow_view_bind_group_layout_key,
+            &shadow_view_buffer,
+        )?;
 
         // Pipeline layout: [shadow_view, transforms, meta, animation].
         // Slots 1..=3 reuse the geometry pass's layouts so the same

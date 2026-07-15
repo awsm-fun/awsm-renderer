@@ -230,6 +230,31 @@ pub(super) fn build_evsm_blur_bind_group(
     Ok(gpu.create_bind_group(&descriptor.into()))
 }
 
+/// Builds the shadow-view bind group (binding 0 = the per-view shadow-view
+/// storage buffer). Construction-only — the buffer is fixed-capacity and never
+/// reallocated, so this is a one-shot eager build (not ledger-driven). Named +
+/// extracted so every `create_bind_group` in the renderer lives inside a
+/// single-purpose builder, keeping the "grep create_bind_group" surface clean.
+pub(super) fn build_shadow_view_bind_group(
+    gpu: &AwsmRendererWebGpu,
+    bind_group_layouts: &BindGroupLayouts,
+    layout_key: BindGroupLayoutKey,
+    shadow_view_buffer: &web_sys::GpuBuffer,
+) -> Result<web_sys::GpuBindGroup, AwsmShadowError> {
+    let entries = vec![BindGroupEntry::new(
+        0,
+        BindGroupResource::Buffer(
+            BufferBinding::new(shadow_view_buffer).with_size(SHADOW_VIEW_BYTES),
+        ),
+    )];
+    let descriptor = BindGroupDescriptor::new(
+        bind_group_layouts.get(layout_key)?,
+        Some("Shadow View"),
+        entries,
+    );
+    Ok(gpu.create_bind_group(&descriptor.into()))
+}
+
 /// Builds a `RenderPipelineCacheKey` for one shadow-caster pipeline
 /// variant. Pure-sync — caller is responsible for ensuring
 /// `shader_key` is already in the `Shaders` cache before passing it
