@@ -174,6 +174,10 @@ impl AwsmRenderer {
                 .as_ref()
                 .and_then(|p| p.edge_shadow.as_ref())
                 .map(|b| b.sampled_view.clone()),
+            // Picker rebuilds only its own bind group here; the opaque-mipgen
+            // build never flows through this narrow path.
+            opaque_mipgen: None,
+            opaque_mip_info: None,
         };
         if let Some(p) = self.picker.as_mut() {
             p.recreate_bind_group(&ctx)?;

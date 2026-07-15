@@ -780,6 +780,35 @@ impl AwsmRenderer {
             // path consumes the new layout.
         }
 
+        // Opaque-RT mipgen bind-group upkeep — routed through the central
+        // ledger like every other pass. The build binds VIEWS of the opaque
+        // texture's mip chain, so it depends only on that texture existing
+        // with `mip_count >= 2` (the sticky transmission mip chain), NOT on
+        // this frame actually using transmission — that gates the DISPATCH in
+        // `record` later. Detect staleness here + `mark_create`; the build
+        // itself runs in `recreate()` just below (the `OpaqueMipgen` arm).
+        // `opaque_mip_info` is an owned clone (GpuTexture handle = refcount
+        // bump) so it doesn't hold a `render_textures` borrow into the call.
+        let opaque_mip_info = self
+            .render_textures
+            .inner()
+            .map(|inner| (inner.opaque.clone(), inner.opaque_mip_count))
+            .filter(|(_, mip_count)| *mip_count >= 2);
+        if let Some(mipgen) = self.opaque_mipgen.as_ref() {
+            // A rebuilt `inner` (resize / AA flip / mip-grow / HUD-depth grow)
+            // changes the opaque texture identity; drop the stale cache so
+            // `needs_rebuild` fires even when the dimensions are unchanged
+            // (same-size AA flip binds a new texture at old dims).
+            if render_texture_views.views_recreated {
+                mipgen.invalidate();
+            }
+            if let Some((tex, mip_count)) = &opaque_mip_info {
+                if mipgen.needs_rebuild(tex.width(), tex.height(), *mip_count) {
+                    self.bind_groups.mark_create(BindGroupCreate::OpaqueMipgen);
+                }
+            }
+        }
+
         self.bind_groups.recreate(
             BindGroupRecreateContext {
                 gpu: &self.gpu,
@@ -823,6 +852,8 @@ impl AwsmRenderer {
                     .as_ref()
                     .and_then(|p| p.edge_shadow.as_ref())
                     .map(|b| b.sampled_view.clone()),
+                opaque_mipgen: self.opaque_mipgen.as_ref(),
+                opaque_mip_info,
             },
             &mut self.render_passes,
             self.picker.as_mut(),
@@ -1297,32 +1328,20 @@ impl AwsmRenderer {
             } else {
                 None
             };
-            // Clone the texture handle and mip count out of the inner
-            // borrow first; that drops the immutable `self.render_textures`
-            // borrow before we take a mutable borrow on `self.opaque_mipgen`.
-            // GpuTexture is a wasm-bindgen JS handle — `.clone()` is a
-            // refcount bump, not a texture copy.
-            let opaque_info = self
-                .render_textures
-                .inner()
-                .map(|inner| (inner.opaque.clone(), inner.opaque_mip_count));
-            // The mipgen caches per-mip views + bind groups across
-            // frames. We invalidate explicitly any time
-            // `RenderTexturesInner` was rebuilt this frame (viewport
-            // resize, AA flip, T2.5 mip-chain grow, T2.6 HUD-depth
-            // grow) so the cache stays paired with the right
-            // `GpuTexture` identity.
-            // Deferred-boot: `None` only between a runtime material change to
-            // transmission and the next commit's config ensure — skip the mip
-            // chain that frame (transmission samples mip 0, slightly sharper
+            // Dispatch the opaque mip chain. The per-mip bind groups were
+            // built ahead of this frame through the
+            // `mark_create(OpaqueMipgen)` → `recreate` path (the early phase
+            // above), so this is dispatch-only — no resource creation on the
+            // per-frame path. No-op until the cache exists (mip chain
+            // inactive, or the frame transmission first appears — the cache
+            // lands next frame).
+            //
+            // Deferred-boot: the mipgen (and its cache) may be `None` between
+            // a runtime material change to transmission and the next commit's
+            // config ensure — that frame samples mip 0 (slightly sharper
             // refraction, never wrong data).
             if let Some(mipgen) = self.opaque_mipgen.as_ref() {
-                if ctx.render_texture_views.views_recreated {
-                    mipgen.invalidate();
-                }
-                if let Some((texture, mip_count)) = opaque_info {
-                    mipgen.record(&self.gpu, &ctx.command_encoder, &texture, mip_count)?;
-                }
+                mipgen.record(&ctx.command_encoder)?;
             }
         }
 

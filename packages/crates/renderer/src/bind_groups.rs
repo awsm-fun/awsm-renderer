@@ -106,6 +106,16 @@ pub struct BindGroupRecreateContext<'a> {
     /// `&mut render_passes` the dispatcher also takes). `None` otherwise → the
     /// opaque main layout omits binding 27.
     pub prep_edge_shadow_view: Option<web_sys::GpuTextureView>,
+    /// Opaque-RT mipgen pass (transmission background mips). `Some` once the
+    /// lazy pass is built. The `OpaqueMipgen` dispatch arm calls
+    /// `rebuild` on it (interior-mutable `&self`), keeping its per-mip bind
+    /// groups on the central `mark_create` → `recreate` path.
+    pub opaque_mipgen: Option<&'a crate::opaque_mipgen::OpaqueMipgen>,
+    /// `(opaque_texture, mip_count)` the mipgen build binds. `Some` only when
+    /// the sticky opaque mip chain is active (`mip_count >= 2`); the dispatch
+    /// arm no-ops otherwise. Owned clone of the JS texture handle (refcount
+    /// bump) so it doesn't borrow `render_textures` across the recreate call.
+    pub opaque_mip_info: Option<(web_sys::GpuTexture, u32)>,
 }
 
 /// Reasons to recreate bind groups.
@@ -146,6 +156,13 @@ pub enum BindGroupCreate {
     /// GPU coverage `counts_buffer` was reallocated. Only the
     /// coverage pass binds it.
     CoverageBuffersResize,
+    /// Opaque-RT mipgen per-mip views + bind groups are stale — the
+    /// opaque texture was (re)allocated with a mip chain, or its
+    /// identity/size changed. Fired by the render loop's early phase off
+    /// `OpaqueMipgen::needs_rebuild`; the build runs in `recreate` so this
+    /// pass's bind-group creation flows through the central ledger like
+    /// every other, instead of being built inline mid-frame.
+    OpaqueMipgen,
     MaterialResize,
     TextureViewRecreate,
     TexturePool,
@@ -247,6 +264,9 @@ impl BindGroups {
             OcclusionCompaction,
             Coverage,
             MaterialClassify,
+            /// Opaque-RT mipgen per-mip bind groups — built ahead of the
+            /// per-frame dispatch, no longer created inline in `record`.
+            OpaqueMipgen,
             MaterialPrep,
             /// Prep-edge group(3) — the `cs_prep_edge` compute pass's
             /// per-frame-until-now edge bind group, now cached + event-driven.
@@ -503,6 +523,9 @@ impl BindGroups {
                 BindGroupCreate::CoverageBuffersResize => {
                     functions_to_call.insert(FunctionToCall::Coverage);
                 }
+                BindGroupCreate::OpaqueMipgen => {
+                    functions_to_call.insert(FunctionToCall::OpaqueMipgen);
+                }
                 BindGroupCreate::DecalClassifyBuffersResize => {
                     functions_to_call.insert(FunctionToCall::MaterialDecalClassify);
                     functions_to_call.insert(FunctionToCall::MaterialDecalMain);
@@ -723,6 +746,19 @@ impl BindGroups {
                         } else {
                             coverage.bind_groups_singlesampled.recreate(&ctx)?;
                         }
+                    }
+                }
+                FunctionToCall::OpaqueMipgen => {
+                    // Build the per-mip views + bind groups against the current
+                    // opaque texture. `opaque_mipgen` is `Some` once the lazy
+                    // pass exists; `opaque_mip_info` is `Some` only when the
+                    // sticky mip chain is active (`mip_count >= 2`). Either
+                    // being `None` (e.g. the first-frame create_list fires this
+                    // before transmission is ever used) makes it a no-op.
+                    if let (Some(mipgen), Some((tex, mip_count))) =
+                        (ctx.opaque_mipgen, ctx.opaque_mip_info.as_ref())
+                    {
+                        mipgen.rebuild(ctx.gpu, tex, *mip_count)?;
                     }
                 }
                 FunctionToCall::MaterialDecalMain => {

@@ -159,40 +159,55 @@ impl OpaqueMipgen {
         *self.cache.lock().unwrap() = None;
     }
 
-    /// Records compute passes that fill mips `1..mip_count` from mip 0 of
-    /// `opaque_texture`. The base mip is assumed to already contain the
-    /// just-rendered opaque pass output.
+    /// True when the cached per-mip bind groups need (re)building for this
+    /// `(width, height, mip_count)` — nothing is cached yet, `invalidate()`
+    /// cleared it (opaque-texture identity changed at the same size, e.g. an
+    /// AA flip), or the viewport dimensions / mip count drifted.
     ///
-    /// Per-mip views and bind groups are cached across frames. The cache
-    /// is rebuilt only when the (width, height, mip_count) tuple changes,
-    /// which in practice means viewport resize.
-    pub fn record(
-        &self,
-        gpu: &AwsmRendererWebGpu,
-        encoder: &CommandEncoder,
-        opaque_texture: &web_sys::GpuTexture,
-        mip_count: u32,
-    ) -> Result<()> {
-        if mip_count < 2 {
-            return Ok(());
-        }
-
-        let width = opaque_texture.width();
-        let height = opaque_texture.height();
-
-        let needs_rebuild = match self.cache.lock().unwrap().as_ref() {
+    /// The render loop calls this in the early (pre-`recreate`) phase and
+    /// fires `BindGroupCreate::OpaqueMipgen` when it returns true; the build
+    /// itself then runs in `recreate` via [`Self::rebuild`]. So — like every
+    /// other bind group in the renderer — this pass's creation only ever
+    /// flows through the central `mark_create` → `recreate` ledger, never
+    /// inline on the per-frame path.
+    pub fn needs_rebuild(&self, width: u32, height: u32, mip_count: u32) -> bool {
+        match self.cache.lock().unwrap().as_ref() {
             Some(cache) => {
                 cache.width != width || cache.height != height || cache.mip_count != mip_count
             }
             None => true,
-        };
-        if needs_rebuild {
-            let built = self.build_cache(gpu, opaque_texture, mip_count)?;
-            *self.cache.lock().unwrap() = Some(built);
         }
+    }
 
+    /// (Re)builds the cached per-mip views + bind groups against
+    /// `opaque_texture`. Dispatched from `BindGroups::recreate` in response to
+    /// `BindGroupCreate::OpaqueMipgen`. Interior-mutable (`&self`) so it shares
+    /// [`Self::record`]'s borrow discipline.
+    pub fn rebuild(
+        &self,
+        gpu: &AwsmRendererWebGpu,
+        opaque_texture: &web_sys::GpuTexture,
+        mip_count: u32,
+    ) -> Result<()> {
+        let built = self.build_cache(gpu, opaque_texture, mip_count)?;
+        *self.cache.lock().unwrap() = Some(built);
+        Ok(())
+    }
+
+    /// Records the cached mipgen compute passes (mips `1..mip_count` filled
+    /// from mip 0 of the opaque RT). The base mip is assumed to already hold
+    /// the just-rendered opaque output.
+    ///
+    /// Dispatch-only: the bind groups were built ahead of time by
+    /// [`Self::rebuild`] via the `mark_create` → `recreate` path, so nothing
+    /// is created on the per-frame path here. No-op until the cache exists
+    /// (mip chain inactive, i.e. `mip_count < 2`, or the frame transmission
+    /// first appears — the cache lands next frame).
+    pub fn record(&self, encoder: &CommandEncoder) -> Result<()> {
         let cache_ref = self.cache.lock().unwrap();
-        let cache = cache_ref.as_ref().expect("mipgen cache");
+        let Some(cache) = cache_ref.as_ref() else {
+            return Ok(());
+        };
 
         for entry in &cache.entries {
             let descriptor: web_sys::GpuComputePassDescriptor =
