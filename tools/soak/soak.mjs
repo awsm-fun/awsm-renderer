@@ -38,6 +38,11 @@ const DEFAULTS = {
   // this (half of a 32GB box). Protects an unattended overnight run from a fast
   // runaway; still leaves ample room for the leak to reproduce / the VA trap to fire.
   cdpPort: 9333,
+  vmmapEvery: 0, // seconds; >0 → dump full `vmmap --summary` region tables for
+  // EVERY chrome process of the instance to OUT/vmmap/ on that cadence. The
+  // Phase-3 VA-region diagnostic: `vmmap --summary` TOTAL rounds to ~0.1T so it
+  // hides a 70GB change inside Chrome's ~1.4TB constant reservation — but the
+  // leaking region shows as its OWN row climbing MB→GB. Diff early-vs-late dumps.
   interactive: false,
   chrome: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
 };
@@ -53,6 +58,7 @@ function parseArgs() {
     else if (k === "--memlog") a.memlog = +next();
     else if (k === "--minutes") a.minutes = +next();
     else if (k === "--rss-cap-mb") a.rssCapMb = +next();
+    else if (k === "--vmmap-every") a.vmmapEvery = +next();
     else if (k === "--url") a.url = next();
     else if (k === "--load") a.load = next();
     else if (k === "--no-load") a.load = "";
@@ -227,6 +233,34 @@ function rendererPids(userDataDir) {
     const c = spawnSync("ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf8" });
     return c.status === 0 && c.stdout.includes("--type=renderer");
   });
+}
+
+// Every chrome process of this instance, with its --type (browser/gpu/renderer/…).
+function instancePids(userDataDir) {
+  const r = spawnSync("pgrep", ["-f", userDataDir], { encoding: "utf8" });
+  if (r.status !== 0) return [];
+  const pids = r.stdout.trim().split(/\s+/).filter(Boolean).map(Number);
+  return pids.map((pid) => {
+    const c = spawnSync("ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf8" });
+    const cmd = c.status === 0 ? c.stdout : "";
+    const m = cmd.match(/--type=([a-z-]+)/);
+    return { pid, type: m ? m[1] : "browser" };
+  });
+}
+
+// Dump full `vmmap --summary` region tables for every instance process. Raw text
+// (parsed at analysis time) so nothing fragile lives in the harness.
+function dumpVmmap(userDataDir, dir, elapsed_s) {
+  for (const { pid, type } of instancePids(userDataDir)) {
+    const r = spawnSync("vmmap", ["--summary", String(pid)], {
+      encoding: "utf8",
+      timeout: 15000,
+      maxBuffer: 64 * 1024 * 1024,
+    });
+    if (r.stdout) {
+      writeFileSync(join(dir, `t${String(elapsed_s).padStart(5, "0")}s-${type}-${pid}.txt`), r.stdout);
+    }
+  }
 }
 
 function psRssVsz(pid) {
@@ -407,6 +441,12 @@ async function main() {
   let firstCensus = null;
   let sampleN = 0;
   const capMs = CFG.minutes * 60 * 1000;
+  const vmmapDir = join(OUT, "vmmap");
+  let lastVmmapAt = -Infinity;
+  if (CFG.vmmapEvery > 0) {
+    mkdirSync(vmmapDir, { recursive: true });
+    log(`vmmap region dumps every ${CFG.vmmapEvery}s → ${vmmapDir}`);
+  }
 
   async function tick() {
     if (done) return;
@@ -425,6 +465,15 @@ async function main() {
     }
     const osm = sampleOs(userDataDir);
     if (osm.renderer_count === 0) return finish("renderer-process-gone", { last: firstCensus });
+    // Periodic full-region vmmap dump (Phase-3 VA-region diagnostic).
+    if (CFG.vmmapEvery > 0 && (Date.now() - START) / 1000 - lastVmmapAt >= CFG.vmmapEvery) {
+      lastVmmapAt = (Date.now() - START) / 1000;
+      try {
+        dumpVmmap(userDataDir, vmmapDir, elapsed_s);
+      } catch (e) {
+        log(`vmmap dump failed at ${elapsed_s}s: ${e.message}`);
+      }
+    }
     // Machine-safety cutoff: bail before a runaway can thrash the box overnight.
     if (osm.rss_kb && osm.rss_kb / 1024 > CFG.rssCapMb) {
       return finish("rss-safety-cap", {
