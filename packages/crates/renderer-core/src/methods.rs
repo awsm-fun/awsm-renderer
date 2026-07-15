@@ -240,6 +240,8 @@ impl AwsmRendererWebGpu {
         &self,
         descriptor: &web_sys::GpuBindGroupDescriptor,
     ) -> web_sys::GpuBindGroup {
+        #[cfg(any(debug_assertions, feature = "harden-diag"))]
+        crate::CREATE_BIND_GROUP_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.device.create_bind_group(descriptor)
     }
 
@@ -378,6 +380,8 @@ impl AwsmRendererWebGpu {
     /// self.gpu.submit_commands(&command_encoder.finish());
     /// Creates a command encoder with an optional label.
     pub fn create_command_encoder(&self, label: Option<&str>) -> CommandEncoder {
+        #[cfg(any(debug_assertions, feature = "harden-diag"))]
+        crate::CREATE_COMMAND_ENCODER_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let encoder = match label {
             None => self.device.create_command_encoder(),
             Some(label) => {

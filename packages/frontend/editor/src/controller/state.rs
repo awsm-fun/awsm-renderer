@@ -6314,6 +6314,19 @@ impl EditorController {
                     "create_buffer_bytes".to_string(),
                     json!(create_buffer_bytes),
                 );
+                // The other two per-frame GPU-object mint points. With
+                // `create_buffer` flat, a bind-group / command-encoder count that
+                // climbs at the VM-region-leak rate names the churn source.
+                let (create_bind_group_count, create_command_encoder_count) =
+                    awsm_renderer_core::create_object_census();
+                entries.insert(
+                    "create_bind_group_count".to_string(),
+                    json!(create_bind_group_count),
+                );
+                entries.insert(
+                    "create_command_encoder_count".to_string(),
+                    json!(create_command_encoder_count),
+                );
                 // Mapped-staging-ring rollup (suspect #1: map/unmap churn). The
                 // ring is fixed-depth so it can't itself leak VA, but a climbing
                 // `ring_fallback_count` / `ring_map_async_wait_ms` flags the ring

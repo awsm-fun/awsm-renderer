@@ -107,6 +107,8 @@ const CSV_COLS = [
   // ground-truth-adjacent in-page signals
   "create_buffer_count",
   "create_buffer_bytes",
+  "create_bind_group_count",
+  "create_command_encoder_count",
   "ring_bytes_uploaded",
   "ring_fallback_count",
   "ring_peak_depth",
@@ -500,7 +502,8 @@ async function main() {
     if (sampleN % 10 === 1 || CFG.sample >= 30) {
       log(
         `t=${elapsed_s}s rss=${osm.rss_kb}k vsz=${osm.vsz_kb}k vmmap=${osm.vmmap_virtual_bytes} ` +
-          `cbuf=${census.create_buffer_count}/${census.create_buffer_bytes}B ` +
+          `cbuf=${census.create_buffer_count} cbg=${census.create_bind_group_count} ` +
+          `cce=${census.create_command_encoder_count} ` +
           `wasm=${census.wasm_heap_bytes} jsheap=${census.js_heap_used_bytes} meshes=${census.meshes}`,
       );
     }

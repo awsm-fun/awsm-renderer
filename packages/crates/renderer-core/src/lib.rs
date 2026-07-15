@@ -70,3 +70,22 @@ pub fn create_buffer_census() -> (u64, u64) {
         CREATE_BUFFER_BYTES.load(Relaxed),
     )
 }
+
+/// Cumulative counts of `create_bind_group` / `create_command_encoder` — the
+/// other two per-frame GPU-object mint points the leak soak watches. `create_buffer`
+/// being flat while one of these climbs at the region-leak rate names it as the
+/// per-frame-churn source (bind groups pin the resources they reference; a
+/// per-frame descriptor is the textbook WebGPU renderer-process growth).
+pub static CREATE_BIND_GROUP_COUNT: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+pub static CREATE_COMMAND_ENCODER_COUNT: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// `(bind_group, command_encoder)` cumulative create counts since process start.
+pub fn create_object_census() -> (u64, u64) {
+    use std::sync::atomic::Ordering::Relaxed;
+    (
+        CREATE_BIND_GROUP_COUNT.load(Relaxed),
+        CREATE_COMMAND_ENCODER_COUNT.load(Relaxed),
+    )
+}
