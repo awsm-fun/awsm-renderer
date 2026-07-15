@@ -181,6 +181,17 @@ pub enum BindGroupCreate {
     /// groups also rebind (Phase 1C / Phase 2 of the light-culling
     /// plan land the consumer-side bindings).
     LightCullingFroxelsResize,
+    /// MSAA edge-resolve `data_buffer` / `args_buffer` (and the
+    /// `EdgeBufferLayout` uniform companion) were reallocated —
+    /// `MaterialEdgeBuffers::ensure_bucket_count` grew them, or
+    /// `set_max_edge_budget` bumped the budget after an overflow. The
+    /// prep-edge group(3), the opaque unified-shade group(3), and the
+    /// opaque final-blend group(0) all bind those buffers and must
+    /// rebind the new handles. (Resize + shadow-atlas changes are
+    /// covered by `TextureViewRecreate` / `ShadowsResourcesChange`;
+    /// MSAA on/off by `AntiAliasingChange` — this variant is only the
+    /// edge-buffer-grow trigger.)
+    MaterialEdgeResize,
 }
 
 /// Tracks pending bind group recreations.
@@ -237,6 +248,12 @@ impl BindGroups {
             Coverage,
             MaterialClassify,
             MaterialPrep,
+            /// Prep-edge group(3) — the `cs_prep_edge` compute pass's
+            /// per-frame-until-now edge bind group, now cached + event-driven.
+            MaterialPrepEdge,
+            /// Opaque unified-shade group(3) + final-blend group(0) — the two
+            /// edge bind groups the opaque pass built inline every frame.
+            MaterialOpaqueEdge,
             MaterialDecalMain,
             MaterialDecalComposite,
             MaterialDecalClassify,
@@ -345,6 +362,12 @@ impl BindGroups {
                     // Coverage pass binds `visibility_data`; rebuild
                     // on view recreate.
                     functions_to_call.insert(FunctionToCall::Coverage);
+                    // The edge groups bind resize-recreated views: prep-edge
+                    // binds edge_shadow_out; opaque shade binds edge_id; opaque
+                    // final-blend binds opaque + reflection. All rebuild on
+                    // resize. No-op when MSAA is off (edge buffers absent).
+                    functions_to_call.insert(FunctionToCall::MaterialPrepEdge);
+                    functions_to_call.insert(FunctionToCall::MaterialOpaqueEdge);
                 }
                 BindGroupCreate::TexturePool => {
                     functions_to_call.insert(FunctionToCall::OpaqueTextures);
@@ -428,6 +451,19 @@ impl BindGroups {
                     // single-sample visibility-data view depending
                     // on the active MSAA setting.
                     functions_to_call.insert(FunctionToCall::Coverage);
+                    // Edge buffers + edge textures are allocated in lockstep
+                    // with MSAA: an MSAA on/off transition allocates (or drops)
+                    // them, so this is the edge groups' build/rebuild trigger.
+                    // Also fires from the initial create_list, giving the edge
+                    // groups their first build. No-op when MSAA is off.
+                    functions_to_call.insert(FunctionToCall::MaterialPrepEdge);
+                    functions_to_call.insert(FunctionToCall::MaterialOpaqueEdge);
+                }
+                BindGroupCreate::MaterialEdgeResize => {
+                    // Edge data/args buffers (+ layout uniform) grew. All three
+                    // edge bind groups bind them.
+                    functions_to_call.insert(FunctionToCall::MaterialPrepEdge);
+                    functions_to_call.insert(FunctionToCall::MaterialOpaqueEdge);
                 }
                 BindGroupCreate::InstanceAttributesResize => {
                     // Per-instance attribute storage buffer is bound on the
@@ -441,6 +477,10 @@ impl BindGroups {
                     // Prep's group(2) binds the shadow atlas / cube / cascade /
                     // EVSM views + globals (Stage 3b — prep samples shadows).
                     functions_to_call.insert(FunctionToCall::MaterialPrep);
+                    // The opaque unified-shade group(3) also carries the shadow
+                    // bindings (the "Extended Shadows" layout) alongside the
+                    // edge data/id — rebind on a shadow-resource change.
+                    functions_to_call.insert(FunctionToCall::MaterialOpaqueEdge);
                 }
                 BindGroupCreate::MaterialClassifyBuffersResize => {
                     // Classify rebuilds its own bind group; opaque
@@ -652,6 +692,21 @@ impl BindGroups {
                     if let Some(prep) = render_passes.material_prep.as_mut() {
                         prep.bind_groups.recreate(&ctx)?;
                     }
+                }
+                FunctionToCall::MaterialPrepEdge => {
+                    // Prep-edge group(3). No-op inside when MSAA is off (edge
+                    // buffers / edge_shadow absent) — leaves the cached group
+                    // `None`, which `render_edge` never fetches in that mode.
+                    if let Some(prep) = render_passes.material_prep.as_mut() {
+                        prep.recreate_edge_bind_group(&ctx)?;
+                    }
+                }
+                FunctionToCall::MaterialOpaqueEdge => {
+                    // Opaque unified-shade group(3) + final-blend group(0).
+                    // No-op inside when MSAA is off / edge resources absent.
+                    render_passes
+                        .material_opaque
+                        .recreate_edge_bind_groups(&ctx)?;
                 }
                 FunctionToCall::Coverage => {
                     // Only rebuild the bind group that matches the

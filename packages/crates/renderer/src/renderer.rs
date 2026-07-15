@@ -3244,6 +3244,10 @@ impl AwsmRenderer {
         // (binding 27); rebind it against the resized view.
         self.bind_groups
             .mark_create(crate::bind_groups::BindGroupCreate::TextureViewRecreate);
+        // The prep-edge / opaque-shade / final-blend bind groups bind the edge
+        // data/args buffers + layout uniform, all reallocated just now.
+        self.bind_groups
+            .mark_create(crate::bind_groups::BindGroupCreate::MaterialEdgeResize);
         tracing::info!(
             target: "awsm_renderer::edge_resolve",
             "set_max_edge_budget: edge budget grown to {} (was tracked via overflow CPU surface)",
