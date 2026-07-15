@@ -4,7 +4,6 @@
 mod atoms;
 mod config;
 mod header;
-mod logger;
 mod models;
 mod pages;
 mod prelude;
@@ -27,7 +26,9 @@ pub fn main() {
 }
 
 async fn init() {
-    logger::init_logger();
+    awsm_renderer_web_shared::logger::init_logger(
+        &awsm_renderer_web_shared::logging::LoggingConfig::from_url(),
+    );
     theme::stylesheet::init();
 
     if let Some(init_url) = CONFIG.debug.start_route.lock().unwrap_throw().take() {

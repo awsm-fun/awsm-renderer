@@ -38,6 +38,11 @@ const DEFAULTS = {
   // this (half of a 32GB box). Protects an unattended overnight run from a fast
   // runaway; still leaves ample room for the leak to reproduce / the VA trap to fire.
   cdpPort: 9333,
+  gcEvery: 0, // seconds; >0 → every N s force a V8 GC (HeapProfiler.collectGarbage
+  // ×3) and log Tag-253/255 region-count + resident BEFORE→AFTER. The decisive
+  // discriminator: if forced GC drops the leaked regions, the leak is COLLECTABLE
+  // transient JS/wasm handles (fix = drop them promptly); if GC does nothing, it's
+  // a true native Dawn/Metal VM-unmapping leak (a different fix).
   vmmapEvery: 0, // seconds; >0 → dump full `vmmap --summary` region tables for
   // EVERY chrome process of the instance to OUT/vmmap/ on that cadence. The
   // Phase-3 VA-region diagnostic: `vmmap --summary` TOTAL rounds to ~0.1T so it
@@ -59,6 +64,7 @@ function parseArgs() {
     else if (k === "--minutes") a.minutes = +next();
     else if (k === "--rss-cap-mb") a.rssCapMb = +next();
     else if (k === "--vmmap-every") a.vmmapEvery = +next();
+    else if (k === "--gc-every") a.gcEvery = +next();
     else if (k === "--url-extra") a.urlExtra = next(); // extra query flags, e.g. "noring" (ablation)
     else if (k === "--url") a.url = next();
     else if (k === "--load") a.load = next();
@@ -109,6 +115,23 @@ const CSV_COLS = [
   "create_buffer_bytes",
   "create_bind_group_count",
   "create_command_encoder_count",
+  // in-page GPU-object census (injected JS prototype wrappers, not Rust) — the
+  // readback + query-set per-frame-churn probes. Cumulative; divide the delta by
+  // the soak_raf_frames delta for a per-frame rate.
+  "map_async_count",
+  "map_async_read_count",
+  "map_async_write_count",
+  "get_mapped_range_count",
+  "unmap_count",
+  "create_query_set_count",
+  "create_texture_count",
+  "create_view_count",
+  "submit_count",
+  "write_buffer_count",
+  "soak_raf_frames",
+  "dom_nodes",
+  "perf_measures",
+  "perf_marks",
   "ring_bytes_uploaded",
   "ring_fallback_count",
   "ring_peak_depth",
@@ -136,6 +159,57 @@ const CSV_COLS = [
   "render_cpu_ms",
 ];
 writeFileSync(CSV_PATH, CSV_COLS.join(",") + "\n");
+
+// In-page GPU-object census. `create_buffer_*` / `create_bind_group_*` come from
+// Rust-side atomics via memory_stats, but mapAsync (readbacks) and createQuerySet
+// (timestamp/occlusion queries) sit behind no central Rust seam — so we count them
+// by wrapping the WebGPU prototypes in the page. Cumulative counters + our OWN rAF
+// tick (independent of the app's render loop) so per-frame rates are exact:
+// `Δmap_async_count / Δsoak_raf_frames`. Idempotent; safe to eval more than once.
+const INSTALL_INPAGE_CENSUS = `(() => {
+  if (window.__soak) return 'already';
+  const c = window.__soak = {
+    map_async_count: 0, map_async_read_count: 0, map_async_write_count: 0,
+    get_mapped_range_count: 0, unmap_count: 0,
+    create_query_set_count: 0, create_texture_count: 0, create_view_count: 0,
+    submit_count: 0, write_buffer_count: 0, soak_raf_frames: 0,
+  };
+  const wrap = (proto, name, key) => {
+    if (!proto || typeof proto[name] !== 'function') return;
+    const orig = proto[name];
+    proto[name] = function (...a) { c[key]++; return orig.apply(this, a); };
+  };
+  const B = (typeof GPUBuffer !== 'undefined') && GPUBuffer.prototype;
+  // mapAsync split by mode (READ=1 = readbacks, WRITE=2 = mapped-staging ring).
+  // The ?noring ablation already exonerated the WRITE path, so READ/frame is the
+  // real suspect. First arg is the GPUMapMode bitflags.
+  if (B && typeof B.mapAsync === 'function') {
+    const orig = B.mapAsync;
+    B.mapAsync = function (mode, ...rest) {
+      c.map_async_count++;
+      if (mode & 1) c.map_async_read_count++;
+      if (mode & 2) c.map_async_write_count++;
+      return orig.call(this, mode, ...rest);
+    };
+  }
+  wrap(B, 'getMappedRange', 'get_mapped_range_count');
+  wrap(B, 'unmap', 'unmap_count');
+  const D = (typeof GPUDevice !== 'undefined') && GPUDevice.prototype;
+  wrap(D, 'createQuerySet', 'create_query_set_count');
+  // Per-frame texture/view churn probe — a size-derived texture rebuilt every
+  // frame (e.g. an odd-viewport round-trip bug) leaks GPU/VM backing without ever
+  // touching create_buffer (flat) or create_bind_group (0). The gap in the census.
+  wrap(D, 'createTexture', 'create_texture_count');
+  const T = (typeof GPUTexture !== 'undefined') && GPUTexture.prototype;
+  wrap(T, 'createView', 'create_view_count');
+  const Q = (typeof GPUQueue !== 'undefined') && GPUQueue.prototype;
+  wrap(Q, 'submit', 'submit_count');
+  wrap(Q, 'writeBuffer', 'write_buffer_count');
+  const raf = window.requestAnimationFrame.bind(window);
+  const tick = () => { c.soak_raf_frames++; raf(tick); };
+  raf(tick);
+  return 'installed';
+})()`;
 
 // ── CDP over raw WebSocket ─────────────────────────────────────────────────────
 function httpGetJson(url) {
@@ -290,6 +364,32 @@ function vmmapVirtualBytes(pid) {
   return Math.round(parseFloat(m[1]) * mult);
 }
 
+// Region count + resident bytes for a specific PageTag from `vmmap --summary`.
+// Tag 253 = PartitionAlloc, Tag 255 = V8 page allocator (the crash dump's
+// page-allocator-mapped-size). The trailing column is REGION COUNT, col 2 is
+// RESIDENT. Best-effort; degrades to null.
+function vmmapTagStats(pid, tag) {
+  const r = spawnSync("vmmap", ["--summary", String(pid)], {
+    encoding: "utf8",
+    timeout: 15000,
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  if (r.status !== 0 || !r.stdout) return null;
+  const re = new RegExp(`Memory Tag ${tag}\\b`);
+  const line = r.stdout.split("\n").find((l) => re.test(l));
+  if (!line) return null;
+  const rest = line.split(re)[1].trim();
+  const toks = rest.split(/\s+/);
+  if (toks.length < 2) return null;
+  const parseSz = (s) => {
+    const m = String(s).match(/^([0-9.]+)([KMGT]?)$/);
+    if (!m) return null;
+    const mult = { "": 1, K: 1024, M: 1024 ** 2, G: 1024 ** 3, T: 1024 ** 4 }[m[2]];
+    return Math.round(parseFloat(m[1]) * mult);
+  };
+  return { regions: parseInt(toks[toks.length - 1], 10), resident: parseSz(toks[1]) };
+}
+
 // pick the renderer that is "the tab" = max RSS among renderers
 function sampleOs(userDataDir) {
   const pids = rendererPids(userDataDir);
@@ -388,6 +488,7 @@ async function main() {
   await cdp.open();
   await cdp.send("Runtime.enable");
   await cdp.send("Inspector.enable").catch(() => {});
+  await cdp.send("HeapProfiler.enable").catch(() => {}); // for collectGarbage (--gc-every)
   cdp.on("Inspector.targetCrashed", () => finish("target-crashed"));
   cdp.on("Runtime.exceptionThrown", (p) => {
     const txt = p?.exceptionDetails?.exception?.description || p?.exceptionDetails?.text || "";
@@ -406,6 +507,58 @@ async function main() {
     });
     if (r.exceptionDetails) throw new Error(r.exceptionDetails.text);
     return r.result.value;
+  }
+
+  // Install the in-page GPU-object census (readback / query-set prototype
+  // wrappers). Counters run monotonically from here, so the per-frame RATE is
+  // correct regardless of this install offset.
+  try {
+    const res = await evalInPage(INSTALL_INPAGE_CENSUS);
+    log(`in-page GPU census: ${res}`);
+  } catch (e) {
+    log(`WARN in-page census install failed: ${e.message}`);
+  }
+
+  async function queryInPageCensus() {
+    try {
+      // __soak counters + live DOM stats. dom_nodes = attached element count
+      // (Blink C++/Tag253 backing); a per-frame climb ⇒ overlay DOM accumulation.
+      // dom_listeners is a rough attached-node total; detached-but-retained nodes
+      // won't show here (they need a heap snapshot).
+      return (
+        (await evalInPage(`(() => {
+          const s = window.__soak || {};
+          let pm = 0, pk = 0;
+          try { pm = performance.getEntriesByType('measure').length; } catch {}
+          try { pk = performance.getEntriesByType('mark').length; } catch {}
+          return Object.assign({}, s, {
+            dom_nodes: document.getElementsByTagName('*').length,
+            perf_measures: pm,
+            perf_marks: pk,
+          });
+        })()`)) || {}
+      );
+    } catch {
+      return {};
+    }
+  }
+
+  // Force a full GC and measure whether the leaked Tag-253/255 regions are
+  // reclaimed. Decisive: collectable-JS-handle churn vs true native VM leak.
+  async function gcProbe(pid, elapsed_s) {
+    const before253 = vmmapTagStats(pid, 253);
+    const before255 = vmmapTagStats(pid, 255);
+    for (let i = 0; i < 3; i++) {
+      await cdp.send("HeapProfiler.collectGarbage").catch(() => {});
+      await sleep(500);
+    }
+    await sleep(1500); // let native finalizers run + regions unmap
+    const after253 = vmmapTagStats(pid, 253);
+    const after255 = vmmapTagStats(pid, 255);
+    const fmt = (b, a) =>
+      `regions ${b?.regions}→${a?.regions} (Δ${(a?.regions ?? 0) - (b?.regions ?? 0)}), ` +
+      `resident ${Math.round((b?.resident ?? 0) / 1e6)}M→${Math.round((a?.resident ?? 0) / 1e6)}M`;
+    log(`GC-PROBE t=${elapsed_s}s  Tag253 ${fmt(before253, after253)}  |  Tag255 ${fmt(before255, after255)}`);
   }
 
   async function queryCensus() {
@@ -447,10 +600,12 @@ async function main() {
   const capMs = CFG.minutes * 60 * 1000;
   const vmmapDir = join(OUT, "vmmap");
   let lastVmmapAt = -Infinity;
+  let lastGcAt = -Infinity;
   if (CFG.vmmapEvery > 0) {
     mkdirSync(vmmapDir, { recursive: true });
     log(`vmmap region dumps every ${CFG.vmmapEvery}s → ${vmmapDir}`);
   }
+  if (CFG.gcEvery > 0) log(`forced-GC region probe every ${CFG.gcEvery}s`);
 
   async function tick() {
     if (done) return;
@@ -467,6 +622,10 @@ async function main() {
       // once the OS PID is gone; otherwise log + keep sampling OS metrics.
       log(`census query failed at ${elapsed_s}s: ${e.message}`);
     }
+    // In-page GPU-object census (readback/query-set prototype wrappers). Merged
+    // into the same row so it lands in both JSONL + CSV.
+    const inpage = await queryInPageCensus();
+    Object.assign(census, inpage);
     const osm = sampleOs(userDataDir);
     if (osm.renderer_count === 0) return finish("renderer-process-gone", { last: firstCensus });
     // Periodic full-region vmmap dump (Phase-3 VA-region diagnostic).
@@ -476,6 +635,19 @@ async function main() {
         dumpVmmap(userDataDir, vmmapDir, elapsed_s);
       } catch (e) {
         log(`vmmap dump failed at ${elapsed_s}s: ${e.message}`);
+      }
+    }
+    // Forced-GC region probe (collectable-churn vs native-leak discriminator).
+    if (
+      CFG.gcEvery > 0 &&
+      osm.renderer_pid &&
+      (Date.now() - START) / 1000 - lastGcAt >= CFG.gcEvery
+    ) {
+      lastGcAt = (Date.now() - START) / 1000;
+      try {
+        await gcProbe(osm.renderer_pid, elapsed_s);
+      } catch (e) {
+        log(`gc probe failed at ${elapsed_s}s: ${e.message}`);
       }
     }
     // Machine-safety cutoff: bail before a runaway can thrash the box overnight.
@@ -504,6 +676,8 @@ async function main() {
         `t=${elapsed_s}s rss=${osm.rss_kb}k vsz=${osm.vsz_kb}k vmmap=${osm.vmmap_virtual_bytes} ` +
           `cbuf=${census.create_buffer_count} cbg=${census.create_bind_group_count} ` +
           `cce=${census.create_command_encoder_count} ` +
+          `map=${census.map_async_count} qset=${census.create_query_set_count} ` +
+          `raf=${census.soak_raf_frames} ` +
           `wasm=${census.wasm_heap_bytes} jsheap=${census.js_heap_used_bytes} meshes=${census.meshes}`,
       );
     }

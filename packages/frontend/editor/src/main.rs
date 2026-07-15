@@ -33,7 +33,7 @@ pub fn main() {
     }
 
     awsm_renderer_web_shared::util::window::set_boot_loader_message("Initializing renderer");
-    logger::init_logger();
+    logger::init_logger(&awsm_renderer_web_shared::logging::LoggingConfig::from_url());
     Modal::init_panic_hook();
     theme::stylesheet::init();
 

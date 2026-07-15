@@ -6274,6 +6274,24 @@ impl EditorController {
                     "render_cpu_ms".to_string(),
                     json!((render_cpu_ms * 100.0).round() / 100.0),
                 );
+                // Per-span CPU timing from the bounded aggregator — only
+                // populated when profiling opted in via `?trace=frame|sub-frame`
+                // (empty & zero-cost otherwise). Slowest span first.
+                let span_timings: Vec<serde_json::Value> =
+                    awsm_renderer_web_shared::aggregator::timing_stats()
+                        .into_iter()
+                        .map(|(name, s)| {
+                            json!({
+                                "name": name,
+                                "last_ms": (s.last_ms * 1000.0).round() / 1000.0,
+                                "ema_ms": (s.ema_ms * 1000.0).round() / 1000.0,
+                                "min_ms": (s.min_ms * 1000.0).round() / 1000.0,
+                                "max_ms": (s.max_ms * 1000.0).round() / 1000.0,
+                                "count": s.count,
+                            })
+                        })
+                        .collect();
+                entries.insert("cpu_span_timings".to_string(), json!(span_timings));
                 // …plus Chrome's non-standard `performance.memory` (zeros
                 // elsewhere). Read via Reflect — web_sys doesn't bind it.
                 let mut heap_used = 0.0f64;

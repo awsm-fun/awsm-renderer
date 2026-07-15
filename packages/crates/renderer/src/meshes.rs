@@ -2791,7 +2791,7 @@ impl Meshes {
             || self.transparency_geometry_data_dirty;
 
         if any_dirty {
-            let _maybe_span_guard = if logging.render_timings.sub_frame() {
+            let _maybe_span_guard = if logging.cpu.sub_frame() {
                 Some(tracing::span!(tracing::Level::INFO, "Mesh GPU write").entered())
             } else {
                 None

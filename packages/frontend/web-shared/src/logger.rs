@@ -1,25 +1,38 @@
+//! `tracing` subscriber installation, driven entirely by a [`LoggingConfig`].
+//!
+//! [`init_logger`] reads nothing from the environment — it installs exactly the
+//! layers the passed config asks for. Frontends decide their config however they
+//! like (the editor via [`LoggingConfig::from_url`], players by hand). Every
+//! optional layer is an `Option<Layer>` (a `None` is a no-op `Layer`), so a
+//! disabled output truly does nothing.
+
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
-use tracing_subscriber::filter::LevelFilter;
 use tracing_subscriber::fmt::format::Pretty;
 use tracing_subscriber::prelude::*;
 use tracing_web::{performance_layer, MakeWebConsoleWriter};
 use wasm_bindgen::prelude::*;
 
-use crate::perf::resolve_log_level;
+use crate::logging::LoggingConfig;
 
 /// In-memory ring buffer of recent `tracing` events (level + formatted line:
-/// `<file:line> — <message + fields>`). The browser console is invisible over
-/// MCP, so a custom [`CaptureLayer`] mirrors every event here and the editor's
-/// `ConsoleLogs` MCP query reads it — letting a headless driver see the same
-/// `WARN`/`ERROR`/`tracing::*` output a human sees in devtools. Capped; oldest
-/// dropped. (wasm is single-threaded, so the `Mutex` never contends.)
+/// `<file:line> — <message + fields>`). The browser console is invisible to a
+/// headless/embedding driver, so a custom [`CaptureLayer`] mirrors every event
+/// here and any embedder can read it back — the editor exposes it over MCP;
+/// nothing here is MCP-specific. Capped; oldest dropped. (wasm is
+/// single-threaded, so the `Mutex` never contends.)
 static CAPTURED_LOGS: Mutex<VecDeque<(String, String)>> = Mutex::new(VecDeque::new());
 const CAPTURED_LOGS_CAP: usize = 1000;
 
+/// Set at [`init_logger`] time when the DevTools User-Timing mirror is on, so
+/// [`frame_boundary`] knows whether it needs to clear the (otherwise unbounded)
+/// User-Timing buffer each frame.
+static DEVTOOLS_MEASURE: AtomicBool = AtomicBool::new(false);
+
 /// The last `limit` captured `tracing` events as `(level, line)`, oldest first.
-/// Read (not drained) so repeated MCP polls each see the full recent window.
+/// Read (not drained) so repeated polls each see the full recent window.
 pub fn captured_logs(limit: usize) -> Vec<(String, String)> {
     let buf = CAPTURED_LOGS.lock().unwrap();
     let start = buf.len().saturating_sub(limit);
@@ -49,7 +62,7 @@ impl tracing::field::Visit for FieldCollector {
 }
 
 /// Mirrors every `tracing` event into [`CAPTURED_LOGS`] (in addition to the
-/// console fmt layer) so it's readable over MCP.
+/// console fmt layer) so it's readable by an embedder.
 struct CaptureLayer;
 impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CaptureLayer {
     fn on_event(
@@ -79,40 +92,61 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CaptureLayer {
     }
 }
 
-/// Default subscriber-level filter when no `?log=` URL override
-/// is present.
+/// Install the global `tracing` subscriber per `cfg`. Idempotent (the first call
+/// wins; later calls are ignored). Reads nothing from the URL/environment — the
+/// caller decides `cfg`.
 ///
-/// Used to be `DEBUG`, which combined with render-timing spans
-/// emitted ~1.6k UserTiming entries in 3s on mobile and burned a
-/// significant chunk of frame time on `performance.mark`. Default
-/// is now level-appropriate; lift back to `DEBUG` (or `TRACE`)
-/// with `?log=debug` when investigating.
-const DEFAULT_LEVEL: LevelFilter = LevelFilter::INFO;
-
-pub fn init_logger() {
+/// Layers installed, each gated by `cfg`:
+/// - fmt→console writer (`cfg.console_writer`)
+/// - [`CaptureLayer`] ring buffer (`cfg.capture_buffer`)
+/// - CPU rolling aggregator (`cfg.profiling.cpu != Off`) — bounded, safe
+/// - DevTools User-Timing mirror (`cfg.profiling.devtools_measure`) — kept
+///   bounded by [`frame_boundary`]
+/// - level filter (`cfg.level`)
+pub fn init_logger(cfg: &LoggingConfig) {
     static LOGGER_INITIALIZED: std::sync::Once = std::sync::Once::new();
 
     LOGGER_INITIALIZED.call_once(|| {
         set_stack_trace_limit(30);
 
-        let fmt_layer = tracing_subscriber::fmt::layer()
-            .with_file(true)
-            .with_line_number(true)
-            .with_ansi(false) // Only partially supported across JavaScript runtimes
-            .without_time()
-            .with_level(true)
-            .with_target(false)
-            .with_writer(MakeWebConsoleWriter::new().with_pretty_level()); // write events to the console
+        DEVTOOLS_MEASURE.store(cfg.devtools_measure(), Ordering::Relaxed);
 
-        let perf_layer = performance_layer().with_details_from_fields(Pretty::default());
+        let fmt_layer = cfg.console_writer.then(|| {
+            tracing_subscriber::fmt::layer()
+                .with_file(true)
+                .with_line_number(true)
+                .with_ansi(false) // Only partially supported across JavaScript runtimes
+                .without_time()
+                .with_level(true)
+                .with_target(false)
+                .with_writer(MakeWebConsoleWriter::new().with_pretty_level())
+        });
 
-        let level_filter = resolve_log_level(DEFAULT_LEVEL);
+        let capture_layer = cfg.capture_buffer.then_some(CaptureLayer);
+
+        // Bounded rolling aggregator — folds each render-timing span's duration
+        // into fixed-size per-name stats. Installed only when CPU profiling is
+        // on; never grows (keyed by the small, fixed set of span names).
+        let cpu_on = cfg.profiling.map(|p| p.cpu.enabled()).unwrap_or(false);
+        let aggregator_layer = cpu_on.then(crate::aggregator::AggregatorLayer::new);
+
+        // DevTools User-Timing mirror: spans → `performance.measure`/`mark` for
+        // the Performance flame chart. This is the output that used to leak
+        // unbounded (the browser never auto-clears the User-Timing buffer and
+        // the renderer emits per-frame spans). It is now (a) opt-in via
+        // `?devtools` and (b) kept bounded by `frame_boundary()` clearing the
+        // buffer each frame. `Option<Layer>` is itself a `Layer` (None = no-op).
+        let perf_layer = cfg
+            .devtools_measure()
+            .then(|| performance_layer().with_details_from_fields(Pretty::default()));
+
+        let level_filter = cfg.level;
 
         tracing_subscriber::registry()
             .with(fmt_layer)
+            .with(aggregator_layer)
             .with(perf_layer)
-            // Mirror events into the MCP-readable ring buffer (see `captured_logs`).
-            .with(CaptureLayer)
+            .with(capture_layer)
             .with(level_filter)
             .init();
 
@@ -121,6 +155,22 @@ pub fn init_logger() {
 
         std::panic::set_hook(Box::new(tracing_panic::panic_hook));
     });
+}
+
+/// Call once per rendered frame (e.g. at the top of the rAF callback). When the
+/// DevTools User-Timing mirror is active, this clears the `performance` mark /
+/// measure buffer so it can't grow unbounded — a live DevTools *recording* still
+/// captures the entries created during the frame, so the flame-chart workflow is
+/// preserved while memory stays flat. A no-op (one relaxed atomic load) when the
+/// mirror is off, so it's safe to call unconditionally every frame.
+pub fn frame_boundary() {
+    if !DEVTOOLS_MEASURE.load(Ordering::Relaxed) {
+        return;
+    }
+    if let Some(perf) = web_sys::window().and_then(|w| w.performance()) {
+        perf.clear_marks();
+        perf.clear_measures();
+    }
 }
 
 #[wasm_bindgen(

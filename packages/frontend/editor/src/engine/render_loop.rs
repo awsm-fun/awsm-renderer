@@ -70,6 +70,10 @@ fn request_frame() {
         render_one_frame(dt_ms);
         let cpu_ms = now_ms().map(|end| (end - ts).max(0.0));
         record_frame_stats(dt_ms, cpu_ms);
+        // Keep the DevTools User-Timing buffer bounded when `?devtools`
+        // profiling is on (no-op otherwise); this is what makes the opt-in
+        // `performance.measure` flame-chart mode leak-safe.
+        awsm_renderer_web_shared::logger::frame_boundary();
         request_frame();
     });
     context::set_raf(raf);

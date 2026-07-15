@@ -31,6 +31,7 @@ mod checks;
 mod harness;
 mod report;
 
+use awsm_renderer::features::RendererFeatures;
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen(start)]
@@ -42,6 +43,34 @@ pub fn boot() -> Result<(), JsValue> {
         web_sys::console::error_1(&format!("PLAYER-TEST panic: FAIL — {info}").into());
         web_sys::console::log_1(&"PLAYER-TESTS COMPLETE: aborted (panic)".into());
     }));
+
+    // `?soak=<scene>` (default `ssr-arena`): idle-render one bundle through the
+    // player path forever, instead of the check suite. Lets `tools/soak/soak.mjs`
+    // point at :9091 to test whether the SHARED render core leaks on its own,
+    // with none of the editor machinery. `?bundles=<origin>` picks the server.
+    if harness::url_has_flag("soak") {
+        let scene = harness::url_flag_value("soak")
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "ssr-arena".to_string());
+        let origin = harness::url_flag_value("bundles")
+            .unwrap_or_else(|| "http://localhost:9084".to_string())
+            .trim_end_matches('/')
+            .to_string();
+        wasm_bindgen_futures::spawn_local(async move {
+            // gpu_culling is force-enabled in create_renderer; decals on to match
+            // the editor's feature breadth so the readback paths are exercised.
+            let features = RendererFeatures {
+                gpu_culling: true,
+                decals: true,
+                ..Default::default()
+            };
+            if let Err(e) = harness::run_soak(&origin, &scene, features).await {
+                web_sys::console::error_1(&format!("player-soak FAIL — {e:#}").into());
+            }
+        });
+        return Ok(());
+    }
+
     wasm_bindgen_futures::spawn_local(async {
         checks::run_all().await;
     });

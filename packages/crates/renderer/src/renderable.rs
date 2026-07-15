@@ -90,7 +90,7 @@ impl AwsmRenderer {
     /// the function returns, `self` is no longer mutably borrowed,
     /// so the caller can construct a [`RenderContext`] over `&self`.
     pub fn collect_renderables(&mut self) -> Result<()> {
-        let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
+        let _maybe_span_guard = if self.logging.cpu.sub_frame() {
             Some(tracing::span!(tracing::Level::INFO, "Collect renderables").entered())
         } else {
             None

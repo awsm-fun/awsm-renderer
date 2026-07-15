@@ -455,7 +455,7 @@ impl Lights {
         shadow_index_for: impl Fn(LightKey) -> u32,
     ) -> Result<()> {
         if self.punctual_gpu_dirty {
-            let _maybe_span_guard = if logging.render_timings.sub_frame() {
+            let _maybe_span_guard = if logging.cpu.sub_frame() {
                 Some(
                     tracing::span!(
                         tracing::Level::INFO,
@@ -507,7 +507,7 @@ impl Lights {
         }
 
         if self.lighting_info_gpu_dirty {
-            let _maybe_span_guard = if logging.render_timings.sub_frame() {
+            let _maybe_span_guard = if logging.cpu.sub_frame() {
                 Some(tracing::span!(tracing::Level::INFO, "Lighting Info GPU write").entered())
             } else {
                 None

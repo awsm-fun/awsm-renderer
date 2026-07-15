@@ -12,7 +12,6 @@
 use std::sync::{Arc, OnceLock};
 
 use awsm_renderer::{
-    debug::AwsmRendererLogging,
     features::RendererFeatures,
     render::RenderHooks,
     workers::{WorkerPool, WorkerPoolBootstrap},
@@ -309,17 +308,14 @@ async fn create_renderer(canvas: web_sys::HtmlCanvasElement) -> EditorResult<Aws
     let profile = awsm_renderer_web_shared::perf::resolve_renderer_profile(
         awsm_renderer::profile::RendererProfile::Desktop,
     );
+    // Renderer per-frame timing is off unless a profiling URL param
+    // (`?trace` / `?gputime`) opts in — `renderer_logging()` returns Off/Off
+    // otherwise, so a normal authoring session pays zero per-frame cost.
     let renderer = AwsmRendererBuilder::new(gpu_builder)
         .with_profile(profile)
-        .with_logging(AwsmRendererLogging {
-            render_timings: awsm_renderer_web_shared::perf::resolve_render_timings(
-                if cfg!(debug_assertions) {
-                    awsm_renderer::debug::RenderTimings::SubFrame
-                } else {
-                    awsm_renderer::debug::RenderTimings::Frame
-                },
-            ),
-        })
+        .with_logging(
+            awsm_renderer_web_shared::logging::LoggingConfig::from_url().renderer_logging(),
+        )
         .with_clear_color(Color::MID_GREY)
         .with_features(editor_features())
         .with_optimization_policy(policy)

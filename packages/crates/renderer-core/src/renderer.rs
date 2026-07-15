@@ -28,6 +28,12 @@ const TEXTURE_COMPRESSION_BC_FEATURE: &str = "texture-compression-bc";
 const TEXTURE_COMPRESSION_ETC2_FEATURE: &str = "texture-compression-etc2";
 const TEXTURE_COMPRESSION_ASTC_FEATURE: &str = "texture-compression-astc";
 
+/// Enables GPU timestamp queries (`create_query_set` with `"timestamp"`,
+/// per-pass `timestampWrites`, `resolveQuerySet`). Requested when the adapter
+/// exposes it; the renderer only creates a query set when its GPU-timing tier is
+/// non-`Off`, so this is free otherwise.
+const TIMESTAMP_QUERY_FEATURE: &str = "timestamp-query";
+
 /// Which block-compressed texture families the active device supports.
 /// Drives the KTX2/Basis transcode-target ladder (see docs/plans/compression.md).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -156,6 +162,14 @@ impl AwsmRendererWebGpu {
     /// WebGPU silently drops the call.
     pub fn has_indirect_first_instance(&self) -> bool {
         self.device.features().has(INDIRECT_FIRST_INSTANCE_FEATURE)
+    }
+
+    /// Whether the active `GpuDevice` was created with the `timestamp-query`
+    /// feature. GPU pass-timing code consults this before creating a timestamp
+    /// query set / attaching `timestampWrites`; when absent, GPU timing silently
+    /// stays off regardless of the requested tier.
+    pub fn has_timestamp_query(&self) -> bool {
+        self.device.features().has(TIMESTAMP_QUERY_FEATURE)
     }
 
     /// Which block-compressed texture families the active `GpuDevice` was
@@ -379,6 +393,14 @@ impl AwsmRendererWebGpuBuilder {
                     if features.has(feature) {
                         required.push(js_sys::JsString::from(feature));
                     }
+                }
+                // `timestamp-query` powers GPU pass timing (per-pass
+                // `timestampWrites` → `resolveQuerySet` → readback). Requested
+                // only when the adapter exposes it, and completely free when the
+                // renderer's GPU-timing tier is `Off` (no query set is ever
+                // created). See `AwsmRendererLogging::gpu`.
+                if features.has(TIMESTAMP_QUERY_FEATURE) {
+                    required.push(js_sys::JsString::from(TIMESTAMP_QUERY_FEATURE));
                 }
                 if !required.is_empty() {
                     descriptor.set_required_features(&required);

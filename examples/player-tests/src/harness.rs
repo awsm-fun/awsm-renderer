@@ -158,6 +158,35 @@ pub async fn run_frames(
     Ok(stamps)
 }
 
+/// Idle-soak mode (`?soak=<scene>`): load ONE bundle through the player path and
+/// idle-render it forever with a STATIC camera — the player-side analogue of the
+/// editor idle soak (`tools/soak/soak.mjs`). Used to answer whether the SHARED
+/// render core (present-view / submit / occlusion-cull readbacks — `gpu_culling`
+/// is forced in [`create_renderer`]) leaks native VM regions on its own, with
+/// none of the editor's overlay / gizmo / picker / HUD / MCP machinery present.
+/// Never returns.
+pub async fn run_soak(origin: &str, scene_name: &str, features: RendererFeatures) -> Result<()> {
+    let bundle_base = format!("{origin}/{scene_name}/bundle");
+    let scene = fetch_scene(&bundle_base).await?;
+    let (mut renderer, _canvas) = create_renderer(features).await?;
+    let assets = awsm_renderer_scene_loader::assets::HttpAssets::new(bundle_base);
+    awsm_renderer_scene_loader::load_scene_for_player(&mut renderer, &scene, &assets, |_| {})
+        .await
+        .map_err(|e| anyhow!("load_scene_for_player: {e}"))?;
+    renderer.update_transforms();
+    let (center, radius) = scene_bounds(&renderer);
+    // Fixed idle camera (no orbit) — matches the editor idle soak so the only
+    // per-frame work is the render loop itself.
+    let eye = orbit_eye(center, radius, 2.2, 0.8);
+    set_camera(&mut renderer, eye, center, radius)?;
+    tracing::info!("player-soak: idle-rendering {scene_name} forever (shared-core leak probe)");
+    loop {
+        next_frame().await;
+        renderer.update_transforms();
+        renderer.render(None).map_err(|e| anyhow!("render: {e}"))?;
+    }
+}
+
 /// A fixed 3/4-view eye at `distance_factor × radius` from the bounds center.
 pub fn orbit_eye(center: Vec3, radius: f32, distance_factor: f32, yaw: f32) -> Vec3 {
     center

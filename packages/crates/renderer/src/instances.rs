@@ -591,7 +591,7 @@ impl Instances {
         bind_groups: &mut BindGroups,
     ) -> Result<()> {
         if self.transform_gpu_dirty {
-            let _maybe_span_guard = if logging.render_timings.sub_frame() {
+            let _maybe_span_guard = if logging.cpu.sub_frame() {
                 Some(tracing::span!(tracing::Level::INFO, "Instance Transform GPU write").entered())
             } else {
                 None
@@ -628,7 +628,7 @@ impl Instances {
         }
 
         if self.attribute_gpu_dirty {
-            let _maybe_span_guard = if logging.render_timings.sub_frame() {
+            let _maybe_span_guard = if logging.cpu.sub_frame() {
                 Some(tracing::span!(tracing::Level::INFO, "Instance Attribute GPU write").entered())
             } else {
                 None

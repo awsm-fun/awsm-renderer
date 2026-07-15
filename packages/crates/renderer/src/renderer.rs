@@ -1203,7 +1203,7 @@ impl AwsmRenderer {
     /// canonical, PBR/Toon feature-set variants, and custom dynamic
     /// materials) at the active AA config; idempotent on cache hits.
     pub(crate) async fn prewarm_pipelines(&mut self) -> crate::error::Result<()> {
-        let _maybe_span = if self.logging.render_timings.sub_frame() {
+        let _maybe_span = if self.logging.cpu.sub_frame() {
             Some(tracing::span!(tracing::Level::INFO, "Prewarm Pipelines").entered())
         } else {
             None

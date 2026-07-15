@@ -5,62 +5,58 @@ use std::{
     sync::{LazyLock, Mutex},
 };
 
-/// Renderer logging flags.
+/// Renderer profiling/logging flags — what per-frame timing work the renderer
+/// produces. Both tiers default to [`TimingTier::Off`], so an embedder that
+/// constructs `AwsmRendererLogging::default()` pays ZERO per-frame cost (no
+/// spans created, no GPU timestamp queries).
 #[derive(Clone, Debug, Default)]
 pub struct AwsmRendererLogging {
-    /// How much per-frame work should open a `tracing` span.
-    ///
-    /// Each span enter/exit on the web routes through
-    /// `tracing_web::performance_layer`, which calls
-    /// `performance.mark()` and `performance.measure()` across the
-    /// wasm↔JS boundary. On mobile the per-call cost is large enough
-    /// that letting every sub-pass open a span dominates frame time.
-    /// We therefore
-    /// gate at the call site so a span is never even *created*
-    /// unless the tier permits it.
-    pub render_timings: RenderTimings,
+    /// CPU-side `tracing` span granularity. Each span enter/exit can route
+    /// through `tracing_web::performance_layer` (User Timing) and/or a bounded
+    /// aggregator — but the span is never even *created* unless the tier permits
+    /// it (gated in Rust at the call site), so `Off` is truly free.
+    pub cpu: TimingTier,
+    /// GPU-side timestamp-query granularity. `Off` = no query set, no per-pass
+    /// `timestampWrites`, no resolve/readback. `Frame` = one begin/end around
+    /// the whole frame's GPU work; `SubFrame` = per-pass timestamps.
+    pub gpu: TimingTier,
 }
 
-/// How much render-side tracing to emit per frame.
+/// How much timing to emit per frame — shared by the CPU (`tracing` spans) and
+/// GPU (timestamp query) paths.
 ///
 /// Ordering matters: each tier is a strict superset of the
 /// previous one. Comparing with `>=` is the canonical way to test
 /// at a span site.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
-pub enum RenderTimings {
-    /// No render-timing spans at all. The crate-level default —
-    /// matches the prior `render_timings: bool = false` behavior so
-    /// any embedder that constructs `AwsmRendererLogging::default()`
-    /// pays zero tracing cost. Frontends explicitly opt in to a
-    /// non-`Off` tier; see `crates/web-shared/src/perf.rs` for the
-    /// `?trace=…` URL-param wiring.
+pub enum TimingTier {
+    /// No timing at all. The crate-level default — any embedder that constructs
+    /// `AwsmRendererLogging::default()` pays zero cost. Frontends explicitly opt
+    /// in to a non-`Off` tier; see `web-shared/src/logging.rs` for the URL-param
+    /// wiring (`?trace=` for CPU, `?gputime=` for GPU).
     #[default]
     Off,
-    /// Just the outermost `"Render"` span — one
-    /// `performance.mark` plus one `performance.measure` per
-    /// frame. This is what the shipping web build runs by default:
-    /// it tells you frame time (and lets the DevTools performance
-    /// panel show a single bar per frame) while costing essentially
+    /// Just the outermost `"Render"` span / one begin+end GPU timestamp per
+    /// frame — tells you total frame (or whole-frame GPU) time for essentially
     /// nothing.
     Frame,
     /// Every render pass, GPU write, hook, and renderer-internal
-    /// stage opens its own span. This is what you want when
-    /// diagnosing why a frame is slow; it's far too chatty to run
-    /// in shipping builds on mobile.
+    /// stage opens its own span / gets its own GPU timestamp pair. This is what
+    /// you want when diagnosing why a frame is slow; too chatty for shipping.
     SubFrame,
 }
 
-impl RenderTimings {
+impl TimingTier {
     /// True when *any* render-timing span should be created.
     /// Equivalent to `!= Off`.
     pub fn enabled(self) -> bool {
-        self != RenderTimings::Off
+        self != TimingTier::Off
     }
 
     /// True when sub-frame spans (passes, GPU writes, hooks, …)
     /// should be created. Equivalent to `>= SubFrame`.
     pub fn sub_frame(self) -> bool {
-        self >= RenderTimings::SubFrame
+        self >= TimingTier::SubFrame
     }
 
     /// Parse the value of a `?trace=…` URL parameter.
