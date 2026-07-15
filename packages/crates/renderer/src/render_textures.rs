@@ -705,7 +705,10 @@ impl RenderTexturesInner {
             (1u32, 1u32)
         };
         let (ssr_w, ssr_h) = if ssr_enabled && ssr_half_res {
-            (crate::size::half_extent(width), crate::size::half_extent(height))
+            (
+                crate::size::half_extent(width),
+                crate::size::half_extent(height),
+            )
         } else {
             (refl_w, refl_h)
         };

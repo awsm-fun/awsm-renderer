@@ -337,10 +337,7 @@ impl MaterialPrepRenderPass {
     /// [`MaterialPrepBindGroups::recreate_edge`] (the edge buffers + layout come
     /// from `ctx`). Disjoint field borrows: `edge_shadow` (shared) + `bind_groups`
     /// (mut).
-    pub fn recreate_edge_bind_group(
-        &mut self,
-        ctx: &BindGroupRecreateContext<'_>,
-    ) -> Result<()> {
+    pub fn recreate_edge_bind_group(&mut self, ctx: &BindGroupRecreateContext<'_>) -> Result<()> {
         let storage_view = self.edge_shadow.as_ref().map(|e| &e.storage_view);
         self.bind_groups.recreate_edge(ctx, storage_view)
     }

@@ -7,9 +7,7 @@
 //! `api.rs`.
 
 use awsm_renderer_core::{
-    bind_groups::{
-        BindGroupLayoutResource, BufferBindingLayout, BufferBindingType,
-    },
+    bind_groups::{BindGroupLayoutResource, BufferBindingLayout, BufferBindingType},
     buffers::{BufferDescriptor, BufferUsage},
     error::AwsmCoreError,
     renderer::AwsmRendererWebGpu,

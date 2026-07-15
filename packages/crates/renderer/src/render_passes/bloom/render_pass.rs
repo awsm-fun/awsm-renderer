@@ -144,8 +144,7 @@ impl BloomRenderPass {
         // the round-trip is exact.
         let expected_base_w = crate::size::half_extent(view_width);
         let expected_base_h = crate::size::half_extent(view_height);
-        if self.texture.base_width == expected_base_w
-            && self.texture.base_height == expected_base_h
+        if self.texture.base_width == expected_base_w && self.texture.base_height == expected_base_h
         {
             return Ok(false);
         }

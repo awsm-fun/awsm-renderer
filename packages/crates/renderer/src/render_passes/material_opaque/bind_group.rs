@@ -247,9 +247,9 @@ impl MaterialOpaqueBindGroups {
     pub fn get_edge_final_blend_bind_group(
         &self,
     ) -> std::result::Result<&web_sys::GpuBindGroup, AwsmBindGroupError> {
-        self._edge_final_blend_bind_group
-            .as_ref()
-            .ok_or_else(|| AwsmBindGroupError::NotFound("Material Final Blend - Group 0".to_string()))
+        self._edge_final_blend_bind_group.as_ref().ok_or_else(|| {
+            AwsmBindGroupError::NotFound("Material Final Blend - Group 0".to_string())
+        })
     }
 
     /// (Re)builds the two edge bind groups — cs_shade group(3) and final-blend
@@ -291,7 +291,8 @@ impl MaterialOpaqueBindGroups {
             BindGroupResource::TextureView(Cow::Borrowed(edge_id_view)),
         ));
         let shade_descriptor = BindGroupDescriptor::new(
-            ctx.bind_group_layouts.get(shade_extended_shadows_layout_key)?,
+            ctx.bind_group_layouts
+                .get(shade_extended_shadows_layout_key)?,
             Some("Material Unified Shade - Extended Shadows (Group 3)"),
             shade_entries,
         );

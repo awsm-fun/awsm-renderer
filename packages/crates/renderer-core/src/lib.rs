@@ -55,10 +55,8 @@ pub const MAX_GPU_BUFFER_BYTES: u64 = 1900 * 1024 * 1024;
 /// `vmmap` virtual size (the ground truth for retained VA), it disambiguates a
 /// GPU-buffer leak (both climb together) from a wasm-heap / JS leak (vmmap
 /// climbs, this stays flat). Surfaced through the editor `memory_stats` query.
-pub static CREATE_BUFFER_COUNT: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
-pub static CREATE_BUFFER_BYTES: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
+pub static CREATE_BUFFER_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub static CREATE_BUFFER_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// `(count, bytes)` of every `create_buffer` call since process start. Read by
 /// the editor's `memory_stats` census for the leak soak; a rising slope on

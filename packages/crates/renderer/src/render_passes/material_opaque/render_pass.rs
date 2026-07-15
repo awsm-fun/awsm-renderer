@@ -204,15 +204,13 @@ impl MaterialOpaqueRenderPass {
     /// views, and shadows come from `ctx`). `BindGroupLayoutKey` is `Copy`, so
     /// reading the keys before the `&mut self.bind_groups` borrow keeps the
     /// field borrows disjoint.
-    pub fn recreate_edge_bind_groups(
-        &mut self,
-        ctx: &BindGroupRecreateContext<'_>,
-    ) -> Result<()> {
+    pub fn recreate_edge_bind_groups(&mut self, ctx: &BindGroupRecreateContext<'_>) -> Result<()> {
         let shade_key = self
             .edge_bind_group_layouts
             .shade_extended_shadows_layout_key;
         let final_blend_key = self.edge_bind_group_layouts.final_blend_group0_layout_key;
-        self.bind_groups.recreate_edge(ctx, shade_key, final_blend_key)
+        self.bind_groups
+            .recreate_edge(ctx, shade_key, final_blend_key)
     }
 
     /// Executes the opaque material pass.
