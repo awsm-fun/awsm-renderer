@@ -1176,7 +1176,13 @@ impl AwsmRenderer {
                 None
             };
 
-            self.render_textures.clear_opaque(&self.gpu)?;
+            // Record the opaque-clear copy into the frame's "Rendering"
+            // encoder (ordered ahead of the opaque pass below) instead of
+            // its own encoder+submit — saves a per-frame create+submit and
+            // keeps all uploads batched into a single `upload-shared`
+            // flush (the mid-frame Texture-Clearer submit used to split
+            // them in two).
+            self.render_textures.clear_opaque(&ctx.command_encoder)?;
         }
 
         // Material classify: per-tile scan of the visibility buffer

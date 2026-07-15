@@ -1,9 +1,47 @@
 # WebGPU per-frame churn — leak fix + performance uplift
 
-**STATUS: PROPOSED (for discussion, not started).** Written 2026-07-15 after the
-soak investigation (see `docs/debugging-leaks.md`, the `crashes.md` follow-up, and
-the diagnostic data in the soak runs). Fixes the editor-tab VA-leak crash *and*
-cuts per-frame CPU overhead — they share one root cause.
+**STATUS: Phase 1 SHIPPED + verified. Phases 2–7 revised per review (below).**
+Written 2026-07-15 after the soak investigation (see `docs/debugging-leaks.md`, the
+`crashes.md` follow-up, and the diagnostic data in the soak runs). Fixes the
+editor-tab VA-leak crash *and* cuts per-frame CPU overhead — they share one root
+cause.
+
+## Phase 1 result (shipped) — encoder churn 4/frame → 2/frame
+
+Two consolidations, both verified on `ssr-arena` at a locked 60 fps (measured by
+wrapping `GPUDevice.createCommandEncoder` + `GPUQueue.submit` in-page — do NOT infer
+fps from encoder counts, that's circular):
+
+**1a. Shared per-frame upload encoder.** Per-subsystem upload flushes each used to
+create + submit their own encoder (~4–5/frame). Now they record their
+`copyBufferToBuffer` into ONE shared encoder on the `AwsmRendererWebGpu` handle
+(`record_upload` → lazy encoder; auto-flushed at the next
+`submit_commands`/`submit_commands_batch`; the staging ring's `mapAsync` kick
+deferred to the next `acquire`, guarded by a monotonic `upload_flush_epoch` so it
+never maps a slot whose copy hasn't reached the queue).
+
+**1b. Fold the per-frame opaque-texture clear into the render encoder.** The `opaque`
+storage texture (deliberately not a RENDER_ATTACHMENT, for TBR mobile) is cleared via
+`copy_buffer_to_texture`. That was its own per-frame encoder+submit — and because it
+submitted mid-frame it *split* the upload flush in two (`upload-shared` ×2). Recording
+the clear into the frame's "Rendering" encoder (ordered ahead of the opaque pass)
+removes that encoder+submit AND collapses the upload flush to one.
+
+Per-frame breakdown (encoder label × per-frame count), same scene, 60 fps:
+
+| build | encoders/frame | submits/frame | labels |
+|---|---|---|---|
+| pre-Phase-1 | ~ (516/s ≈ several) | several | per-subsystem upload encoders + Rendering + Texture Clearer |
+| 1a only | 4 | 4 | upload-shared ×2, Rendering ×1, Texture Clearer ×1 |
+| **1a + 1b (shipped)** | **2** | **2** | **upload-shared ×1, Rendering ×1** |
+
+That's the floor without a deeper frame-sequencing refactor: uploads happen in the
+subsystem write paths *before* the "Rendering" encoder exists, so merging the last
+`upload-shared` into `Rendering` (→ 1 encoder / 1 submit) needs the render encoder
+created up front — deferred as riskier, not done. Bind-group rate unchanged at 3/frame
+(untouched — that's Phase 2). No rendering regression (ssr-arena pixel-identical, cleared
+background still black), **zero WebGPU validation errors** both times. An 8h soak is
+still the durable leak gate.
 
 ## TL;DR
 
@@ -60,45 +98,44 @@ The gaps are: command-encoder consolidation, bind-group caching coverage, and
 
 ## The plan
 
-### Phase 1 — Consolidate command encoders (biggest churn cut, low risk)
-- **Finding**: `buffer/mapped_uploader.rs:167` creates a *new* command encoder per
-  subsystem upload-flush per frame (~4–5/frame), plus the main "Rendering" encoder.
-- **Change**: thread ONE per-frame command encoder through the upload flushes and the
-  main pass (record all copies + passes into it), then one `finish`+`submit`. This is
-  the recommended shape (one encoder, one submit) and removes the bulk of the 516/s
-  encoder churn.
-- **Risk**: low–moderate — must preserve the ring's "submit before kicking mapAsync"
-  ordering. Verify with the soak (encoder rate → ~1/frame) and a visual check.
+### Phase 1 — Consolidate command encoders (biggest churn cut, low risk) — ✅ DONE
+- **Finding**: `buffer/mapped_uploader.rs` created a *new* command encoder per
+  subsystem upload-flush per frame (~4–5/frame), each with its own `submit`.
+- **Change (shipped, 1a)**: one shared per-frame upload encoder on the gpu handle
+  (`record_upload`), auto-flushed at the next `submit_commands`; ring `mapAsync` kick
+  deferred to the next `acquire` and epoch-guarded (`upload_flush_epoch`) so the
+  "copy submitted before map kicked" invariant holds without a per-flush submit.
+- **Change (shipped, 1b)**: fold the per-frame opaque-texture clear
+  (`TextureClearer::clear`) into the "Rendering" encoder instead of its own
+  encoder+submit — also collapses the upload flush from 2→1 per frame.
+- **Result**: 4 → 2 encoders/frame and 4 → 2 submits/frame, zero validation errors,
+  ssr-arena pixel-identical. See the result table above.
 
-### Phase 2 — Bind-group caching (kills the leak's main slice + rebind cost)
-- **Audit** the ~172/s `createBindGroup` sites for ones rebuilt every frame instead of
-  on-change. Known non-cached/inline candidates from the survey: `material_prep`
-  edge bind group (`render_pass.rs:402`), occlusion/HZB (`hzb/bind_group.rs` push
-  sites), tonemap/present. (Most material/shadow/bloom bind groups are already cached
-  in fields — good.)
-- **Change**: a first-class **bind-group cache** keyed by (layout + resource ids);
-  recreate only when a referenced resource changes. Organize by update frequency —
-  `@group(0)` per-frame (camera/env), `@group(1)` per-material, `@group(2)` per-draw
-  via one big buffer + 256B-aligned dynamic offsets (extend what several passes already
-  do). Use explicit shared layouts (no `layout:'auto'` for shared groups) so one
-  camera bind group works across pipelines.
-- **Risk**: moderate — invalidation correctness is the tricky part. The soak is the
-  regression gate; add a `create_bind_group` rate assertion.
+### Phase 2 — Bind-group churn: FIND THE BUG (not a cache) — next
+- **Correction from review**: bind-group recreation in this codebase is *supposed to
+  be event-driven* — 46 of ~49 `create_bind_group` sites are in `recreate_*` methods
+  keyed on change events. So a steady **172/s** create rate on an *idle* scene is a
+  **bug** (something recreates every frame that shouldn't), NOT a missing cache. Do
+  NOT bolt on a general bind-group cache; that would paper over the real defect.
+- **Known per-frame (mesh-dependent) offenders from the survey**: `material_prep`
+  `render_edge` (`render_pass.rs:402`), `material_opaque` `build_shade_bind_group`
+  (`render_pass.rs:141`) and `build_edge_bind_groups` (`:181`). These rebuild inline
+  per draw instead of on mesh-set change.
+- **Change**: make those sites event-driven like the other 46 — cache the bind group
+  on the owning struct, invalidate only when a referenced resource (mesh buffer,
+  texture, layout) actually changes. The fix is per-site correctness, not a new
+  abstraction. Soak `create_bind_group` rate → near-zero on an idle scene is the gate.
+- **Risk**: low–moderate — localized; invalidation must cover every referenced resource.
 
-### Phase 3 — Upload-path simplification (evaluate; complexity + churn reduction)
-- Research is clear that `queue.writeBuffer` is the recommended default for per-frame
-  dynamic data (internally sub-allocates staging + non-blocking copy; no hand-rolled
-  N-buffering needed). Our bespoke mapped-staging-ring adds complexity and shows
-  chronic fallback churn (~150/s) with no measured win.
-- **Proposal**: A/B the ring vs `writeBuffer` + one big dynamic-offset uniform/storage
-  buffer for the small per-frame uniforms (camera, frame globals, transforms) under
-  `?trace=sub-frame`. If writeBuffer is within noise (likely), retire the ring for
-  those paths (keep it only where a measured stall justifies it). Fewer encoders,
-  less code, same or better perf.
-- **Risk**: moderate — touches core upload; gated by the A/B measurement. Do AFTER
-  Phase 1–2 stop the bleeding.
+### Phase 3 — Upload path: KEEP the staging ring (no A/B retire)
+- **Correction from review**: the mapped-staging-ring is a *deliberate* perf choice
+  over `queue.writeBuffer` — it writes straight into mapped memory and avoids the
+  browser's staging-copy hop (see the module doc in `mapped_staging_ring.rs`). We
+  moved *away* from `writeBuffer` + dynamic offsets on purpose. **Do not retire it.**
+- The earlier "A/B then retire" proposal is **dropped**. If the ~fallback churn ever
+  shows a measured cost, tune ring depth / acquisition, don't replace the ring.
 
-### Phase 4 — Render bundles for the static opaque pass (biggest untapped CPU win)
+### Phase 4 — Render bundles for the static opaque pass (conditional CPU win)
 - None exist today. Record the opaque draw list into a `GPURenderBundle` once; replay
   with `executeBundles`; mutate referenced buffers (via writeBuffer) instead of
   re-recording. Pull viewport/scissor/blend-const/stencil out of the bundle. Skip when
@@ -113,12 +150,11 @@ The gaps are: command-encoder consolidation, bind-group caching coverage, and
   correctness/robustness cleanup — coverage is off by default in the editor, but the
   pattern should be right for when it's on.)
 
-### Phase 6 — GPU-driven rendering expansion (future, ties into nanite/LOD)
-- Single-buffer `drawIndexedIndirect` + compute culling (all indirect args in ONE
-  buffer — Chrome/D3D12 validation is ~300× cheaper that way, and invisible to
-  timestamp queries). `multiDrawIndirect`/bindless/64-bit-atomics are flag-gated
-  experimental → optional accelerations with fallbacks. Overlaps the existing cluster/
-  nanite work.
+### Phase 6 — GPU-driven rendering — ALREADY DONE (dropped)
+- **Correction from review**: we already do GPU-driven indirect rendering in the
+  nanite/cluster path (single-buffer `drawIndexedIndirect` + compute cull/compaction).
+  There is no separate work here; the "expand GPU-driven indirect" item is **dropped**
+  as redundant. Any indirect-arg-buffer hygiene lives with the nanite code, not here.
 
 ### Phase 7 — Profiling + permanent gate
 - Add a `timestamp-query` GPU-frame-time harness (ping-pong result buffers, dev-flag to
@@ -129,18 +165,21 @@ The gaps are: command-encoder consolidation, bind-group caching coverage, and
 
 ## Sequencing & verification
 
-- **Do Phase 1 → 2 first** — they stop the crash and are the safe churn cuts. Re-run
-  the soak after each; target: encoder rate → ~1–2/frame, bind-group rate → near-zero
-  steady-state, mapped-region count FLAT over 8h.
-- Phase 3–4 are the perf multipliers (do after the leak is closed and measured).
-- Phase 5–6 are robustness/future.
+- **Phase 1 done** (encoder rate 516→229/s). **Phase 2 next** — hunt the per-frame
+  bind-group *bug* (make the 3 mesh-dependent sites event-driven), target
+  `create_bind_group` → near-zero on an idle scene.
+- Phase 3 is a KEEP decision (ring stays); Phase 4 (render bundles) is a conditional
+  CPU win once the leak is closed; Phase 5 is robustness; Phase 6 is already covered by
+  nanite.
 - Every phase is verified by the existing soak harness + census (the instrument that
-  found the bug is the instrument that proves the fix).
+  found the bug is the instrument that proves the fix). The 8h soak with FLAT
+  mapped-region count is the durable gate.
 
-## Open question to resolve before implementing
+## Open question — does Phase 1 alone move the leak?
 
-The exact leaking object *within* the churn isn't pinned 1:1 (leak ~35/s vs churn
-172+516/s) — but the fix (cache/consolidate) is identical regardless, and Phase 1–2
-will drive the rate to zero and confirm by soak. If we want certainty first, one more
-ablation (instrument-then-disable a specific bind-group site) would pin it — optional,
-~30 min, not required to proceed.
+Phase 1 halved encoder churn but did NOT touch the 172/s bind-group rate. If the leak
+tracks bind-group churn (the more likely culprit — bind groups pin the resources they
+reference and have no `.destroy()`), the crash won't close until Phase 2. Run a long
+soak on the Phase-1 build to see whether the ~35 region/s rate drops proportionally
+with the encoder cut or holds at the bind-group rate — that pins which churn stream
+feeds the leak and confirms Phase 2 is the real fix.

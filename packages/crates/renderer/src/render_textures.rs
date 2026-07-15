@@ -1,6 +1,7 @@
 //! Render texture allocation and management.
 
 use awsm_renderer_core::{
+    command::CommandEncoder,
     error::AwsmCoreError,
     renderer::AwsmRendererWebGpu,
     texture::{
@@ -342,12 +343,15 @@ impl RenderTextures {
         self.inner.as_ref()
     }
 
-    /// Clears the opaque render texture when initialized.
-    pub fn clear_opaque(&self, gpu: &AwsmRendererWebGpu) -> Result<()> {
+    /// Records the opaque-render-texture clear into `encoder` (when the
+    /// textures are initialized). Recorded into the frame's main
+    /// "Rendering" encoder ahead of the opaque pass rather than issuing
+    /// its own encoder+submit — see [`TextureClearer::clear`].
+    pub fn clear_opaque(&self, encoder: &CommandEncoder) -> Result<()> {
         if let Some(inner) = self.inner.as_ref() {
             inner
                 .opaque_clearer
-                .clear(gpu, &inner.opaque)
+                .clear(encoder, &inner.opaque)
                 .map_err(AwsmRenderTextureError::TextureClearerClear)
         } else {
             Ok(())

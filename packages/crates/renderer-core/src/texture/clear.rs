@@ -2,6 +2,7 @@
 
 use crate::buffers::{BufferDescriptor, BufferUsage};
 use crate::command::copy_texture::{Origin3d, TexelCopyBufferInfo, TexelCopyTextureInfo};
+use crate::command::CommandEncoder;
 use crate::error::{AwsmCoreError, Result};
 use crate::texture::Extent3d;
 use crate::{renderer::AwsmRendererWebGpu, texture::TextureFormat};
@@ -68,10 +69,17 @@ impl TextureClearer {
         })
     }
 
-    /// Clears the target texture to zero.
-    pub fn clear(&self, gpu: &AwsmRendererWebGpu, texture: &web_sys::GpuTexture) -> Result<()> {
-        let encoder = gpu.create_command_encoder(Some("Texture Clearer"));
-
+    /// Records the copy commands that clear `texture` to zero into
+    /// `encoder`. Does NOT create its own encoder or submit — the caller
+    /// records this into whatever per-frame encoder already exists (the
+    /// main "Rendering" encoder) so the frame stays at one
+    /// encoder/submit per consumer instead of spending an extra
+    /// create+submit pair here every frame. The zeroed staging buffer is
+    /// a `COPY_SRC`, so this is valid to interleave with the frame's
+    /// other commands; ordering (clear before the opaque pass writes the
+    /// texture) is guaranteed by recording it ahead of that pass in the
+    /// same encoder.
+    pub fn clear(&self, encoder: &CommandEncoder, texture: &web_sys::GpuTexture) -> Result<()> {
         for i in 0..self.chunks {
             let y = i * self.chunk_height;
             let h = (self.height - y).min(self.chunk_height);
@@ -100,7 +108,6 @@ impl TextureClearer {
             )?;
         }
 
-        gpu.submit_commands(&encoder.finish());
         Ok(())
     }
 }

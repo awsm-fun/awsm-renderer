@@ -5,7 +5,11 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::GpuSupportedLimits;
 
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
+
 use crate::{
+    command::CommandEncoder,
     configuration::CanvasConfiguration,
     error::{AwsmCoreError, Result},
 };
@@ -116,6 +120,31 @@ pub struct AwsmRendererWebGpu {
     /// panic with a clear message if invoked in `Offscreen` mode
     /// rather than silently mis-casting.
     canvas_kind: CanvasKind,
+    /// Shared per-frame **upload** command encoder. Per-frame buffer
+    /// uploads (`MappedStagingRing` copies, via `record_upload`) record
+    /// their `copyBufferToBuffer` commands into this ONE encoder instead
+    /// of each creating + submitting their own — the encoder is finished
+    /// and submitted exactly once, lazily, at the next `submit_commands`
+    /// (see [`Self::flush_upload_encoder`]). This collapses ~4–5
+    /// encoder-create + submit pairs per frame down to one, which is both
+    /// the recommended WebGPU shape and the fix for the per-frame
+    /// GPU-object churn that drove the editor-tab VA leak (see
+    /// `docs/plans/webgpu-churn-leak-perf.md`).
+    ///
+    /// `Rc<RefCell<..>>` (not a bare field) because `AwsmRendererWebGpu`
+    /// is `Clone` and handed to many subsystems: every clone must share
+    /// the *same* pending encoder so the clone that renders flushes the
+    /// copies the clone that uploaded recorded.
+    pub(crate) upload_encoder: Rc<RefCell<Option<CommandEncoder>>>,
+    /// Monotonic counter of how many times `upload_encoder` has been
+    /// flushed (finished + submitted). A staging-ring slot records the
+    /// epoch it was made `Submitted` in; the ring only kicks `mapAsync`
+    /// on a slot once this counter has advanced past that epoch — i.e.
+    /// once the copy referencing the slot's buffer has actually reached
+    /// the queue. This is what keeps the *deferred* kick correct even if
+    /// a ring is written more than once between two flushes. Shared
+    /// across clones for the same reason as `upload_encoder`.
+    pub(crate) upload_flush_epoch: Rc<Cell<u64>>,
 }
 
 impl AwsmRendererWebGpu {
@@ -445,6 +474,8 @@ impl AwsmRendererWebGpuBuilder {
             device_id: DeviceId::next(),
             context,
             canvas_kind: self.canvas,
+            upload_encoder: Rc::new(RefCell::new(None)),
+            upload_flush_epoch: Rc::new(Cell::new(0)),
         })
     }
 }

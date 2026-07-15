@@ -163,6 +163,16 @@ struct Slot {
     /// `Submitted → Ready` latency into `stats.map_async_wait_ms` on
     /// the transition. `None` outside `Pending`.
     map_async_started_ms: Option<f64>,
+    /// The [`AwsmRendererWebGpu::upload_flush_epoch`] value at the moment
+    /// this slot was made `Submitted` by `finalize` — i.e. which
+    /// not-yet-flushed batch of copies this slot's `copyBufferToBuffer`
+    /// was recorded into. [`MappedStagingRing::kick_flushed_slots`] only
+    /// kicks `mapAsync` on the slot once the shared upload encoder has
+    /// been flushed *past* this epoch, guaranteeing the copy referencing
+    /// this buffer has reached the queue before we put the buffer into a
+    /// pending-map state (which WebGPU would otherwise reject). Meaningful
+    /// only while `state == Submitted`.
+    recorded_epoch: u64,
 }
 
 /// Outcome of [`MappedStagingRing::acquire`].
@@ -223,6 +233,7 @@ impl<'a> MappedSlotWrite<'a> {
         encoder: &CommandEncoder,
         dest: &web_sys::GpuBuffer,
         copy_ranges: &[(usize, usize)],
+        flush_epoch: u64,
     ) -> Result<(), AwsmCoreError> {
         // unmap before copy — WebGPU forbids mapped buffers as copy
         // sources. After this point the buffer is no longer mapped,
@@ -265,17 +276,21 @@ impl<'a> MappedSlotWrite<'a> {
         self.ring.stats.bytes_uploaded_via_ring += total as u64;
 
         self.ring.slots[self.slot_index].state = SlotState::Submitted;
+        self.ring.slots[self.slot_index].recorded_epoch = flush_epoch;
         self.ring.update_peak();
 
-        // NOTE: we intentionally do *not* kick `mapAsync` here. The
-        // copy command we just recorded references this slot's buffer
-        // as a copy source; if we put the buffer into a
-        // pending-mapAsync state before the encoder has been submitted,
-        // WebGPU validation rejects the submit ("buffer is used in a
-        // submission while a map is pending"). The caller is required
-        // to submit the encoder *first*, then call
-        // [`MappedStagingRing::kick_submitted_slots`] to roll the
-        // Submitted slots forward to Pending. See
+        // NOTE: we intentionally do *not* kick `mapAsync` here. The copy
+        // command we just recorded references this slot's buffer as a
+        // copy source; if we put the buffer into a pending-mapAsync state
+        // before that copy has been *submitted*, WebGPU validation
+        // rejects the submit ("buffer is used in a submission while a map
+        // is pending"). The copy now lives in the renderer's *shared*
+        // per-frame upload encoder, which is submitted lazily at the next
+        // `submit_commands` (bumping `upload_flush_epoch`). We stamp the
+        // slot with the current `flush_epoch`; a later
+        // [`MappedStagingRing::kick_flushed_slots`] rolls it to `Pending`
+        // only once the epoch has advanced past this stamp — i.e. once
+        // the copy has reached the queue. See
         // [`crate::buffer::mapped_uploader::MappedUploader::write_dirty_ranges`]
         // for the canonical ordering.
         self.finalized = true;
@@ -524,21 +539,33 @@ impl MappedStagingRing {
         }
     }
 
-    /// Kick `mapAsync` on every slot currently in `Submitted` state,
-    /// transitioning them to `Pending`. **Must be called *after* the
-    /// command buffer that records the slot's copy command has been
-    /// submitted to the queue** — otherwise WebGPU rejects the
-    /// submission because the buffer would be in a pending-map state
-    /// while still referenced by a not-yet-submitted command buffer.
+    /// Kick `mapAsync` on every `Submitted` slot **whose copy has
+    /// already been flushed to the queue** — i.e. whose `recorded_epoch`
+    /// is strictly less than `flushed_epoch` (the current
+    /// [`AwsmRendererWebGpu::upload_flush_epoch`]). Transitions those
+    /// slots to `Pending`.
+    ///
+    /// This replaces the old "submit encoder, then kick immediately"
+    /// coupling. Copies now accumulate in the renderer's shared per-frame
+    /// upload encoder and are submitted lazily at `submit_commands`
+    /// (which bumps the flush epoch). A slot finalized in epoch `E` is
+    /// therefore safe to map only once the epoch has advanced to `≥ E+1`.
+    /// The `<` guard is what makes the deferred kick correct even when a
+    /// ring is written more than once between two flushes: a slot
+    /// finalized *this* epoch (copy still un-submitted) is skipped, not
+    /// wrongly mapped.
     ///
     /// The canonical caller is
     /// [`crate::buffer::mapped_uploader::MappedUploader::write_dirty_ranges`],
-    /// which interleaves: acquire → write → finalize (records copy +
-    /// marks Submitted) → `gpu.submit_commands(...)` → this method.
-    pub fn kick_submitted_slots(&mut self) {
+    /// which calls this at the *top* of the next upload for the ring —
+    /// by which point the prior frame's `submit_commands` has flushed the
+    /// copies.
+    pub fn kick_flushed_slots(&mut self, flushed_epoch: u64) {
         let depth = self.slots.len();
         for idx in 0..depth {
-            if self.slots[idx].state == SlotState::Submitted {
+            if self.slots[idx].state == SlotState::Submitted
+                && self.slots[idx].recorded_epoch < flushed_epoch
+            {
                 self.start_map_async(idx);
             }
         }
@@ -665,6 +692,7 @@ impl MappedStagingRing {
             ready_flag: Arc::new(AtomicBool::new(false)),
             recover_needed: Arc::new(AtomicBool::new(false)),
             map_async_started_ms: None,
+            recorded_epoch: 0,
         })
     }
 }
