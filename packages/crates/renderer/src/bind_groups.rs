@@ -163,6 +163,15 @@ pub enum BindGroupCreate {
     /// pass's bind-group creation flows through the central ledger like
     /// every other, instead of being built inline mid-frame.
     OpaqueMipgen,
+    /// The three EVSM shadow compute bind groups (moment-write + blur H/V)
+    /// are stale — the shadow resource-recreate path reallocated a cascade /
+    /// EVSM-atlas / ping-pong view they bind. Fired from
+    /// `Shadows::apply_pending_resource_recreate`; the rebuild runs in
+    /// `recreate` (`Shadows::recreate_evsm_bind_groups`) so, like every other
+    /// bind group, creation flows through the ledger instead of inline in the
+    /// resource path. NOT in the initial seed — the eager construction build
+    /// covers frame 0; this only fires on later atlas/cascade resizes.
+    ShadowEvsmBindGroups,
     MaterialResize,
     TextureViewRecreate,
     TexturePool,
@@ -229,6 +238,10 @@ impl BindGroups {
                 BindGroupCreate::DecalsResize | BindGroupCreate::DecalClassifyBuffersResize => {
                     features.decals
                 }
+                // Built eagerly in `Shadows` construction; the ledger only
+                // rebuilds them on later resource-recreate, never on the
+                // initial seed (which has no reallocated views to bind).
+                BindGroupCreate::ShadowEvsmBindGroups => false,
                 _ => true,
             })
             .collect::<HashSet<_>>();
@@ -267,6 +280,10 @@ impl BindGroups {
             /// Opaque-RT mipgen per-mip bind groups — built ahead of the
             /// per-frame dispatch, no longer created inline in `record`.
             OpaqueMipgen,
+            /// EVSM shadow compute bind groups (moment-write + blur H/V),
+            /// rebuilt via `Shadows::recreate_evsm_bind_groups` instead of
+            /// inline in the shadow resource-recreate path.
+            ShadowEvsm,
             MaterialPrep,
             /// Prep-edge group(3) — the `cs_prep_edge` compute pass's
             /// per-frame-until-now edge bind group, now cached + event-driven.
@@ -526,6 +543,9 @@ impl BindGroups {
                 BindGroupCreate::OpaqueMipgen => {
                     functions_to_call.insert(FunctionToCall::OpaqueMipgen);
                 }
+                BindGroupCreate::ShadowEvsmBindGroups => {
+                    functions_to_call.insert(FunctionToCall::ShadowEvsm);
+                }
                 BindGroupCreate::DecalClassifyBuffersResize => {
                     functions_to_call.insert(FunctionToCall::MaterialDecalClassify);
                     functions_to_call.insert(FunctionToCall::MaterialDecalMain);
@@ -760,6 +780,13 @@ impl BindGroups {
                     {
                         mipgen.rebuild(ctx.gpu, tex, *mip_count)?;
                     }
+                }
+                FunctionToCall::ShadowEvsm => {
+                    // Rebuild the three EVSM shadow bind groups against the
+                    // views the resource-recreate path just reallocated
+                    // (interior-mutable, so shared `ctx.shadows` suffices).
+                    ctx.shadows
+                        .recreate_evsm_bind_groups(ctx.gpu, ctx.bind_group_layouts)?;
                 }
                 FunctionToCall::MaterialDecalMain => {
                     render_passes

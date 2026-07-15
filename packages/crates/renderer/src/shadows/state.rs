@@ -62,6 +62,18 @@ use crate::{
     },
 };
 
+/// The three persistent EVSM compute bind groups, rebuilt together whenever
+/// any view they bind is reallocated. Held behind one interior-mutable slot
+/// on [`Shadows`] so their creation routes through `BindGroups::recreate`.
+struct EvsmBindGroups {
+    /// 0=shadow cascade-array (depth), 1=evsm_atlas (storage write), 2=params.
+    moment_write: web_sys::GpuBindGroup,
+    /// 0=evsm_atlas (read), 1=ping-pong (storage write), 2=params.
+    blur_h: web_sys::GpuBindGroup,
+    /// 0=ping-pong (read), 1=evsm_atlas (storage write), 2=params.
+    blur_v: web_sys::GpuBindGroup,
+}
+
 /// Owns every GPU resource for shadow generation and sampling.
 pub struct Shadows {
     /// Renderer-wide configuration. Replace via [`Shadows::set_config`].
@@ -102,18 +114,16 @@ pub struct Shadows {
     /// evsm_rect)` for the dispatch loop. `pcf_rect` is in shadow_atlas
     /// texels; `evsm_rect` is in evsm_atlas texels.
     pub evsm_dispatch_queue: Vec<EvsmDispatchEntry>,
-    /// Persistent bind group for the moment-write compute pass.
-    /// Bindings: 0=shadow_atlas (depth), 1=evsm_atlas (storage write),
-    /// 2=params (uniform, dynamic offset). Same group is used for
-    /// every EVSM cascade; per-cascade context comes via dynamic
-    /// offset.
-    pub evsm_moment_write_bind_group: web_sys::GpuBindGroup,
-    /// Persistent bind group for the horizontal blur half-pass.
-    /// 0=evsm_atlas (read), 1=ping-pong (storage write), 2=params.
-    pub evsm_blur_h_bind_group: web_sys::GpuBindGroup,
-    /// Persistent bind group for the vertical blur half-pass.
-    /// 0=ping-pong (read), 1=evsm_atlas (storage write), 2=params.
-    pub evsm_blur_v_bind_group: web_sys::GpuBindGroup,
+    /// The three persistent EVSM compute bind groups (moment-write + blur
+    /// H/V). Interior-mutable so `recreate_evsm_bind_groups` can rebuild them
+    /// via `&self` from the central `BindGroups::recreate` dispatch — like
+    /// every other bind group, their (re)creation flows through
+    /// `mark_create(BindGroupCreate::ShadowEvsmBindGroups)` rather than being
+    /// built inline in the resource-recreate path. (`Mutex`, not `RefCell`,
+    /// for renderer-wide interior-mutability consistency; the inner
+    /// `GpuBindGroup` is `!Send` so this doesn't grant `Sync`. Lock is one
+    /// uncontested CAS, same rationale as `OpaqueMipgen`.)
+    evsm_bind_groups: std::sync::Mutex<Option<EvsmBindGroups>>,
     /// 2D-array depth texture, one layer per directional-cascade view.
     /// Spot lights stay on `atlas_texture`; cascades migrated here so
     /// each cascade gets its own per-layer render attachment — a
@@ -1052,9 +1062,11 @@ impl Shadows {
             evsm_blur_pingpong_view,
             evsm_pass,
             evsm_dispatch_queue: Vec::new(),
-            evsm_moment_write_bind_group,
-            evsm_blur_h_bind_group,
-            evsm_blur_v_bind_group,
+            evsm_bind_groups: std::sync::Mutex::new(Some(EvsmBindGroups {
+                moment_write: evsm_moment_write_bind_group,
+                blur_h: evsm_blur_h_bind_group,
+                blur_v: evsm_blur_v_bind_group,
+            })),
             descriptors_buffer,
             descriptors_uniform,
             globals_buffer,
@@ -1200,7 +1212,6 @@ impl Shadows {
     fn apply_pending_resource_recreate(
         &mut self,
         gpu: &AwsmRendererWebGpu,
-        bind_group_layouts: &BindGroupLayouts,
         bind_groups: &mut BindGroups,
     ) -> Result<(), AwsmShadowError> {
         let recreate = std::mem::take(&mut self.pending_resource_recreate);
@@ -1274,33 +1285,10 @@ impl Shadows {
                 .create_view()
                 .map_err(AwsmCoreError::create_texture_view)?;
             // All three EVSM bind groups reference at least one of the
-            // recreated views, so rebuild all three.
-            self.evsm_moment_write_bind_group = build_evsm_moment_write_bind_group(
-                gpu,
-                bind_group_layouts,
-                self.evsm_pass.moment_write_layout_key,
-                &self.cascade_array_view,
-                &self.evsm_atlas_view,
-                &self.evsm_pass.params_buffer,
-            )?;
-            self.evsm_blur_h_bind_group = build_evsm_blur_bind_group(
-                gpu,
-                bind_group_layouts,
-                self.evsm_pass.blur_layout_key,
-                &self.evsm_atlas_view,
-                &self.evsm_blur_pingpong_view,
-                &self.evsm_pass.params_buffer,
-                "Shadow EVSM Blur H Bind Group",
-            )?;
-            self.evsm_blur_v_bind_group = build_evsm_blur_bind_group(
-                gpu,
-                bind_group_layouts,
-                self.evsm_pass.blur_layout_key,
-                &self.evsm_blur_pingpong_view,
-                &self.evsm_atlas_view,
-                &self.evsm_pass.params_buffer,
-                "Shadow EVSM Blur V Bind Group",
-            )?;
+            // recreated views — mark them for rebuild in `BindGroups::recreate`
+            // (which runs after this, before the shadow render). The views are
+            // already updated above, so the recreate arm binds the fresh ones.
+            bind_groups.mark_create(crate::bind_groups::BindGroupCreate::ShadowEvsmBindGroups);
         }
 
         if recreate.cube_pool {
@@ -1369,17 +1357,11 @@ impl Shadows {
                 &self.cascade_array_texture,
                 new_layers,
             )?;
-            // Moment-write reads from the cascade-array view — rebind
-            // against the freshly-created view. Blur bind groups stay
-            // valid (EVSM atlas + ping-pong only).
-            self.evsm_moment_write_bind_group = build_evsm_moment_write_bind_group(
-                gpu,
-                bind_group_layouts,
-                self.evsm_pass.moment_write_layout_key,
-                &self.cascade_array_view,
-                &self.evsm_atlas_view,
-                &self.evsm_pass.params_buffer,
-            )?;
+            // Moment-write reads from the cascade-array view — mark the EVSM
+            // groups for rebuild against the freshly-created view in
+            // `BindGroups::recreate`. (Blur groups are unaffected here, but the
+            // recreate arm rebuilds all three together — cheap + event-driven.)
+            bind_groups.mark_create(crate::bind_groups::BindGroupCreate::ShadowEvsmBindGroups);
         }
 
         // Re-rasterise only the views whose backing texture actually
@@ -1571,6 +1553,91 @@ impl Shadows {
         &self.shadow_view_bind_group
     }
 
+    /// The EVSM moment-write bind group. Cheap JS-handle clone (refcount
+    /// bump) out of the interior-mutable holder — the render pass takes an
+    /// owned handle so it doesn't hold the lock across `set_bind_group`.
+    /// Panics only if called before the first `recreate` build, which the
+    /// render loop always runs (initial `create_list` seed + resource
+    /// rebuilds) before the EVSM pass.
+    pub fn evsm_moment_write_bind_group(&self) -> web_sys::GpuBindGroup {
+        self.evsm_bind_groups
+            .lock()
+            .unwrap()
+            .as_ref()
+            .expect("EVSM bind groups built via recreate before render")
+            .moment_write
+            .clone()
+    }
+
+    /// The EVSM horizontal-blur bind group (see [`Self::evsm_moment_write_bind_group`]).
+    pub fn evsm_blur_h_bind_group(&self) -> web_sys::GpuBindGroup {
+        self.evsm_bind_groups
+            .lock()
+            .unwrap()
+            .as_ref()
+            .expect("EVSM bind groups built via recreate before render")
+            .blur_h
+            .clone()
+    }
+
+    /// The EVSM vertical-blur bind group (see [`Self::evsm_moment_write_bind_group`]).
+    pub fn evsm_blur_v_bind_group(&self) -> web_sys::GpuBindGroup {
+        self.evsm_bind_groups
+            .lock()
+            .unwrap()
+            .as_ref()
+            .expect("EVSM bind groups built via recreate before render")
+            .blur_v
+            .clone()
+    }
+
+    /// (Re)builds the three EVSM bind groups against the current cascade /
+    /// EVSM-atlas / ping-pong views + params buffer. Dispatched from
+    /// `BindGroups::recreate` in response to
+    /// `BindGroupCreate::ShadowEvsmBindGroups`, which the resource-recreate
+    /// path fires whenever it reallocates any view those groups bind.
+    /// Interior-mutable (`&self`) so it rides the same borrow discipline as
+    /// the render pass's reads — the central recreate holds `shadows`
+    /// immutably via the context.
+    pub fn recreate_evsm_bind_groups(
+        &self,
+        gpu: &AwsmRendererWebGpu,
+        bind_group_layouts: &BindGroupLayouts,
+    ) -> Result<(), AwsmShadowError> {
+        let moment_write = build_evsm_moment_write_bind_group(
+            gpu,
+            bind_group_layouts,
+            self.evsm_pass.moment_write_layout_key,
+            &self.cascade_array_view,
+            &self.evsm_atlas_view,
+            &self.evsm_pass.params_buffer,
+        )?;
+        let blur_h = build_evsm_blur_bind_group(
+            gpu,
+            bind_group_layouts,
+            self.evsm_pass.blur_layout_key,
+            &self.evsm_atlas_view,
+            &self.evsm_blur_pingpong_view,
+            &self.evsm_pass.params_buffer,
+            "Shadow EVSM Blur H Bind Group",
+        )?;
+        let blur_v = build_evsm_blur_bind_group(
+            gpu,
+            bind_group_layouts,
+            self.evsm_pass.blur_layout_key,
+            &self.evsm_blur_pingpong_view,
+            &self.evsm_atlas_view,
+            &self.evsm_pass.params_buffer,
+            "Shadow EVSM Blur V Bind Group",
+        )?;
+        *self.evsm_bind_groups.lock().unwrap() = Some(EvsmBindGroups {
+            moment_write,
+            blur_h,
+            blur_v,
+        });
+        Ok(())
+    }
+
     /// Per-frame upload point. Refits cascades against the current
     /// camera, packs descriptors into the uniform buffer, and writes
     /// shadow globals when dirty.
@@ -1611,7 +1678,6 @@ impl Shadows {
         &mut self,
         _logging: &AwsmRendererLogging,
         gpu: &AwsmRendererWebGpu,
-        bind_group_layouts: &BindGroupLayouts,
         bind_groups: &mut BindGroups,
         camera: &crate::camera::CameraBuffer,
         lights: &crate::lights::Lights,
@@ -1648,7 +1714,7 @@ impl Shadows {
         // `set_config` from the editor takes effect immediately. The
         // auto-grow path below operates on whatever size landed here.
         if self.pending_resource_recreate.any() {
-            self.apply_pending_resource_recreate(gpu, bind_group_layouts, bind_groups)?;
+            self.apply_pending_resource_recreate(gpu, bind_groups)?;
         }
 
         // Dynamic atlas resize. If the previous frame's packer ran
