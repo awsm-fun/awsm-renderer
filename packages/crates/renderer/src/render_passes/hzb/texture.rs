@@ -97,8 +97,6 @@ impl HzbTexture {
     /// Dimensions of mip `level` (clamped to ≥ 1 on each axis — same
     /// rule WebGPU applies for non-power-of-2 textures).
     pub fn mip_dims(&self, level: u32) -> (u32, u32) {
-        let w = (self.width >> level).max(1);
-        let h = (self.height >> level).max(1);
-        (w, h)
+        awsm_renderer_core::texture::mipmap::get_mipmap_size_for_level(self.width, self.height, level)
     }
 }

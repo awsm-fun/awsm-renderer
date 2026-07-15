@@ -79,6 +79,7 @@ pub mod renderable;
 pub mod scene_spatial;
 pub mod shaders;
 pub mod shadows;
+pub mod size;
 pub mod textures;
 pub mod transforms;
 pub mod update;

@@ -269,15 +269,17 @@ impl SsrRenderPass {
             let compute_pass = ctx.command_encoder.begin_compute_pass(Some(
                 &ComputePassDescriptor::new(Some("SSR Trace + Resolve + Temporal")).into(),
             ));
-            // Trace dims match the `ssr` target: halved when half-res, matching
-            // the `((w+1)/2, (h+1)/2)` target sizing in `RenderTexturesInner`.
+            // Trace dims match the `ssr` target: halved when half-res, through
+            // the SAME `crate::size::half_extent` helper `RenderTexturesInner`
+            // sizes the target with, so alloc and dispatch never drift.
             let (w, h) = if half_res {
-                (view_width.div_ceil(2), view_height.div_ceil(2))
+                (
+                    crate::size::half_extent(view_width),
+                    crate::size::half_extent(view_height),
+                )
             } else {
-                (view_width, view_height)
+                (view_width.max(1), view_height.max(1))
             };
-            let w = w.max(1);
-            let h = h.max(1);
 
             // Software-BVH trace — BEFORE the screen-space trace, which
             // consumes its `ssr_bvh` output as the miss fallback (dispatch

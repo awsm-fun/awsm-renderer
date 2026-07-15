@@ -228,9 +228,10 @@ impl RenderTextures {
             None => false,
         };
 
-        // Half-res SSR trace: the `ssr` target shrinks to ((w+1)/2, (h+1)/2)
-        // when SSR is on AND resolution_scale < 1.0 (the composite step
-        // bilinearly upsamples it). Toggling it rebuilds inner + recreates the
+        // Half-res SSR trace: the `ssr` target shrinks to
+        // (half_extent(w), half_extent(h)) (see `crate::size`) when SSR is on
+        // AND resolution_scale < 1.0 (the composite step bilinearly upsamples
+        // it). Toggling it rebuilds inner + recreates the
         // SSR bind groups, exactly like the `ssr_enabled` flip above.
         let ssr_half_res_changed = match self.inner.as_ref() {
             Some(inner) => inner.ssr_half_res != ssr_half_res,
@@ -704,7 +705,7 @@ impl RenderTexturesInner {
             (1u32, 1u32)
         };
         let (ssr_w, ssr_h) = if ssr_enabled && ssr_half_res {
-            (width.div_ceil(2), height.div_ceil(2))
+            (crate::size::half_extent(width), crate::size::half_extent(height))
         } else {
             (refl_w, refl_h)
         };

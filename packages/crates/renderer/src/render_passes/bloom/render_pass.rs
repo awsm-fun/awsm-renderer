@@ -133,17 +133,17 @@ impl BloomRenderPass {
         view_width: u32,
         view_height: u32,
     ) -> Result<bool> {
-        // BloomTexture stores mip 0 at HALF the viewport via integer division
-        // (`BloomTexture::new`: `(view / 2).max(1)`). Reconstructing the
-        // viewport as `base * 2` loses the low bit for any ODD viewport width
-        // or height — e.g. 705 → base 352 → 352*2 = 704 ≠ 705 — so the old
-        // check was perpetually false at odd dimensions, rebuilding the pyramid
-        // AND marking `TextureViewRecreate` (which rebuilds every
-        // texture-view-dependent bind group in the renderer) EVERY frame. Halve
-        // the incoming viewport the same way `new` does and compare the bases,
-        // so the round-trip is exact.
-        let expected_base_w = (view_width / 2).max(1);
-        let expected_base_h = (view_height / 2).max(1);
+        // BloomTexture stores mip 0 at HALF the viewport (`BloomTexture::new`
+        // derives it via `size::half_extent`). Reconstructing the viewport as
+        // `base * 2` would lose the low bit for any ODD viewport dimension —
+        // e.g. 705 → base 353 → 353*2 = 706 ≠ 705 — leaving this check
+        // perpetually false at odd sizes, rebuilding the pyramid AND marking
+        // `TextureViewRecreate` (which rebuilds every texture-view-dependent
+        // bind group in the renderer) EVERY frame. Instead halve the incoming
+        // viewport through the SAME helper `new` uses and compare the bases, so
+        // the round-trip is exact.
+        let expected_base_w = crate::size::half_extent(view_width);
+        let expected_base_h = crate::size::half_extent(view_height);
         if self.texture.base_width == expected_base_w
             && self.texture.base_height == expected_base_h
         {
