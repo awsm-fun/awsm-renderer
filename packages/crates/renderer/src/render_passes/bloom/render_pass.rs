@@ -133,11 +133,20 @@ impl BloomRenderPass {
         view_width: u32,
         view_height: u32,
     ) -> Result<bool> {
-        // BloomTexture stores mip 0 at HALF the viewport; compare against the
-        // viewport it was built from (2× the pyramid base).
-        let cur_view_w = self.texture.base_width * 2;
-        let cur_view_h = self.texture.base_height * 2;
-        if cur_view_w == view_width.max(1) && cur_view_h == view_height.max(1) {
+        // BloomTexture stores mip 0 at HALF the viewport via integer division
+        // (`BloomTexture::new`: `(view / 2).max(1)`). Reconstructing the
+        // viewport as `base * 2` loses the low bit for any ODD viewport width
+        // or height — e.g. 705 → base 352 → 352*2 = 704 ≠ 705 — so the old
+        // check was perpetually false at odd dimensions, rebuilding the pyramid
+        // AND marking `TextureViewRecreate` (which rebuilds every
+        // texture-view-dependent bind group in the renderer) EVERY frame. Halve
+        // the incoming viewport the same way `new` does and compare the bases,
+        // so the round-trip is exact.
+        let expected_base_w = (view_width / 2).max(1);
+        let expected_base_h = (view_height / 2).max(1);
+        if self.texture.base_width == expected_base_w
+            && self.texture.base_height == expected_base_h
+        {
             return Ok(false);
         }
         // Explicitly release the old pyramid pair (two RGBA16F half-res mip
