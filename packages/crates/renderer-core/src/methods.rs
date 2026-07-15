@@ -337,9 +337,25 @@ impl AwsmRendererWebGpu {
             );
         }
 
-        self.device
+        let buffer = self
+            .device
             .create_buffer(descriptor)
-            .map_err(AwsmCoreError::buffer_creation)
+            .map_err(AwsmCoreError::buffer_creation)?;
+
+        // Cumulative buffer-creation census for the memory-leak soak (see
+        // crate::CREATE_BUFFER_COUNT). Increment-only; two relaxed atomic adds
+        // on a cold-ish path (buffer creation, not a per-byte hot loop). Gated to
+        // dev/harden-diag so a release build carries zero always-on cost — the
+        // soak runs a dev build, and the `create_buffer_census()` accessor stays
+        // defined either way (reads 0 in release).
+        #[cfg(any(debug_assertions, feature = "harden-diag"))]
+        {
+            use std::sync::atomic::Ordering::Relaxed;
+            crate::CREATE_BUFFER_COUNT.fetch_add(1, Relaxed);
+            crate::CREATE_BUFFER_BYTES.fetch_add(size as u64, Relaxed);
+        }
+
+        Ok(buffer)
     }
 
     /// Example usage:

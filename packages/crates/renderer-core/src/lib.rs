@@ -43,3 +43,30 @@ pub const OVERSIZED_ALLOC_BYTES: u64 = 512 * 1024 * 1024;
 /// (propagated `Result`) rather than taking the editor/viewer down with it. No
 /// legitimate single buffer here comes anywhere near this.
 pub const MAX_GPU_BUFFER_BYTES: u64 = 1900 * 1024 * 1024;
+
+/// Cumulative (monotonic, increment-only) census of `create_buffer` calls —
+/// the memory-leak-soak instrument (see docs/plans/crashes.md). We deliberately
+/// do NOT track *live* buffers: there is no central buffer-destroy chokepoint
+/// (many `web_sys::GpuBuffer` handles are released by GC with no explicit
+/// `.destroy()` at all), so a decrement keyed on the scattered destroy sites
+/// would drift upward and manufacture a false "leak". A cumulative *creation*
+/// count/bytes is unambiguous: its SLOPE over a soak run directly measures how
+/// fast the render loop is minting GPU buffers. Cross-referenced with the OS
+/// `vmmap` virtual size (the ground truth for retained VA), it disambiguates a
+/// GPU-buffer leak (both climb together) from a wasm-heap / JS leak (vmmap
+/// climbs, this stays flat). Surfaced through the editor `memory_stats` query.
+pub static CREATE_BUFFER_COUNT: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+pub static CREATE_BUFFER_BYTES: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// `(count, bytes)` of every `create_buffer` call since process start. Read by
+/// the editor's `memory_stats` census for the leak soak; a rising slope on
+/// either names the render loop as a per-frame buffer-minting source.
+pub fn create_buffer_census() -> (u64, u64) {
+    use std::sync::atomic::Ordering::Relaxed;
+    (
+        CREATE_BUFFER_COUNT.load(Relaxed),
+        CREATE_BUFFER_BYTES.load(Relaxed),
+    )
+}

@@ -137,6 +137,24 @@ pub fn main() {
                                     }
                                 });
                             }
+                            // `?memlog=N` — memory-leak soak trail (see
+                            // docs/plans/crashes.md). Every N seconds, emit the
+                            // full `memory_stats` census as one parseable
+                            // `MEMLOG <json>` console line, so an overnight CDP
+                            // soak leaves a durable trail even if live sampling
+                            // drops frames or the driver dies. Absent → silent.
+                            if let Some(secs) = boot_memlog_secs() {
+                                let interval_ms = (secs.max(1) * 1000) as u32;
+                                spawn_local(async move {
+                                    loop {
+                                        gloo_timers::future::TimeoutFuture::new(interval_ms).await;
+                                        let census = controller::controller()
+                                            .query_json("{\"query\":\"memory_stats\"}")
+                                            .await;
+                                        tracing::info!("MEMLOG {census}");
+                                    }
+                                });
+                            }
                             // Remote MCP control: `?mcp=<control-origin>` auto-dials
                             // the native server over a WebSocket. Absent → the
                             // top-bar MCP button connects on demand (to the dev
@@ -200,6 +218,13 @@ fn boot_load_url() -> Option<String> {
         }
     }
     None
+}
+
+/// Read a `?memlog=N` query parameter — the memory-leak soak-trail interval in
+/// whole seconds (docs/plans/crashes.md). Returns `None` when absent or
+/// unparseable (census logging disabled).
+fn boot_memlog_secs() -> Option<u64> {
+    boot_query_param("memlog").and_then(|v| v.parse::<u64>().ok())
 }
 
 /// Read a `?mcp=<control-origin>` query parameter (URL-decoded) — the native MCP
