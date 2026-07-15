@@ -218,10 +218,27 @@ Once the pool is known:
   `await` or `?` bails between map and unmap. Watch for a mapped `ArrayBuffer` /
   `Uint8Array` view captured by a closure that outlives the frame — a retained
   view keeps the buffer mapped, so the pages never free.
-- **Ablation A/B (decisive when reading code is ambiguous):** disable one
-  suspected per-frame map/readback source and re-run a short soak. If the region
-  growth rate drops, you found it. Toggle them one at a time. This turns a
-  guess into a measurement.
+- **Ablation A/B (decisive when reading code is ambiguous).** When two or more
+  per-frame paths could be the source and static reading can't separate them,
+  *measure* instead of arguing. Add a runtime toggle that disables one suspected
+  source, then compare the leak **rate** (region-count growth/sec from §5) with
+  the toggle on vs off. Whichever toggle flattens the rate is the culprit; toggle
+  one at a time to isolate.
+
+  Implementation pattern that keeps ablation cheap and permanent:
+  1. A process-global `static AtomicBool` next to the suspect code, read at the
+     top of the hot path to short-circuit it (e.g. force a staging ring to its
+     `writeBuffer` fallback so it never maps; skip a per-frame readback kick).
+  2. A `pub fn set_…(bool)` setter, called once at init from a **URL flag**
+     (`?noring`, `?noreadback`, …) parsed the same way as other feature flags.
+  3. **Gate the hot-path read behind `#[cfg(debug_assertions)]`** so release
+     carries no per-frame branch; soaks run a dev build, so they still get it.
+     Keep the static + setter always-defined (the setter's write keeps the static
+     "used", so no dead-code warning) — only the *read* is gated.
+
+  These toggles are worth keeping in-tree as documented debug flags: the next
+  regression is one soak away from being re-bisected. Drive them through the same
+  soak harness with a pass-through URL-flag option.
 
 ---
 
@@ -267,4 +284,6 @@ pgrep -f "<user-data-dir>"                   # then ps -o command= to read --typ
   is the diagnosis.
 - Watch **region count** and **RESIDENT**, not rounded virtual totals.
 - Confirm **linear vs plateau** before calling something a leak.
+- When two per-frame paths are both plausible, **ablate** (dev-gated `static`
+  toggle via a URL flag) and compare the region-growth **rate** on vs off.
 ```

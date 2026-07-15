@@ -69,6 +69,22 @@ pub const MIN_RING_DEPTH: usize = 1;
 static STAGING_USAGE: LazyLock<BufferUsage> =
     LazyLock::new(|| BufferUsage::new().with_map_write().with_copy_src());
 
+/// Diagnostic ablation flag (see docs/debugging-leaks.md). When set, every
+/// [`MappedStagingRing::acquire`] returns [`AcquireOutcome::Exhausted`] so the
+/// caller takes the `queue.writeBuffer` fallback and the ring performs NO
+/// `mapAsync`/`getMappedRange` at all. This isolates whether a per-frame
+/// buffer-*mapping* leak (V8/PartitionAlloc mapped pages that never return to the
+/// OS) originates in the staging ring: run a soak with `?noring` and watch the
+/// `vmmap` region-count growth rate. Set at renderer init from the editor's
+/// `?noring` URL flag via [`set_force_fallback`].
+static RING_FORCE_FALLBACK: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Set the ring-ablation flag (see [`RING_FORCE_FALLBACK`]). Diagnostic only.
+pub fn set_force_fallback(on: bool) {
+    RING_FORCE_FALLBACK.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Telemetry surfaced via
 /// [`crate::AwsmRenderer::upload_ring_stats`] — each renderer
 /// subsystem (Meshes, Materials, Transforms, …) exposes its
@@ -385,6 +401,14 @@ impl MappedStagingRing {
     /// caller should fall back to `queue.writeBuffer` and the ring
     /// auto-bumps `fallback_count`.
     pub fn acquire(&mut self) -> AcquireOutcome<'_> {
+        // Diagnostic ablation: force the writeBuffer fallback path so the ring
+        // never maps (see `RING_FORCE_FALLBACK`). Gated to dev builds so release
+        // carries no per-acquire branch (soaks run a dev build).
+        #[cfg(debug_assertions)]
+        if RING_FORCE_FALLBACK.load(std::sync::atomic::Ordering::Relaxed) {
+            self.stats.fallback_count += 1;
+            return AcquireOutcome::Exhausted;
+        }
         // Heal any slot that flipped `recover_needed` since the last
         // call — either a `mapAsync` rejection in flight or a
         // `finalize` copy-record failure on the previous frame. Cheap

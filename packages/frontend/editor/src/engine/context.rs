@@ -277,6 +277,10 @@ fn url_flag_value(key: &str) -> Option<String> {
 }
 
 async fn create_renderer(canvas: web_sys::HtmlCanvasElement) -> EditorResult<AwsmRenderer> {
+    // Diagnostic ablation (docs/debugging-leaks.md): `?noring` forces the mapped
+    // staging ring to the writeBuffer fallback so it never maps — isolates a
+    // per-frame buffer-mapping VA leak to the ring vs elsewhere in a soak.
+    awsm_renderer::buffer::mapped_staging_ring::set_force_fallback(url_has_flag("noring"));
     let gpu = web_sys::window().unwrap().navigator().gpu();
     let gpu_builder = AwsmRendererWebGpuBuilder::new(gpu, canvas)
         .with_configuration(

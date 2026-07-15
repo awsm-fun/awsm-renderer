@@ -59,6 +59,7 @@ function parseArgs() {
     else if (k === "--minutes") a.minutes = +next();
     else if (k === "--rss-cap-mb") a.rssCapMb = +next();
     else if (k === "--vmmap-every") a.vmmapEvery = +next();
+    else if (k === "--url-extra") a.urlExtra = next(); // extra query flags, e.g. "noring" (ablation)
     else if (k === "--url") a.url = next();
     else if (k === "--load") a.load = next();
     else if (k === "--no-load") a.load = "";
@@ -333,7 +334,8 @@ const START = Date.now();
 
 async function main() {
   const encLoad = CFG.load ? `&load=${encodeURIComponent(CFG.load)}` : "";
-  const pageUrl = `${CFG.url}/?memlog=${CFG.memlog}${encLoad}`;
+  const extra = CFG.urlExtra ? `&${CFG.urlExtra}` : "";
+  const pageUrl = `${CFG.url}/?memlog=${CFG.memlog}${encLoad}${extra}`;
   const userDataDir = join(OUT, "chrome-profile");
 
   log(`SOAK START out=${OUT}`);
