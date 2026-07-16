@@ -18,6 +18,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 awsm-renderer = { workspace = true }
+awsm-renderer-codec-basis = { workspace = true }
 awsm-renderer-core = { workspace = true }
 awsm-renderer-scene = { workspace = true }
 # `http` pulls in `HttpAssets` — the ready-made bundle-over-HTTP asset source a

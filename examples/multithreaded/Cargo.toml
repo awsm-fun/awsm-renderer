@@ -28,6 +28,7 @@ harden-diag = []
 # `texture-export` pulls in the GPU `copyTextureToBuffer` → PNG readback path
 # (`renderer.capture_frame()`) that backs `RenderCommand::Screenshot` (B2).
 awsm-renderer = { workspace = true, features = ["texture-export"] }
+awsm-renderer-codec-basis = { workspace = true }
 awsm-renderer-core = { workspace = true }
 awsm-renderer-gltf = { workspace = true }
 awsm-renderer-scene = { workspace = true }

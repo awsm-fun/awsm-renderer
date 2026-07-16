@@ -79,8 +79,17 @@ pub enum BasisError {
     Timeout { ms: u32 },
 }
 
-/// URLs the client needs; all resolved by the browser against the document
-/// base, so root-relative defaults work for every app we serve at "/".
+/// URLs the client needs to spawn the Basis worker and load the codec modules.
+///
+/// There is deliberately **no `Default`** and no hardcoded URL anywhere in this
+/// crate: the value MUST come from the frontend via [`configure`]. A previous
+/// root-relative default (`/workers/basis-worker.js`) worked only for apps
+/// running on the MAIN thread — inside a blob-spawned worker (the
+/// player/game-worker architecture) a relative URL cannot resolve against the
+/// worker's `blob:` base (`Failed to construct 'Worker': … is not a valid URL`),
+/// so only the frontend — which knows its absolute origin — can supply a URL
+/// that works everywhere. See [`BasisWorkerConfig::player`] /
+/// [`BasisWorkerConfig::editor`].
 #[derive(Debug, Clone)]
 pub struct BasisWorkerConfig {
     pub worker_url: String,
@@ -95,23 +104,72 @@ pub struct BasisWorkerConfig {
     pub request_timeout_ms: u32,
 }
 
-impl Default for BasisWorkerConfig {
-    fn default() -> Self {
+/// Default per-request watchdog (ms). Not a URL — safe to keep in-crate.
+const DEFAULT_REQUEST_TIMEOUT_MS: u32 = 120_000;
+
+impl BasisWorkerConfig {
+    /// Player configuration: worker + transcoder, no encoder. Both URLs are
+    /// REQUIRED and supplied by the frontend (absolute for a worker-architecture
+    /// player, e.g. `format!("{origin}/workers/basis-worker.js")`).
+    pub fn player(worker_url: String, transcoder_url: String) -> Self {
         Self {
-            worker_url: "/workers/basis-worker.js".to_string(),
-            transcoder_url: "/vendor/basis/basis_transcoder.js".to_string(),
+            worker_url,
+            transcoder_url,
             encoder_url: None,
-            request_timeout_ms: 120_000,
+            request_timeout_ms: DEFAULT_REQUEST_TIMEOUT_MS,
+        }
+    }
+
+    /// Editor configuration: worker + transcoder + encoder. All URLs REQUIRED.
+    pub fn editor(worker_url: String, transcoder_url: String, encoder_url: String) -> Self {
+        Self {
+            worker_url,
+            transcoder_url,
+            encoder_url: Some(encoder_url),
+            request_timeout_ms: DEFAULT_REQUEST_TIMEOUT_MS,
         }
     }
 }
 
-impl BasisWorkerConfig {
-    /// Editor configuration: transcoder + encoder.
-    pub fn with_encoder() -> Self {
-        Self {
-            encoder_url: Some("/vendor/basis/basis_encoder.js".to_string()),
-            ..Self::default()
+thread_local! {
+    /// This thread's Basis config, set by the frontend via [`configure`] before
+    /// any scene / glTF load that may transcode KTX2. No default — see
+    /// [`BasisWorkerConfig`].
+    static CONFIG: RefCell<Option<BasisWorkerConfig>> = const { RefCell::new(None) };
+    /// The lazily-built, per-thread client (one Basis worker per thread), created
+    /// from `CONFIG` on first [`client`] call and reused thereafter.
+    static CLIENT: RefCell<Option<BasisWorkerClient>> = const { RefCell::new(None) };
+}
+
+/// Set this thread's Basis codec URLs. Call ONCE at startup, on the thread that
+/// runs scene/glTF loads — for a worker-architecture player that is the WORKER,
+/// not the main thread. Replaces any previous value (and drops a client built
+/// from it, so the next [`client`] rebuilds against the new URLs).
+pub fn configure(config: BasisWorkerConfig) {
+    CONFIG.with(|c| *c.borrow_mut() = Some(config));
+    CLIENT.with(|c| *c.borrow_mut() = None);
+}
+
+/// The per-thread Basis client, built from [`configure`]'s config on first use.
+/// Returns `None` (having logged an error) when the thread was never configured,
+/// so a caller can leave the texture slot unbound instead of panicking.
+pub fn client() -> Option<BasisWorkerClient> {
+    if let Some(c) = CLIENT.with(|c| c.borrow().clone()) {
+        return Some(c);
+    }
+    match CONFIG.with(|c| c.borrow().clone()) {
+        Some(cfg) => {
+            let c = BasisWorkerClient::new(cfg);
+            CLIENT.with(|cell| *cell.borrow_mut() = Some(c.clone()));
+            Some(c)
+        }
+        None => {
+            tracing::error!(
+                "awsm-renderer-codec-basis: no Basis URLs configured on this thread — call \
+                 `awsm_renderer_codec_basis::configure(...)` at startup (on the load thread). \
+                 KTX2/Basis textures will be left unbound."
+            );
+            None
         }
     }
 }
@@ -574,8 +632,10 @@ mod tests {
     }
 
     #[test]
-    fn player_default_config_has_no_encoder() {
-        assert!(BasisWorkerConfig::default().encoder_url.is_none());
-        assert!(BasisWorkerConfig::with_encoder().encoder_url.is_some());
+    fn player_config_has_no_encoder_editor_does() {
+        let player = BasisWorkerConfig::player("/w.js".into(), "/t.js".into());
+        assert!(player.encoder_url.is_none());
+        let editor = BasisWorkerConfig::editor("/w.js".into(), "/t.js".into(), "/e.js".into());
+        assert!(editor.encoder_url.is_some());
     }
 }

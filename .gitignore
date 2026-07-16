@@ -16,6 +16,9 @@ awsm-renderer-assets
 debug
 target
 
+####### Dev-server / task logs
+*.log
+
 ####### Node / Cloudflare tooling
 node_modules
 .wrangler

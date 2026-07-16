@@ -21,9 +21,7 @@ use awsm_renderer_codec_basis::selection::{
     select_normal_transcode_target_checked, select_transcode_target_checked, sniff_basis_ktx2,
     target_is_two_plane, texture_format_for_target, TranscodeCaps,
 };
-use awsm_renderer_codec_basis::{
-    BasisWorkerClient, BasisWorkerConfig, TranscodeTarget, TranscodedLevel,
-};
+use awsm_renderer_codec_basis::{TranscodeTarget, TranscodedLevel};
 use awsm_renderer_core::image::{
     ColorSpaceConversion, CompressedImage, ImageBitmapOptions, ImageData, PremultiplyAlpha,
 };
@@ -92,14 +90,6 @@ enum DecodedImage {
         height: u32,
         levels: Vec<TranscodedLevel>,
     },
-}
-
-thread_local! {
-    /// One Basis worker per thread, spawned lazily on the first KTX2 texture
-    /// (player config: transcoder module only — no encoder URL, so the
-    /// editor-only encoder can never even be requested).
-    static BASIS_CLIENT: BasisWorkerClient =
-        BasisWorkerClient::new(BasisWorkerConfig::default());
 }
 
 impl TextureCache {
@@ -286,7 +276,15 @@ async fn fetch_decode(
                 } else {
                     select_transcode_target_checked(caps, codec, sniff.has_alpha, width, height)
                 };
-                let client = BASIS_CLIENT.with(|c| c.clone());
+                // Per-thread client, built from the frontend's `configure(...)`
+                // URLs (crate hardcodes none — a blob-worker player needs an
+                // absolute URL only the app knows). Unconfigured → leave unbound.
+                let Some(client) = awsm_renderer_codec_basis::client() else {
+                    tracing::warn!(
+                        "scene-loader: texture `{path}` KTX2 skipped — Basis codec not configured (call awsm_renderer_codec_basis::configure at startup)"
+                    );
+                    return None;
+                };
                 match client.transcode(&bytes, target).await {
                     Ok(tex) => {
                         tracing::info!(

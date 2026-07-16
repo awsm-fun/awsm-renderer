@@ -13,16 +13,7 @@ use std::sync::Arc;
 use awsm_renderer_codec_basis::selection::{
     select_transcode_target_checked, sniff_basis_ktx2, texture_format_for_target, TranscodeCaps,
 };
-use awsm_renderer_codec_basis::{BasisWorkerClient, BasisWorkerConfig};
 use awsm_renderer_core::image::{CompressedImage, ImageData};
-
-thread_local! {
-    /// One Basis worker per thread, spawned lazily on the first KTX2 image.
-    /// Transcoder-only config — import never needs the (editor-bake-only)
-    /// encoder module.
-    static BASIS_CLIENT: BasisWorkerClient =
-        BasisWorkerClient::new(BasisWorkerConfig::default());
-}
 
 /// Transcode one KTX2 payload to the device's block format (RGBA8 last
 /// resort), returning it sRGB-agnostic under the linear format variant.
@@ -48,7 +39,14 @@ pub(crate) async fn transcode_ktx2_image(bytes: &[u8]) -> anyhow::Result<ImageDa
         sniff.height,
     );
 
-    let client = BASIS_CLIENT.with(|c| c.clone());
+    // Per-thread client, built from the frontend's `configure(...)` URLs (crate
+    // hardcodes none). Unconfigured → hard error here (import can't silently drop
+    // a texture the way the player's optional slot does).
+    let client = awsm_renderer_codec_basis::client().ok_or_else(|| {
+        anyhow::anyhow!(
+            "Basis codec not configured — call awsm_renderer_codec_basis::configure(...) at startup"
+        )
+    })?;
     let tex = client
         .transcode(bytes, target)
         .await
