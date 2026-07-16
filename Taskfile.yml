@@ -257,7 +257,7 @@ tasks:
         # awsm-renderer dev-depends on awsm-renderer-lod-bake (a cluster-DAG test),
         # and a dev-dep carrying a `version` stays in the published manifest, so
         # lod-bake must be on crates.io before awsm-renderer packages.
-        CRATES="awsm-renderer-curves awsm-renderer-geometry awsm-renderer-tangents awsm-renderer-scene awsm-renderer-core awsm-renderer-materials awsm-renderer-particles awsm-renderer-meshgen awsm-renderer-glb-export awsm-renderer-gltf-convert awsm-renderer-lod-bake awsm-renderer awsm-renderer-gltf awsm-renderer-scene-loader"
+        CRATES="awsm-renderer-codec-meshopt awsm-renderer-codec-basis awsm-renderer-curves awsm-renderer-geometry awsm-renderer-tangents awsm-renderer-scene awsm-renderer-core awsm-renderer-materials awsm-renderer-particles awsm-renderer-meshgen awsm-renderer-glb-export awsm-renderer-gltf-convert awsm-renderer-lod-bake awsm-renderer awsm-renderer-gltf awsm-renderer-scene-loader"
         # Workspace version (first `version = "…"` inside [workspace.package]).
         VERSION="$(awk '/^\[workspace\.package\]/{f=1} f&&/^version = /{gsub(/[",]/,"");print $3;exit}' Cargo.toml)"
         case "{{.PUBLISH_ARGS}}" in *--dry-run*) DRY=1;; *) DRY=0;; esac
