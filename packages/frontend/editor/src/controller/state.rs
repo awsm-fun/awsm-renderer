@@ -6274,11 +6274,12 @@ impl EditorController {
                     "render_cpu_ms".to_string(),
                     json!((render_cpu_ms * 100.0).round() / 100.0),
                 );
-                // Per-span CPU timing from the bounded aggregator — only
-                // populated when profiling opted in via `?trace=frame|sub-frame`
-                // (empty & zero-cost otherwise). Slowest span first.
-                let span_timings: Vec<serde_json::Value> =
-                    awsm_renderer_web_shared::aggregator::timing_stats()
+                // Per-pass CPU + GPU timing from the renderer's bounded
+                // aggregators — only populated when profiling opted in via
+                // `?trace` / `?gputime` (empty & zero-cost otherwise, since
+                // timing is gated at the source). Slowest first.
+                let to_json = |stats: Vec<(&'static str, awsm_renderer::profiling::TimingStat)>| {
+                    stats
                         .into_iter()
                         .map(|(name, s)| {
                             json!({
@@ -6290,8 +6291,16 @@ impl EditorController {
                                 "count": s.count,
                             })
                         })
-                        .collect();
-                entries.insert("cpu_span_timings".to_string(), json!(span_timings));
+                        .collect::<Vec<_>>()
+                };
+                entries.insert(
+                    "cpu_span_timings".to_string(),
+                    json!(to_json(awsm_renderer::profiling::cpu_timing_stats())),
+                );
+                entries.insert(
+                    "gpu_span_timings".to_string(),
+                    json!(to_json(awsm_renderer::profiling::gpu_timing_stats())),
+                );
                 // …plus Chrome's non-standard `performance.memory` (zeros
                 // elsewhere). Read via Reflect — web_sys doesn't bind it.
                 let mut heap_used = 0.0f64;

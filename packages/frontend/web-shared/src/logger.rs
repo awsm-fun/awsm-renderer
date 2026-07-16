@@ -1,18 +1,17 @@
 //! `tracing` subscriber installation, driven entirely by a [`LoggingConfig`].
 //!
 //! [`init_logger`] reads nothing from the environment — it installs exactly the
-//! layers the passed config asks for. Frontends decide their config however they
-//! like (the editor via [`LoggingConfig::from_url`], players by hand). Every
-//! optional layer is an `Option<Layer>` (a `None` is a no-op `Layer`), so a
-//! disabled output truly does nothing.
+//! log layers the passed config asks for (fmt→console + a bounded capture ring +
+//! a level filter). It does **no** profiling: per-frame timing lives entirely in
+//! the renderer ([`awsm_renderer::profiling`]), gated at the source so that
+//! disabled profiling is a complete no-op with nothing installed here. Every
+//! optional layer is an `Option<Layer>` (a `None` is a no-op `Layer`).
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
-use tracing_subscriber::fmt::format::Pretty;
 use tracing_subscriber::prelude::*;
-use tracing_web::{performance_layer, MakeWebConsoleWriter};
+use tracing_web::MakeWebConsoleWriter;
 use wasm_bindgen::prelude::*;
 
 use crate::logging::LoggingConfig;
@@ -25,11 +24,6 @@ use crate::logging::LoggingConfig;
 /// single-threaded, so the `Mutex` never contends.)
 static CAPTURED_LOGS: Mutex<VecDeque<(String, String)>> = Mutex::new(VecDeque::new());
 const CAPTURED_LOGS_CAP: usize = 1000;
-
-/// Set at [`init_logger`] time when the DevTools User-Timing mirror is on, so
-/// [`frame_boundary`] knows whether it needs to clear the (otherwise unbounded)
-/// User-Timing buffer each frame.
-static DEVTOOLS_MEASURE: AtomicBool = AtomicBool::new(false);
 
 /// The last `limit` captured `tracing` events as `(level, line)`, oldest first.
 /// Read (not drained) so repeated polls each see the full recent window.
@@ -96,20 +90,15 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CaptureLayer {
 /// wins; later calls are ignored). Reads nothing from the URL/environment — the
 /// caller decides `cfg`.
 ///
-/// Layers installed, each gated by `cfg`:
+/// Log layers only (no profiling — that lives in the renderer):
 /// - fmt→console writer (`cfg.console_writer`)
 /// - [`CaptureLayer`] ring buffer (`cfg.capture_buffer`)
-/// - CPU rolling aggregator (`cfg.profiling.cpu != Off`) — bounded, safe
-/// - DevTools User-Timing mirror (`cfg.profiling.devtools_measure`) — kept
-///   bounded by [`frame_boundary`]
 /// - level filter (`cfg.level`)
 pub fn init_logger(cfg: &LoggingConfig) {
     static LOGGER_INITIALIZED: std::sync::Once = std::sync::Once::new();
 
     LOGGER_INITIALIZED.call_once(|| {
         set_stack_trace_limit(30);
-
-        DEVTOOLS_MEASURE.store(cfg.devtools_measure(), Ordering::Relaxed);
 
         let fmt_layer = cfg.console_writer.then(|| {
             tracing_subscriber::fmt::layer()
@@ -124,28 +113,10 @@ pub fn init_logger(cfg: &LoggingConfig) {
 
         let capture_layer = cfg.capture_buffer.then_some(CaptureLayer);
 
-        // Bounded rolling aggregator — folds each render-timing span's duration
-        // into fixed-size per-name stats. Installed only when CPU profiling is
-        // on; never grows (keyed by the small, fixed set of span names).
-        let cpu_on = cfg.profiling.map(|p| p.cpu.enabled()).unwrap_or(false);
-        let aggregator_layer = cpu_on.then(crate::aggregator::AggregatorLayer::new);
-
-        // DevTools User-Timing mirror: spans → `performance.measure`/`mark` for
-        // the Performance flame chart. This is the output that used to leak
-        // unbounded (the browser never auto-clears the User-Timing buffer and
-        // the renderer emits per-frame spans). It is now (a) opt-in via
-        // `?devtools` and (b) kept bounded by `frame_boundary()` clearing the
-        // buffer each frame. `Option<Layer>` is itself a `Layer` (None = no-op).
-        let perf_layer = cfg
-            .devtools_measure()
-            .then(|| performance_layer().with_details_from_fields(Pretty::default()));
-
         let level_filter = cfg.level;
 
         tracing_subscriber::registry()
             .with(fmt_layer)
-            .with(aggregator_layer)
-            .with(perf_layer)
             .with(capture_layer)
             .with(level_filter)
             .init();
@@ -158,13 +129,15 @@ pub fn init_logger(cfg: &LoggingConfig) {
 }
 
 /// Call once per rendered frame (e.g. at the top of the rAF callback). When the
-/// DevTools User-Timing mirror is active, this clears the `performance` mark /
-/// measure buffer so it can't grow unbounded — a live DevTools *recording* still
-/// captures the entries created during the frame, so the flame-chart workflow is
-/// preserved while memory stays flat. A no-op (one relaxed atomic load) when the
-/// mirror is off, so it's safe to call unconditionally every frame.
+/// renderer's DevTools User-Timing mirror is active
+/// ([`awsm_renderer::profiling::devtools_measure_enabled`]), this clears the
+/// `performance` mark / measure buffer so it can't grow unbounded — a live
+/// DevTools *recording* still captures the entries created during the frame, so
+/// the flame-chart workflow is preserved while memory stays flat. A no-op (one
+/// relaxed atomic load) when the mirror is off, so it's safe to call
+/// unconditionally every frame.
 pub fn frame_boundary() {
-    if !DEVTOOLS_MEASURE.load(Ordering::Relaxed) {
+    if !awsm_renderer::profiling::devtools_measure_enabled() {
         return;
     }
     if let Some(perf) = web_sys::window().and_then(|w| w.performance()) {

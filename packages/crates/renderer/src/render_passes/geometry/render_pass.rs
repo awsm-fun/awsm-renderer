@@ -169,6 +169,7 @@ impl GeometryRenderPass {
                 label: Some("Geometry Render Pass"),
                 color_attachments,
                 depth_stencil_attachment: Some(depth_stencil_attachment),
+                timestamp_writes: ctx.gpu_timestamps.and_then(|t| t.writes_for("Geometry")),
                 ..Default::default()
             }
             .into(),

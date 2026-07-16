@@ -71,6 +71,7 @@ pub mod pipeline_scheduler;
 pub mod pipelines;
 pub mod post_process;
 pub mod profile;
+pub mod profiling;
 pub mod raw_mesh;
 pub mod render;
 pub mod render_passes;

@@ -1,68 +1,55 @@
 //! Explicit logging + profiling configuration for awsm-renderer frontends.
 //!
 //! [`LoggingConfig`] is the single source of truth for what a frontend's
-//! `tracing` subscriber does and how much per-frame profiling the renderer
-//! produces. [`crate::logger::init_logger`] installs subscriber layers strictly
-//! per the config — it performs **no** URL inspection of its own.
+//! `tracing` subscriber does and what per-frame profiling the renderer starts
+//! with. [`crate::logger::init_logger`] consumes only the *log* fields; the
+//! *profiling* sub-config seeds the renderer's runtime tiers and the DevTools
+//! mirror.
 //!
-//! [`LoggingConfig::from_url`] is an *opt-in* helper that maps the editor's
-//! URL-query conventions (`?log`, `?trace`, `?gputime`, `?devtools`) onto a
-//! config. The editor calls it; players may reuse it or build a [`LoggingConfig`]
-//! by hand. Either way, the important property holds: **`profiling: None` is
-//! structurally zero-cost** — no spans are created, no GPU queries issued, no
-//! User-Timing entries accumulated. A normal long-lived editor session runs in
-//! exactly that state, which is what closes the ~70GB User-Timing leak that used
-//! to crash the tab (see `docs/plans/profiling.md`).
+//! Profiling itself is **not** implemented here — it lives in the renderer
+//! ([`awsm_renderer::profiling`]), gated at the source so that a disabled tier
+//! is a complete no-op (no timer, no query set, nothing installed). Because the
+//! gate is a plain runtime field, the same knobs can be flipped live from an
+//! editor menu; this config just provides the *initial* values.
+//!
+//! [`LoggingConfig::from_url`] maps the editor's URL conventions (`?log`,
+//! `?trace`, `?gputime`, `?devtools`) onto a config. The editor calls it;
+//! players may reuse it or build a [`LoggingConfig`] by hand. The perf HUD is a
+//! **separate** concern (`?perfhud`, [`crate::perf_hud`]) — deliberately not
+//! tied to whether profiling is capturing.
 
 use awsm_renderer::debug::{AwsmRendererLogging, TimingTier};
 use tracing_subscriber::filter::LevelFilter;
 
-/// Subscriber-level configuration: where log lines and timings go. Passed by
-/// value to [`crate::logger::init_logger`]. Construct it explicitly, or derive
-/// it from the URL with [`LoggingConfig::from_url`].
+/// Subscriber-level + initial-profiling configuration. Construct explicitly, or
+/// derive it from the URL with [`LoggingConfig::from_url`].
 #[derive(Clone, Debug)]
 pub struct LoggingConfig {
     /// Level filter for `tracing::{error,warn,info,debug,trace}!` lines. Does
-    /// **not** gate profiling spans — those are gated by `profiling`.
+    /// **not** gate profiling.
     pub level: LevelFilter,
     /// Install the fmt→browser-console writer (human-readable DevTools output).
     pub console_writer: bool,
-    /// Install the bounded ring-buffer capture layer. It mirrors every event
-    /// into a fixed-size in-memory buffer any embedder can read back — the
-    /// editor exposes it over MCP, a player could surface it in an in-page
-    /// overlay. Cheap and bounded regardless of how long the session runs, so
-    /// there's no leak reason to turn it off; it's a knob purely so a player
-    /// that doesn't need it can save the couple hundred KB.
+    /// Install the bounded ring-buffer capture layer any embedder can read back
+    /// (the editor exposes it over MCP). Cheap and bounded regardless.
     pub capture_buffer: bool,
-    /// Per-frame profiling. `None` (the default) is structurally zero-cost: no
-    /// spans, no GPU queries, no User-Timing entries. `Some(..)` opts into the
-    /// tiers described on [`ProfilingConfig`].
+    /// Initial per-frame profiling state. `None` (the default) means the
+    /// renderer starts with both tiers `Off` and the DevTools mirror disabled —
+    /// a complete no-op. A menu can still turn profiling on later.
     pub profiling: Option<ProfilingConfig>,
 }
 
-/// Per-frame profiling knobs. Only meaningful inside
-/// [`LoggingConfig::profiling`]; the presence of the `Some` is itself the
-/// master "profiling on" switch.
-///
-/// The rolling aggregators (last / ema / min / max per span or pass) are
-/// *implicit* — they run whenever the corresponding tier is non-[`TimingTier::Off`],
-/// so there's no separate flag for them. `devtools_measure` is the one extra,
-/// heavier CPU-only output.
+/// Initial per-frame profiling state. Applied to the renderer via
+/// [`ProfilingConfig::renderer_logging`] (tiers) and [`ProfilingConfig::apply`]
+/// (DevTools mirror). All of it is runtime-mutable afterwards.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ProfilingConfig {
-    /// CPU-side `tracing`-span granularity. Non-`Off` folds each span's duration
-    /// into the CPU aggregator (and, when `devtools_measure`, the User-Timing
-    /// flame chart).
+    /// CPU-scope timing tier → the CPU aggregator (per-pass wall time).
     pub cpu: TimingTier,
-    /// GPU-side timestamp-query granularity. Non-`Off` requests the
-    /// `timestamp-query` device feature, attaches per-pass `timestampWrites`,
-    /// and folds resolved durations into the GPU aggregator.
+    /// GPU timestamp-query tier → the GPU aggregator (per-pass device time).
     pub gpu: TimingTier,
-    /// ALSO mirror CPU spans into the browser User-Timing timeline
-    /// (`performance.measure`/`mark`) so they show up in the DevTools
-    /// Performance flame chart. CPU-only. Off by default. This is the output
-    /// that used to leak; it is kept bounded by clearing marks/measures once
-    /// per frame (see [`crate::logger::frame_boundary`]).
+    /// Also mirror CPU scopes into the browser User-Timing timeline for the
+    /// DevTools flame chart. Kept bounded by `logger::frame_boundary`.
     pub devtools_measure: bool,
 }
 
@@ -78,34 +65,40 @@ impl Default for LoggingConfig {
 }
 
 impl ProfilingConfig {
-    /// The renderer-core logging flags this profiling config implies.
+    /// The renderer-core logging flags (initial tiers) this config implies.
     pub fn renderer_logging(&self) -> AwsmRendererLogging {
         AwsmRendererLogging {
             cpu: self.cpu,
             gpu: self.gpu,
         }
     }
+
+    /// Apply the runtime-only bits (currently the DevTools mirror) to the
+    /// renderer's global profiling state.
+    pub fn apply(&self) {
+        awsm_renderer::profiling::set_devtools_measure(self.devtools_measure);
+    }
 }
 
 impl LoggingConfig {
-    /// The renderer-core logging flags for this config — `Off/Off` (zero
-    /// per-frame cost) when `profiling` is `None`. Feed this into
-    /// `AwsmRendererBuilder::with_logging`.
+    /// Initial renderer tiers — `Off/Off` (zero per-frame cost) when `profiling`
+    /// is `None`. Feed into `AwsmRendererBuilder::with_logging`.
     pub fn renderer_logging(&self) -> AwsmRendererLogging {
         self.profiling
             .map(|p| p.renderer_logging())
             .unwrap_or_default()
     }
 
-    /// True when the DevTools User-Timing mirror is requested — the only
-    /// profiling output that needs the per-frame `performance.clear*` guard.
-    pub fn devtools_measure(&self) -> bool {
-        self.profiling.map(|p| p.devtools_measure).unwrap_or(false)
+    /// Apply the runtime-only profiling bits (DevTools mirror). Call once at
+    /// boot after constructing the renderer. No-op when `profiling` is `None`.
+    pub fn apply_profiling(&self) {
+        if let Some(p) = self.profiling {
+            p.apply();
+        }
     }
 
-    /// Build a config from the page URL query, applying the editor's
-    /// conventions. This is opt-in: a frontend *chooses* to call it (the
-    /// subscriber layer never reads the URL itself).
+    /// Build a config from the page URL query (opt-in — a frontend chooses to
+    /// call it; nothing reads the URL implicitly).
     ///
     /// - `?log=off|error|warn|info|debug|trace` → `level` (default `INFO`)
     /// - `?trace=off|frame|sub-frame`           → enables profiling, sets `cpu`
@@ -113,7 +106,8 @@ impl LoggingConfig {
     /// - `?devtools`                            → enables profiling, `devtools_measure`
     ///
     /// `profiling` stays `None` unless at least one of `?trace` / `?gputime` /
-    /// `?devtools` is present, so a normal session is zero-cost.
+    /// `?devtools` is present. (The perf HUD's `?perfhud` is intentionally
+    /// independent — see [`crate::perf_hud`].)
     pub fn from_url() -> Self {
         let level = crate::perf::log_level_override().unwrap_or(LevelFilter::INFO);
 

@@ -134,7 +134,7 @@ named `tracing` span whose timings surface via
 `tracing-web::performance_layer` into
 `performance.getEntriesByType('measure')` — provided the
 renderer is running at the `SubFrame` tier. See
-[perf-tracing.md](perf-tracing.md) for tiers and runtime knobs.
+[PROFILING.md](PROFILING.md) for tiers and runtime knobs.
 
 ### 1a. MSAA as a separate dispatch chain, decoupled from materials
 
@@ -442,11 +442,11 @@ Two practical implications shape everything else in this doc:
 
 ## 4. Per-frame budget
 
-Span names appear in `performance.getEntriesByType('measure')`
-when the renderer is running at the `SubFrame` tier — the default
-in debug builds, opt-in with `?trace=sub-frame` in release. The
-shipping default (`Frame` tier) emits only the outer `Render`
-span. See [perf-tracing.md](perf-tracing.md).
+CPU scope timings are read via `awsm_renderer::profiling::cpu_timing_stats()`
+(or `memory_stats.cpu_span_timings`) when the renderer is running at a non-`Off`
+CPU tier — opt-in with `?trace=sub-frame` (all defaults are `Off`). With
+`?devtools` the same scopes also appear in `performance.getEntriesByType('measure')`
+for the DevTools flame chart. See [PROFILING.md](PROFILING.md).
 
 Typical 4K viewport, scene-editor with both features on, no
 decals authored, modest mesh count:
@@ -1482,11 +1482,10 @@ move the needle:
 
 ### "My scene drops frames at N+ meshes"
 
-1. Read `performance.getEntriesByType('measure')` (or the
-   browser's Performance tab) to find the dominant span. Make
-   sure the page is loaded at the `SubFrame` tracing tier — debug
-   builds default to it, release builds need `?trace=sub-frame`.
-   See [perf-tracing.md](perf-tracing.md).
+1. Load with `?trace=sub-frame&perfhud` (or flip it from the editor
+   Profiling menu) and read the perf HUD / `memory_stats.cpu_span_timings`
+   to find the dominant scope. With `?devtools` the same scopes also show in
+   the browser's Performance tab. See [PROFILING.md](PROFILING.md).
 2. If `Geometry RenderPass` dominates: turn `gpu_culling` on
    if it isn't (saves per-mesh CPU recording + indirect-draws
    GPU-cull the invisible set).
@@ -1620,7 +1619,7 @@ default to game-friendly values; the items below are the
 
 | Default | Value | Why it's right |
 |---|---|---|
-| `AwsmRendererLogging::render_timings` | `RenderTimings::Off` | Tiered enum (`Off` / `Frame` / `SubFrame`). The default is `Off` — zero overhead. Frontends opt up to `Frame` (single outer span, ~free) for production and `SubFrame` (every pass) for diagnosis; the `?trace=…` URL param overrides at runtime. See [perf-tracing.md](perf-tracing.md). |
+| `AwsmRendererLogging::cpu` / `::gpu` | `TimingTier::Off` | Two tiered enums (`Off` / `Frame` / `SubFrame`) — CPU scope timing and GPU timestamp timing. Both default `Off` (zero overhead; nothing created). `?trace=` sets `cpu`, `?gputime=` sets `gpu`, and the editor Profiling menu flips them at runtime. See [PROFILING.md](PROFILING.md). |
 | Mapped-buffer staging ring | Always on | Every per-frame `writeBuffer` site is routed through `MappedUploader`. 99.9999% of bytes go through the mapped fast path on 10k meshes. |
 | Coverage-driven skin-skip (§5d) | Always on | Off-screen skins stop animating after a 2-frame grace; in-frustum skins resume that same frame via the BVH override. |
 | Shadow-receiver gate (§5f) | Always on | Meshes no caster reaches skip the entire shadow-sample chain. 0.048 ms / frame to maintain on 10k meshes. |
@@ -1803,7 +1802,7 @@ URL switches (all dev-friendly, can be combined):
 * `?features=off` (debug only) flips `RendererFeatures::default()`
   for A/B comparison without rebuilding the renderer.
 * `?trace=off|frame|sub-frame` picks the render-tracing tier at
-  runtime — see [perf-tracing.md](perf-tracing.md).
+  runtime — see [PROFILING.md](PROFILING.md).
 * `?log=info|debug|trace|warn|error|off` overrides the subscriber
   log-level filter (default `INFO`).
 

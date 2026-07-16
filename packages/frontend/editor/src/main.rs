@@ -33,7 +33,12 @@ pub fn main() {
     }
 
     awsm_renderer_web_shared::util::window::set_boot_loader_message("Initializing renderer");
-    logger::init_logger(&awsm_renderer_web_shared::logging::LoggingConfig::from_url());
+    let logging_cfg = awsm_renderer_web_shared::logging::LoggingConfig::from_url();
+    logger::init_logger(&logging_cfg);
+    // Seed the runtime profiling state (DevTools mirror) + perf HUD visibility
+    // from the URL. All of it is toggleable later from the Profiling menu.
+    logging_cfg.apply_profiling();
+    awsm_renderer_web_shared::perf_hud::init_from_url();
     Modal::init_panic_hook();
     theme::stylesheet::init();
 
@@ -69,6 +74,9 @@ pub fn main() {
             // and early toasts have somewhere to surface).
             .child(Modal::render())
             .child(Toast::render())
+            // Shared perf overlay (hidden unless `?perfhud` or toggled from the
+            // Profiling menu). Self-manages visibility + sampling.
+            .child(awsm_renderer_web_shared::perf_hud::render())
             // The WebGPU canvas is created here (triggering create_context); the
             // Scene workspace reparents it into the viewport slot once mounted.
             .child(engine::canvas::render_canvas(clone!(ctx_ready => move |canvas| {

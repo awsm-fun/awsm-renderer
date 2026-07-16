@@ -298,6 +298,9 @@ pub struct AwsmRenderer {
     pub lights: Lights,
     pub textures: Textures,
     pub logging: AwsmRendererLogging,
+    /// GPU timestamp-query subsystem — `Some` only when the device exposes the
+    /// `timestamp-query` feature. Emits nothing while `logging.gpu` is `Off`.
+    pub gpu_timestamps: Option<crate::profiling::GpuTimestamps>,
     pub render_textures: RenderTextures,
     pub render_passes: RenderPasses,
     pub environment: Environment,
@@ -2591,8 +2594,14 @@ impl AwsmRendererBuilder {
         // for config changes via `ensure_scene_pipelines` →
         // `launch_edge_resolve_compile` (cache-keyed, so overlaps are hits).
 
+        // Built once when the device supports timestamp queries (free — emits
+        // nothing until `logging.gpu` is turned on). Constructed before `gpu` is
+        // moved into the struct below.
+        let gpu_timestamps = crate::profiling::GpuTimestamps::new(&gpu);
+
         let mut _self = AwsmRenderer {
             gpu,
+            gpu_timestamps,
             meshes,
             camera,
             frame_globals,

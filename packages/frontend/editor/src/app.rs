@@ -1872,6 +1872,10 @@ fn overflow_button(ctrl: &EditorController) -> Dom {
                 MenuItem::new("Export scene as GLB\u{2026}").icon("mesh").on_click(clone!(close => move || { export_scene_glb(); (close.borrow_mut())(); })).render(),
                 MenuItem::new("Export player bundle\u{2026}").icon("mesh").on_click(clone!(close => move || { open_export_player_bundle(); (close.borrow_mut())(); })).render(),
                 MenuItem::new("Settings\u{2026}").icon("settings").on_click(clone!(close => move || { controller().settings_open.set_neq(true); (close.borrow_mut())(); })).render(),
+                MenuItem::new("Toggle perf HUD").icon("settings").on_click(clone!(close => move || { awsm_renderer_web_shared::perf_hud::toggle(); (close.borrow_mut())(); })).render(),
+                MenuItem::new("Cycle CPU profiling (off/frame/sub)").icon("settings").on_click(clone!(close => move || { cycle_cpu_profiling(); (close.borrow_mut())(); })).render(),
+                MenuItem::new("Cycle GPU profiling (off/frame/sub)").icon("settings").on_click(clone!(close => move || { cycle_gpu_profiling(); (close.borrow_mut())(); })).render(),
+                MenuItem::new("Toggle DevTools flame chart").icon("settings").on_click(clone!(close => move || { awsm_renderer::profiling::set_devtools_measure(!awsm_renderer::profiling::devtools_measure_enabled()); (close.borrow_mut())(); })).render(),
                 MenuItem::new("About AwsmRenderer\u{2026}").icon("help").on_click(clone!(close => move || { open_about(); (close.borrow_mut())(); })).render(),
                 MenuItem::new("Purge unused assets").icon("trash").on_click(clone!(close => move || { purge_unused_assets(); (close.borrow_mut())(); })).render(),
                 MenuItem::new("Clear scene\u{2026}").icon("trash").danger(true).on_click(clone!(close => move || { open_clear_all(); (close.borrow_mut())(); })).render(),
@@ -1893,6 +1897,47 @@ fn overflow_button(ctrl: &EditorController) -> Dom {
             None
         }))
     })
+}
+
+/// Off → Frame → SubFrame → Off.
+fn next_timing_tier(t: awsm_renderer::debug::TimingTier) -> awsm_renderer::debug::TimingTier {
+    use awsm_renderer::debug::TimingTier::*;
+    match t {
+        Off => Frame,
+        Frame => SubFrame,
+        SubFrame => Off,
+    }
+}
+
+/// Cycle the renderer's CPU profiling tier at runtime and reveal the perf HUD so
+/// the change is visible. Zero-cost when it lands back on `Off`.
+fn cycle_cpu_profiling() {
+    spawn_local(async {
+        let tier = crate::engine::context::with_renderer_mut(|r| {
+            r.logging.cpu = next_timing_tier(r.logging.cpu);
+            r.logging.cpu
+        })
+        .await;
+        if tier != awsm_renderer::debug::TimingTier::Off {
+            awsm_renderer_web_shared::perf_hud::set_visible(true);
+        }
+        tracing::info!("CPU profiling tier → {tier:?}");
+    });
+}
+
+/// Cycle the renderer's GPU timestamp tier at runtime and reveal the perf HUD.
+fn cycle_gpu_profiling() {
+    spawn_local(async {
+        let tier = crate::engine::context::with_renderer_mut(|r| {
+            r.logging.gpu = next_timing_tier(r.logging.gpu);
+            r.logging.gpu
+        })
+        .await;
+        if tier != awsm_renderer::debug::TimingTier::Off {
+            awsm_renderer_web_shared::perf_hud::set_visible(true);
+        }
+        tracing::info!("GPU profiling tier → {tier:?}");
+    });
 }
 
 fn workspace(ctrl: &EditorController) -> Dom {
