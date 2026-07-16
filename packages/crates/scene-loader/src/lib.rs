@@ -103,6 +103,16 @@ pub mod texture;
 pub use assets::SceneAssets;
 pub use particles::{drive_emitter, EmitterHandle};
 
+/// The Basis (KTX2/BasisU) transcoder, re-exported at the loader root.
+///
+/// A player depends on *this* crate to load a scene, and the texture load path
+/// here is what spawns the transcoder — so the player configures it through the
+/// loader (`scene_loader::basis::configure(BasisWorkerConfig::player(..))`)
+/// rather than taking a direct dependency on the internal codec crate. Call
+/// `configure` once, before the first load, with the URLs your app serves the
+/// worker + transcoder from.
+pub use awsm_renderer_codec_basis as basis;
+
 use std::collections::HashMap;
 
 use animation::AnimResolveMaps;

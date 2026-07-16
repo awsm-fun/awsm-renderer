@@ -159,6 +159,17 @@ async fn run_render(
             demo_scene()
         }
     };
+    // Provide the Basis codec URLs before loading. We run the player load path
+    // ON THIS WORKER, whose `blob:` base can't resolve a root-relative URL — so
+    // the URLs MUST be absolute (origin-qualified). This is the pattern a
+    // worker-architecture game copies. (This fixture is primitives-only and never
+    // transcodes, but wiring it here keeps the reference correct for KTX2 scenes.)
+    let basis_base = origin.trim_end_matches('/');
+    awsm_renderer_codec_basis::configure(awsm_renderer_codec_basis::BasisWorkerConfig::player(
+        format!("{basis_base}/workers/basis-worker.js"),
+        format!("{basis_base}/vendor/basis/basis_transcoder.js"),
+    ));
+
     let assets: std::collections::HashMap<String, Vec<u8>> = std::collections::HashMap::new();
     let loaded =
         awsm_renderer_scene_loader::load_scene_for_player(&mut renderer, &scene, &assets, |_| {})

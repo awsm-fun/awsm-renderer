@@ -32,6 +32,13 @@ async fn init() {
     awsm_renderer_web_shared::perf_hud::init_from_url();
     theme::stylesheet::init();
 
+    // Basis codec URLs (the crate hardcodes none). Main-thread viewer, so
+    // root-relative paths (the index.html copy-file targets) resolve fine.
+    awsm_renderer_codec_basis::configure(awsm_renderer_codec_basis::BasisWorkerConfig::player(
+        "/workers/basis-worker.js".to_string(),
+        "/vendor/basis/basis_transcoder.js".to_string(),
+    ));
+
     if let Some(init_url) = CONFIG.debug.start_route.lock().unwrap_throw().take() {
         init_url.go_to_url();
     }

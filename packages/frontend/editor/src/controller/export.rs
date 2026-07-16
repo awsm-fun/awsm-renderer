@@ -542,8 +542,20 @@ pub async fn bake_player_bundle(
                                     quality: 190,
                                     zstd: true,
                                 };
-                                let client = BASIS_ENCODER.with(|c| c.clone());
-                                match client.encode(&rgba, w, h, &params).await {
+                                // Per-thread client, built from the editor's
+                                // startup `configure(...)` (which carries the
+                                // encoder URL). Unconfigured is treated like an
+                                // encode failure below → lossless-WebP fallback.
+                                let encode_result = match awsm_renderer_codec_basis::client() {
+                                    Some(client) => client
+                                        .encode(&rgba, w, h, &params)
+                                        .await
+                                        .map_err(|e| e.to_string()),
+                                    None => Err("Basis codec not configured (call \
+                                                 awsm_renderer_codec_basis::configure at startup)"
+                                        .to_string()),
+                                };
+                                match encode_result {
                                     Ok(ktx2) => {
                                         tracing::info!(
                                             "bundle texture {artifact_id}: {w}x{h} → KTX2 {}{} \
@@ -1447,16 +1459,6 @@ fn texture_encoding_from_mime(
         ImageMime::Ktx2 => TextureEncoding::Ktx2,
     }
 }
-thread_local! {
-    /// Basis ENCODER worker client — editor-only (the `encoder` cargo feature
-    /// + the encoder module URL exist only here). Lazy: spawned on the first
-    /// KTX2 bake.
-    static BASIS_ENCODER: awsm_renderer_codec_basis::BasisWorkerClient =
-        awsm_renderer_codec_basis::BasisWorkerClient::new(
-            awsm_renderer_codec_basis::BasisWorkerConfig::with_encoder(),
-        );
-}
-
 /// Decode PNG/JPEG source bytes to RGBA8 (pure-Rust `image` crate — same
 /// decode the lossless-WebP path uses). `None` for KTX2 (handled upstream as
 /// passthrough) or a failed decode.

@@ -54,6 +54,17 @@ pub fn main() {
         .style(["-moz-user-select", "user-select", "-webkit-user-select"], "text")
     });
 
+    // Provide the Basis codec URLs (the crate hardcodes none). The editor runs
+    // its KTX2 transcode (glTF import) + KTX2 encode (bundle bake) on THIS main
+    // thread, whose document base resolves root-relative URLs — so these plain
+    // paths (the copy-file targets in index.html) are correct here. A
+    // worker-architecture player must instead pass absolute URLs.
+    awsm_renderer_codec_basis::configure(awsm_renderer_codec_basis::BasisWorkerConfig::editor(
+        "/workers/basis-worker.js".to_string(),
+        "/vendor/basis/basis_transcoder.js".to_string(),
+        "/vendor/basis/basis_encoder.js".to_string(),
+    ));
+
     // Establish the command/query authority before mounting any UI: every later
     // panel dispatches through this singleton.
     controller::init();

@@ -44,6 +44,13 @@ pub fn boot() -> Result<(), JsValue> {
         web_sys::console::log_1(&"PLAYER-TESTS COMPLETE: aborted (panic)".into());
     }));
 
+    // Basis codec URLs (the crate hardcodes none). Main-thread harness, so the
+    // root-relative copy-file targets from index.html resolve fine.
+    awsm_renderer_codec_basis::configure(awsm_renderer_codec_basis::BasisWorkerConfig::player(
+        "/workers/basis-worker.js".to_string(),
+        "/vendor/basis/basis_transcoder.js".to_string(),
+    ));
+
     // `?soak=<scene>` (default `ssr-arena`): idle-render one bundle through the
     // player path forever, instead of the check suite. Lets `tools/soak/soak.mjs`
     // point at :9091 to test whether the SHARED render core leaks on its own,
