@@ -106,6 +106,16 @@ pub struct BindGroupRecreateContext<'a> {
     /// `&mut render_passes` the dispatcher also takes). `None` otherwise → the
     /// opaque main layout omits binding 27.
     pub prep_edge_shadow_view: Option<web_sys::GpuTextureView>,
+    /// Opaque-RT mipgen pass (transmission background mips). `Some` once the
+    /// lazy pass is built. The `OpaqueMipgen` dispatch arm calls
+    /// `rebuild` on it (interior-mutable `&self`), keeping its per-mip bind
+    /// groups on the central `mark_create` → `recreate` path.
+    pub opaque_mipgen: Option<&'a crate::opaque_mipgen::OpaqueMipgen>,
+    /// `(opaque_texture, mip_count)` the mipgen build binds. `Some` only when
+    /// the sticky opaque mip chain is active (`mip_count >= 2`); the dispatch
+    /// arm no-ops otherwise. Owned clone of the JS texture handle (refcount
+    /// bump) so it doesn't borrow `render_textures` across the recreate call.
+    pub opaque_mip_info: Option<(web_sys::GpuTexture, u32)>,
 }
 
 /// Reasons to recreate bind groups.
@@ -146,6 +156,22 @@ pub enum BindGroupCreate {
     /// GPU coverage `counts_buffer` was reallocated. Only the
     /// coverage pass binds it.
     CoverageBuffersResize,
+    /// Opaque-RT mipgen per-mip views + bind groups are stale — the
+    /// opaque texture was (re)allocated with a mip chain, or its
+    /// identity/size changed. Fired by the render loop's early phase off
+    /// `OpaqueMipgen::needs_rebuild`; the build runs in `recreate` so this
+    /// pass's bind-group creation flows through the central ledger like
+    /// every other, instead of being built inline mid-frame.
+    OpaqueMipgen,
+    /// The three EVSM shadow compute bind groups (moment-write + blur H/V)
+    /// are stale — the shadow resource-recreate path reallocated a cascade /
+    /// EVSM-atlas / ping-pong view they bind. Fired from
+    /// `Shadows::apply_pending_resource_recreate`; the rebuild runs in
+    /// `recreate` (`Shadows::recreate_evsm_bind_groups`) so, like every other
+    /// bind group, creation flows through the ledger instead of inline in the
+    /// resource path. NOT in the initial seed — the eager construction build
+    /// covers frame 0; this only fires on later atlas/cascade resizes.
+    ShadowEvsmBindGroups,
     MaterialResize,
     TextureViewRecreate,
     TexturePool,
@@ -181,6 +207,17 @@ pub enum BindGroupCreate {
     /// groups also rebind (Phase 1C / Phase 2 of the light-culling
     /// plan land the consumer-side bindings).
     LightCullingFroxelsResize,
+    /// MSAA edge-resolve `data_buffer` / `args_buffer` (and the
+    /// `EdgeBufferLayout` uniform companion) were reallocated —
+    /// `MaterialEdgeBuffers::ensure_bucket_count` grew them, or
+    /// `set_max_edge_budget` bumped the budget after an overflow. The
+    /// prep-edge group(3), the opaque unified-shade group(3), and the
+    /// opaque final-blend group(0) all bind those buffers and must
+    /// rebind the new handles. (Resize + shadow-atlas changes are
+    /// covered by `TextureViewRecreate` / `ShadowsResourcesChange`;
+    /// MSAA on/off by `AntiAliasingChange` — this variant is only the
+    /// edge-buffer-grow trigger.)
+    MaterialEdgeResize,
 }
 
 /// Tracks pending bind group recreations.
@@ -201,6 +238,10 @@ impl BindGroups {
                 BindGroupCreate::DecalsResize | BindGroupCreate::DecalClassifyBuffersResize => {
                     features.decals
                 }
+                // Built eagerly in `Shadows` construction; the ledger only
+                // rebuilds them on later resource-recreate, never on the
+                // initial seed (which has no reallocated views to bind).
+                BindGroupCreate::ShadowEvsmBindGroups => false,
                 _ => true,
             })
             .collect::<HashSet<_>>();
@@ -236,7 +277,20 @@ impl BindGroups {
             OcclusionCompaction,
             Coverage,
             MaterialClassify,
+            /// Opaque-RT mipgen per-mip bind groups — built ahead of the
+            /// per-frame dispatch, no longer created inline in `record`.
+            OpaqueMipgen,
+            /// EVSM shadow compute bind groups (moment-write + blur H/V),
+            /// rebuilt via `Shadows::recreate_evsm_bind_groups` instead of
+            /// inline in the shadow resource-recreate path.
+            ShadowEvsm,
             MaterialPrep,
+            /// Prep-edge group(3) — the `cs_prep_edge` compute pass's
+            /// per-frame-until-now edge bind group, now cached + event-driven.
+            MaterialPrepEdge,
+            /// Opaque unified-shade group(3) + final-blend group(0) — the two
+            /// edge bind groups the opaque pass built inline every frame.
+            MaterialOpaqueEdge,
             MaterialDecalMain,
             MaterialDecalComposite,
             MaterialDecalClassify,
@@ -345,6 +399,12 @@ impl BindGroups {
                     // Coverage pass binds `visibility_data`; rebuild
                     // on view recreate.
                     functions_to_call.insert(FunctionToCall::Coverage);
+                    // The edge groups bind resize-recreated views: prep-edge
+                    // binds edge_shadow_out; opaque shade binds edge_id; opaque
+                    // final-blend binds opaque + reflection. All rebuild on
+                    // resize. No-op when MSAA is off (edge buffers absent).
+                    functions_to_call.insert(FunctionToCall::MaterialPrepEdge);
+                    functions_to_call.insert(FunctionToCall::MaterialOpaqueEdge);
                 }
                 BindGroupCreate::TexturePool => {
                     functions_to_call.insert(FunctionToCall::OpaqueTextures);
@@ -428,6 +488,19 @@ impl BindGroups {
                     // single-sample visibility-data view depending
                     // on the active MSAA setting.
                     functions_to_call.insert(FunctionToCall::Coverage);
+                    // Edge buffers + edge textures are allocated in lockstep
+                    // with MSAA: an MSAA on/off transition allocates (or drops)
+                    // them, so this is the edge groups' build/rebuild trigger.
+                    // Also fires from the initial create_list, giving the edge
+                    // groups their first build. No-op when MSAA is off.
+                    functions_to_call.insert(FunctionToCall::MaterialPrepEdge);
+                    functions_to_call.insert(FunctionToCall::MaterialOpaqueEdge);
+                }
+                BindGroupCreate::MaterialEdgeResize => {
+                    // Edge data/args buffers (+ layout uniform) grew. All three
+                    // edge bind groups bind them.
+                    functions_to_call.insert(FunctionToCall::MaterialPrepEdge);
+                    functions_to_call.insert(FunctionToCall::MaterialOpaqueEdge);
                 }
                 BindGroupCreate::InstanceAttributesResize => {
                     // Per-instance attribute storage buffer is bound on the
@@ -441,6 +514,10 @@ impl BindGroups {
                     // Prep's group(2) binds the shadow atlas / cube / cascade /
                     // EVSM views + globals (Stage 3b — prep samples shadows).
                     functions_to_call.insert(FunctionToCall::MaterialPrep);
+                    // The opaque unified-shade group(3) also carries the shadow
+                    // bindings (the "Extended Shadows" layout) alongside the
+                    // edge data/id — rebind on a shadow-resource change.
+                    functions_to_call.insert(FunctionToCall::MaterialOpaqueEdge);
                 }
                 BindGroupCreate::MaterialClassifyBuffersResize => {
                     // Classify rebuilds its own bind group; opaque
@@ -462,6 +539,12 @@ impl BindGroups {
                 }
                 BindGroupCreate::CoverageBuffersResize => {
                     functions_to_call.insert(FunctionToCall::Coverage);
+                }
+                BindGroupCreate::OpaqueMipgen => {
+                    functions_to_call.insert(FunctionToCall::OpaqueMipgen);
+                }
+                BindGroupCreate::ShadowEvsmBindGroups => {
+                    functions_to_call.insert(FunctionToCall::ShadowEvsm);
                 }
                 BindGroupCreate::DecalClassifyBuffersResize => {
                     functions_to_call.insert(FunctionToCall::MaterialDecalClassify);
@@ -653,6 +736,21 @@ impl BindGroups {
                         prep.bind_groups.recreate(&ctx)?;
                     }
                 }
+                FunctionToCall::MaterialPrepEdge => {
+                    // Prep-edge group(3). No-op inside when MSAA is off (edge
+                    // buffers / edge_shadow absent) — leaves the cached group
+                    // `None`, which `render_edge` never fetches in that mode.
+                    if let Some(prep) = render_passes.material_prep.as_mut() {
+                        prep.recreate_edge_bind_group(&ctx)?;
+                    }
+                }
+                FunctionToCall::MaterialOpaqueEdge => {
+                    // Opaque unified-shade group(3) + final-blend group(0).
+                    // No-op inside when MSAA is off / edge resources absent.
+                    render_passes
+                        .material_opaque
+                        .recreate_edge_bind_groups(&ctx)?;
+                }
                 FunctionToCall::Coverage => {
                     // Only rebuild the bind group that matches the
                     // current MSAA setting. Building both would bind
@@ -669,6 +767,26 @@ impl BindGroups {
                             coverage.bind_groups_singlesampled.recreate(&ctx)?;
                         }
                     }
+                }
+                FunctionToCall::OpaqueMipgen => {
+                    // Build the per-mip views + bind groups against the current
+                    // opaque texture. `opaque_mipgen` is `Some` once the lazy
+                    // pass exists; `opaque_mip_info` is `Some` only when the
+                    // sticky mip chain is active (`mip_count >= 2`). Either
+                    // being `None` (e.g. the first-frame create_list fires this
+                    // before transmission is ever used) makes it a no-op.
+                    if let (Some(mipgen), Some((tex, mip_count))) =
+                        (ctx.opaque_mipgen, ctx.opaque_mip_info.as_ref())
+                    {
+                        mipgen.rebuild(ctx.gpu, tex, *mip_count)?;
+                    }
+                }
+                FunctionToCall::ShadowEvsm => {
+                    // Rebuild the three EVSM shadow bind groups against the
+                    // views the resource-recreate path just reallocated
+                    // (interior-mutable, so shared `ctx.shadows` suffices).
+                    ctx.shadows
+                        .recreate_evsm_bind_groups(ctx.gpu, ctx.bind_group_layouts)?;
                 }
                 FunctionToCall::MaterialDecalMain => {
                     render_passes

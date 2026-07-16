@@ -234,11 +234,8 @@ impl AwsmRenderer {
 
         if let Some(hook) = hooks.and_then(|h| h.pre_render.as_ref()) {
             {
-                let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
-                    Some(tracing::span!(tracing::Level::INFO, "PreRender Hook").entered())
-                } else {
-                    None
-                };
+                let _maybe_span_guard =
+                    crate::profiling::cpu_scope(&self.logging, "PreRender Hook", true);
                 hook(self)?;
             }
         }
@@ -247,11 +244,7 @@ impl AwsmRenderer {
         // shipping build still produces one `performance.measure`
         // per frame. Everything *inside* `render()` is gated on
         // `.sub_frame()`.
-        let _maybe_span_guard = if self.logging.render_timings.enabled() {
-            Some(tracing::span!(tracing::Level::INFO, "Render").entered())
-        } else {
-            None
-        };
+        let _maybe_span_guard = crate::profiling::cpu_scope(&self.logging, "Render", false);
 
         self.render_textures.next_frame();
 
@@ -545,7 +538,6 @@ impl AwsmRenderer {
         self.shadows.write_gpu(
             &self.logging,
             &self.gpu,
-            &self.bind_group_layouts,
             &mut self.bind_groups,
             &self.camera,
             &self.lights,
@@ -780,6 +772,35 @@ impl AwsmRenderer {
             // path consumes the new layout.
         }
 
+        // Opaque-RT mipgen bind-group upkeep — routed through the central
+        // ledger like every other pass. The build binds VIEWS of the opaque
+        // texture's mip chain, so it depends only on that texture existing
+        // with `mip_count >= 2` (the sticky transmission mip chain), NOT on
+        // this frame actually using transmission — that gates the DISPATCH in
+        // `record` later. Detect staleness here + `mark_create`; the build
+        // itself runs in `recreate()` just below (the `OpaqueMipgen` arm).
+        // `opaque_mip_info` is an owned clone (GpuTexture handle = refcount
+        // bump) so it doesn't hold a `render_textures` borrow into the call.
+        let opaque_mip_info = self
+            .render_textures
+            .inner()
+            .map(|inner| (inner.opaque.clone(), inner.opaque_mip_count))
+            .filter(|(_, mip_count)| *mip_count >= 2);
+        if let Some(mipgen) = self.opaque_mipgen.as_ref() {
+            // A rebuilt `inner` (resize / AA flip / mip-grow / HUD-depth grow)
+            // changes the opaque texture identity; drop the stale cache so
+            // `needs_rebuild` fires even when the dimensions are unchanged
+            // (same-size AA flip binds a new texture at old dims).
+            if render_texture_views.views_recreated {
+                mipgen.invalidate();
+            }
+            if let Some((tex, mip_count)) = &opaque_mip_info {
+                if mipgen.needs_rebuild(tex.width(), tex.height(), *mip_count) {
+                    self.bind_groups.mark_create(BindGroupCreate::OpaqueMipgen);
+                }
+            }
+        }
+
         self.bind_groups.recreate(
             BindGroupRecreateContext {
                 gpu: &self.gpu,
@@ -823,6 +844,8 @@ impl AwsmRenderer {
                     .as_ref()
                     .and_then(|p| p.edge_shadow.as_ref())
                     .map(|b| b.sampled_view.clone()),
+                opaque_mipgen: self.opaque_mipgen.as_ref(),
+                opaque_mip_info,
             },
             &mut self.render_passes,
             self.picker.as_mut(),
@@ -901,7 +924,19 @@ impl AwsmRenderer {
             ),
             viewport_size,
             prep_config: &self.prep_config,
+            // GPU timestamp handle — `None` (no slots ever allocated) unless the
+            // `gpu` tier is on AND the device supports timestamp queries.
+            gpu_timestamps: if self.logging.gpu.enabled() {
+                self.gpu_timestamps.as_ref()
+            } else {
+                None
+            },
         };
+
+        // Reset the per-frame timestamp slot allocator (no-op when disabled).
+        if let Some(ts) = ctx.gpu_timestamps {
+            ts.begin_frame();
+        }
 
         // Snapshot per-opaque-renderable info that the occlusion + indirect-
         // draw infrastructure needs after `renderables.opaque` is consumed
@@ -991,11 +1026,8 @@ impl AwsmRenderer {
 
         if let Some(hook) = hooks.and_then(|h| h.first_pass.as_ref()) {
             {
-                let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
-                    Some(tracing::span!(tracing::Level::INFO, "FirstPass Hook").entered())
-                } else {
-                    None
-                };
+                let _maybe_span_guard =
+                    crate::profiling::cpu_scope(&self.logging, "FirstPass Hook", true);
                 hook(&ctx)?;
             }
         }
@@ -1033,11 +1065,8 @@ impl AwsmRenderer {
         }
 
         {
-            let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
-                Some(tracing::span!(tracing::Level::INFO, "Geometry RenderPass").entered())
-            } else {
-                None
-            };
+            let _maybe_span_guard =
+                crate::profiling::cpu_scope(&self.logging, "Geometry RenderPass", true);
 
             self.render_passes
                 .geometry
@@ -1054,11 +1083,8 @@ impl AwsmRenderer {
         // frame, every frame, when HUD is empty. The same skip applies to
         // the HUD transparent + HUD line passes further below.
         if !renderables.hud.is_empty() {
-            let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
-                Some(tracing::span!(tracing::Level::INFO, "HUD Geometry RenderPass").entered())
-            } else {
-                None
-            };
+            let _maybe_span_guard =
+                crate::profiling::cpu_scope(&self.logging, "HUD Geometry RenderPass", true);
 
             self.render_passes
                 .geometry
@@ -1067,11 +1093,8 @@ impl AwsmRenderer {
 
         if let Some(hook) = hooks.and_then(|h| h.after_geometry_pass.as_ref()) {
             {
-                let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
-                    Some(tracing::span!(tracing::Level::INFO, "AfterGeometryPass Hook").entered())
-                } else {
-                    None
-                };
+                let _maybe_span_guard =
+                    crate::profiling::cpu_scope(&self.logging, "AfterGeometryPass Hook", true);
                 hook(&ctx)?;
             }
         }
@@ -1091,11 +1114,8 @@ impl AwsmRenderer {
             self.render_passes.coverage.as_ref(),
             self.coverage_buffers.as_ref(),
         ) {
-            let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
-                Some(tracing::span!(tracing::Level::INFO, "Coverage RenderPass").entered())
-            } else {
-                None
-            };
+            let _maybe_span_guard =
+                crate::profiling::cpu_scope(&self.logging, "Coverage RenderPass", true);
             // Zero the per-mesh atomic counts via a recorded
             // `clear_buffer` so it runs in command order strictly before
             // the coverage compute dispatch reads + atomic-adds into
@@ -1128,20 +1148,14 @@ impl AwsmRenderer {
         // the freshly-written shadow maps. Short-circuits when there
         // are no active shadow casters.
         if self.shadows.any_active() {
-            let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
-                Some(tracing::span!(tracing::Level::INFO, "Shadow Generation").entered())
-            } else {
-                None
-            };
+            let _maybe_span_guard =
+                crate::profiling::cpu_scope(&self.logging, "Shadow Generation", true);
             crate::shadows::render_pass::record(&ctx, &self.shadows)?;
         }
 
         {
-            let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
-                Some(tracing::span!(tracing::Level::INFO, "Light Culling RenderPass").entered())
-            } else {
-                None
-            };
+            let _maybe_span_guard =
+                crate::profiling::cpu_scope(&self.logging, "Light Culling RenderPass", true);
 
             self.render_passes.light_culling.render(&ctx)?;
         }
@@ -1170,13 +1184,16 @@ impl AwsmRenderer {
         };
 
         {
-            let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
-                Some(tracing::span!(tracing::Level::INFO, "Clear opaque").entered())
-            } else {
-                None
-            };
+            let _maybe_span_guard =
+                crate::profiling::cpu_scope(&self.logging, "Clear opaque", true);
 
-            self.render_textures.clear_opaque(&self.gpu)?;
+            // Record the opaque-clear copy into the frame's "Rendering"
+            // encoder (ordered ahead of the opaque pass below) instead of
+            // its own encoder+submit — saves a per-frame create+submit and
+            // keeps all uploads batched into a single `upload-shared`
+            // flush (the mid-frame Texture-Clearer submit used to split
+            // them in two).
+            self.render_textures.clear_opaque(&ctx.command_encoder)?;
         }
 
         // Material classify: per-tile scan of the visibility buffer
@@ -1184,11 +1201,8 @@ impl AwsmRenderer {
         // opaque pipelines consume below. Runs once per frame; cheap
         // (~few hundred microseconds on a 4K viewport).
         {
-            let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
-                Some(tracing::span!(tracing::Level::INFO, "Material Classify RenderPass").entered())
-            } else {
-                None
-            };
+            let _maybe_span_guard =
+                crate::profiling::cpu_scope(&self.logging, "Material Classify RenderPass", true);
             // Priority 3 — reset the edge-buffer header (counters +
             // indirect-args) before classify rebuilds them this frame.
             // Cheap: ~64 bytes per write at typical bucket counts.
@@ -1203,11 +1217,8 @@ impl AwsmRenderer {
         // resolve. Always `Some` (prep is unconditional); the opaque deferred
         // path reads its outputs. Dispatched between classify and opaque.
         if let Some(prep) = self.render_passes.material_prep.as_ref() {
-            let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
-                Some(tracing::span!(tracing::Level::INFO, "Material Prep RenderPass").entered())
-            } else {
-                None
-            };
+            let _maybe_span_guard =
+                crate::profiling::cpu_scope(&self.logging, "Material Prep RenderPass", true);
             prep.render(&ctx)?;
             // Stage 5b-shadow: after the full-screen cs_prep, fill the compact
             // per-edge-sample shadow texture (MSAA only — no-op otherwise) so the
@@ -1223,11 +1234,8 @@ impl AwsmRenderer {
         }
 
         {
-            let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
-                Some(tracing::span!(tracing::Level::INFO, "Material Opaque RenderPass").entered())
-            } else {
-                None
-            };
+            let _maybe_span_guard =
+                crate::profiling::cpu_scope(&self.logging, "Material Opaque RenderPass", true);
 
             // Unified-edge (U2b, `docs/plans/unified-edge-shading.md`): under MSAA
             // the renderer shades through the merged `cs_shade` path (one kernel:
@@ -1286,46 +1294,28 @@ impl AwsmRenderer {
             .iter()
             .any(|r| self.materials.has_transmission(r.material_key()));
         if scene_has_transmission {
-            let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
-                Some(tracing::span!(tracing::Level::INFO, "Opaque Mipgen").entered())
-            } else {
-                None
-            };
-            // Clone the texture handle and mip count out of the inner
-            // borrow first; that drops the immutable `self.render_textures`
-            // borrow before we take a mutable borrow on `self.opaque_mipgen`.
-            // GpuTexture is a wasm-bindgen JS handle — `.clone()` is a
-            // refcount bump, not a texture copy.
-            let opaque_info = self
-                .render_textures
-                .inner()
-                .map(|inner| (inner.opaque.clone(), inner.opaque_mip_count));
-            // The mipgen caches per-mip views + bind groups across
-            // frames. We invalidate explicitly any time
-            // `RenderTexturesInner` was rebuilt this frame (viewport
-            // resize, AA flip, T2.5 mip-chain grow, T2.6 HUD-depth
-            // grow) so the cache stays paired with the right
-            // `GpuTexture` identity.
-            // Deferred-boot: `None` only between a runtime material change to
-            // transmission and the next commit's config ensure — skip the mip
-            // chain that frame (transmission samples mip 0, slightly sharper
+            let _maybe_span_guard =
+                crate::profiling::cpu_scope(&self.logging, "Opaque Mipgen", true);
+            // Dispatch the opaque mip chain. The per-mip bind groups were
+            // built ahead of this frame through the
+            // `mark_create(OpaqueMipgen)` → `recreate` path (the early phase
+            // above), so this is dispatch-only — no resource creation on the
+            // per-frame path. No-op until the cache exists (mip chain
+            // inactive, or the frame transmission first appears — the cache
+            // lands next frame).
+            //
+            // Deferred-boot: the mipgen (and its cache) may be `None` between
+            // a runtime material change to transmission and the next commit's
+            // config ensure — that frame samples mip 0 (slightly sharper
             // refraction, never wrong data).
             if let Some(mipgen) = self.opaque_mipgen.as_ref() {
-                if ctx.render_texture_views.views_recreated {
-                    mipgen.invalidate();
-                }
-                if let Some((texture, mip_count)) = opaque_info {
-                    mipgen.record(&self.gpu, &ctx.command_encoder, &texture, mip_count)?;
-                }
+                mipgen.record(&ctx.command_encoder)?;
             }
         }
 
         {
-            let _maybe_span_guard = if ctx.logging.render_timings.sub_frame() {
-                Some(tracing::span!(tracing::Level::INFO, "Opaque to Transparent Blit").entered())
-            } else {
-                None
-            };
+            let _maybe_span_guard =
+                crate::profiling::cpu_scope(ctx.logging, "Opaque to Transparent Blit", true);
 
             blit_tex(
                 match &ctx.anti_aliasing.msaa_sample_count {
@@ -1372,11 +1362,8 @@ impl AwsmRenderer {
         // this frame.
         if frame_opts.hzb {
             if let Some(hzb) = self.render_passes.hzb.as_ref() {
-                let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
-                    Some(tracing::span!(tracing::Level::INFO, "HZB RenderPass").entered())
-                } else {
-                    None
-                };
+                let _maybe_span_guard =
+                    crate::profiling::cpu_scope(&self.logging, "HZB RenderPass", true);
                 hzb.render(&ctx)?;
             }
         }
@@ -1399,11 +1386,8 @@ impl AwsmRenderer {
             self.render_passes.material_decal.as_ref(),
             self.decals.as_ref(),
         ) {
-            let _maybe_span_guard = if ctx.logging.render_timings.sub_frame() {
-                Some(tracing::span!(tracing::Level::INFO, "Material Decal RenderPass").entered())
-            } else {
-                None
-            };
+            let _maybe_span_guard =
+                crate::profiling::cpu_scope(ctx.logging, "Material Decal RenderPass", true);
             // Zero the per-tile atomic counts before classify reads
             // them. Recorded into the command encoder so it runs in
             // command order strictly before the classify dispatch
@@ -1514,7 +1498,7 @@ impl AwsmRenderer {
                 }
 
                 if occlusion_instance_count > 0 {
-                    let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
+                    let _maybe_span_guard = if self.logging.cpu.sub_frame() {
                         Some(
                             tracing::span!(
                                 tracing::Level::INFO,
@@ -1538,7 +1522,7 @@ impl AwsmRenderer {
                     // `CompactionBuffers::args_ready`.)
                     if let Some(compaction_pass) = self.render_passes.occlusion_compaction.as_ref()
                     {
-                        let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
+                        let _maybe_span_guard = if self.logging.cpu.sub_frame() {
                             Some(
                                 tracing::span!(
                                     tracing::Level::INFO,
@@ -1584,37 +1568,22 @@ impl AwsmRenderer {
         // blit (so depth + transparent target are populated) and before any
         // `before_transparent_pass` hook so editor overlays can draw on top.
         {
-            let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
-                Some(tracing::span!(tracing::Level::INFO, "Line RenderPass").entered())
-            } else {
-                None
-            };
+            let _maybe_span_guard =
+                crate::profiling::cpu_scope(&self.logging, "Line RenderPass", true);
             self.lines.render(&ctx)?;
         }
 
         if let Some(hook) = hooks.and_then(|h| h.before_transparent_pass.as_ref()) {
             {
-                let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
-                    Some(
-                        tracing::span!(tracing::Level::INFO, "BeforeTransparentPass Hook")
-                            .entered(),
-                    )
-                } else {
-                    None
-                };
+                let _maybe_span_guard =
+                    crate::profiling::cpu_scope(&self.logging, "BeforeTransparentPass Hook", true);
                 hook(&ctx)?;
             }
         }
 
         {
-            let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
-                Some(
-                    tracing::span!(tracing::Level::INFO, "Material Transparent RenderPass")
-                        .entered(),
-                )
-            } else {
-                None
-            };
+            let _maybe_span_guard =
+                crate::profiling::cpu_scope(&self.logging, "Material Transparent RenderPass", true);
 
             self.render_passes
                 .material_transparent
@@ -1623,13 +1592,8 @@ impl AwsmRenderer {
 
         if let Some(hook) = hooks.and_then(|h| h.after_transparent_pass.as_ref()) {
             {
-                let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
-                    Some(
-                        tracing::span!(tracing::Level::INFO, "AfterTransparentPass Hook").entered(),
-                    )
-                } else {
-                    None
-                };
+                let _maybe_span_guard =
+                    crate::profiling::cpu_scope(&self.logging, "AfterTransparentPass Hook", true);
                 hook(&ctx)?;
             }
         }
@@ -1640,11 +1604,8 @@ impl AwsmRenderer {
         // descriptor with zero draws still costs a full-screen tile
         // round-trip on TBR mobile GPUs.
         if !renderables.hud.is_empty() {
-            let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
-                Some(tracing::span!(tracing::Level::INFO, "HUD RenderPass").entered())
-            } else {
-                None
-            };
+            let _maybe_span_guard =
+                crate::profiling::cpu_scope(&self.logging, "HUD RenderPass", true);
 
             self.render_passes
                 .material_transparent
@@ -1656,13 +1617,8 @@ impl AwsmRenderer {
             .render_texture_views
             .transparent_to_composite_blit_bind_group_no_anti_alias
         {
-            let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
-                Some(
-                    tracing::span!(tracing::Level::INFO, "Non-antialised composite blit").entered(),
-                )
-            } else {
-                None
-            };
+            let _maybe_span_guard =
+                crate::profiling::cpu_scope(&self.logging, "Non-antialised composite blit", true);
 
             blit_tex(
                 &ctx.render_textures
@@ -1683,11 +1639,8 @@ impl AwsmRenderer {
         if ctx.post_processing.ssr.enabled {
             // Lazy pass: enabled ⇒ `Some` (built awaited on the first enable).
             if let Some(ssr) = self.render_passes.ssr.as_ref() {
-                let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
-                    Some(tracing::span!(tracing::Level::INFO, "SSR RenderPass").entered())
-                } else {
-                    None
-                };
+                let _maybe_span_guard =
+                    crate::profiling::cpu_scope(&self.logging, "SSR RenderPass", true);
                 ssr.render(
                     &ctx,
                     ctx.render_texture_views.width,
@@ -1704,11 +1657,8 @@ impl AwsmRenderer {
         if ctx.post_processing.bloom {
             // Lazy pass: enabled ⇒ `Some` (built awaited on the first enable).
             if let Some(bloom) = self.render_passes.bloom.as_ref() {
-                let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
-                    Some(tracing::span!(tracing::Level::INFO, "Bloom RenderPass").entered())
-                } else {
-                    None
-                };
+                let _maybe_span_guard =
+                    crate::profiling::cpu_scope(&self.logging, "Bloom RenderPass", true);
                 bloom.render(
                     &ctx,
                     ctx.render_texture_views.width,
@@ -1718,32 +1668,23 @@ impl AwsmRenderer {
         }
 
         {
-            let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
-                Some(tracing::span!(tracing::Level::INFO, "Effects RenderPass").entered())
-            } else {
-                None
-            };
+            let _maybe_span_guard =
+                crate::profiling::cpu_scope(&self.logging, "Effects RenderPass", true);
 
             self.render_passes.effects.render(&ctx)?;
         }
 
         {
-            let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
-                Some(tracing::span!(tracing::Level::INFO, "Display RenderPass").entered())
-            } else {
-                None
-            };
+            let _maybe_span_guard =
+                crate::profiling::cpu_scope(&self.logging, "Display RenderPass", true);
 
             self.render_passes.display.render(&ctx)?;
         }
 
         if let Some(hook) = hooks.and_then(|h| h.last_pass.as_ref()) {
             {
-                let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
-                    Some(tracing::span!(tracing::Level::INFO, "LastPass Hook").entered())
-                } else {
-                    None
-                };
+                let _maybe_span_guard =
+                    crate::profiling::cpu_scope(&self.logging, "LastPass Hook", true);
                 hook(&ctx)?;
             }
         }
@@ -1783,7 +1724,22 @@ impl AwsmRenderer {
                 None
             };
 
+        // Record `resolveQuerySet` + copy-to-readback into the frame's encoder
+        // BEFORE `finish()`. No-op unless GPU timing is on and slots were used.
+        let kick_gpu_timestamps = ctx
+            .gpu_timestamps
+            .map(|ts| ts.resolve(&ctx.command_encoder))
+            .unwrap_or(false);
+
         self.gpu.submit_commands(&ctx.command_encoder.finish());
+
+        // Kick the timestamp `mapAsync` readback after submit (results land a
+        // few frames later, fold into the GPU aggregator).
+        if kick_gpu_timestamps {
+            if let Some(ts) = ctx.gpu_timestamps {
+                ts.kick_readback();
+            }
+        }
 
         // Kick the `mapAsync` readback so next frame's
         // `MeshCoverage::ingest` sees this frame's counts. Skipped
@@ -1954,11 +1910,8 @@ impl AwsmRenderer {
 
         if let Some(hook) = hooks.and_then(|h| h.post_render.as_ref()) {
             {
-                let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
-                    Some(tracing::span!(tracing::Level::INFO, "PostRender Hook").entered())
-                } else {
-                    None
-                };
+                let _maybe_span_guard =
+                    crate::profiling::cpu_scope(&self.logging, "PostRender Hook", true);
                 hook(self)?;
             }
         }
@@ -2386,6 +2339,10 @@ pub struct RenderContext<'a> {
     /// calls — each call crosses the wasm↔JS boundary into
     /// `getCurrentTexture().getSize()`, which is small (~0.1–1 µs) but
     /// happens at multiple pass-level call sites per frame.
+    /// GPU timestamp handle for this frame. `None` when GPU timing is off or
+    /// unsupported — passes then attach no `timestampWrites`. See
+    /// [`crate::profiling::GpuTimestamps`].
+    pub gpu_timestamps: Option<&'a crate::profiling::GpuTimestamps>,
     pub viewport_size: (u32, u32),
     /// Plan B shared-prep config. Inert today — the prep pass is dispatched
     /// only when `render_passes.material_prep` is `Some` (i.e. when this is

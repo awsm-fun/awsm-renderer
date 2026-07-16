@@ -1,33 +1,14 @@
-//! Runtime overrides for renderer perf-tracing.
+//! Low-level URL-query readers shared by awsm-renderer frontends.
 //!
-//! Two URL query parameters control how much we trace at runtime.
-//! Both apply to any awsm-renderer frontend that calls
-//! [`crate::logger::init_logger`] (or its app-local variants) at
-//! boot:
-//!
-//! * `?trace=off|frame|sub-frame` — which render-side spans get
-//!   created. Maps directly onto
-//!   [`awsm_renderer::debug::RenderTimings`]. Span creation is
-//!   gated *in Rust*, so a tier that doesn't include a span pays
-//!   zero wasm↔JS crossings for it.
-//! * `?log=error|warn|info|debug|trace` — the tracing-subscriber
-//!   level filter. Affects `tracing::{error,warn,info,debug,trace}!`
-//!   log lines (which go to the browser console). Spans are gated
-//!   by `?trace=…`, not by this.
-//!
-//! Each frontend decides its own *default* (typically: SubFrame +
-//! DEBUG in debug builds, Frame + INFO in release). The query
-//! params, when present, override.
+//! These are the raw building blocks (`?key`, `?key=value`, `?mobile=`,
+//! `?log=`). The *composed* logging/profiling configuration lives in
+//! [`crate::logging`] — see [`crate::logging::LoggingConfig::from_url`], which
+//! layers the editor's `?trace` / `?gputime` / `?devtools` conventions on top
+//! of these helpers. Reading a URL param is an explicit, opt-in act by a
+//! frontend; nothing here runs implicitly.
 
-use awsm_renderer::{debug::RenderTimings, profile::RendererProfile};
+use awsm_renderer::profile::RendererProfile;
 use tracing_subscriber::filter::LevelFilter;
-
-/// Read `?trace=…` from `window.location.search`, if any. Returns
-/// `None` when the param is absent or unrecognised — caller falls
-/// back to its build-time default.
-pub fn render_timings_override() -> Option<RenderTimings> {
-    query_param("trace").and_then(|v| RenderTimings::parse(&v))
-}
 
 /// Read `?mobile=…` from `window.location.search` and resolve to a
 /// [`RendererProfile`]. Accepts:
@@ -70,22 +51,16 @@ pub fn log_level_override() -> Option<LevelFilter> {
     }
 }
 
-/// Resolve the effective render-timings tier: query param wins,
-/// else the supplied build-time default.
-pub fn resolve_render_timings(default: RenderTimings) -> RenderTimings {
-    render_timings_override().unwrap_or(default)
-}
-
 /// Resolve the effective log level: query param wins, else default.
 pub fn resolve_log_level(default: LevelFilter) -> LevelFilter {
     log_level_override().unwrap_or(default)
 }
 
 /// Tiny `?key=value` lookup against `window.location.search`. Not a
-/// full URL parser — just enough for the two perf knobs we care
-/// about. Returns the raw value (URL-decoded for `+` → ` `; we
-/// don't accept percent-encoded keys in practice).
-fn query_param(key: &str) -> Option<String> {
+/// full URL parser — just enough for the perf/logging knobs we care
+/// about. Returns the raw value (we don't accept percent-encoded keys
+/// in practice).
+pub(crate) fn query_param(key: &str) -> Option<String> {
     let window = web_sys::window()?;
     let search = window.location().search().ok()?;
     // `search` is either "" or "?a=b&c=d".
@@ -101,4 +76,18 @@ fn query_param(key: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// True when a bare `?key` (or `?key=…`) flag is present in the page URL.
+pub(crate) fn query_flag(key: &str) -> bool {
+    let Some(window) = web_sys::window() else {
+        return false;
+    };
+    let Ok(search) = window.location().search() else {
+        return false;
+    };
+    let stripped = search.strip_prefix('?').unwrap_or(&search);
+    stripped
+        .split('&')
+        .any(|p| p == key || p.starts_with(&format!("{key}=")))
 }

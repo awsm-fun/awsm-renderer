@@ -143,7 +143,7 @@ impl AwsmRenderer {
         // Span so the cost shows up in the browser Performance API
         // (`?trace=sub-frame`).
         {
-            let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
+            let _maybe_span_guard = if self.logging.cpu.sub_frame() {
                 Some(tracing::span!(tracing::Level::INFO, "SceneSpatial Maintain").entered())
             } else {
                 None
@@ -174,7 +174,7 @@ impl AwsmRenderer {
         // value and short-circuits unchanged writes, so the dirty-range
         // set stays sparse on a steady-state stress scene.
         {
-            let _maybe_span_guard = if self.logging.render_timings.sub_frame() {
+            let _maybe_span_guard = if self.logging.cpu.sub_frame() {
                 Some(tracing::span!(tracing::Level::INFO, "Shadow Receiver Gate").entered())
             } else {
                 None
@@ -683,7 +683,7 @@ impl Transforms {
         bind_groups: &mut BindGroups,
     ) -> Result<()> {
         if self.gpu_dirty {
-            let _maybe_span_guard = if logging.render_timings.sub_frame() {
+            let _maybe_span_guard = if logging.cpu.sub_frame() {
                 Some(tracing::span!(tracing::Level::INFO, "Transform GPU write").entered())
             } else {
                 None

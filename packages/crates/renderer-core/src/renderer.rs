@@ -5,7 +5,11 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::GpuSupportedLimits;
 
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
+
 use crate::{
+    command::CommandEncoder,
     configuration::CanvasConfiguration,
     error::{AwsmCoreError, Result},
 };
@@ -23,6 +27,12 @@ const INDIRECT_FIRST_INSTANCE_FEATURE: &str = "indirect-first-instance";
 const TEXTURE_COMPRESSION_BC_FEATURE: &str = "texture-compression-bc";
 const TEXTURE_COMPRESSION_ETC2_FEATURE: &str = "texture-compression-etc2";
 const TEXTURE_COMPRESSION_ASTC_FEATURE: &str = "texture-compression-astc";
+
+/// Enables GPU timestamp queries (`create_query_set` with `"timestamp"`,
+/// per-pass `timestampWrites`, `resolveQuerySet`). Requested when the adapter
+/// exposes it; the renderer only creates a query set when its GPU-timing tier is
+/// non-`Off`, so this is free otherwise.
+const TIMESTAMP_QUERY_FEATURE: &str = "timestamp-query";
 
 /// Which block-compressed texture families the active device supports.
 /// Drives the KTX2/Basis transcode-target ladder (see docs/plans/compression.md).
@@ -116,6 +126,31 @@ pub struct AwsmRendererWebGpu {
     /// panic with a clear message if invoked in `Offscreen` mode
     /// rather than silently mis-casting.
     canvas_kind: CanvasKind,
+    /// Shared per-frame **upload** command encoder. Per-frame buffer
+    /// uploads (`MappedStagingRing` copies, via `record_upload`) record
+    /// their `copyBufferToBuffer` commands into this ONE encoder instead
+    /// of each creating + submitting their own — the encoder is finished
+    /// and submitted exactly once, lazily, at the next `submit_commands`
+    /// (see [`Self::flush_upload_encoder`]). This collapses ~4–5
+    /// encoder-create + submit pairs per frame down to one, which is both
+    /// the recommended WebGPU shape and the fix for the per-frame
+    /// GPU-object churn that drove the editor-tab VA leak (see
+    /// `docs/plans/webgpu-churn-leak-perf.md`).
+    ///
+    /// `Rc<RefCell<..>>` (not a bare field) because `AwsmRendererWebGpu`
+    /// is `Clone` and handed to many subsystems: every clone must share
+    /// the *same* pending encoder so the clone that renders flushes the
+    /// copies the clone that uploaded recorded.
+    pub(crate) upload_encoder: Rc<RefCell<Option<CommandEncoder>>>,
+    /// Monotonic counter of how many times `upload_encoder` has been
+    /// flushed (finished + submitted). A staging-ring slot records the
+    /// epoch it was made `Submitted` in; the ring only kicks `mapAsync`
+    /// on a slot once this counter has advanced past that epoch — i.e.
+    /// once the copy referencing the slot's buffer has actually reached
+    /// the queue. This is what keeps the *deferred* kick correct even if
+    /// a ring is written more than once between two flushes. Shared
+    /// across clones for the same reason as `upload_encoder`.
+    pub(crate) upload_flush_epoch: Rc<Cell<u64>>,
 }
 
 impl AwsmRendererWebGpu {
@@ -127,6 +162,14 @@ impl AwsmRendererWebGpu {
     /// WebGPU silently drops the call.
     pub fn has_indirect_first_instance(&self) -> bool {
         self.device.features().has(INDIRECT_FIRST_INSTANCE_FEATURE)
+    }
+
+    /// Whether the active `GpuDevice` was created with the `timestamp-query`
+    /// feature. GPU pass-timing code consults this before creating a timestamp
+    /// query set / attaching `timestampWrites`; when absent, GPU timing silently
+    /// stays off regardless of the requested tier.
+    pub fn has_timestamp_query(&self) -> bool {
+        self.device.features().has(TIMESTAMP_QUERY_FEATURE)
     }
 
     /// Which block-compressed texture families the active `GpuDevice` was
@@ -351,6 +394,14 @@ impl AwsmRendererWebGpuBuilder {
                         required.push(js_sys::JsString::from(feature));
                     }
                 }
+                // `timestamp-query` powers GPU pass timing (per-pass
+                // `timestampWrites` → `resolveQuerySet` → readback). Requested
+                // only when the adapter exposes it, and completely free when the
+                // renderer's GPU-timing tier is `Off` (no query set is ever
+                // created). See `AwsmRendererLogging::gpu`.
+                if features.has(TIMESTAMP_QUERY_FEATURE) {
+                    required.push(js_sys::JsString::from(TIMESTAMP_QUERY_FEATURE));
+                }
                 if !required.is_empty() {
                     descriptor.set_required_features(&required);
                 }
@@ -445,6 +496,8 @@ impl AwsmRendererWebGpuBuilder {
             device_id: DeviceId::next(),
             context,
             canvas_kind: self.canvas,
+            upload_encoder: Rc::new(RefCell::new(None)),
+            upload_flush_epoch: Rc::new(Cell::new(0)),
         })
     }
 }

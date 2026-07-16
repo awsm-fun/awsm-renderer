@@ -63,6 +63,11 @@ tasks:
       - media-local
       - media-additional-assets
 
+  soak:
+    desc: "Editor memory-leak soak (docs/plans/crashes.md, Phase 2). Launches a dedicated Chrome pointed at the editor with ?memlog, loads a representative project, leaves it IDLE, and samples memory (in-page census + ps/vmmap on the renderer PID) every 30s until the tab crashes or the cap elapses — writes CSV+JSONL to the output dir. Run the servers FIRST (in another shell: `task dev` for the editor+media on :9085, and `task test-scenes` for the :9084 project the soak loads), then `task soak`. Flags pass through: `task soak -- --minutes 480 --interactive --out /path`."
+    cmds:
+      - node tools/soak/soak.mjs {{.CLI_ARGS}}
+
   build:
     desc: "Build every frontend for production into .build-artifacts/"
     cmds:

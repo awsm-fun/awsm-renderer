@@ -6274,6 +6274,33 @@ impl EditorController {
                     "render_cpu_ms".to_string(),
                     json!((render_cpu_ms * 100.0).round() / 100.0),
                 );
+                // Per-pass CPU + GPU timing from the renderer's bounded
+                // aggregators — only populated when profiling opted in via
+                // `?trace` / `?gputime` (empty & zero-cost otherwise, since
+                // timing is gated at the source). Slowest first.
+                let to_json = |stats: Vec<(&'static str, awsm_renderer::profiling::TimingStat)>| {
+                    stats
+                        .into_iter()
+                        .map(|(name, s)| {
+                            json!({
+                                "name": name,
+                                "last_ms": (s.last_ms * 1000.0).round() / 1000.0,
+                                "ema_ms": (s.ema_ms * 1000.0).round() / 1000.0,
+                                "min_ms": (s.min_ms * 1000.0).round() / 1000.0,
+                                "max_ms": (s.max_ms * 1000.0).round() / 1000.0,
+                                "count": s.count,
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                };
+                entries.insert(
+                    "cpu_span_timings".to_string(),
+                    json!(to_json(awsm_renderer::profiling::cpu_timing_stats())),
+                );
+                entries.insert(
+                    "gpu_span_timings".to_string(),
+                    json!(to_json(awsm_renderer::profiling::gpu_timing_stats())),
+                );
                 // …plus Chrome's non-standard `performance.memory` (zeros
                 // elsewhere). Read via Reflect — web_sys doesn't bind it.
                 let mut heap_used = 0.0f64;
@@ -6297,6 +6324,80 @@ impl EditorController {
                 entries.insert("js_heap_used_bytes".to_string(), json!(heap_used));
                 entries.insert("js_heap_total_bytes".to_string(), json!(heap_total));
                 entries.insert("js_heap_limit_bytes".to_string(), json!(heap_limit));
+                // Memory-leak soak instruments (docs/plans/crashes.md). Cumulative
+                // (increment-only) GPU-buffer creation census: a rising slope on
+                // either counter over an idle soak names the render loop as a
+                // per-frame buffer-minting source (suspect #1/#5). NOT a live
+                // count — there's no central destroy seam to decrement against, so
+                // creation-rate (cross-referenced with the OS vmmap virtual size)
+                // is the unambiguous signal.
+                let (create_buffer_count, create_buffer_bytes) =
+                    awsm_renderer_core::create_buffer_census();
+                entries.insert(
+                    "create_buffer_count".to_string(),
+                    json!(create_buffer_count),
+                );
+                entries.insert(
+                    "create_buffer_bytes".to_string(),
+                    json!(create_buffer_bytes),
+                );
+                // The other two per-frame GPU-object mint points. With
+                // `create_buffer` flat, a bind-group / command-encoder count that
+                // climbs at the VM-region-leak rate names the churn source.
+                let (create_bind_group_count, create_command_encoder_count) =
+                    awsm_renderer_core::create_object_census();
+                entries.insert(
+                    "create_bind_group_count".to_string(),
+                    json!(create_bind_group_count),
+                );
+                entries.insert(
+                    "create_command_encoder_count".to_string(),
+                    json!(create_command_encoder_count),
+                );
+                // Mapped-staging-ring rollup (suspect #1: map/unmap churn). The
+                // ring is fixed-depth so it can't itself leak VA, but a climbing
+                // `ring_fallback_count` / `ring_map_async_wait_ms` flags the ring
+                // failing to release slots as fast as the CPU consumes them, and
+                // `ring_bytes_uploaded` is the per-frame upload volume driving all
+                // the map traffic. Folded across every subsystem's UploadStats.
+                let (
+                    ring_peak_depth,
+                    ring_fallback_count,
+                    ring_map_async_wait_ms,
+                    ring_bytes_uploaded,
+                    ring_resize_count,
+                ) = crate::engine::context::with_renderer_mut(|r| {
+                    let mut peak = 0usize;
+                    let mut fallback = 0u64;
+                    let mut wait_ms = 0.0f64;
+                    let mut bytes = 0u64;
+                    let mut resize = 0u64;
+                    for (_label, s) in r.upload_ring_stats() {
+                        peak = peak.max(s.peak_ring_depth_used);
+                        fallback += s.fallback_count;
+                        wait_ms += s.map_async_wait_ms;
+                        bytes += s.bytes_uploaded_via_ring
+                            + s.bytes_uploaded_via_fallback
+                            + s.bytes_uploaded_via_writebuffer;
+                        resize += s.resize_count;
+                    }
+                    (peak, fallback, wait_ms, bytes, resize)
+                })
+                .await;
+                entries.insert("ring_peak_depth".to_string(), json!(ring_peak_depth));
+                entries.insert(
+                    "ring_fallback_count".to_string(),
+                    json!(ring_fallback_count),
+                );
+                entries.insert(
+                    "ring_map_async_wait_ms".to_string(),
+                    json!((ring_map_async_wait_ms * 100.0).round() / 100.0),
+                );
+                entries.insert(
+                    "ring_bytes_uploaded".to_string(),
+                    json!(ring_bytes_uploaded),
+                );
+                entries.insert("ring_resize_count".to_string(), json!(ring_resize_count));
                 // Opt-in hardening diagnostics (gated): the metrics the JS-heap
                 // soak misses. `wasm_heap_bytes` is WASM linear-memory size — the
                 // arena the unbounded-undo OOM actually grows. `undo_*`/`redo_*`

@@ -525,7 +525,7 @@ impl Skins {
             return Ok(());
         }
         if self.matrices_gpu_dirty {
-            let _maybe_span_guard = if logging.render_timings.sub_frame() {
+            let _maybe_span_guard = if logging.cpu.sub_frame() {
                 Some(tracing::span!(tracing::Level::INFO, "Skin Matrices GPU write").entered())
             } else {
                 None
@@ -566,7 +566,7 @@ impl Skins {
         }
 
         if self.joint_index_weights_gpu_dirty {
-            let _maybe_span_guard = if logging.render_timings.sub_frame() {
+            let _maybe_span_guard = if logging.cpu.sub_frame() {
                 Some(
                     tracing::span!(tracing::Level::INFO, "Skin Joint Index Weights GPU write")
                         .entered(),

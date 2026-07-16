@@ -70,6 +70,12 @@ pub struct MaterialPrepBindGroups {
     /// the temp; V reads the temp → writes back into `prep_shadow_visibility`.
     blur_h_bind_group: Option<web_sys::GpuBindGroup>,
     blur_v_bind_group: Option<web_sys::GpuBindGroup>,
+    /// group(3) for `cs_prep_edge`: edge_data (RO) + edge_layout (uniform) +
+    /// edge_shadow_out (storage-write). Cached + rebuilt via
+    /// [`Self::recreate_edge`] on `MaterialEdgeResize` / `TextureViewRecreate` /
+    /// `AntiAliasingChange` (was rebuilt inline every frame before). `None` when
+    /// MSAA is off (no edge buffers) — `render_edge` never fetches it then.
+    edge_bind_group: Option<web_sys::GpuBindGroup>,
 }
 
 impl MaterialPrepBindGroups {
@@ -115,6 +121,7 @@ impl MaterialPrepBindGroups {
             shadows_bind_group: None,
             blur_h_bind_group: None,
             blur_v_bind_group: None,
+            edge_bind_group: None,
         })
     }
 
@@ -143,6 +150,62 @@ impl MaterialPrepBindGroups {
         self.shadows_bind_group
             .as_ref()
             .ok_or_else(|| AwsmBindGroupError::NotFound("Material Prep - Shadows".to_string()))
+    }
+
+    /// Returns the live group(3) edge bind group. Only fetched by
+    /// `render_edge`, which runs only under MSAA — where `recreate_edge` has
+    /// built it. An error here means an edge dispatch was reached without the
+    /// group having been (re)built, i.e. a missing recreate trigger.
+    pub fn get_edge_bind_group(
+        &self,
+    ) -> std::result::Result<&web_sys::GpuBindGroup, AwsmBindGroupError> {
+        self.edge_bind_group
+            .as_ref()
+            .ok_or_else(|| AwsmBindGroupError::NotFound("Material Prep Edge - Group 3".to_string()))
+    }
+
+    /// (Re)builds the group(3) edge bind group: edge_data (RO) + edge_layout
+    /// (uniform) + edge_shadow_out (storage-write view). Event-driven (see the
+    /// field doc); replaces the old per-frame inline build in `render_edge`.
+    /// No-ops to `None` when any input is absent (MSAA off / edge resources not
+    /// yet allocated) — the caller (`render_edge`) bails out in that state
+    /// before it would fetch the group.
+    pub fn recreate_edge(
+        &mut self,
+        ctx: &BindGroupRecreateContext<'_>,
+        edge_shadow_storage_view: Option<&web_sys::GpuTextureView>,
+    ) -> Result<()> {
+        let (Some(edge_buffers), Some(edge_layout_uniform), Some(storage_view), Some(bgl_key)) = (
+            ctx.material_edge_buffers,
+            ctx.material_edge_layout_uniform,
+            edge_shadow_storage_view,
+            self.edge_bind_group_layout_key,
+        ) else {
+            self.edge_bind_group = None;
+            return Ok(());
+        };
+
+        let entries = vec![
+            BindGroupEntry::new(
+                0,
+                BindGroupResource::Buffer(BufferBinding::new(&edge_buffers.data_buffer)),
+            ),
+            BindGroupEntry::new(
+                1,
+                BindGroupResource::Buffer(BufferBinding::new(edge_layout_uniform)),
+            ),
+            BindGroupEntry::new(
+                2,
+                BindGroupResource::TextureView(Cow::Borrowed(storage_view)),
+            ),
+        ];
+        let descriptor = BindGroupDescriptor::new(
+            ctx.bind_group_layouts.get(bgl_key)?,
+            Some("Material Prep Edge - Group 3"),
+            entries,
+        );
+        self.edge_bind_group = Some(ctx.gpu.create_bind_group(&descriptor.into()));
+        Ok(())
     }
 
     /// Blur H bind group (src = `prep_shadow_visibility`, dst = temp).

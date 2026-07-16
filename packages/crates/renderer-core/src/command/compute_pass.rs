@@ -103,6 +103,18 @@ impl<'a> ComputePassDescriptor<'a> {
         self.timestamp_writes = Some(timestamp_writes);
         self
     }
+
+    /// Sets timestamp writes only when `Some` — convenient for the opt-in
+    /// profiling path (`ctx.gpu_timestamps.and_then(|t| t.writes_for_compute(..))`).
+    pub fn with_timestamp_writes_opt(
+        mut self,
+        timestamp_writes: Option<ComputeTimestampWrites<'a>>,
+    ) -> Self {
+        if timestamp_writes.is_some() {
+            self.timestamp_writes = timestamp_writes;
+        }
+        self
+    }
 }
 
 /// Timestamp write configuration for a compute pass.

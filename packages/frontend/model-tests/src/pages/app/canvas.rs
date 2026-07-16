@@ -4,7 +4,6 @@ use awsm_renderer::{
         configuration::{CanvasAlphaMode, CanvasConfiguration, CanvasToneMappingMode},
         renderer::{AwsmRendererWebGpuBuilder, DeviceRequestLimits},
     },
-    debug::AwsmRendererLogging,
     AwsmRendererBuilder,
 };
 use wasm_bindgen_futures::spawn_local;
@@ -94,12 +93,13 @@ impl AppCanvas {
                             .with_bucket_config(awsm_renderer::BucketConfig {
                                 max_bucket_entries: 1024,
                             })
-                            .with_logging(AwsmRendererLogging {
-                                // Default tier comes from build profile + `?trace=…` URL
-                                // override. See `crate::logger::default_render_timings`
-                                // for the policy.
-                                render_timings: crate::logger::default_render_timings(),
-                            })
+                            // Per-frame timing off unless a profiling URL param
+                            // (`?trace`/`?gputime`) opts in — `renderer_logging()`
+                            // is Off/Off otherwise (zero per-frame cost).
+                            .with_logging(
+                                awsm_renderer_web_shared::logging::LoggingConfig::from_url()
+                                    .renderer_logging(),
+                            )
                             .with_clear_color(Color::MID_GREY)
                             // model-tests wires .pick() to mouse-down
                             // for editor-mode click-to-select; opt in

@@ -133,11 +133,19 @@ impl BloomRenderPass {
         view_width: u32,
         view_height: u32,
     ) -> Result<bool> {
-        // BloomTexture stores mip 0 at HALF the viewport; compare against the
-        // viewport it was built from (2× the pyramid base).
-        let cur_view_w = self.texture.base_width * 2;
-        let cur_view_h = self.texture.base_height * 2;
-        if cur_view_w == view_width.max(1) && cur_view_h == view_height.max(1) {
+        // BloomTexture stores mip 0 at HALF the viewport (`BloomTexture::new`
+        // derives it via `size::half_extent`). Reconstructing the viewport as
+        // `base * 2` would lose the low bit for any ODD viewport dimension —
+        // e.g. 705 → base 353 → 353*2 = 706 ≠ 705 — leaving this check
+        // perpetually false at odd sizes, rebuilding the pyramid AND marking
+        // `TextureViewRecreate` (which rebuilds every texture-view-dependent
+        // bind group in the renderer) EVERY frame. Instead halve the incoming
+        // viewport through the SAME helper `new` uses and compare the bases, so
+        // the round-trip is exact.
+        let expected_base_w = crate::size::half_extent(view_width);
+        let expected_base_h = crate::size::half_extent(view_height);
+        if self.texture.base_width == expected_base_w && self.texture.base_height == expected_base_h
+        {
             return Ok(false);
         }
         // Explicitly release the old pyramid pair (two RGBA16F half-res mip
@@ -162,7 +170,12 @@ impl BloomRenderPass {
     /// `view_width` / `view_height` size the final combine dispatch (full-res).
     pub fn render(&self, ctx: &RenderContext, view_width: u32, view_height: u32) -> Result<()> {
         let compute_pass = ctx.command_encoder.begin_compute_pass(Some(
-            &ComputePassDescriptor::new(Some("Bloom Build")).into(),
+            &ComputePassDescriptor::new(Some("Bloom Build"))
+                .with_timestamp_writes_opt(
+                    ctx.gpu_timestamps
+                        .and_then(|t| t.writes_for_compute("Bloom")),
+                )
+                .into(),
         ));
 
         // Prefilter — composite → pyramid mip 0 (half-res).

@@ -534,7 +534,7 @@ fn dispatch_evsm(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
             &ComputePassDescriptor::new(Some("Shadow EVSM Moment Write")).into(),
         ));
         pass.set_pipeline(moment_pipeline);
-        pass.set_bind_group(0, &shadows.evsm_moment_write_bind_group, Some(&[offset]))?;
+        pass.set_bind_group(0, &shadows.evsm_moment_write_bind_group(), Some(&[offset]))?;
         pass.dispatch_workgroups(dst_w.div_ceil(8), Some(dst_h.div_ceil(8)), None);
         pass.end();
 
@@ -543,7 +543,7 @@ fn dispatch_evsm(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
             &ComputePassDescriptor::new(Some("Shadow EVSM Blur H")).into(),
         ));
         pass.set_pipeline(blur_h_pipeline);
-        pass.set_bind_group(0, &shadows.evsm_blur_h_bind_group, Some(&[offset]))?;
+        pass.set_bind_group(0, &shadows.evsm_blur_h_bind_group(), Some(&[offset]))?;
         pass.dispatch_workgroups(dst_w.div_ceil(64), Some(dst_h), None);
         pass.end();
 
@@ -552,7 +552,7 @@ fn dispatch_evsm(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
             &ComputePassDescriptor::new(Some("Shadow EVSM Blur V")).into(),
         ));
         pass.set_pipeline(blur_v_pipeline);
-        pass.set_bind_group(0, &shadows.evsm_blur_v_bind_group, Some(&[offset]))?;
+        pass.set_bind_group(0, &shadows.evsm_blur_v_bind_group(), Some(&[offset]))?;
         pass.dispatch_workgroups(dst_w, Some(dst_h.div_ceil(64)), None);
         pass.end();
     }

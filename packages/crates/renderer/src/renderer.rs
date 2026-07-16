@@ -298,6 +298,9 @@ pub struct AwsmRenderer {
     pub lights: Lights,
     pub textures: Textures,
     pub logging: AwsmRendererLogging,
+    /// GPU timestamp-query subsystem — `Some` only when the device exposes the
+    /// `timestamp-query` feature. Emits nothing while `logging.gpu` is `Off`.
+    pub gpu_timestamps: Option<crate::profiling::GpuTimestamps>,
     pub render_textures: RenderTextures,
     pub render_passes: RenderPasses,
     pub environment: Environment,
@@ -1203,7 +1206,7 @@ impl AwsmRenderer {
     /// canonical, PBR/Toon feature-set variants, and custom dynamic
     /// materials) at the active AA config; idempotent on cache hits.
     pub(crate) async fn prewarm_pipelines(&mut self) -> crate::error::Result<()> {
-        let _maybe_span = if self.logging.render_timings.sub_frame() {
+        let _maybe_span = if self.logging.cpu.sub_frame() {
             Some(tracing::span!(tracing::Level::INFO, "Prewarm Pipelines").entered())
         } else {
             None
@@ -2591,8 +2594,14 @@ impl AwsmRendererBuilder {
         // for config changes via `ensure_scene_pipelines` →
         // `launch_edge_resolve_compile` (cache-keyed, so overlaps are hits).
 
+        // Built once when the device supports timestamp queries (free — emits
+        // nothing until `logging.gpu` is turned on). Constructed before `gpu` is
+        // moved into the struct below.
+        let gpu_timestamps = crate::profiling::GpuTimestamps::new(&gpu);
+
         let mut _self = AwsmRenderer {
             gpu,
+            gpu_timestamps,
             meshes,
             camera,
             frame_globals,
@@ -3244,6 +3253,10 @@ impl AwsmRenderer {
         // (binding 27); rebind it against the resized view.
         self.bind_groups
             .mark_create(crate::bind_groups::BindGroupCreate::TextureViewRecreate);
+        // The prep-edge / opaque-shade / final-blend bind groups bind the edge
+        // data/args buffers + layout uniform, all reallocated just now.
+        self.bind_groups
+            .mark_create(crate::bind_groups::BindGroupCreate::MaterialEdgeResize);
         tracing::info!(
             target: "awsm_renderer::edge_resolve",
             "set_max_edge_budget: edge budget grown to {} (was tracked via overflow CPU surface)",

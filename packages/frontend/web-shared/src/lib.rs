@@ -6,7 +6,9 @@
 pub mod atoms;
 pub mod error;
 pub mod logger;
+pub mod logging;
 pub mod perf;
+pub mod perf_hud;
 pub mod prelude;
 pub mod theme;
 pub mod util;

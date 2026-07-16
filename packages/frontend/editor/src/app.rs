@@ -1872,6 +1872,7 @@ fn overflow_button(ctrl: &EditorController) -> Dom {
                 MenuItem::new("Export scene as GLB\u{2026}").icon("mesh").on_click(clone!(close => move || { export_scene_glb(); (close.borrow_mut())(); })).render(),
                 MenuItem::new("Export player bundle\u{2026}").icon("mesh").on_click(clone!(close => move || { open_export_player_bundle(); (close.borrow_mut())(); })).render(),
                 MenuItem::new("Settings\u{2026}").icon("settings").on_click(clone!(close => move || { controller().settings_open.set_neq(true); (close.borrow_mut())(); })).render(),
+                MenuItem::new("Profiling\u{2026}").icon("settings").on_click(clone!(close => move || { crate::profiling_modal::open(); (close.borrow_mut())(); })).render(),
                 MenuItem::new("About AwsmRenderer\u{2026}").icon("help").on_click(clone!(close => move || { open_about(); (close.borrow_mut())(); })).render(),
                 MenuItem::new("Purge unused assets").icon("trash").on_click(clone!(close => move || { purge_unused_assets(); (close.borrow_mut())(); })).render(),
                 MenuItem::new("Clear scene\u{2026}").icon("trash").danger(true).on_click(clone!(close => move || { open_clear_all(); (close.borrow_mut())(); })).render(),
@@ -1933,6 +1934,10 @@ fn workspace(ctrl: &EditorController) -> Dom {
                     .style("position", "relative")
                     .apply(panel_highlight(FocusTarget::Viewport))
                     .child(crate::scene_mode::viewport::render())
+                    // Perf HUD overlays the canvas (top-left), clear of the top
+                    // bar + inspector. Hidden unless toggled in the Profiling
+                    // modal / `?perfhud`.
+                    .child(awsm_renderer_web_shared::perf_hud::render())
                 }))
                 .child(html!("div", {
                     .style("width", "288px")

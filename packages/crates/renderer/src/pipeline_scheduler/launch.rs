@@ -257,6 +257,11 @@ impl crate::AwsmRenderer {
                 self.bind_groups.mark_create(
                     crate::bind_groups::BindGroupCreate::MaterialClassifyBuffersResize,
                 );
+                // The prep-edge / opaque-shade / final-blend bind groups bind
+                // the edge data/args buffers + layout uniform, all reallocated
+                // here — mark them for recreation.
+                self.bind_groups
+                    .mark_create(crate::bind_groups::BindGroupCreate::MaterialEdgeResize);
                 let max_edge_budget = edge_buffers.max_edge_budget;
                 if let Ok((uniform, _bytes)) =
                     crate::render_passes::material_opaque::edge_buffers::build_edge_layout_uniform(

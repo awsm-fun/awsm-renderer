@@ -39,6 +39,16 @@ pub struct MaterialOpaqueBindGroups {
     _lights_bind_group: Option<web_sys::GpuBindGroup>,
     _texture_bind_group: Option<web_sys::GpuBindGroup>,
     _shadows_bind_group: Option<web_sys::GpuBindGroup>,
+    /// cs_shade group(3) ("Extended Shadows"): shadow entries + edge_data@10 +
+    /// edge_layout@11 + edge_id@12. Cached + rebuilt via [`Self::recreate_edge`]
+    /// on `MaterialEdgeResize` / `TextureViewRecreate` / `ShadowsResourcesChange`
+    /// / `AntiAliasingChange` (was rebuilt inline every frame). `None` when MSAA
+    /// is off — `render_shade` never fetches it then.
+    _edge_shade_bind_group: Option<web_sys::GpuBindGroup>,
+    /// final_blend group(0): edge_data + edge_layout + opaque view + reflection
+    /// view. Same caching/trigger discipline as `_edge_shade_bind_group` (minus
+    /// the shadow dependency).
+    _edge_final_blend_bind_group: Option<web_sys::GpuBindGroup>,
 }
 
 impl MaterialOpaqueBindGroups {
@@ -136,6 +146,8 @@ impl MaterialOpaqueBindGroups {
             _lights_bind_group: None,
             _texture_bind_group: None,
             _shadows_bind_group: None,
+            _edge_shade_bind_group: None,
+            _edge_final_blend_bind_group: None,
         })
     }
 
@@ -164,6 +176,11 @@ impl MaterialOpaqueBindGroups {
             _lights_bind_group: self._lights_bind_group.clone(),
             _texture_bind_group: None,
             _shadows_bind_group: self._shadows_bind_group.clone(),
+            // Edge groups don't bind the texture pool — preserve them across a
+            // pool-grow clone (they rebuild on their own edge/view/shadow/AA
+            // triggers).
+            _edge_shade_bind_group: self._edge_shade_bind_group.clone(),
+            _edge_final_blend_bind_group: self._edge_final_blend_bind_group.clone(),
         };
 
         Ok(_self)
@@ -211,6 +228,106 @@ impl MaterialOpaqueBindGroups {
                 "Material Opaque - Shadows".to_string(),
             )),
         }
+    }
+
+    /// Returns the live cs_shade group(3) ("Extended Shadows"). Fetched only by
+    /// `render_shade` (MSAA-only) after `recreate_edge` has built it.
+    pub fn get_edge_shade_bind_group(
+        &self,
+    ) -> std::result::Result<&web_sys::GpuBindGroup, AwsmBindGroupError> {
+        self._edge_shade_bind_group.as_ref().ok_or_else(|| {
+            AwsmBindGroupError::NotFound(
+                "Material Unified Shade - Extended Shadows (Group 3)".to_string(),
+            )
+        })
+    }
+
+    /// Returns the live final-blend group(0). Fetched only by `render_shade`
+    /// (MSAA-only) after `recreate_edge` has built it.
+    pub fn get_edge_final_blend_bind_group(
+        &self,
+    ) -> std::result::Result<&web_sys::GpuBindGroup, AwsmBindGroupError> {
+        self._edge_final_blend_bind_group.as_ref().ok_or_else(|| {
+            AwsmBindGroupError::NotFound("Material Final Blend - Group 0".to_string())
+        })
+    }
+
+    /// (Re)builds the two edge bind groups — cs_shade group(3) and final-blend
+    /// group(0) — from `ctx` (edge buffers + layout uniform, `edge_id` /
+    /// `opaque` / `reflection` views, shadows). The layout keys live on the
+    /// pass, so they're passed in. Event-driven (see the field docs); replaces
+    /// the old per-frame inline builds in `render_shade`. No-ops both groups to
+    /// `None` when edge resources are absent (MSAA off) — `render_shade` bails
+    /// before fetching them then.
+    pub fn recreate_edge(
+        &mut self,
+        ctx: &BindGroupRecreateContext<'_>,
+        shade_extended_shadows_layout_key: BindGroupLayoutKey,
+        final_blend_group0_layout_key: BindGroupLayoutKey,
+    ) -> Result<()> {
+        let (Some(edge_buffers), Some(edge_layout_uniform), Some(edge_id_view)) = (
+            ctx.material_edge_buffers,
+            ctx.material_edge_layout_uniform,
+            ctx.render_texture_views.edge_id.as_ref(),
+        ) else {
+            self._edge_shade_bind_group = None;
+            self._edge_final_blend_bind_group = None;
+            return Ok(());
+        };
+
+        // cs_shade group(3): standard shadow bindings + edge_data@10 +
+        // edge_layout@11 + edge_id@12 (the shade-extended layout).
+        let mut shade_entries = build_shadow_bind_group_entries(ctx.shadows);
+        shade_entries.push(BindGroupEntry::new(
+            10,
+            BindGroupResource::Buffer(BufferBinding::new(&edge_buffers.data_buffer)),
+        ));
+        shade_entries.push(BindGroupEntry::new(
+            11,
+            BindGroupResource::Buffer(BufferBinding::new(edge_layout_uniform)),
+        ));
+        shade_entries.push(BindGroupEntry::new(
+            12,
+            BindGroupResource::TextureView(Cow::Borrowed(edge_id_view)),
+        ));
+        let shade_descriptor = BindGroupDescriptor::new(
+            ctx.bind_group_layouts
+                .get(shade_extended_shadows_layout_key)?,
+            Some("Material Unified Shade - Extended Shadows (Group 3)"),
+            shade_entries,
+        );
+        self._edge_shade_bind_group = Some(ctx.gpu.create_bind_group(&shade_descriptor.into()));
+
+        // final_blend group(0): data (RO) + layout + opaque storage texture +
+        // reflection descriptor.
+        let final_entries = vec![
+            BindGroupEntry::new(
+                0,
+                BindGroupResource::Buffer(BufferBinding::new(&edge_buffers.data_buffer)),
+            ),
+            BindGroupEntry::new(
+                1,
+                BindGroupResource::Buffer(BufferBinding::new(edge_layout_uniform)),
+            ),
+            BindGroupEntry::new(
+                2,
+                BindGroupResource::TextureView(Cow::Borrowed(&ctx.render_texture_views.opaque)),
+            ),
+            BindGroupEntry::new(
+                3,
+                BindGroupResource::TextureView(Cow::Borrowed(
+                    &ctx.render_texture_views.reflection_descriptor,
+                )),
+            ),
+        ];
+        let final_descriptor = BindGroupDescriptor::new(
+            ctx.bind_group_layouts.get(final_blend_group0_layout_key)?,
+            Some("Material Final Blend - Group 0"),
+            final_entries,
+        );
+        self._edge_final_blend_bind_group =
+            Some(ctx.gpu.create_bind_group(&final_descriptor.into()));
+        Ok(())
     }
 
     /// Recreates the main bind group for the opaque material pass.

@@ -73,8 +73,8 @@ impl BloomTexture {
 
     pub fn new(gpu: &AwsmRendererWebGpu, view_width: u32, view_height: u32) -> Result<Self> {
         // mip 0 is half-res (the classic bloom prefilter downsample).
-        let base_width = (view_width / 2).max(1);
-        let base_height = (view_height / 2).max(1);
+        let base_width = crate::size::half_extent(view_width);
+        let base_height = crate::size::half_extent(view_height);
         let max_dim = base_width.max(base_height);
         let full_chain = (32u32 - max_dim.leading_zeros()).max(1);
         // full_chain is already ≥ 1 and BLOOM_MAX_MIPS ≥ 1, so this is a plain
@@ -101,9 +101,11 @@ impl BloomTexture {
 
     /// Dimensions of pyramid mip `level` (level 0 = half-viewport), clamped ≥ 1.
     pub fn mip_dims(&self, level: u32) -> (u32, u32) {
-        let w = (self.base_width >> level).max(1);
-        let h = (self.base_height >> level).max(1);
-        (w, h)
+        awsm_renderer_core::texture::mipmap::get_mipmap_size_for_level(
+            self.base_width,
+            self.base_height,
+            level,
+        )
     }
 }
 

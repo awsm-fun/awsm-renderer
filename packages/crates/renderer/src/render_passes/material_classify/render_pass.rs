@@ -100,7 +100,12 @@ impl MaterialClassifyRenderPass {
     /// won't be shaded).
     pub fn render(&self, ctx: &RenderContext) -> Result<()> {
         let compute_pass = ctx.command_encoder.begin_compute_pass(Some(
-            &ComputePassDescriptor::new(Some("Material Classify Pass")).into(),
+            &ComputePassDescriptor::new(Some("Material Classify Pass"))
+                .with_timestamp_writes_opt(
+                    ctx.gpu_timestamps
+                        .and_then(|t| t.writes_for_compute("Material Classify")),
+                )
+                .into(),
         ));
 
         let msaa = ctx.anti_aliasing.msaa_sample_count;

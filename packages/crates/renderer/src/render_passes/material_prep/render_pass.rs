@@ -22,13 +22,10 @@
 //! The prep pass itself is unconditional — always constructed and dispatched.
 //! The opaque deferred path reads its outputs.
 
-use std::borrow::Cow;
-
-use awsm_renderer_core::bind_groups::{BindGroupDescriptor, BindGroupEntry, BindGroupResource};
-use awsm_renderer_core::buffers::BufferBinding;
 use awsm_renderer_core::command::compute_pass::ComputePassDescriptor;
 
 use crate::{
+    bind_groups::BindGroupRecreateContext,
     error::Result,
     pipeline_layouts::PipelineLayoutCacheKey,
     pipelines::compute_pipeline::{ComputePipelineCacheKey, ComputePipelineKey},
@@ -290,7 +287,12 @@ impl MaterialPrepRenderPass {
         let shadows_bind_group = self.bind_groups.get_shadows_bind_group()?;
 
         let compute_pass = ctx.command_encoder.begin_compute_pass(Some(
-            &ComputePassDescriptor::new(Some("Material Prep Pass")).into(),
+            &ComputePassDescriptor::new(Some("Material Prep Pass"))
+                .with_timestamp_writes_opt(
+                    ctx.gpu_timestamps
+                        .and_then(|t| t.writes_for_compute("Material Prep")),
+                )
+                .into(),
         ));
         compute_pass.set_pipeline(pipeline);
         compute_pass.set_bind_group(0, bind_group, None)?;
@@ -332,6 +334,19 @@ impl MaterialPrepRenderPass {
     /// edges). Inserted between `cs_prep` and the opaque pass; only effective
     /// under MSAA (the pipeline + texture are `None` otherwise). No-op when the
     /// edge buffers / layout uniform aren't allocated (non-MSAA).
+    /// (Re)builds the cached group(3) edge bind group. Called by the central
+    /// [`crate::bind_groups::BindGroups`] dispatcher (via
+    /// `FunctionToCall::MaterialPrepEdge`) on the edge-group triggers
+    /// (`MaterialEdgeResize` / `TextureViewRecreate` / `AntiAliasingChange`) —
+    /// NOT every frame. Forwards the pass-owned `edge_shadow` storage view into
+    /// [`MaterialPrepBindGroups::recreate_edge`] (the edge buffers + layout come
+    /// from `ctx`). Disjoint field borrows: `edge_shadow` (shared) + `bind_groups`
+    /// (mut).
+    pub fn recreate_edge_bind_group(&mut self, ctx: &BindGroupRecreateContext<'_>) -> Result<()> {
+        let storage_view = self.edge_shadow.as_ref().map(|e| &e.storage_view);
+        self.bind_groups.recreate_edge(ctx, storage_view)
+    }
+
     pub fn render_edge(&self, ctx: &RenderContext) -> Result<()> {
         // cs_prep_edge is MSAA-only: its pipeline layout binds the *multisampled*
         // prep main BGL at group(0), so it must never run while the live prep main
@@ -348,11 +363,13 @@ impl MaterialPrepRenderPass {
         // Edge buffers exist ⟺ MSAA-on AND the device supports edge resolve
         // (see `set_anti_aliasing`) — absent means this frame legitimately has
         // no edge-resolve path, so skip.
-        let (edge_buffers, edge_layout_uniform) =
-            match (ctx.material_edge_buffers, ctx.material_edge_layout_uniform) {
-                (Some(b), Some(u)) => (b, u),
-                _ => return Ok(()),
-            };
+        // Both must be live for the edge path; the edge bind group (built by
+        // `recreate_edge`) binds the layout uniform, so we only need the buffers
+        // handle here (for the indirect args_buffer at dispatch).
+        let edge_buffers = match (ctx.material_edge_buffers, ctx.material_edge_layout_uniform) {
+            (Some(b), Some(_)) => b,
+            _ => return Ok(()),
+        };
         // Past this point the edge path IS live — a missing pipeline/texture is
         // a broken invariant (cs_edge reads the compact texture this dispatch
         // fills; skipping silently would shade edges with garbage shadows).
@@ -362,44 +379,17 @@ impl MaterialPrepRenderPass {
                 .ok_or(crate::error::AwsmError::PipelineVariantNotCompiled(
                     "cs_prep_edge (edge buffers live but the edge prep pipeline never compiled)",
                 ))?;
-        let edge_shadow =
-            self.edge_shadow
-                .as_ref()
-                .ok_or(crate::error::AwsmError::PipelineVariantNotCompiled(
-                "edge-shadow texture (edge buffers live but the compact texture never allocated)",
-            ))?;
-        let edge_bgl_key = match self.bind_groups.edge_bind_group_layout_key {
-            Some(k) => k,
-            None => return Ok(()),
-        };
-
         let pipeline = ctx.pipelines.compute.get(edge_pipeline_key)?;
         let bind_group = self.bind_groups.get_bind_group()?;
         let lights_bind_group = self.bind_groups.get_lights_bind_group()?;
         let shadows_bind_group = self.bind_groups.get_shadows_bind_group()?;
 
-        // group(3) built fresh each frame (cheap; mirrors the opaque edge-resolve
-        // pass): edge_data (RO) + edge_layout + edge_shadow_out (storage write).
-        let entries = vec![
-            BindGroupEntry::new(
-                0,
-                BindGroupResource::Buffer(BufferBinding::new(&edge_buffers.data_buffer)),
-            ),
-            BindGroupEntry::new(
-                1,
-                BindGroupResource::Buffer(BufferBinding::new(edge_layout_uniform)),
-            ),
-            BindGroupEntry::new(
-                2,
-                BindGroupResource::TextureView(Cow::Borrowed(&edge_shadow.storage_view)),
-            ),
-        ];
-        let descriptor = BindGroupDescriptor::new(
-            ctx.bind_group_layouts.get(edge_bgl_key)?,
-            Some("Material Prep Edge - Group 3"),
-            entries,
-        );
-        let edge_bind_group = ctx.gpu.create_bind_group(&descriptor.into());
+        // group(3): edge_data (RO) + edge_layout + edge_shadow_out (storage
+        // write). Cached + rebuilt only on edge-buffer / view / MSAA events via
+        // `MaterialPrepBindGroups::recreate_edge` (was rebuilt inline every
+        // frame). A missing group here would mean an edge dispatch was reached
+        // without a recreate — the getter surfaces that as an error.
+        let edge_bind_group = self.bind_groups.get_edge_bind_group()?;
 
         let compute_pass = ctx.command_encoder.begin_compute_pass(Some(
             &ComputePassDescriptor::new(Some("Material Prep Edge Pass")).into(),
@@ -408,7 +398,7 @@ impl MaterialPrepRenderPass {
         compute_pass.set_bind_group(0, bind_group, None)?;
         compute_pass.set_bind_group(1, lights_bind_group, None)?;
         compute_pass.set_bind_group(2, shadows_bind_group, None)?;
-        compute_pass.set_bind_group(3, &edge_bind_group, None)?;
+        compute_pass.set_bind_group(3, edge_bind_group, None)?;
         // Indirect over edge_count via the final_blend_args cell (workgroup_size
         // 64; the cell's workgroup_count_x = ceil(edge_count / 64), set by
         // classify — already sized for all edges).

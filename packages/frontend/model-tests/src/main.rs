@@ -4,7 +4,6 @@
 mod atoms;
 mod config;
 mod header;
-mod logger;
 mod models;
 mod pages;
 mod prelude;
@@ -27,7 +26,10 @@ pub fn main() {
 }
 
 async fn init() {
-    logger::init_logger();
+    let logging_cfg = awsm_renderer_web_shared::logging::LoggingConfig::from_url();
+    awsm_renderer_web_shared::logger::init_logger(&logging_cfg);
+    logging_cfg.apply_profiling();
+    awsm_renderer_web_shared::perf_hud::init_from_url();
     theme::stylesheet::init();
 
     if let Some(init_url) = CONFIG.debug.start_route.lock().unwrap_throw().take() {
@@ -59,6 +61,7 @@ async fn init() {
                             })
                         }))
                         .fragment(&Modal::render())
+                        .child(awsm_renderer_web_shared::perf_hud::render())
                     })),
                     Some(error) => Some(render_incompatible(&error.main_text(), error.extra_text().as_deref())),
                 }

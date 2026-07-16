@@ -1,25 +1,32 @@
+//! `tracing` subscriber installation, driven entirely by a [`LoggingConfig`].
+//!
+//! [`init_logger`] reads nothing from the environment — it installs exactly the
+//! log layers the passed config asks for (fmt→console + a bounded capture ring +
+//! a level filter). It does **no** profiling: per-frame timing lives entirely in
+//! the renderer ([`awsm_renderer::profiling`]), gated at the source so that
+//! disabled profiling is a complete no-op with nothing installed here. Every
+//! optional layer is an `Option<Layer>` (a `None` is a no-op `Layer`).
+
 use std::collections::VecDeque;
 use std::sync::Mutex;
 
-use tracing_subscriber::filter::LevelFilter;
-use tracing_subscriber::fmt::format::Pretty;
 use tracing_subscriber::prelude::*;
-use tracing_web::{performance_layer, MakeWebConsoleWriter};
+use tracing_web::MakeWebConsoleWriter;
 use wasm_bindgen::prelude::*;
 
-use crate::perf::resolve_log_level;
+use crate::logging::LoggingConfig;
 
 /// In-memory ring buffer of recent `tracing` events (level + formatted line:
-/// `<file:line> — <message + fields>`). The browser console is invisible over
-/// MCP, so a custom [`CaptureLayer`] mirrors every event here and the editor's
-/// `ConsoleLogs` MCP query reads it — letting a headless driver see the same
-/// `WARN`/`ERROR`/`tracing::*` output a human sees in devtools. Capped; oldest
-/// dropped. (wasm is single-threaded, so the `Mutex` never contends.)
+/// `<file:line> — <message + fields>`). The browser console is invisible to a
+/// headless/embedding driver, so a custom [`CaptureLayer`] mirrors every event
+/// here and any embedder can read it back — the editor exposes it over MCP;
+/// nothing here is MCP-specific. Capped; oldest dropped. (wasm is
+/// single-threaded, so the `Mutex` never contends.)
 static CAPTURED_LOGS: Mutex<VecDeque<(String, String)>> = Mutex::new(VecDeque::new());
 const CAPTURED_LOGS_CAP: usize = 1000;
 
 /// The last `limit` captured `tracing` events as `(level, line)`, oldest first.
-/// Read (not drained) so repeated MCP polls each see the full recent window.
+/// Read (not drained) so repeated polls each see the full recent window.
 pub fn captured_logs(limit: usize) -> Vec<(String, String)> {
     let buf = CAPTURED_LOGS.lock().unwrap();
     let start = buf.len().saturating_sub(limit);
@@ -49,7 +56,7 @@ impl tracing::field::Visit for FieldCollector {
 }
 
 /// Mirrors every `tracing` event into [`CAPTURED_LOGS`] (in addition to the
-/// console fmt layer) so it's readable over MCP.
+/// console fmt layer) so it's readable by an embedder.
 struct CaptureLayer;
 impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CaptureLayer {
     fn on_event(
@@ -79,40 +86,38 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CaptureLayer {
     }
 }
 
-/// Default subscriber-level filter when no `?log=` URL override
-/// is present.
+/// Install the global `tracing` subscriber per `cfg`. Idempotent (the first call
+/// wins; later calls are ignored). Reads nothing from the URL/environment — the
+/// caller decides `cfg`.
 ///
-/// Used to be `DEBUG`, which combined with render-timing spans
-/// emitted ~1.6k UserTiming entries in 3s on mobile and burned a
-/// significant chunk of frame time on `performance.mark`. Default
-/// is now level-appropriate; lift back to `DEBUG` (or `TRACE`)
-/// with `?log=debug` when investigating.
-const DEFAULT_LEVEL: LevelFilter = LevelFilter::INFO;
-
-pub fn init_logger() {
+/// Log layers only (no profiling — that lives in the renderer):
+/// - fmt→console writer (`cfg.console_writer`)
+/// - [`CaptureLayer`] ring buffer (`cfg.capture_buffer`)
+/// - level filter (`cfg.level`)
+pub fn init_logger(cfg: &LoggingConfig) {
     static LOGGER_INITIALIZED: std::sync::Once = std::sync::Once::new();
 
     LOGGER_INITIALIZED.call_once(|| {
         set_stack_trace_limit(30);
 
-        let fmt_layer = tracing_subscriber::fmt::layer()
-            .with_file(true)
-            .with_line_number(true)
-            .with_ansi(false) // Only partially supported across JavaScript runtimes
-            .without_time()
-            .with_level(true)
-            .with_target(false)
-            .with_writer(MakeWebConsoleWriter::new().with_pretty_level()); // write events to the console
+        let fmt_layer = cfg.console_writer.then(|| {
+            tracing_subscriber::fmt::layer()
+                .with_file(true)
+                .with_line_number(true)
+                .with_ansi(false) // Only partially supported across JavaScript runtimes
+                .without_time()
+                .with_level(true)
+                .with_target(false)
+                .with_writer(MakeWebConsoleWriter::new().with_pretty_level())
+        });
 
-        let perf_layer = performance_layer().with_details_from_fields(Pretty::default());
+        let capture_layer = cfg.capture_buffer.then_some(CaptureLayer);
 
-        let level_filter = resolve_log_level(DEFAULT_LEVEL);
+        let level_filter = cfg.level;
 
         tracing_subscriber::registry()
             .with(fmt_layer)
-            .with(perf_layer)
-            // Mirror events into the MCP-readable ring buffer (see `captured_logs`).
-            .with(CaptureLayer)
+            .with(capture_layer)
             .with(level_filter)
             .init();
 
@@ -121,6 +126,24 @@ pub fn init_logger() {
 
         std::panic::set_hook(Box::new(tracing_panic::panic_hook));
     });
+}
+
+/// Call once per rendered frame (e.g. at the top of the rAF callback). When the
+/// renderer's DevTools User-Timing mirror is active
+/// ([`awsm_renderer::profiling::devtools_measure_enabled`]), this clears the
+/// `performance` mark / measure buffer so it can't grow unbounded — a live
+/// DevTools *recording* still captures the entries created during the frame, so
+/// the flame-chart workflow is preserved while memory stays flat. A no-op (one
+/// relaxed atomic load) when the mirror is off, so it's safe to call
+/// unconditionally every frame.
+pub fn frame_boundary() {
+    if !awsm_renderer::profiling::devtools_measure_enabled() {
+        return;
+    }
+    if let Some(perf) = web_sys::window().and_then(|w| w.performance()) {
+        perf.clear_marks();
+        perf.clear_measures();
+    }
 }
 
 #[wasm_bindgen(

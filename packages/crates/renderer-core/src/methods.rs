@@ -240,6 +240,8 @@ impl AwsmRendererWebGpu {
         &self,
         descriptor: &web_sys::GpuBindGroupDescriptor,
     ) -> web_sys::GpuBindGroup {
+        #[cfg(any(debug_assertions, feature = "harden-diag"))]
+        crate::CREATE_BIND_GROUP_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.device.create_bind_group(descriptor)
     }
 
@@ -337,9 +339,25 @@ impl AwsmRendererWebGpu {
             );
         }
 
-        self.device
+        let buffer = self
+            .device
             .create_buffer(descriptor)
-            .map_err(AwsmCoreError::buffer_creation)
+            .map_err(AwsmCoreError::buffer_creation)?;
+
+        // Cumulative buffer-creation census for the memory-leak soak (see
+        // crate::CREATE_BUFFER_COUNT). Increment-only; two relaxed atomic adds
+        // on a cold-ish path (buffer creation, not a per-byte hot loop). Gated to
+        // dev/harden-diag so a release build carries zero always-on cost — the
+        // soak runs a dev build, and the `create_buffer_census()` accessor stays
+        // defined either way (reads 0 in release).
+        #[cfg(any(debug_assertions, feature = "harden-diag"))]
+        {
+            use std::sync::atomic::Ordering::Relaxed;
+            crate::CREATE_BUFFER_COUNT.fetch_add(1, Relaxed);
+            crate::CREATE_BUFFER_BYTES.fetch_add(size as u64, Relaxed);
+        }
+
+        Ok(buffer)
     }
 
     /// Example usage:
@@ -362,6 +380,8 @@ impl AwsmRendererWebGpu {
     /// self.gpu.submit_commands(&command_encoder.finish());
     /// Creates a command encoder with an optional label.
     pub fn create_command_encoder(&self, label: Option<&str>) -> CommandEncoder {
+        #[cfg(any(debug_assertions, feature = "harden-diag"))]
+        crate::CREATE_COMMAND_ENCODER_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let encoder = match label {
             None => self.device.create_command_encoder(),
             Some(label) => {
@@ -375,9 +395,66 @@ impl AwsmRendererWebGpu {
         CommandEncoder::new(encoder)
     }
 
+    /// Record into the shared per-frame **upload** command encoder,
+    /// creating it lazily on first use this frame.
+    ///
+    /// Per-frame buffer uploads call this instead of
+    /// `create_command_encoder` + `submit_commands`: their
+    /// `copyBufferToBuffer` commands all land in ONE encoder that is
+    /// finished + submitted exactly once, at the next `submit_commands`
+    /// (see [`Self::flush_upload_encoder`]). Collapses ~4–5 per-frame
+    /// encoder-create/submit pairs into one — the WebGPU-recommended
+    /// shape and the fix for the per-frame churn behind the VA leak.
+    ///
+    /// The closure receives the shared encoder; its return value is
+    /// passed straight back so callers can propagate a `Result`.
+    pub fn record_upload<R>(&self, f: impl FnOnce(&CommandEncoder) -> R) -> R {
+        let mut guard = self.upload_encoder.borrow_mut();
+        if guard.is_none() {
+            *guard = Some(self.create_command_encoder(Some("upload-shared")));
+        }
+        // `unwrap` is sound: we just ensured `Some` above and hold the
+        // borrow, so nothing can take it out from under us.
+        f(guard.as_ref().unwrap())
+    }
+
+    /// Number of times the shared upload encoder has been flushed
+    /// (finished + submitted). See [`Self::flush_upload_encoder`] and the
+    /// `upload_flush_epoch` field doc — the staging ring reads this to
+    /// know when a slot's copy has actually reached the queue.
+    pub fn upload_flush_epoch(&self) -> u64 {
+        self.upload_flush_epoch.get()
+    }
+
+    /// Finish + submit the shared upload encoder if any copies are
+    /// pending, then bump [`Self::upload_flush_epoch`]. No-op when the
+    /// encoder is empty (nothing recorded since the last flush), so
+    /// calling it before every submit is cheap.
+    ///
+    /// Submits the upload buffer as its own command buffer *ahead of*
+    /// whatever the caller is about to submit — WebGPU executes queue
+    /// submissions in order, so the copies land before any pass that
+    /// reads the uploaded data, exactly as when each upload submitted its
+    /// own encoder. Submits directly via the queue (not `submit_commands`)
+    /// to avoid recursing back into the flush.
+    pub fn flush_upload_encoder(&self) {
+        let encoder = self.upload_encoder.borrow_mut().take();
+        if let Some(encoder) = encoder {
+            let command_buffer = encoder.finish();
+            self.device
+                .queue()
+                .submit(std::slice::from_ref(&command_buffer));
+            self.upload_flush_epoch
+                .set(self.upload_flush_epoch.get().wrapping_add(1));
+        }
+    }
+
     /// See [`Self::create_command_encoder`] for usage.
     /// Submits a single command buffer.
     pub fn submit_commands(&self, command_buffer: &web_sys::GpuCommandBuffer) {
+        // Flush any pending per-frame uploads FIRST so their copies are
+        // ordered ahead of the passes in `command_buffer` that read them.
+        self.flush_upload_encoder();
         self.device
             .queue()
             .submit(std::slice::from_ref(command_buffer));
@@ -389,6 +466,8 @@ impl AwsmRendererWebGpu {
         &self,
         command_buffers: impl IntoIterator<Item = &'a web_sys::GpuCommandBuffer>,
     ) {
+        // Flush pending uploads ahead of the batch (see `submit_commands`).
+        self.flush_upload_encoder();
         let command_buffers_js: Vec<web_sys::GpuCommandBuffer> =
             command_buffers.into_iter().cloned().collect();
         self.device.queue().submit(&command_buffers_js);

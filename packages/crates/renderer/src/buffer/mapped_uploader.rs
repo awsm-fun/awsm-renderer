@@ -148,6 +148,19 @@ impl MappedUploader {
             return Ok(());
         }
 
+        // Roll any slot whose copy was flushed in a *prior* frame forward
+        // to `Pending` (kick `mapAsync`). We do this at the *top* of the
+        // upload — by now the previous frame's `submit_commands` has
+        // flushed the shared upload encoder (advancing the flush epoch),
+        // so slots finalized last frame are safe to map. Deferring the
+        // kick to here is what lets many subsystems batch their copies
+        // into ONE encoder that submits once per frame, instead of each
+        // creating + submitting its own. The epoch guard inside
+        // `kick_flushed_slots` skips any slot finalized *this* frame whose
+        // copy hasn't been submitted yet.
+        let flush_epoch = gpu.upload_flush_epoch();
+        ring.kick_flushed_slots(flush_epoch);
+
         let acquired = match ring.acquire() {
             AcquireOutcome::Acquired(slot) => {
                 // Memcpy each dirty range into the matching slot offset.
@@ -157,30 +170,18 @@ impl MappedUploader {
                         slot.write(*off, &raw_data[*off..end]);
                     }
                 }
-                // `MappedUploader` owns a single ephemeral
-                // `CommandEncoder` per Acquired call so
-                // `copy_buffer_to_buffer` lands in a submittable
-                // command buffer immediately. Created only on the
-                // success branch — exhaustion-heavy frames (already
-                // the worst case) shouldn't pay the JS-side allocation
-                // for an encoder we never use.
-                let encoder = gpu.create_command_encoder(Some(&self.label));
-                // Record the copy command and mark the slot
-                // Submitted. `finalize` deliberately does NOT call
-                // `mapAsync` here — the slot is still referenced by
-                // the encoder we're about to submit, and queuing a
-                // map on it before submit fails WebGPU validation.
-                slot.finalize(&encoder, dest, &prepared)?;
-                gpu.submit_commands(&encoder.finish());
+                // Record the `copy_buffer_to_buffer` into the renderer's
+                // shared per-frame upload encoder (created lazily on first
+                // use, submitted once at the next `submit_commands`).
+                // `finalize` marks the slot `Submitted` and stamps it with
+                // `flush_epoch`; it deliberately does NOT kick `mapAsync`
+                // — the copy hasn't been submitted yet. The kick happens
+                // next frame, above, once the epoch has advanced.
+                gpu.record_upload(|encoder| slot.finalize(encoder, dest, &prepared, flush_epoch))?;
                 true
             }
             AcquireOutcome::Exhausted => false,
         };
-        if acquired {
-            // *After* submit, the buffer is in the queue's in-flight
-            // set and `mapAsync` can safely queue behind it.
-            ring.kick_submitted_slots();
-        }
         let exhausted = !acquired;
 
         if exhausted {

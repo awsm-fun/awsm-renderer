@@ -79,6 +79,7 @@ impl DisplayRenderPass {
                     StoreOp::Store,
                 )
                 .with_clear_color(ctx.clear_color)],
+                timestamp_writes: ctx.gpu_timestamps.and_then(|t| t.writes_for("Display")),
                 ..Default::default()
             }
             .into(),
