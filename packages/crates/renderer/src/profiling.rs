@@ -19,6 +19,7 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
+use awsm_renderer_core::command::compute_pass::ComputeTimestampWrites;
 use awsm_renderer_core::command::render_pass::RenderTimestampWrites;
 use awsm_renderer_core::renderer::AwsmRendererWebGpu;
 use std::cell::RefCell;
@@ -201,7 +202,7 @@ pub fn cpu_scope(
 
 /// Max timestamp slots (2 per instrumented pass) in the query set. Passes beyond
 /// this simply aren't timed for that frame.
-const GPU_MAX_SLOTS: u32 = 32;
+const GPU_MAX_SLOTS: u32 = 64;
 const GPU_TS_BYTES: u32 = GPU_MAX_SLOTS * 8; // 64-bit nanosecond timestamps
 
 struct GpuFrameScratch {
@@ -292,11 +293,9 @@ impl GpuTimestamps {
         f.records.clear();
     }
 
-    /// Allocate a begin/end timestamp pair for a pass and return the
-    /// [`RenderTimestampWrites`] to splice into its descriptor. `None` when the
-    /// query set is full for this frame. Call inline in the pass descriptor,
-    /// only when the pass actually runs.
-    pub fn writes_for(&self, name: &'static str) -> Option<RenderTimestampWrites<'_>> {
+    /// Allocate a begin/end slot pair for `name`, or `None` when the query set
+    /// is full for this frame.
+    fn alloc_pair(&self, name: &'static str) -> Option<u32> {
         let mut f = self.frame.borrow_mut();
         if f.next_slot + 2 > GPU_MAX_SLOTS {
             return None;
@@ -304,7 +303,24 @@ impl GpuTimestamps {
         let base = f.next_slot;
         f.next_slot += 2;
         f.records.push((name, base));
-        Some(RenderTimestampWrites {
+        Some(base)
+    }
+
+    /// Allocate a timestamp pair for a **render** pass and return the
+    /// [`RenderTimestampWrites`] to splice into its descriptor. Call inline in
+    /// the pass descriptor, only when the pass actually runs.
+    pub fn writes_for(&self, name: &'static str) -> Option<RenderTimestampWrites<'_>> {
+        self.alloc_pair(name).map(|base| RenderTimestampWrites {
+            query_set: &self.query_set,
+            beginning_index: Some(base),
+            end_index: Some(base + 1),
+        })
+    }
+
+    /// Allocate a timestamp pair for a **compute** pass and return the
+    /// [`ComputeTimestampWrites`] to pass to `ComputePassDescriptor::with_timestamp_writes`.
+    pub fn writes_for_compute(&self, name: &'static str) -> Option<ComputeTimestampWrites<'_>> {
+        self.alloc_pair(name).map(|base| ComputeTimestampWrites {
             query_set: &self.query_set,
             beginning_index: Some(base),
             end_index: Some(base + 1),

@@ -287,7 +287,12 @@ impl MaterialPrepRenderPass {
         let shadows_bind_group = self.bind_groups.get_shadows_bind_group()?;
 
         let compute_pass = ctx.command_encoder.begin_compute_pass(Some(
-            &ComputePassDescriptor::new(Some("Material Prep Pass")).into(),
+            &ComputePassDescriptor::new(Some("Material Prep Pass"))
+                .with_timestamp_writes_opt(
+                    ctx.gpu_timestamps
+                        .and_then(|t| t.writes_for_compute("Material Prep")),
+                )
+                .into(),
         ));
         compute_pass.set_pipeline(pipeline);
         compute_pass.set_bind_group(0, bind_group, None)?;

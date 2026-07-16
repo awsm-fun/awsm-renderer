@@ -80,7 +80,12 @@ impl EffectsRenderPass {
         workgroup_size: (u32, u32),
     ) -> Result<()> {
         let compute_pass = ctx.command_encoder.begin_compute_pass(Some(
-            &ComputePassDescriptor::new(Some("Effects Pass")).into(),
+            &ComputePassDescriptor::new(Some("Effects Pass"))
+                .with_timestamp_writes_opt(
+                    ctx.gpu_timestamps
+                        .and_then(|t| t.writes_for_compute("Effects")),
+                )
+                .into(),
         ));
 
         compute_pass.set_bind_group(0, self.bind_groups.get_bind_group()?, None)?;

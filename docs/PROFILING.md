@@ -61,10 +61,18 @@ feature, instrumented passes attach `timestampWrites`; after submit the renderer
 `(end − begin)` nanoseconds into the **GPU aggregator**
 (`awsm_renderer::profiling::gpu_timing_stats()`, `memory_stats.gpu_span_timings`).
 
-Currently instrumented passes: **Geometry** (scene rasterization) and **Display**
-(final composite/tonemap). Compute-based passes (culling, unified shading) aren't
-timed yet — see [Extending](#extending-gpu-coverage). Zero-cost when off: no query
-set is created, no timestamp writes are attached.
+Instrumented passes: **Geometry**, **Light Culling**, **Material Classify**,
+**Material Prep**, **Material Opaque** (unified shade), **SSR**, **Bloom**,
+**Effects**, and **Display** — render *and* compute passes. Zero-cost when off:
+no query set is created, no timestamp writes are attached.
+
+> **Reading the Display number.** `Display` is the final fullscreen-triangle
+> tonemap into the **swapchain** texture. Its timestamp routinely reads a few ms
+> even though the shader is trivial — that's the GPU **present / vsync
+> backpressure** wait (the frame is vsync-capped, so with only ~1-2 ms of real
+> work the GPU idles and that wait lands inside the presenting pass's
+> timestamps). It is *not* tonemap cost. Judge real GPU work from the other
+> passes; treat `Display` as "present overhead," not compute.
 
 ### On-screen HUD (`?perfhud`)
 
@@ -92,15 +100,17 @@ a bounded capture ring (readable over MCP) and nothing else — no profiling lay
 
 ## Editor menu
 
-The editor's overflow (`⋯`) menu → runtime toggles, no reload needed:
+The editor's overflow (`⋯`) menu → **Profiling…** opens a modal with runtime
+controls, no reload needed:
 
-- **Toggle perf HUD** — show/hide the overlay.
-- **Cycle CPU profiling (off/frame/sub)** — steps `AwsmRendererLogging::cpu`; auto-shows the HUD when non-off.
-- **Cycle GPU profiling (off/frame/sub)** — steps `AwsmRendererLogging::gpu`.
-- **Toggle DevTools flame chart** — flips the User-Timing mirror.
+- **CPU timing** — segmented `Off / Frame / Sub-frame` → `AwsmRendererLogging::cpu`.
+- **GPU timing** — segmented `Off / Frame / Sub-frame` → `AwsmRendererLogging::gpu`.
+- **Perf HUD** — show/hide the overlay (shown over the canvas, top-left).
+- **DevTools flame chart** — flip the User-Timing mirror.
 
-These mutate the live renderer, so you can turn profiling on, read the numbers,
-and turn it back off to a genuine no-op — all in one session.
+The controls reflect the live renderer state and mutate it directly, so you can
+turn profiling on, read the numbers, and turn it back off to a genuine no-op —
+all in one session. Turning a tier on auto-shows the HUD.
 
 ---
 
@@ -167,16 +177,24 @@ setters are `renderer.logging.cpu/gpu`, `profiling::set_devtools_measure`, and
 
 ## Extending GPU coverage
 
-To time another pass, add `timestamp_writes` to its `RenderPassDescriptor`:
+Render pass — add `timestamp_writes` to its `RenderPassDescriptor`:
 
 ```rust
 timestamp_writes: ctx.gpu_timestamps.and_then(|t| t.writes_for("My Pass")),
 ```
 
-The slot allocator (32 timestamp slots = 16 pass-pairs) hands out a begin/end
-pair per call and folds the resolved duration under that name. Compute passes need
-the analogous `ComputeTimestampWrites` path (not yet wired). Keep the total under
-16 instrumented passes/frame or the extras are silently untimed (logged budget).
+Compute pass — use the descriptor builder helper:
+
+```rust
+ComputePassDescriptor::new(Some("My Pass"))
+    .with_timestamp_writes_opt(ctx.gpu_timestamps.and_then(|t| t.writes_for_compute("My Pass")))
+```
+
+The slot allocator (64 timestamp slots = 32 pass-pairs) hands out a begin/end
+pair per call and folds the resolved duration under that name; extras beyond the
+budget are silently untimed. Still uninstrumented: per-light **Shadow Generation**
+passes and the **Bloom** downsample/upsample chain (only the build dispatch is
+timed) — add them the same way if you need that granularity.
 
 ---
 

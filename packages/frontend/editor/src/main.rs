@@ -14,6 +14,7 @@ mod fs;
 mod help_modal;
 mod material_mode;
 mod prelude;
+mod profiling_modal;
 mod remote;
 mod scene_mode;
 
@@ -74,9 +75,6 @@ pub fn main() {
             // and early toasts have somewhere to surface).
             .child(Modal::render())
             .child(Toast::render())
-            // Shared perf overlay (hidden unless `?perfhud` or toggled from the
-            // Profiling menu). Self-manages visibility + sampling.
-            .child(awsm_renderer_web_shared::perf_hud::render())
             // The WebGPU canvas is created here (triggering create_context); the
             // Scene workspace reparents it into the viewport slot once mounted.
             .child(engine::canvas::render_canvas(clone!(ctx_ready => move |canvas| {

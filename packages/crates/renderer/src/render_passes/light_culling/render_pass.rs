@@ -65,7 +65,12 @@ impl LightCullingRenderPass {
         let tiles_y = buffers.tiles_y();
 
         let compute_pass = ctx.command_encoder.begin_compute_pass(Some(
-            &ComputePassDescriptor::new(Some("Light Culling")).into(),
+            &ComputePassDescriptor::new(Some("Light Culling"))
+                .with_timestamp_writes_opt(
+                    ctx.gpu_timestamps
+                        .and_then(|t| t.writes_for_compute("Light Culling")),
+                )
+                .into(),
         ));
         compute_pass.set_bind_group(0, bind_group, None)?;
         // Stage A — per-2D-tile side-plane cull (one workgroup per tile,

@@ -149,7 +149,12 @@ impl MaterialOpaqueRenderPass {
         // accumulator (disjoint per-bucket slots, no cross-bucket dependency).
         {
             let compute_pass = ctx.command_encoder.begin_compute_pass(Some(
-                &ComputePassDescriptor::new(Some("Material Opaque - Unified Shade")).into(),
+                &ComputePassDescriptor::new(Some("Material Opaque - Unified Shade"))
+                    .with_timestamp_writes_opt(
+                        ctx.gpu_timestamps
+                            .and_then(|t| t.writes_for_compute("Material Opaque Shade")),
+                    )
+                    .into(),
             ));
             compute_pass.set_bind_group(0u32, main_bind_group, None)?;
             compute_pass.set_bind_group(1u32, lights_bind_group, None)?;
@@ -222,7 +227,12 @@ impl MaterialOpaqueRenderPass {
     /// material-LOD inputs.
     pub fn render(&self, ctx: &RenderContext, _renderables: &[Renderable]) -> Result<()> {
         let compute_pass = ctx.command_encoder.begin_compute_pass(Some(
-            &ComputePassDescriptor::new(Some("Material Opaque Pass")).into(),
+            &ComputePassDescriptor::new(Some("Material Opaque Pass"))
+                .with_timestamp_writes_opt(
+                    ctx.gpu_timestamps
+                        .and_then(|t| t.writes_for_compute("Material Opaque")),
+                )
+                .into(),
         ));
 
         let (main_bind_group, lights_bind_group, texture_bind_group, shadows_bind_group) =

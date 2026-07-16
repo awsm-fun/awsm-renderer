@@ -267,7 +267,11 @@ impl SsrRenderPass {
     ) -> Result<()> {
         {
             let compute_pass = ctx.command_encoder.begin_compute_pass(Some(
-                &ComputePassDescriptor::new(Some("SSR Trace + Resolve + Temporal")).into(),
+                &ComputePassDescriptor::new(Some("SSR Trace + Resolve + Temporal"))
+                    .with_timestamp_writes_opt(
+                        ctx.gpu_timestamps.and_then(|t| t.writes_for_compute("SSR")),
+                    )
+                    .into(),
             ));
             // Trace dims match the `ssr` target: halved when half-res, through
             // the SAME `crate::size::half_extent` helper `RenderTexturesInner`

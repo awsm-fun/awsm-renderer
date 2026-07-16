@@ -146,9 +146,10 @@ fn content(data: &HudData) -> Dom {
     })
 }
 
-/// The overlay `Dom`. Mount it once near the app root; it shows/hides itself via
-/// the shared [`visible`] signal and updates while shown. Renders nothing (an
-/// empty comment node) when hidden.
+/// The overlay `Dom`. Mount it inside a **positioned** container (e.g. the
+/// editor viewport) — it anchors to that container's top-left corner so it sits
+/// over the canvas rather than the app chrome. Shows/hides itself via the shared
+/// [`visible`] signal and updates while shown; renders nothing when hidden.
 pub fn render() -> Dom {
     html!("div", {
         .child_signal(VISIBLE.signal().map(|vis| {
@@ -156,10 +157,10 @@ pub fn render() -> Dom {
                 return None;
             }
             Some(html!("div", {
-                .style("position", "fixed")
+                .style("position", "absolute")
                 .style("top", "8px")
-                .style("right", "8px")
-                .style("z-index", "2147483647")
+                .style("left", "8px")
+                .style("z-index", "40")
                 .style("pointer-events", "none")
                 .style("font-family", "ui-monospace, SFMono-Regular, Menlo, monospace")
                 .style("font-size", "11px")
