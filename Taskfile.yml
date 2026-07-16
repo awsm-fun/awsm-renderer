@@ -214,7 +214,7 @@ tasks:
       - echo "✅ v{{.VERSION}} tag (re)pushed at $(git rev-parse --short HEAD) — MCP/LOD binary build running on CI."
 
   crates-publish:
-    desc: "Publish the 13 awsm-renderer library crates to crates.io (dependency-ordered)."
+    desc: "Publish the 14 awsm-renderer library crates to crates.io (dependency-ordered)."
     cmds:
       - task: _crates-publish
         vars:
@@ -253,7 +253,11 @@ tasks:
     cmds:
       - |
         set -eu
-        CRATES="awsm-renderer-curves awsm-renderer-geometry awsm-renderer-tangents awsm-renderer-scene awsm-renderer-core awsm-renderer-materials awsm-renderer-particles awsm-renderer-meshgen awsm-renderer awsm-renderer-glb-export awsm-renderer-gltf awsm-renderer-gltf-convert awsm-renderer-lod-bake awsm-renderer-scene-loader"
+        # Dependency-leaf-first. NOTE: dev-dependencies count for ordering —
+        # awsm-renderer dev-depends on awsm-renderer-lod-bake (a cluster-DAG test),
+        # and a dev-dep carrying a `version` stays in the published manifest, so
+        # lod-bake must be on crates.io before awsm-renderer packages.
+        CRATES="awsm-renderer-curves awsm-renderer-geometry awsm-renderer-tangents awsm-renderer-scene awsm-renderer-core awsm-renderer-materials awsm-renderer-particles awsm-renderer-meshgen awsm-renderer-glb-export awsm-renderer-gltf-convert awsm-renderer-lod-bake awsm-renderer awsm-renderer-gltf awsm-renderer-scene-loader"
         # Workspace version (first `version = "…"` inside [workspace.package]).
         VERSION="$(awk '/^\[workspace\.package\]/{f=1} f&&/^version = /{gsub(/[",]/,"");print $3;exit}' Cargo.toml)"
         case "{{.PUBLISH_ARGS}}" in *--dry-run*) DRY=1;; *) DRY=0;; esac
