@@ -947,9 +947,20 @@ impl EditorController {
                         ))
                     }
                 }
-                // Nothing to change (no meshes, or all already this kind) — a no-op
-                // that still records cleanly (empty Batch inverts to empty Batch).
-                Box::pin(self.apply_inner(EditorCommand::Batch(cmds))).await
+                // Apply each SetKind through the normal kind path (re-materializes,
+                // bumps structure_rev) and collect inverses into one `Batch` so undo
+                // reverts the whole subtree in a single step. `Batch` itself is
+                // handled in `apply`, not `apply_inner`, so we inline the loop here.
+                // Nothing to change (no meshes / all already this kind) → empty
+                // Batch, which inverts cleanly.
+                let mut inverses = Vec::new();
+                for c in cmds {
+                    if let Some(inv) = Box::pin(self.apply_inner(c)).await? {
+                        inverses.push(inv);
+                    }
+                }
+                inverses.reverse();
+                Ok(Some(EditorCommand::Batch(inverses)))
             }
             EditorCommand::PatchKind { id, patch } => {
                 // RFC 7386 merge-patch over the node's serialized kind (§3). Reject
