@@ -44,8 +44,13 @@ async () => {
     await d({ cmd: 'select_material_variant', node: n, variant: v });
     await d({ cmd: 'set_builtin_param', node: n, param: 'base_color', value: base });
   }
-  // per-mesh opt-out: MCP tool set_mesh_lod {node, enabled:false} on the third
-  // (a SetKind under the hood — run via the MCP client, or patch the kind here)
+  // Collapse the two lod-on spheres to raw geometry so they lower to GLB and get
+  // a discrete LOD chain baked (bare primitives stay procedural and bake no LOD).
+  // They keep the default `Discrete` kind. Opt the third sphere OUT (kind None) so
+  // the player test can contrast tri-drop-at-distance vs no-drop.
+  await d({ cmd: 'collapse_mesh_stack', mesh: ID(0x10) });
+  await d({ cmd: 'collapse_mesh_stack', mesh: ID(0x11) });
+  await d({ cmd: 'patch_kind', id: ID(0x12), patch: { mesh: { lod: { kind: 'none' } } } });
   await d({ cmd: 'set_camera_orbit', yaw: 0.4, pitch: 0.35, radius: 10, look_at: [0, 0.9, 0] });
   await d({ cmd: 'set_view_options', grid: false, gizmos: false, light_gizmos: false });
   await q({ query: 'wait_render_settled' });
