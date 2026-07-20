@@ -637,7 +637,7 @@ where
     }
 }
 
-/// Filename for a view-only cluster ("nanite") asset's baked DAG side file
+/// Filename for a view-only cluster ("cluster") asset's baked DAG side file
 /// (`<source>.clusters.bin`). The SAME name the runtime player fetches
 /// (`scene-loader`'s `NodeKind::ClusterMesh` arm via `cluster_mesh_filename`), so
 /// one written file serves BOTH editor reload AND the player bundle.
@@ -645,7 +645,7 @@ fn cluster_filename(source: AssetId) -> String {
     awsm_renderer_lod_bake::cluster_mesh_filename(&source.0.to_string())
 }
 
-/// The cluster ("nanite") source ids referenced by the LIVE scene's
+/// The cluster ("cluster") source ids referenced by the LIVE scene's
 /// `NodeKind::ClusterMesh` nodes (one baked DAG per source, shared across nodes).
 fn cluster_sources(ctrl: &EditorController) -> std::collections::HashSet<AssetId> {
     use crate::engine::scene::NodeKind;
@@ -693,7 +693,7 @@ fn cluster_sources_from_project(project: &EditorProject) -> std::collections::Ha
 /// [`cluster_cache`](crate::engine::bridge::cluster_cache). JSON (the exact
 /// `serde_json` form the `awsm-renderer-lod-bake` CLI writes + the runtime fetches), so one
 /// file serves editor reload AND the player bundle. Closes the cluster half of the
-/// session-local-only persistence gap: a view-only nanite import now survives
+/// session-local-only persistence gap: a view-only cluster import now survives
 /// Save → reload (and ships in the player bundle).
 pub fn cluster_files(ctrl: &EditorController) -> Vec<(String, Vec<u8>)> {
     use crate::engine::bridge::cluster_cache;
@@ -1186,7 +1186,7 @@ pub async fn load_from_dir(
         dir.read_bytes(&path).await.map_err(|e| e.to_string())
     })
     .await;
-    // Re-read view-only cluster ("nanite") DAGs into the cluster_cache BEFORE the
+    // Re-read view-only cluster ("cluster") DAGs into the cluster_cache BEFORE the
     // scene materialises, so ClusterMesh nodes render after a cold reload.
     restore_cluster_meshes(&project, |path| async move {
         dir.read_bytes(&path).await.map_err(|e| e.to_string())
@@ -1280,7 +1280,7 @@ pub async fn apply_inmem(
         async move { bytes.ok_or_else(|| format!("missing in-memory texture: {path}")) }
     })
     .await;
-    // Re-read view-only cluster ("nanite") DAGs into the cluster_cache BEFORE the
+    // Re-read view-only cluster ("cluster") DAGs into the cluster_cache BEFORE the
     // scene materialises (declared input), so ClusterMesh nodes render after the
     // round-trip reload.
     restore_cluster_meshes(&project, |path| {
@@ -1319,9 +1319,6 @@ pub async fn apply_inmem(
     ctrl.dirty.set_neq(false);
     ctrl.env_saved_baseline
         .set(ctrl.scene.environment.get_cloned());
-    // Loaded nodes may author `lod.far_swap` — register the chains now that
-    // every mesh is materialized.
-    crate::engine::bridge::lod_sync::resync().await;
     Ok(())
 }
 
@@ -1386,7 +1383,7 @@ pub async fn load_project_from_url(ctrl: &EditorController, base_url: &str) -> E
     restore_skinned_templates(&project, http_bytes!()).await;
     // Re-upload imported textures BEFORE apply_project (declared load input).
     restore_textures(&project, http_bytes!()).await;
-    // Re-read cluster ("nanite") DAGs BEFORE apply_project (so ClusterMesh nodes render).
+    // Re-read cluster ("cluster") DAGs BEFORE apply_project (so ClusterMesh nodes render).
     restore_cluster_meshes(&project, http_bytes!()).await;
     restore_ktx(&project, http_bytes!()).await;
     // Rehydrate custom-material buffer assets BEFORE apply_project.
@@ -1442,7 +1439,7 @@ mod cluster_persistence_tests {
     fn cluster_node(source: AssetId, children: Vec<EditorNode>) -> EditorNode {
         EditorNode {
             id: NodeId::new(),
-            name: "nanite".into(),
+            name: "cluster".into(),
             transform: Trs::default(),
             kind: NodeKind::ClusterMesh {
                 cluster: ClusterMeshRef { source },
@@ -1460,7 +1457,7 @@ mod cluster_persistence_tests {
     /// A project with several `ClusterMesh` nodes (incl. a nested one) yields every
     /// distinct source — so `cluster_files` writes them all on Save and
     /// `restore_cluster_meshes` re-reads them all on Load. This is the persistence
-    /// contract that lets MULTIPLE nanite meshes survive Save→reload (A3); the
+    /// contract that lets MULTIPLE cluster meshes survive Save→reload (A3); the
     /// writer/restorer both iterate exactly this set.
     #[test]
     fn cluster_sources_from_project_collects_every_mesh() {

@@ -188,13 +188,13 @@ pub struct SkinJoint {
     pub index: u32,
 }
 
-/// Reference to a **pre-baked cluster-LOD ("nanite") mesh**: the imported source
+/// Reference to a **pre-baked cluster-LOD ("cluster") mesh**: the imported source
 /// asset whose baked cluster DAG (`assets/<source>.clusters.bin`) + base geometry
 /// (`assets/<source>.glb`) the renderer streams through the bounded cluster
 /// pipeline. Like [`SkinnedMeshRef`], this is a deliberately **view-only**,
 /// renderer-managed geometry category — it is NOT a `MeshDef`/`ModifierStack`, so
 /// it carries no editable stack/overrides. It exists so a large mesh can be brought
-/// into the editor and rendered as nanite (bounded draw + VRAM) via the SAME path
+/// into the editor and rendered as cluster (bounded draw + VRAM) via the SAME path
 /// the player uses, without the dense visibility-geometry explode that would
 /// otherwise crash on a multi-million-triangle mesh.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -277,11 +277,11 @@ pub enum NodeKind {
         #[serde(default)]
         lod: MeshLodConfig,
     },
-    /// A **pre-baked cluster-LOD ("nanite") mesh** — a third, deliberately
+    /// A **pre-baked cluster-LOD ("cluster") mesh** — a third, deliberately
     /// **view-only** geometry category (like [`Self::SkinnedMesh`], not editable):
     /// no `MeshDef`/stack, rendered + cut by the renderer's cluster pipeline from a
     /// baked `assets/<source>.clusters.bin`. Brought in via the offline `awsm-renderer-lod-bake`
-    /// pre-bake so a huge mesh views as nanite in-editor (bounded) without re-baking
+    /// pre-bake so a huge mesh views as cluster in-editor (bounded) without re-baking
     /// or a dense explode. No `lod` toggle — it IS the LOD.
     ClusterMesh {
         cluster: ClusterMeshRef,
@@ -356,66 +356,101 @@ fn default_true_msc() -> bool {
     true
 }
 
-/// Per-mesh LOD opt-**out** flag. LOD is the norm for a general game renderer,
-/// so this defaults **on**; authors flip it off for hero assets where any
-/// simplification is unacceptable, already-low-poly meshes (bake cost, no
-/// benefit), or HUD/UI meshes.
+/// Per-mesh level-of-detail configuration. LOD is the norm for a general game
+/// renderer, so meshes default to a sensible [`LodKind`] derived from their
+/// class + triangle count (see [`LodKind::default_for`]); authors override per
+/// mesh.
 ///
 /// Authored in the editable project (persists in `project.toml` like
-/// [`MeshShadowConfig`]) and consumed by the **export-time** LOD bake — it has
-/// no meaning at import. One `enabled: bool` to start; grows later to carry
-/// params (target ratios, level count, error threshold).
-#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+/// [`MeshShadowConfig`]) and consumed by the **export-time** LOD bake, which
+/// commits to exactly the chosen kind and records it explicitly in the bundle.
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct MeshLodConfig {
-    /// Whether the export bake generates simplified LOD levels for this mesh.
-    #[serde(default = "default_true_mlc")]
-    pub enabled: bool,
-    /// Authored far-LOD swap ("geometry mipmap"): beyond the distance where
-    /// `error` (object-space metres) projects below the screen-error budget,
-    /// the renderer draws `node`'s mesh INSTEAD of this one (visibility swap
-    /// via the discrete-LOD registry — the far node stops drawing on its own).
-    /// The canonical cure for grazing-angle shimmer of small relief detail
-    /// (grooves, rails, tubes): author a flat/simplified far version and swap.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub far_swap: Option<MeshLodFarSwap>,
+    /// Which LOD strategy the export bake produces for this mesh — exactly one
+    /// of None / Cluster / Discrete.
+    #[serde(default)]
+    pub kind: LodKind,
 }
 
-/// See [`MeshLodConfig::far_swap`].
+/// The LOD strategy for a mesh. Exactly one applies; the bake commits to it and
+/// records it explicitly in the bundle so the player never has to probe files
+/// or feature flags to decide what a mesh is.
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
-pub struct MeshLodFarSwap {
-    /// The node whose mesh replaces this one at distance.
-    pub node: NodeId,
-    /// Object-space error (metres) hidden by the swap — typically the relief
-    /// depth flattened away (e.g. 0.06 for 6cm floor grooves). Bigger = swaps
-    /// closer to the camera.
-    #[serde(default = "default_far_swap_error")]
-    pub error: f32,
+pub enum LodKind {
+    /// No LOD — the mesh always draws whole (below the bake floor, hero assets,
+    /// UI/HUD, or already-low-poly).
+    None,
+    /// Cluster virtual geometry: the mesh is baked into a cluster DAG and the
+    /// GPU cuts a distance-appropriate subset *within the single mesh* each
+    /// frame. Static rigid `Mesh` only — skinned/instanced geometry can't
+    /// cluster.
+    Cluster,
+    /// Discrete whole-mesh LOD: the baker produces progressively simplified
+    /// whole-mesh copies (auto QEM), one selected per instance by projected
+    /// screen error.
+    Discrete(DiscreteLod),
 }
 
-/// The authored far-swap error a fresh swap starts at (6cm — a typical shallow
-/// relief depth). Single source of truth shared by the serde default and the
-/// editor's far-swap picker so a UI-minted swap and a hand-authored one agree.
-pub const DEFAULT_FAR_SWAP_ERROR: f32 = 0.05;
-
-fn default_far_swap_error() -> f32 {
-    DEFAULT_FAR_SWAP_ERROR
+/// Tunable settings for [`LodKind::Discrete`] auto-simplification.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub struct DiscreteLod {
+    /// Number of simplified levels baked beyond the base mesh.
+    #[serde(default = "default_discrete_levels")]
+    pub levels: u32,
+    /// Per-level triangle fraction of the previous level (0.5 → levels at 0.5,
+    /// 0.25, 0.125 of base). Lower = more aggressive = flattens fine relief that
+    /// shimmers at grazing angles.
+    #[serde(default = "default_discrete_reduction")]
+    pub reduction: f32,
 }
 
-impl Default for MeshLodConfig {
+/// Triangle floor below which a static mesh gets no cluster DAG (cluster LOD
+/// only pays off on dense geometry); also the default-kind threshold.
+pub const CLUSTER_MIN_TRIANGLES: usize = 4096;
+/// Triangle floor below which a mesh gets no discrete chain.
+pub const DISCRETE_MIN_TRIANGLES: usize = 512;
+
+fn default_discrete_levels() -> u32 {
+    3
+}
+fn default_discrete_reduction() -> f32 {
+    0.5
+}
+
+impl Default for DiscreteLod {
     fn default() -> Self {
         Self {
-            enabled: true,
-            far_swap: None,
+            levels: default_discrete_levels(),
+            reduction: default_discrete_reduction(),
         }
     }
 }
 
-fn default_true_mlc() -> bool {
-    true
+impl LodKind {
+    /// The smart default kind for a mesh at authoring time. `cluster_eligible`
+    /// is true only for static rigid `Mesh` nodes (skinned/instanced can't
+    /// cluster). `tri_count` is the base triangle count.
+    pub fn default_for(cluster_eligible: bool, tri_count: usize) -> Self {
+        if cluster_eligible && tri_count >= CLUSTER_MIN_TRIANGLES {
+            LodKind::Cluster
+        } else if tri_count >= DISCRETE_MIN_TRIANGLES {
+            LodKind::Discrete(DiscreteLod::default())
+        } else {
+            LodKind::None
+        }
+    }
+}
+
+impl Default for LodKind {
+    fn default() -> Self {
+        LodKind::Discrete(DiscreteLod::default())
+    }
 }
 
 impl NodeKind {
@@ -682,8 +717,7 @@ mod tests {
                     receive: true,
                 },
                 lod: MeshLodConfig {
-                    enabled: false,
-                    far_swap: None,
+                    kind: LodKind::None,
                 },
             }),
             locked: false,
@@ -701,7 +735,7 @@ mod tests {
                 assert_eq!(def.transforms[1].scale, [2.0, 2.0, 2.0]);
                 assert_eq!(def.per_instance_colors.len(), 1);
                 assert!(!def.shadow.cast);
-                assert!(!def.lod.enabled);
+                assert_eq!(def.lod.kind, LodKind::None);
             }
             other => panic!("expected Instancer, got {other:?}"),
         }
@@ -731,34 +765,34 @@ mod tests {
         }
     }
 
-    /// A `MeshLodConfig` round-trips through TOML, and a legacy `Mesh` node with
-    /// no `lod` table defaults to `enabled = true` (LOD is opt-out, default on).
-    /// This is the backwards-compat guarantee for projects saved before the LOD
-    /// toggle existed.
+    /// Each `LodKind` round-trips through TOML, and a mesh kind with no `lod`
+    /// table (or no `kind` field) defaults to the type default (`Discrete`).
     #[test]
-    fn mesh_lod_config_default_and_round_trip() {
-        // Explicit opt-out survives a round-trip.
-        let off = MeshLodConfig {
-            enabled: false,
-            far_swap: None,
-        };
-        let text = toml::to_string(&off).expect("serialize");
-        let back: MeshLodConfig = toml::from_str(&text).expect("deserialize");
-        assert_eq!(off, back);
+    fn mesh_lod_config_kinds_round_trip() {
+        for kind in [
+            LodKind::None,
+            LodKind::Cluster,
+            LodKind::Discrete(DiscreteLod {
+                levels: 4,
+                reduction: 0.35,
+            }),
+        ] {
+            let cfg = MeshLodConfig { kind };
+            let text = toml::to_string(&cfg).expect("serialize");
+            let back: MeshLodConfig = toml::from_str(&text).expect("deserialize");
+            assert_eq!(cfg, back, "round-trip {kind:?}");
+        }
 
-        // A legacy mesh kind TOML with no `lod` table → enabled defaults true.
-        let legacy = r#"
+        // A mesh kind TOML with no `lod` table → the default kind.
+        let bare = r#"
             [mesh]
             mesh = "00000000-0000-0000-0000-000000000000"
         "#;
-        let kind: NodeKind = toml::from_str(legacy).expect("deserialize legacy mesh kind");
+        let kind: NodeKind = toml::from_str(bare).expect("deserialize bare mesh kind");
         assert_eq!(
             kind.mesh_lod().copied(),
-            Some(MeshLodConfig {
-                enabled: true,
-                far_swap: None
-            }),
-            "absent `lod` must default to enabled (opt-out, default on)"
+            Some(MeshLodConfig::default()),
+            "absent `lod` must default to MeshLodConfig::default()"
         );
     }
 }

@@ -1,4 +1,4 @@
-//! Session-local cache of parsed **cluster-LOD ("nanite") meshes** for view-only
+//! Session-local cache of parsed **cluster-LOD ("cluster") meshes** for view-only
 //! [`NodeKind::ClusterMesh`](awsm_renderer_scene::tree::NodeKind::ClusterMesh)
 //! nodes.
 //!
@@ -39,7 +39,7 @@ pub fn get(source: AssetId) -> Option<Rc<ClusterMesh>> {
 }
 
 /// Drop a cached cluster mesh — called from `node_sync::remove_node` when the last
-/// `ClusterMesh` node referencing this source is deleted, so a view-only nanite
+/// `ClusterMesh` node referencing this source is deleted, so a view-only cluster
 /// import doesn't leak its parsed DAG (tens of MB) for the rest of the session.
 pub fn remove(source: AssetId) {
     CLUSTER_MESHES.with(|c| {

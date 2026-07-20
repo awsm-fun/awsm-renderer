@@ -1465,7 +1465,7 @@ impl EditorController {
                 crate::engine::bridge::texture_cache::clear();
                 crate::engine::bridge::material::clear_texture_keys();
                 crate::engine::bridge::buffer_cache::clear();
-                // View-only cluster ("nanite") DAGs live only in `cluster_cache`;
+                // View-only cluster ("cluster") DAGs live only in `cluster_cache`;
                 // drop it too so the round-trip exercises the real save→reload
                 // restore (`restore_cluster_meshes` re-reads the persisted DAG).
                 crate::engine::bridge::cluster_cache::clear();
@@ -3739,12 +3739,12 @@ impl EditorController {
                     .map_err(|e| crate::error::EditorError::msg(format!("import failed: {e}")))?;
                 Ok(None)
             }
-            // Import a PRE-BAKED nanite asset (awsm-renderer-lod-bake CLI output) as a
+            // Import a PRE-BAKED cluster asset (awsm-renderer-lod-bake CLI output) as a
             // VIEW-ONLY ClusterMesh node, rendered via the bounded cluster pipeline
             // (the player path). No in-editor bake, no dense explode — large meshes
             // come in without crashing. Geometry is non-editable (it IS the LOD).
-            EditorCommand::ImportNaniteAsset { clusters_url } => {
-                let _activity = crate::engine::activity::begin_activity("Importing nanite asset…");
+            EditorCommand::ImportClusterAsset { clusters_url } => {
+                let _activity = crate::engine::activity::begin_activity("Importing cluster asset…");
                 match fetch_cluster_mesh(&clusters_url).await {
                     Ok(cm) => {
                         // Register an asset so the node's `ClusterMeshRef` resolves
@@ -3762,7 +3762,7 @@ impl EditorController {
                         let node_id = NodeId::new();
                         let spec = crate::controller::node_spec::NodeSpec {
                             id: node_id,
-                            name: "Nanite Mesh".to_string(),
+                            name: "Cluster Mesh".to_string(),
                             transform: awsm_renderer_editor_protocol::Trs::default(),
                             kind: NodeKind::ClusterMesh {
                                 cluster: awsm_renderer_editor_protocol::ClusterMeshRef {
@@ -3784,7 +3784,7 @@ impl EditorController {
                         Ok(Some(EditorCommand::Delete { id: node_id }))
                     }
                     Err(e) => {
-                        Toast::error(format!("Nanite import failed: {e}"));
+                        Toast::error(format!("Cluster import failed: {e}"));
                         Ok(None)
                     }
                 }
@@ -7295,8 +7295,8 @@ thread_local! {
     )> = const { RefCell::new((Vec::new(), Vec::new(), Vec::new())) };
 }
 
-/// Fetch + parse a pre-baked cluster-LOD ("nanite") DAG (`<id>.clusters.bin`, JSON)
-/// from a URL — the `awsm-renderer-lod-bake` CLI output the `ImportNaniteAsset` command brings
+/// Fetch + parse a pre-baked cluster-LOD ("cluster") DAG (`<id>.clusters.bin`, JSON)
+/// from a URL — the `awsm-renderer-lod-bake` CLI output the `ImportClusterAsset` command brings
 /// into the editor as a view-only [`NodeKind::ClusterMesh`].
 async fn fetch_cluster_mesh(url: &str) -> Result<awsm_renderer_lod_bake::ClusterMesh, String> {
     let resp = gloo_net::http::Request::get(url)
@@ -9749,7 +9749,7 @@ fn palette_from_import(
 }
 
 fn structure_key(kind: &NodeKind) -> String {
-    use awsm_renderer_editor_protocol::{CameraProjection, LightConfig, MaterialShading};
+    use awsm_renderer_editor_protocol::{CameraProjection, LightConfig, LodKind, MaterialShading};
     match kind {
         // The Mesh inspector rows depend on the assigned material's shading model
         // (its shared variant) — read it from the per-mesh inline store, which is
@@ -9776,12 +9776,17 @@ fn structure_key(kind: &NodeKind) -> String {
                         .join(",")
                 })
                 .unwrap_or_default();
-            // Far-swap presence flips whether the error dial + hint rows exist,
-            // so it belongs in the structural key (adding/clearing a far node
-            // must rebuild the inspector; a pure error scrub must not).
-            let far = kind.mesh_lod().and_then(|l| l.far_swap).is_some();
+            // The LOD kind discriminant flips which rows exist (Discrete adds the
+            // levels/reduction settings), so it belongs in the structural key; a
+            // pure settings scrub keeps the same discriminant and must not rebuild.
+            let lod = match kind.mesh_lod().map(|l| l.kind) {
+                Some(LodKind::None) => "none",
+                Some(LodKind::Cluster) => "cluster",
+                Some(LodKind::Discrete(_)) => "discrete",
+                None => "-",
+            };
             format!(
-                "mesh/{shading}/{:?}/{palette}/fs{far}",
+                "mesh/{shading}/{:?}/{palette}/lod:{lod}",
                 kind.selected_variant_id()
             )
         }

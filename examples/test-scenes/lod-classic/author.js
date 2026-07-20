@@ -1,16 +1,18 @@
 // test-scene: lod-classic
 // Discrete LOD chains: three high-poly spheres (96x64 segments, ~12k tris
-// each) — two with LOD enabled (the default), one explicitly OPTED OUT via
-// set_mesh_lod {node, enabled:false} (the per-mesh opt-out lock).
-// LOD levels are generated AT EXPORT BAKE (the bake-at-export design), and
-// switching happens in the PLAYER at runtime — the editor always renders
+// each). After this author.js runs, the bake step sets each sphere's LOD kind
+// via MCP `set_mesh_lod`: lod-on-a / lod-on-b -> `discrete` (these ~12k-tri
+// static meshes would otherwise smart-default to Cluster), lod-opt-out ->
+// `none`. LOD levels are generated AT EXPORT BAKE (the bake-at-export design),
+// and switching happens in the PLAYER at runtime — the editor always renders
 // full resolution. What this scene locks:
-//   - the per-mesh `lod.enabled` flag round-trips project -> bundle
-//     (bundle scene.toml carries [nodes.kind.mesh.lod] enabled=true/false);
+//   - the per-mesh `lod.kind` round-trips project -> bundle, and the Discrete
+//     manifest is recorded INLINE on the mesh asset's `scene.toml` entry
+//     (`AssetEntry.lod`) — no `.lod.toml` sidecar in the bundle;
 //   - the baked bundle is the fixture for plan 007's player test, which
 //     loads it at near/far radii and asserts the rendered triangle count
-//     DROPS at distance for the lod-on spheres and does NOT for the
-//     opted-out one.
+//     DROPS at distance for the discrete spheres and does NOT for the
+//     `none` one.
 async () => {
   const d = async (o) => {
     const r = await window.wasmBindings.editor_dispatch_json(JSON.stringify(o));

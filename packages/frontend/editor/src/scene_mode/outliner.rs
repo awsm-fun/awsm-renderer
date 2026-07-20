@@ -817,7 +817,7 @@ pub fn kind_icon(kind: &NodeKind) -> &'static str {
         // No dedicated rig/skeleton glyph in the icon set; a skinned mesh is
         // still a mesh, so reuse the cube.
         NodeKind::SkinnedMesh { .. } => "cube",
-        // A nanite/cluster mesh is still a mesh — reuse the cube glyph.
+        // A cluster/cluster mesh is still a mesh — reuse the cube glyph.
         NodeKind::ClusterMesh { .. } => "cube",
         NodeKind::Curve(_) => "curve",
         NodeKind::InstancesAlongCurve(_) => "layers",

@@ -76,7 +76,7 @@ dedicated tool reaches it indirectly · **dispatch** = escape hatch only ·
 | `verify_roundtrip` | `verify_roundtrip` | tool | Returns the census report inline. |
 | `import_model_from_url` | `import_model_from_url` | tool | Returns the import report; settle-visible. |
 | `import_model_from_file` | — | n/a | Session-local `blob:` URL from the file picker — meaningless over MCP (use `import_model_from_url`). |
-| `import_nanite_asset` | `import_nanite_asset` | tool | |
+| `import_cluster_asset` | `import_cluster_asset` | tool | |
 | `import_texture_from_url` | `import_texture_from_url` | tool | |
 | `import_ktx_env_from_url` | `set_environment` (URL args) | wrapper | The tool mints the asset + patches the slot in one call; direct dispatch works for pre-registering. |
 | `add_material_asset` | — | dispatch | Content-Browser generic create; agents use `add_builtin_material` / `add_custom_material` (typed, id-echoing). Fine as dispatch-only. |

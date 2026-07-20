@@ -14,9 +14,9 @@ use crate::engine::scene::{
 };
 use crate::prelude::*;
 use awsm_renderer_editor_protocol::{
-    AssetSource, BillboardMode, CubeFaceUpdateRate, CurveDef, DecalConfig, EvsmCutoff,
-    FarCascadeUpdateRate, LightShadowConfig, LightShadowHardness, LineDef, MaterialAlphaMode,
-    MaterialDef, MaterialShading, MeshLodConfig, MeshLodFarSwap, MeshShadowConfig,
+    AssetSource, BillboardMode, CubeFaceUpdateRate, CurveDef, DecalConfig, DiscreteLod, EvsmCutoff,
+    FarCascadeUpdateRate, LightShadowConfig, LightShadowHardness, LineDef, LodKind,
+    MaterialAlphaMode, MaterialDef, MaterialShading, MeshLodConfig, MeshShadowConfig,
     ParticleEmitterDef, PrimitiveShape, ProceduralTextureDef, SpriteAlphaMode, SpriteDef,
     TextureDef, TextureExport,
 };
@@ -271,7 +271,7 @@ fn kind_editor(node: &Arc<Node>) -> Dom {
                 }))
             })
         }
-        // A pre-baked cluster ("nanite") mesh: view-only, rendered via the bounded
+        // A pre-baked cluster ("cluster") mesh: view-only, rendered via the bounded
         // cluster pipeline from its baked DAG (same path the player uses). Not
         // editable — no modifier stack / per-vertex ops; it IS the LOD. Shows the
         // material + shadow surface only.
@@ -279,8 +279,8 @@ fn kind_editor(node: &Arc<Node>) -> Dom {
             let selected = node_material_instance(node);
             html!("div", {
             .child(info_section(
-                "Nanite Mesh",
-                "A pre-baked cluster-LOD mesh, rendered as nanite (bounded draw + VRAM) \
+                "Cluster Mesh",
+                "A pre-baked cluster-LOD mesh, rendered as cluster (bounded draw + VRAM) \
                  via the renderer's cluster pipeline — the same path the player uses, no \
                  in-editor re-baking. View-only: it has no editable geometry stack (bake \
                  it offline with the awsm-renderer-lod-bake CLI). Move/scale it like any node and \
@@ -3983,116 +3983,110 @@ fn set_mesh_lod(node: &Arc<Node>, lod: MeshLodConfig) {
 }
 
 fn mesh_lod_editor(node: &Arc<Node>, lod: MeshLodConfig) -> Dom {
-    let enabled = Mutable::new(lod.enabled);
-    spawn_local(clone!(enabled, node => async move {
+    // Cluster virtual geometry is static-rigid only — skinned meshes deform and
+    // instanced meshes draw many copies, neither of which the cluster path
+    // supports. Offer Cluster only for a plain `Mesh` node.
+    let cluster_eligible = matches!(node.kind.get_cloned(), NodeKind::Mesh { .. });
+
+    let mut options: Vec<(String, String)> = vec![("none".into(), "None".into())];
+    if cluster_eligible {
+        options.push(("cluster".into(), "Cluster".into()));
+    }
+    options.push(("discrete".into(), "Discrete".into()));
+
+    let current = match lod.kind {
+        LodKind::None => "none",
+        LodKind::Cluster => "cluster",
+        LodKind::Discrete(_) => "discrete",
+    };
+    let sel = Mutable::new(current.to_string());
+    spawn_local(clone!(sel, node => async move {
         let mut first = true;
-        enabled.signal().for_each(move |on| {
+        sel.signal_cloned().for_each(move |val| {
             let fire = !first;
             first = false;
             clone!(node => async move {
                 if !fire { return; }
-                if let Some(lod) = node.kind.get_cloned().mesh_lod().copied() {
-                    if lod.enabled != on {
-                        set_mesh_lod(&node, MeshLodConfig { enabled: on, ..lod });
-                    }
+                let Some(cur) = node.kind.get_cloned().mesh_lod().copied() else { return; };
+                let next_kind = match val.as_str() {
+                    "none" => LodKind::None,
+                    "cluster" => LodKind::Cluster,
+                    // Re-selecting Discrete keeps its tuned settings; a fresh
+                    // switch starts from the defaults.
+                    _ => match cur.kind {
+                        LodKind::Discrete(d) => LodKind::Discrete(d),
+                        _ => LodKind::Discrete(DiscreteLod::default()),
+                    },
+                };
+                if next_kind != cur.kind {
+                    set_mesh_lod(&node, MeshLodConfig { kind: next_kind });
                 }
             })
         }).await;
     }));
 
-    let mut section = Section::new("LOD").child(row("Enabled", toggle(enabled)));
+    let mut section = Section::new("LOD").child(row("Kind", select(sel, options)));
 
-    // Authored far-swap ("geometry mipmap") is only consumed for static Mesh
-    // bases: the renderer's resync (bridge::lod_sync) registers a discrete LOD
-    // chain for `NodeKind::Mesh` alone, so surfacing the control on skinned/other
-    // kinds would persist a swap that silently never fires. Scope it to meshes.
-    if matches!(node.kind.get_cloned(), NodeKind::Mesh { .. }) {
-        section = section.child(far_swap_editor(node, lod));
+    // Discrete settings — only under Discrete. The inspector rebuilds when the
+    // kind discriminant flips (see `structure_key`), so these rows appear/vanish
+    // in sync; a settings scrub keeps the discriminant and doesn't rebuild.
+    if let LodKind::Discrete(d) = lod.kind {
+        let n_levels = node.clone();
+        section = section.child(row(
+            "Levels",
+            NumField::new(d.levels as f64)
+                .min(1.0)
+                .max(8.0)
+                .step(1.0)
+                .on_change(move |v| {
+                    let Some(cur) = n_levels.kind.get_cloned().mesh_lod().copied() else {
+                        return;
+                    };
+                    if let LodKind::Discrete(mut d) = cur.kind {
+                        d.levels = (v as u32).max(1);
+                        set_mesh_lod(
+                            &n_levels,
+                            MeshLodConfig {
+                                kind: LodKind::Discrete(d),
+                            },
+                        );
+                    }
+                })
+                .render(),
+        ));
+        let n_red = node.clone();
+        section = section.child(row(
+            "Reduction",
+            NumField::new(d.reduction as f64)
+                .min(0.1)
+                .max(0.9)
+                .step(0.05)
+                .on_change(move |v| {
+                    let Some(cur) = n_red.kind.get_cloned().mesh_lod().copied() else {
+                        return;
+                    };
+                    if let LodKind::Discrete(mut d) = cur.kind {
+                        d.reduction = v as f32;
+                        set_mesh_lod(
+                            &n_red,
+                            MeshLodConfig {
+                                kind: LodKind::Discrete(d),
+                            },
+                        );
+                    }
+                })
+                .render(),
+        ));
+        section = section.child(html!("div", {
+            .style("font-size", "11.5px").style("color", "var(--text-3)").style("line-height", "1.5")
+            .style("margin-top", "4px")
+            .text("Auto-simplified whole-mesh levels swapped by distance. Lower \
+                   reduction = more aggressive = flattens fine relief that shimmers \
+                   at grazing angles.")
+        }));
     }
 
     section.render()
-}
-
-/// Far-swap ("geometry mipmap") sub-editor for a static Mesh base: pick the
-/// low-detail far node that replaces this mesh at distance, and — once one is
-/// set — tune the object-space error that decides how close the swap happens.
-/// The inspector rebuilds when far_swap presence flips (see `structure_key` in
-/// the controller), so the error row's build-time presence stays in sync.
-fn far_swap_editor(node: &Arc<Node>, lod: MeshLodConfig) -> Dom {
-    let id = node.id;
-    // Eligible far targets: every OTHER static mesh node. The 1:1 contract (a far
-    // node belongs to exactly one base — see lod_sync) and self-reference are
-    // both handled here by excluding self; picking a node already used by another
-    // base is left to the author (the last writer wins in the registry diff).
-    let far_nodes: Vec<(NodeId, String)> =
-        collect_kind_nodes(|k| matches!(k, NodeKind::Mesh { .. }))
-            .into_iter()
-            .filter(|(nid, _)| *nid != id)
-            .collect();
-    let current = lod.far_swap.map(|fs| fs.node).unwrap_or_else(NodeId::nil);
-
-    let n_pick = node.clone();
-    let picker = ref_picker("Far mesh", far_nodes, current, move |picked| {
-        let Some(cur) = n_pick.kind.get_cloned().mesh_lod().copied() else {
-            return;
-        };
-        let far_swap = if picked == NodeId::nil() {
-            None
-        } else {
-            // Changing only the target keeps the tuned error; a fresh swap starts
-            // at the shared default.
-            let error = cur
-                .far_swap
-                .map(|fs| fs.error)
-                .unwrap_or(awsm_renderer_editor_protocol::DEFAULT_FAR_SWAP_ERROR);
-            Some(MeshLodFarSwap {
-                node: picked,
-                error,
-            })
-        };
-        set_mesh_lod(&n_pick, MeshLodConfig { far_swap, ..cur });
-    });
-
-    // No far node yet → just the picker.
-    let Some(fs) = lod.far_swap else {
-        return html!("div", { .child(picker) });
-    };
-
-    // Far node set → picker + error dial + a one-line semantics hint.
-    let n_err = node.clone();
-    let dial = row(
-        "Swap error",
-        NumField::new(fs.error as f64)
-            .min(0.0)
-            .step(0.005)
-            .suffix(" m")
-            .on_change(move |v| {
-                let Some(cur) = n_err.kind.get_cloned().mesh_lod().copied() else {
-                    return;
-                };
-                if let Some(mut f) = cur.far_swap {
-                    f.error = v as f32;
-                    set_mesh_lod(
-                        &n_err,
-                        MeshLodConfig {
-                            far_swap: Some(f),
-                            ..cur
-                        },
-                    );
-                }
-            })
-            .render(),
-    );
-    html!("div", {
-        .child(picker)
-        .child(dial)
-        .child(html!("div", {
-            .style("font-size", "11.5px").style("color", "var(--text-3)").style("line-height", "1.5")
-            .style("margin-top", "4px")
-            .text("Object-space relief (metres) the swap flattens — e.g. 0.06 for \
-                   6 cm floor grooves. Larger swaps to the far mesh closer to the camera.")
-        }))
-    })
 }
 
 fn mesh_shadow_editor(node: &Arc<Node>, shadow: MeshShadowConfig) -> Dom {

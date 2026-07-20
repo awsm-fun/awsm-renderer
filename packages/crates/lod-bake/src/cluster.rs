@@ -1,7 +1,7 @@
 //! Cluster (meshlet) generation for the cluster-LOD DAG (Phase B).
 //!
 //! Partitions a mesh's triangles into compact clusters of ~`target_triangles`
-//! each (Nanite-style meshlets, ~128 tris). Pure Rust: meshoptimizer's C
+//! each (Cluster-style meshlets, ~128 tris). Pure Rust: meshoptimizer's C
 //! `buildMeshlets` can't build for the `wasm32-unknown-unknown` editor (Apple
 //! clang has no wasm target — the same constraint that made the simplifier
 //! pure-Rust). Growth is greedy over edge adjacency, picking the adjacent

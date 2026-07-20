@@ -108,7 +108,7 @@ const EXPECTED_COMMANDS: &[&str] = &[
     "import_ktx_env_from_url",
     "import_model_from_file",
     "import_model_from_url",
-    "import_nanite_asset",
+    "import_cluster_asset",
     "import_texture_from_url",
     "insert",
     "insert_keyframe",

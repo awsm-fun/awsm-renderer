@@ -36,7 +36,7 @@ pub struct ClusterLodRenderPass {
     /// layout once (it needs the init ctx) and stamp a fresh bind group per mesh.
     proto_cut_bg: ClusterCutBindGroups,
     proto_compaction_bg: ClusterCompactionBindGroups,
-    /// Resident cluster meshes — one per nanite asset, keyed by `render_mesh`.
+    /// Resident cluster meshes — one per cluster asset, keyed by `render_mesh`.
     /// SEVERAL render simultaneously: each owns its page-pool buffers, cut +
     /// compaction bind groups, page count, and (under `cluster_paging`) its own
     /// per-frame paging manager. Empty until a cluster mesh loads.

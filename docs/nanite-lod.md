@@ -1,3 +1,60 @@
+# Capabilities & How To Use
+
+Every mesh has **one explicit LOD kind** — always exactly one of **`None`**,
+**`Cluster`**, or **`Discrete`** — chosen at authoring time, committed to by the
+export bake, and recorded in the bundle. The player never guesses: it reads the
+kind straight from the asset. (We use the term **Cluster** for this throughout —
+it is the Nanite-style approach, under a consistent name.)
+
+| Kind | What it does | Which meshes | Authoring |
+|---|---|---|---|
+| **None** | Always draws the mesh whole — no LOD. | any | hero assets, already-low-poly meshes, UI/HUD |
+| **Cluster** | Bakes a cluster DAG; the GPU cuts a distance-appropriate subset *within the single mesh* each frame (continuous, no whole-mesh pop). | **static rigid `Mesh` only** — skinned/instanced geometry can't cluster | automatic for dense static meshes |
+| **Discrete** | Bakes progressively simplified **whole-mesh copies** (auto QEM); one is selected per instance by projected screen error (classic whole-mesh pop). Tunable: `levels` + `reduction`. | any (the only option for skinned/morph/instanced) | automatic for mid-size meshes; tune when fine relief shimmers |
+
+## Choosing the kind
+
+Every mesh gets a **smart default** by class + triangle count, which you can override:
+
+- static `Mesh`: **Cluster** if ≥ 4096 triangles, **Discrete** if ≥ 512, else **None**.
+- skinned / morph / instanced: **Discrete** if ≥ 512 triangles, else **None** (no Cluster — they deform or draw many copies).
+
+Override per mesh in the editor inspector's **LOD** section (a Kind selector; under
+Discrete, `Levels` + `Reduction` fields), or over MCP:
+
+```
+set_mesh_lod { node, kind: "none" | "cluster" | "discrete",
+               discrete_levels?, discrete_reduction? }
+```
+
+**Tuning Discrete:** `levels` is how many simplified copies to bake (default 3);
+`reduction` is each level's triangle fraction of the previous (default 0.5 →
+levels at 0.5 / 0.25 / 0.125 of base). **Lower reduction = more aggressive =
+flattens fine relief** (grooves, thin ridges) that shimmers at grazing angles —
+the setting to reach for instead of hand-authoring a flat far mesh.
+
+**Heavy static meshes** (millions of triangles) that are too big to import and bake
+in-browser: pre-bake offline with the `awsm-renderer-lod-bake` CLI and import the
+result as a view-only `ClusterMesh` via `import_cluster_asset { clusters_url }`.
+Same cluster pipeline, just not editable.
+
+## Per-build gating (default off = no LOD)
+
+LOD subsystems are **runtime feature flags that default OFF**, and flag-off is
+byte-identical to a renderer with no LOD code. A default player build draws every
+mesh whole until the host turns the flags on:
+
+- **discrete** LOD (the `lod` feature) — honors `Discrete` assets.
+- **cluster virtual geometry** (the `virtual_geometry` feature) — honors `Cluster`
+  assets; when off, a `Cluster` mesh draws its base whole.
+- **cluster streaming / paging** — bound VRAM for multi-million-triangle assets.
+
+So the bundle records *intent* (this mesh is Cluster / Discrete / None); the build
+decides which kinds it *honors*. During editor preview these are on by default
+(escape hatches `?novg` / `?nopaging`; streaming via `?stream` / `?streambudget=N`).
+
+---
+
 # Level of Detail (LOD) & Virtual Geometry
 
 Built-in LOD lets the renderer draw the *right amount of geometry* for how much of
@@ -10,7 +67,7 @@ the techniques that work for rigid geometry don't survive vertex deformation.
 
 | Mesh class | LOD strategy | Detail varies… |
 |---|---|---|
-| **Static rigid** (`Mesh`, no skin/morph) | **Cluster virtual geometry** (Nanite-style) | *within* a single mesh, per-cluster, by distance |
+| **Static rigid** (`Mesh`, no skin/morph) | **Cluster virtual geometry** | *within* a single mesh, per-cluster, by distance |
 | **Deforming** (skinned, or morph-target) | **Discrete LOD chain** | per *instance*, whole-mesh, by distance |
 
 Both feed the same visibility buffer and the same deferred material passes, so a
@@ -151,13 +208,13 @@ Meshes below a small triangle floor, or with LOD disabled (below), are skipped.
 
 There are two levels of control:
 
-**1. Per-mesh, in the editor (content).** Each mesh has a **LOD toggle** in its
-inspector (alongside the shadow toggles), persisted in the project. It is
-**opt-out / default-on**: meshes get LOD baked unless you explicitly turn it off
-for a specific mesh (e.g. a hero asset you always want at full detail). The same
-toggle is scriptable via the `set_mesh_lod` MCP tool. With it off, that mesh is
-baked and drawn whole, and a per-instance override can also pin an individual
-instance to full detail.
+**1. Per-mesh, in the editor (content).** Each mesh has an explicit **LOD kind**
+(`None` / `Cluster` / `Discrete`) in its inspector, persisted in the project and
+defaulted smartly by class + triangle count (see *Capabilities & How To Use* at
+the top). The bake commits to exactly that kind and records it in the bundle. The
+same control is scriptable via the `set_mesh_lod` MCP tool. `None` draws the mesh
+whole; a per-instance `None` can also pin an individual instance to full detail
+even when the asset baked levels for its siblings.
 
 **2. Per-build, the renderer feature gates (runtime).** The player runtime enables
 LOD through renderer feature flags — discrete LOD, cluster virtual geometry, and
@@ -216,7 +273,7 @@ these gates are exposed as URL flags on the editor's player preview.
 ### Offline pre-bake — `awsm-renderer-lod-bake` CLI
 Baking a heavy mesh in the browser is slow and can exceed GPU buffer limits. The
 `awsm-renderer-lod-bake` binary (crate `awsm-renderer-lod-bake-cli`, in `packages/tools/lod-bake-cli`)
-converts a glTF/GLB **offline** into nanite-ready assets, reusing the exact crates
+converts a glTF/GLB **offline** into cluster-ready assets, reusing the exact crates
 the editor's export bake uses (so output is identical to an in-editor bake).
 
 Install it the same way as the MCP server — prebuilt binaries on GitHub Releases
@@ -242,14 +299,14 @@ Per mesh node it writes `<id>.glb` (base), `<id>.lod{N}.glb` + `<id>.lod.toml`
 welds coincident positions for adjacency (`DagOptions::weld_eps`) so split-vertex
 glTF (UV/normal seams) clusters cleanly instead of degenerating to ~1 tri/cluster.
 
-### Editor — view-only nanite import
+### Editor — view-only cluster import
 A pre-baked asset imports into the editor as a **view-only** `NodeKind::ClusterMesh`
 (a third geometry category alongside `Mesh` and `SkinnedMesh` — not editable; it IS
 the LOD). It renders through the **same cluster pipeline the player uses**
 (`scene-loader::materialize_cluster_mesh`) — no in-editor re-baking and no dense
-visibility-geometry explode — so a multi-million-triangle mesh views as nanite,
-bounded, without crashing the editor. Drive it with the `import_nanite_asset` MCP
-tool (or `EditorCommand::ImportNaniteAsset { clusters_url }`). The editor enables
+visibility-geometry explode — so a multi-million-triangle mesh views as cluster,
+bounded, without crashing the editor. Drive it with the `import_cluster_asset` MCP
+tool (or `EditorCommand::ImportClusterAsset { clusters_url }`). The editor enables
 `virtual_geometry` + `cluster_paging` by default for this (escape: `?novg` /
 `?nopaging`); per-frame cost stays zero for scenes with no resident cluster mesh.
 
@@ -268,11 +325,11 @@ All six headline acceptance claims (crack-free per-cluster cut incl. non-waterti
 multi-million-tri streaming residency; cut bounded by screen not source; deforming →
 discrete chain; flags-off byte-identical; the benchmark) are **shipped + verified**
 with committed tests + on-device evidence. The multi-M benchmark is recorded in
-[`nanite-lod-benchmark.md`](./nanite-lod-benchmark.md) (a 1,081,344-tri source /
+[`cluster-lod-benchmark.md`](./cluster-lod-benchmark.md) (a 1,081,344-tri source /
 2,393,468-tri DAG → ~83 MB bounded pool, M capped to 29,850 tris, cut 4.9k–14.8k tris
 scaling with viewport height) and pinned by the `a6_benchmark_table_recorded` test.
 
-Editor cluster-asset persistence is **shipped**: a view-only nanite import survives
+Editor cluster-asset persistence is **shipped**: a view-only cluster import survives
 Save→reload and ships in the player bundle. `persistence::cluster_files` writes each
 referenced DAG to `assets/<source>.clusters.bin` (from the session-local
 `cluster_cache`, keyed by `AssetId` — not by re-fetching the import URL, so even a
@@ -288,18 +345,18 @@ asymmetrically; and `ClusterMesh::validate` rejects a malformed `.clusters.bin` 
 rather than reading out of bounds. Crack-free coverage spans the UV sphere (A1) and a
 genus-1 torus.
 
-Multiple simultaneous nanite meshes are **shipped**: the cluster pass keys per render
+Multiple simultaneous cluster meshes are **shipped**: the cluster pass keys per render
 mesh (`Vec<ClusterMeshState>`), each editor `ClusterMesh` node materializes
 independently under its own transform, and total residency is bounded by a global cap
 (`per_mesh_budget * GLOBAL_RESIDENCY_MESH_MULTIPLE`) shared across resident meshes — so
 VRAM stays bounded regardless of mesh count (later meshes throttle, then skip with a
 warn). The cut-readback diagnostics sum across all resident meshes. Verified on-device
-with two heavy nanite meshes resident + drawing at once (see
-[`plans/nanite-follow-up.md`](./plans/nanite-follow-up.md), phase A4).
+with two heavy cluster meshes resident + drawing at once (see
+[`plans/cluster-follow-up.md`](./plans/cluster-follow-up.md), phase A4).
 
 The historical "known follow-ups" are now both closed (degenerate-topology robustness
 above; multiple simultaneous meshes here). The plan
-[`plans/nanite-follow-up.md`](./plans/nanite-follow-up.md) records the full breakdown.
+[`plans/cluster-follow-up.md`](./plans/cluster-follow-up.md) records the full breakdown.
 
 ## Follow-up: `clusters.bin` wire compression (recorded 2026-07-14)
 
@@ -313,7 +370,7 @@ footprint.
 Ordered follow-up (own task, not part of the bundle-options work):
 1. **Serialization first**: move `ClusterMesh` off JSON to a compact binary
    (bincode/postcard) — likely the biggest single win, zero precision questions.
-2. **Per-cluster quantization grids**: nanite-standard — each cluster quantizes
+2. **Per-cluster quantization grids**: cluster-standard — each cluster quantizes
    positions against its own bounds (tiny extents ⇒ tiny error), sidestepping
    the whole-mesh precision concerns that shaped the bundle quantization
    "smart" mode.

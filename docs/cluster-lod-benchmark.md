@@ -1,9 +1,9 @@
-# Nanite-style cluster-LOD — multi-million-triangle benchmark (A6)
+# Cluster-style cluster-LOD — multi-million-triangle benchmark (A6)
 
-On-device benchmark backing the north-star claims in [`docs/nanite-lod.md`](../nanite-lod.md)
+On-device benchmark backing the north-star claims in [`docs/cluster-lod.md`](../cluster-lod.md)
 §"Streaming residency (how multi-million-triangle assets fit)": **bounded draw** (cut tri
 count tracks screen resolution + pixel-error budget, *not* source size) and **bounded VRAM**
-(residency holds only the working set). Captured iter 39 (2026-06-26) on `nanite`, browser
+(residency holds only the working set). Captured iter 39 (2026-06-26) on `cluster`, browser
 healthy (un-frozen — watertight screenshot + live readbacks), `?vg&paging&trace=sub-frame`.
 
 ## Asset

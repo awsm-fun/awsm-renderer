@@ -473,10 +473,6 @@ async fn add_node(
                         // still recompiling" race for MCP screenshot-after-edit.
                         let _guard = crate::controller::CompileGuard::new();
                         apply_kind(entry, kind, false).await;
-                        // Kind edits can add/remove `lod.far_swap` (or swap the
-                        // mesh a chain points at) — reconcile the authored
-                        // far-swap LOD chains.
-                        crate::engine::bridge::lod_sync::resync().await;
                     }
                 })
             })).await;
@@ -605,7 +601,7 @@ async fn remove_node(node_id: NodeId) {
         // gone. Candidate templates: this node's tracked import id, and (for a
         // skinned node) the template it renders from.
         reclaim_templates_for_removed(&entry, node_id).await;
-        // Free the view-only nanite DAG cache for a deleted ClusterMesh node (last
+        // Free the view-only cluster DAG cache for a deleted ClusterMesh node (last
         // reference only) — closes the editor-side session leak that otherwise grows
         // the wasm heap toward an OOM abort on re-import-heavy sessions.
         reclaim_cluster_cache_for_removed(&entry);
@@ -640,7 +636,7 @@ fn scene_has_skinned_from(aid: AssetId) -> bool {
 }
 
 /// Whether the AUTHORED scene still has a `ClusterMesh` referencing `source`.
-/// Mirror of [`scene_has_skinned_from`] for view-only nanite meshes: keeps the
+/// Mirror of [`scene_has_skinned_from`] for view-only cluster meshes: keeps the
 /// `cluster_cache` free reload-safe (on `apply_project` the new nodes with the same
 /// source are already in `controller().scene`) and duplicate-safe (a duplicated
 /// `ClusterMesh` shares the source, so deleting one must not free the DAG the other
@@ -887,7 +883,7 @@ async fn apply_kind(entry: Arc<RendererNode>, kind: NodeKind, declare_only: bool
         NodeKind::SkinnedMesh { skin, .. } => {
             materialize_skinned_mesh(entry.clone(), skin, selected_material, declare_only).await
         }
-        // A view-only pre-baked nanite mesh: materialize through the SAME cluster
+        // A view-only pre-baked cluster mesh: materialize through the SAME cluster
         // path the player uses (no in-editor re-bake, no dense explode). Cluster
         // data comes from the import-time `cluster_cache`.
         NodeKind::ClusterMesh { cluster, .. } => {
@@ -1634,7 +1630,7 @@ async fn materialize_skinned_mesh(
 
 /// Materialize a view-only [`NodeKind::ClusterMesh`] through the renderer's cluster
 /// pipeline — the SAME `scene-loader::materialize_cluster_mesh` the player uses, so a
-/// huge mesh renders as nanite (bounded draw + VRAM) with no in-editor re-bake and
+/// huge mesh renders as cluster (bounded draw + VRAM) with no in-editor re-bake and
 /// no dense visibility-geometry explode. The cluster DAG comes from the import-time
 /// [`super::cluster_cache`]; the render mesh rides a child of the NODE's transform so
 /// moving/scaling the node moves it. Tracked in `model_*` for teardown like any node.
@@ -1646,7 +1642,7 @@ async fn materialize_cluster_mesh_node(
 ) {
     let Some(cm) = super::cluster_cache::get(cluster.source) else {
         tracing::warn!(
-            "ClusterMesh source {:?}: not in the cluster cache (re-import the nanite asset) — renders empty",
+            "ClusterMesh source {:?}: not in the cluster cache (re-import the cluster asset) — renders empty",
             cluster.source
         );
         return;

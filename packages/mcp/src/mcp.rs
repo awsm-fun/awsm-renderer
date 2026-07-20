@@ -39,8 +39,8 @@ use awsm_renderer_scene::animation::{
     TexTransformProp, TrackTarget, TrackValue, TransformProp,
 };
 use awsm_renderer_scene::{
-    AssetId, EnvSlot, EnvironmentConfig, LightKind, MaterialShading, MeshLodConfig,
-    MeshShadowConfig, NodeId, NodeKind, PrimitiveShape, ToneMappingConfig, Trs,
+    AssetId, DiscreteLod, EnvSlot, EnvironmentConfig, LightKind, LodKind, MaterialShading,
+    MeshLodConfig, MeshShadowConfig, NodeId, NodeKind, PrimitiveShape, ToneMappingConfig, Trs,
 };
 
 use crate::link::{AgentSession, EditorLink, LinkError};
@@ -555,21 +555,19 @@ pub struct SetMeshShadowParams {
 pub struct SetMeshLodParams {
     /// Mesh / SkinnedMesh / InstancesAlongCurve node UUID.
     pub node: String,
-    /// Whether the export-time LOD bake generates simplified levels for this
-    /// mesh. LOD is opt-out (default on); set false for hero/low-poly/UI meshes.
-    pub enabled: bool,
-    /// Authored far-LOD swap target node UUID ("geometry mipmap"): beyond the
-    /// distance where `far_swap_error` metres project below the screen-error
-    /// budget, that node's mesh draws INSTEAD of this one (runtime visibility
-    /// swap; the far node stops drawing on its own while registered). Pass
-    /// null/omit to clear. The far node must be a plain Mesh with exactly one
-    /// primitive, used by only ONE base.
+    /// The LOD strategy — exactly one of `"none"`, `"cluster"`, or `"discrete"`.
+    /// None = the mesh always draws whole. Cluster = baked cluster virtual
+    /// geometry (static rigid `Mesh` only — skinned/instanced can't cluster).
+    /// Discrete = auto-simplified whole-mesh chain swapped by distance.
+    pub kind: String,
+    /// (Discrete only) number of simplified levels baked beyond the base. Default 3.
     #[serde(default)]
-    pub far_swap_node: Option<String>,
-    /// Object-space error (metres) the swap hides — the relief depth being
-    /// flattened (e.g. 0.06 for 6cm floor grooves). Default 0.05.
+    pub discrete_levels: Option<u32>,
+    /// (Discrete only) per-level triangle fraction of the previous level (0.5 →
+    /// levels at 0.5, 0.25, 0.125 of base). Lower = more aggressive = flattens
+    /// fine relief that shimmers at grazing angles. Default 0.5.
     #[serde(default)]
-    pub far_swap_error: Option<f32>,
+    pub discrete_reduction: Option<f32>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -643,9 +641,9 @@ pub struct UrlParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
-pub struct ImportNaniteParams {
+pub struct ImportClusterParams {
     /// URL of a pre-baked cluster-LOD DAG file (`<id>.clusters.bin`) produced by the
-    /// `awsm-renderer-lod-bake` CLI. The editor fetches + renders it as a view-only nanite mesh.
+    /// `awsm-renderer-lod-bake` CLI. The editor fetches + renders it as a view-only cluster mesh.
     pub clusters_url: String,
 }
 
@@ -2437,7 +2435,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Set a mesh node's LOD opt-out flag. Works on Mesh, SkinnedMesh, and InstancesAlongCurve nodes; errors on any other kind. `enabled` = the export-time LOD bake generates simplified detail levels for this mesh (opt-out, default on — set false for hero assets, already-low-poly meshes, or HUD/UI meshes). Authored in the editable project and consumed by the player-bundle export bake. Reads the node's current kind, updates only its `lod` config, and re-sends it (one SetKind = one undo step)."
+        description = "Set a mesh node's LOD kind. Works on Mesh, SkinnedMesh, and InstancesAlongCurve nodes; errors on any other kind. `kind` is exactly one of `none` (always draw whole — hero/low-poly/UI meshes), `cluster` (baked cluster virtual geometry — static rigid Mesh only), or `discrete` (auto-simplified whole-mesh chain, tunable via `discrete_levels`/`discrete_reduction`). Authored in the editable project and consumed by the player-bundle export bake, which commits to exactly this kind. Reads the node's current kind, updates only its `lod` config, and re-sends it (one SetKind = one undo step)."
     )]
     async fn set_mesh_lod(
         &self,
@@ -2455,19 +2453,24 @@ impl EditorMcp {
                 None,
             )
         })?;
-        let far_swap = match p.far_swap_node.as_deref() {
-            Some(n) => Some(awsm_renderer_editor_protocol::MeshLodFarSwap {
-                node: parse_node(n)?,
-                error: p
-                    .far_swap_error
-                    .unwrap_or(awsm_renderer_editor_protocol::DEFAULT_FAR_SWAP_ERROR),
-            }),
-            None => None,
+        let lod_kind = match p.kind.as_str() {
+            "none" => LodKind::None,
+            "cluster" => LodKind::Cluster,
+            "discrete" => {
+                let d = DiscreteLod::default();
+                LodKind::Discrete(DiscreteLod {
+                    levels: p.discrete_levels.unwrap_or(d.levels),
+                    reduction: p.discrete_reduction.unwrap_or(d.reduction),
+                })
+            }
+            other => {
+                return Err(McpError::invalid_params(
+                    format!("unknown lod kind `{other}` (expected none|cluster|discrete)"),
+                    None,
+                ))
+            }
         };
-        *lod = MeshLodConfig {
-            enabled: p.enabled,
-            far_swap,
-        };
+        *lod = MeshLodConfig { kind: lod_kind };
         self.dispatch(EditorCommand::SetKind {
             id: node,
             kind: Box::new(kind),
@@ -2806,7 +2809,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Round-trip regression self-test: prove project save→load is lossless END TO END. Serializes the open project to its persisted form, clears EVERY session byte cache (captured meshes, textures, buffers, skinned rigs/bind poses, nanite cluster DAGs, env KTX), reloads through the same path as a directory Load, and returns a JSON report comparing a full save-census before vs after ({ before, after, equal, after_complete, lossless }). DESTRUCTIVE: replaces the open project with the reloaded one; not undoable. Stricter than reload_project_in_memory (which keeps the mesh cache warm). Re-read the report later via editor_query_json({\"query\":\"verify_roundtrip_report\"})."
+        description = "Round-trip regression self-test: prove project save→load is lossless END TO END. Serializes the open project to its persisted form, clears EVERY session byte cache (captured meshes, textures, buffers, skinned rigs/bind poses, cluster cluster DAGs, env KTX), reloads through the same path as a directory Load, and returns a JSON report comparing a full save-census before vs after ({ before, after, equal, after_complete, lossless }). DESTRUCTIVE: replaces the open project with the reloaded one; not undoable. Stricter than reload_project_in_memory (which keeps the mesh cache warm). Re-read the report later via editor_query_json({\"query\":\"verify_roundtrip_report\"})."
     )]
     async fn verify_roundtrip(&self) -> Result<CallToolResult, McpError> {
         // Dispatch (errors — e.g. a serialize failure — propagate here), then
@@ -2852,20 +2855,20 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Import a PRE-BAKED nanite / cluster-LOD asset as a VIEW-ONLY mesh. \
+        description = "Import a PRE-BAKED cluster / cluster-LOD asset as a VIEW-ONLY mesh. \
         `clusters_url` points at a `<id>.clusters.bin` produced offline by the `awsm-renderer-lod-bake` \
         CLI (which converts a glTF/GLB). The editor renders it through the bounded cluster \
         pipeline — the same path the player uses — so a multi-million-triangle mesh views as \
-        nanite (bounded draw + VRAM) without the dense explode that would otherwise crash the \
+        cluster (bounded draw + VRAM) without the dense explode that would otherwise crash the \
         editor. The node is non-editable (no geometry stack / modifiers — it IS the LOD); \
         move/scale it and assign a material like any node. Use this instead of \
         `import_model_from_url` for heavy static meshes."
     )]
-    async fn import_nanite_asset(
+    async fn import_cluster_asset(
         &self,
-        Parameters(p): Parameters<ImportNaniteParams>,
+        Parameters(p): Parameters<ImportClusterParams>,
     ) -> Result<CallToolResult, McpError> {
-        self.dispatch(EditorCommand::ImportNaniteAsset {
+        self.dispatch(EditorCommand::ImportClusterAsset {
             clusters_url: p.clusters_url,
         })
         .await

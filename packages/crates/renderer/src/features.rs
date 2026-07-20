@@ -149,7 +149,7 @@ pub struct RendererFeatures {
     /// the budget (which currently fail to fit), so flag-off is byte-identical.
     /// Requires [`Self::virtual_geometry`]. This is the **intermediate** residency
     /// win; true per-frame paging (stream finer clusters on demand) is the
-    /// follow-up — see `docs/nanite-lod.md (streaming residency).
+    /// follow-up — see `docs/cluster-lod.md (streaming residency).
     pub cluster_streaming: bool,
 
     /// Optional override for the cluster-streaming triangle budget (Phase 5). When

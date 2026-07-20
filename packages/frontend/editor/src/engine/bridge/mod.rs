@@ -12,7 +12,6 @@ pub mod collider_wire;
 pub mod dynamic;
 pub mod env_sync;
 pub mod gltf;
-pub mod lod_sync;
 pub mod material;
 pub mod mesh_cache;
 pub mod mesh_sync;

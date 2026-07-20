@@ -416,13 +416,13 @@ pub enum EditorCommand {
     /// variant `ImportModelFromFile`.
     ImportModelFromUrl { url: String },
 
-    /// Import a PRE-BAKED nanite/cluster-LOD asset (from the `awsm-renderer-lod-bake` CLI) as
+    /// Import a PRE-BAKED cluster/cluster-LOD asset (from the `awsm-renderer-lod-bake` CLI) as
     /// a VIEW-ONLY [`crate::tree::NodeKind::ClusterMesh`] node. `clusters_url` points
     /// at the baked `<id>.clusters.bin`; the editor fetches + parses it, renders it
     /// through the bounded cluster pipeline (the SAME path the player uses — no
     /// in-editor re-baking, no dense explode that would crash on a huge mesh), and
-    /// adds a movable node. View-only: a nanite mesh has no editable geometry stack.
-    ImportNaniteAsset { clusters_url: String },
+    /// adds a movable node. View-only: a cluster mesh has no editable geometry stack.
+    ImportClusterAsset { clusters_url: String },
 
     /// Import a glTF model from a locally-picked file. `url` is a `blob:` object
     /// URL minted from the picked `File`; `name` is the real filename (used for
@@ -1615,7 +1615,7 @@ impl EditorCommand {
             EditorCommand::Reparent { .. } => "Reparent",
             EditorCommand::LoadProjectFromUrl { .. } => "Load project",
             EditorCommand::ImportModelFromUrl { .. } => "Import model",
-            EditorCommand::ImportNaniteAsset { .. } => "Import nanite asset",
+            EditorCommand::ImportClusterAsset { .. } => "Import cluster asset",
             EditorCommand::ImportModelFromFile { .. } => "Import model",
             EditorCommand::ImportTextureFromUrl { .. } => "Import texture",
             EditorCommand::ImportKtxEnvFromUrl { .. } => "Import environment",
