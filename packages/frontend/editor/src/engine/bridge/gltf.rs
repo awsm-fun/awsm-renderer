@@ -136,6 +136,8 @@ fn gltf_sampler(
         mag_filter: mag,
         min_filter: min,
         mipmap_filter: mip,
+        // AUTO: the renderer applies 16× when the filter trio allows it.
+        anisotropy: None,
     };
     (sampler != TextureSampler::default()).then_some(sampler)
 }

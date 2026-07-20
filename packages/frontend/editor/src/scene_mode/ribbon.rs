@@ -102,11 +102,11 @@ fn tab_strip(tab: &Mutable<String>) -> Dom {
     })
 }
 
-/// True if `path` names a pre-baked nanite / cluster-LOD asset (the
+/// True if `path` names a pre-baked cluster / cluster-LOD asset (the
 /// `awsm-renderer-lod-bake` CLI's `<id>.clusters.bin`). Strips any URL query /
 /// fragment first so a served `…/foo.clusters.bin?v=2` still routes to the
-/// nanite path; matches `cluster_mesh_filename`'s `.clusters.bin` suffix.
-fn is_nanite_path(path: &str) -> bool {
+/// cluster path; matches `cluster_mesh_filename`'s `.clusters.bin` suffix.
+fn is_cluster_path(path: &str) -> bool {
     path.split(['?', '#'])
         .next()
         .unwrap_or(path)
@@ -121,7 +121,7 @@ fn is_nanite_path(path: &str) -> bool {
 /// abstracted) **or** pick a local file, routed by extension:
 /// - `.glb` / `.gltf` → `ImportModelFromFile` / `ImportModelFromUrl` (the
 ///   normal editable-mesh path).
-/// - `.clusters.bin`  → `ImportNaniteAsset` (the pre-baked nanite / cluster-LOD
+/// - `.clusters.bin`  → `ImportClusterAsset` (the pre-baked cluster / cluster-LOD
 ///   path — a view-only `ClusterMesh` drawn through the bounded cluster
 ///   pipeline). For a local pick we mint a `blob:` URL; `fetch_cluster_mesh`
 ///   GETs it like any URL.
@@ -144,14 +144,14 @@ fn open_import_model() {
                         let name = file.name();
                         if let Ok(obj_url) = web_sys::Url::create_object_url_with_blob(&file) {
                             spawn_local(async move {
-                                if is_nanite_path(&name) {
-                                    // View-only nanite import. We do NOT revoke the blob:
+                                if is_cluster_path(&name) {
+                                    // View-only cluster import. We do NOT revoke the blob:
                                     // the URL is stored as the asset source and redo
                                     // re-dispatches this command, which re-GETs it — a
                                     // revoked blob would break redo. It lives for the
                                     // session (same session-local lifetime as the cache).
                                     let _ = controller()
-                                        .dispatch(EditorCommand::ImportNaniteAsset { clusters_url: obj_url })
+                                        .dispatch(EditorCommand::ImportClusterAsset { clusters_url: obj_url })
                                         .await;
                                 } else {
                                     // The glb loader copies geometry into GPU templates,
@@ -175,7 +175,7 @@ fn open_import_model() {
                 .child(html!("span", { .style("font-size", "12.5px").style("color", "var(--text-2)").style("line-height", "1.5")
                     .text("Load a model into the scene — paste a URL, or pick a local file below. \
                            A .glb / .gltf imports as an editable mesh; a pre-baked .clusters.bin \
-                           (awsm-renderer-lod-bake output) imports as a view-only nanite mesh.") }))
+                           (awsm-renderer-lod-bake output) imports as a view-only cluster mesh.") }))
                 .child(TextInput::new(url.clone()).placeholder("https://\u{2026}/model.glb").render())
                 .child(FilePicker::new()
                     .with_accept(".glb,.gltf,.clusters.bin")
@@ -194,8 +194,8 @@ fn open_import_model() {
                         let u = url.get_cloned();
                         if u.trim().is_empty() { return; }
                         spawn_local(async move {
-                            let cmd = if is_nanite_path(&u) {
-                                EditorCommand::ImportNaniteAsset { clusters_url: u }
+                            let cmd = if is_cluster_path(&u) {
+                                EditorCommand::ImportClusterAsset { clusters_url: u }
                             } else {
                                 EditorCommand::ImportModelFromUrl { url: u }
                             };

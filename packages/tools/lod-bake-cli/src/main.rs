@@ -1,4 +1,4 @@
-//! `awsm-renderer-lod-bake` — offline nanite/LOD pre-processor.
+//! `awsm-renderer-lod-bake` — offline cluster/LOD pre-processor.
 //!
 //! Reads a glTF/GLB mesh and writes the same pre-baked assets the editor's
 //! export-time bake produces ([`controller::lod_bake`] in the editor crate),
@@ -37,7 +37,7 @@ const LOD_RATIOS: &[f32] = &[0.5, 0.25, 0.125];
 #[command(
     name = "awsm-renderer-lod-bake",
     version,
-    about = "Pre-bake a glTF/GLB mesh into nanite-ready cluster-LOD + discrete-LOD assets (offline)."
+    about = "Pre-bake a glTF/GLB mesh into cluster-ready cluster-LOD + discrete-LOD assets (offline)."
 )]
 struct Args {
     /// Input glTF/GLB file (self-contained: `.glb`, or `.gltf` with embedded /
@@ -45,7 +45,7 @@ struct Args {
     input: PathBuf,
 
     /// Output directory for the baked assets (created if missing). Defaults to
-    /// `<input-dir>/<input-stem>.nanite/`.
+    /// `<input-dir>/<input-stem>.cluster/`.
     #[arg(short, long)]
     out: Option<PathBuf>,
 
@@ -54,7 +54,7 @@ struct Args {
     #[arg(long)]
     id: Option<String>,
 
-    /// Skip the cluster-LOD (nanite) bake.
+    /// Skip the cluster-LOD (cluster) bake.
     #[arg(long)]
     no_clusters: bool,
 
@@ -106,7 +106,7 @@ fn main() -> Result<()> {
 
     let out_dir = args.out.clone().unwrap_or_else(|| {
         let parent = args.input.parent().unwrap_or_else(|| Path::new("."));
-        parent.join(format!("{stem}.nanite"))
+        parent.join(format!("{stem}.cluster"))
     });
     std::fs::create_dir_all(&out_dir)
         .with_context(|| format!("creating output dir {}", out_dir.display()))?;
@@ -166,7 +166,7 @@ fn bake_one(out_dir: &Path, asset_id: &str, mesh: &MeshData, args: &Args) -> Res
     });
     written += write_file(out_dir, &format!("{asset_id}.glb"), &base_glb)?;
 
-    // Cluster-LOD (nanite) DAG.
+    // Cluster-LOD (cluster) DAG.
     if !args.no_clusters && tris >= args.cluster_min {
         let dag = build_cluster_dag(&mesh.positions, &mesh.indices, &DagOptions::default());
         let cm = ClusterMesh::from_dag(

@@ -155,6 +155,13 @@ pub enum BuiltinMaterialParam {
     FlipbookFps,
     /// FlipBook time offset (seconds) — phase/scrub the sheet. FlipBook only.
     FlipbookTimeOffset,
+    /// Secondary/detail blend strengths (secondary-maps extension) — animate
+    /// the VALUE only; the extension enable is pipeline-shaped.
+    SecondaryBaseColorStrength,
+    SecondaryNormalStrength,
+    SecondaryMetallicRoughnessStrength,
+    SecondaryOcclusionStrength,
+    SecondaryEmissiveStrength,
 }
 
 /// Which parameter of a [`crate::cameras::CameraParams`] an animation channel

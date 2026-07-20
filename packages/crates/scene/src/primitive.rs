@@ -243,6 +243,14 @@ pub struct TextureSampler {
     pub min_filter: TextureFilter,
     #[serde(default)]
     pub mipmap_filter: TextureFilter,
+    /// Anisotropic filtering: `None` (default) = AUTO — the renderer applies
+    /// 16× whenever the filter trio allows it (all linear), which keeps thin
+    /// texture detail (etched lines, grates) from dissolving into dashes at
+    /// grazing angles. `Some(1)` disables, `Some(2..=16)` sets an explicit
+    /// level. Ignored (off) when any filter is `nearest` — WebGPU requires
+    /// linear filtering for anisotropy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anisotropy: Option<u16>,
 }
 
 /// glTF `KHR_texture_transform` — an affine transform applied to a texture's UVs

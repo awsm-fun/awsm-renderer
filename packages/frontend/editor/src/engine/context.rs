@@ -227,7 +227,7 @@ fn editor_features() -> RendererFeatures {
         // round-trip (the editable scene registers no chains, so it stays a no-op
         // there regardless).
         lod: url_has_flag("lod"),
-        // Cluster LOD (Phase B). ON by default in the editor so a PRE-BAKED nanite
+        // Cluster LOD (Phase B). ON by default in the editor so a PRE-BAKED cluster
         // asset imported into the editable scene renders through the bounded cluster
         // pipeline (no dense `?vg` explode) without a reload. The per-frame cost is
         // zero for scenes with no cluster mesh (the cut early-outs at
@@ -241,9 +241,9 @@ fn editor_features() -> RendererFeatures {
         cluster_streaming: url_has_flag("stream") || url_flag_value("streambudget").is_some(),
         cluster_streaming_budget: url_flag_value("streambudget").and_then(|v| v.parse().ok()),
         // Cluster-LOD dynamic per-frame paging (Phase 5 Step 2 / Gap B). ON by
-        // default alongside `virtual_geometry` so imported nanite assets page within
+        // default alongside `virtual_geometry` so imported cluster assets page within
         // a bounded VRAM budget in-editor. No-op (early-out) when no cluster mesh is
-        // resident, so non-nanite scenes pay nothing per frame. `?nopaging` forces off.
+        // resident, so non-cluster scenes pay nothing per frame. `?nopaging` forces off.
         cluster_paging: !url_has_flag("nopaging"),
         // Reverse-Z depth convention (plan 003, git history) — ON by
         // default since the 003 rollout completed; `?noreversez` = forward-Z

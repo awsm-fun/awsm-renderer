@@ -9,7 +9,7 @@
 
 use std::sync::Arc;
 
-use awsm_renderer_editor_protocol::PrimitiveShape;
+use awsm_renderer_editor_protocol::{DiscreteLod, LodKind, PrimitiveShape};
 use dominator::EventOptions;
 
 use std::cell::RefCell;
@@ -685,6 +685,16 @@ fn row_context_menu(node: Arc<Node>, x: f64, y: f64, open: Mutable<Option<(f64, 
         MenuItem::new(if prefab { "Unmark prefab" } else { "Mark as prefab" }).icon("layers")
             .on_click(clone!(close => move || { dispatch(EditorCommand::SetPrefab { id, prefab: !prefab }); close(); })).render(),
         menu_sep(),
+        // Bulk LOD: applies to this node (if a mesh) + every descendant mesh, one
+        // undo step. Works on any node kind (Group / Light / …). LOD is opt-in —
+        // meshes default to None.
+        MenuItem::new("LOD → None").icon("mesh")
+            .on_click(clone!(close => move || { dispatch(EditorCommand::SetSubtreeLod { root: id, kind: LodKind::None }); close(); })).render(),
+        MenuItem::new("LOD → Discrete").icon("mesh")
+            .on_click(clone!(close => move || { dispatch(EditorCommand::SetSubtreeLod { root: id, kind: LodKind::Discrete(DiscreteLod::default()) }); close(); })).render(),
+        MenuItem::new("LOD → Cluster").icon("mesh")
+            .on_click(clone!(close => move || { dispatch(EditorCommand::SetSubtreeLod { root: id, kind: LodKind::Cluster }); close(); })).render(),
+        menu_sep(),
         // Reparenting. "Group" wraps the selection in a new Empty parent;
         // "Move to root" un-parents. (Drag-and-drop in the tree also reparents.)
         MenuItem::new("Group selection").icon("layers")
@@ -817,7 +827,7 @@ pub fn kind_icon(kind: &NodeKind) -> &'static str {
         // No dedicated rig/skeleton glyph in the icon set; a skinned mesh is
         // still a mesh, so reuse the cube.
         NodeKind::SkinnedMesh { .. } => "cube",
-        // A nanite/cluster mesh is still a mesh — reuse the cube glyph.
+        // A cluster/cluster mesh is still a mesh — reuse the cube glyph.
         NodeKind::ClusterMesh { .. } => "cube",
         NodeKind::Curve(_) => "curve",
         NodeKind::InstancesAlongCurve(_) => "layers",

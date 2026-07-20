@@ -329,7 +329,7 @@ impl AwsmRenderer {
         removed
     }
 
-    /// Drop any cluster-LOD ("nanite") render state keyed by this mesh — so a
+    /// Drop any cluster-LOD ("cluster") render state keyed by this mesh — so a
     /// removed cluster render mesh `M` doesn't leave a dangling
     /// [`crate::render_passes::cluster_lod::ClusterMeshState`] whose per-frame
     /// paging/cut would then hit `MeshNotFound`. No-op without the `lod` feature or

@@ -306,6 +306,7 @@ impl BindGroups {
             TransparentShadows,
             LightCulling,
             Bloom,
+            Smaa,
             Ssr,
             Effects,
             Display,
@@ -390,6 +391,9 @@ impl BindGroups {
                     // bloom texture (write) + its per-mip pyramid views — all
                     // recreated on resize.
                     functions_to_call.insert(FunctionToCall::Bloom);
+                    // SMAA pre-pass binds composite (read) + its edges/weights
+                    // textures — all recreated on resize/toggle.
+                    functions_to_call.insert(FunctionToCall::Smaa);
                     // SSR binds depth + normal + transparent (read) + the ssr
                     // target (write); all recreated on resize.
                     functions_to_call.insert(FunctionToCall::Ssr);
@@ -827,6 +831,19 @@ impl BindGroups {
                         .bind_groups
                         .recreate_texture_pool(&ctx)?;
                 }
+                FunctionToCall::Smaa => {
+                    // Lazy pass: `None` while SMAA is off (dropped on disable —
+                    // zero-cost). Rebind against the live composite + its own
+                    // textures.
+                    if let Some(smaa) = render_passes.smaa.as_mut() {
+                        let crate::render_passes::smaa::render_pass::SmaaRenderPass {
+                            bind_groups,
+                            textures,
+                            ..
+                        } = smaa;
+                        bind_groups.recreate(&ctx, textures)?;
+                    }
+                }
                 FunctionToCall::Bloom => {
                     // Lazy pass: `None` until bloom is first enabled — its
                     // eventual construction marks `TextureViewRecreate`, so
@@ -858,7 +875,15 @@ impl BindGroups {
                     }
                 }
                 FunctionToCall::Effects => {
-                    render_passes.effects.bind_groups.recreate(&ctx)?;
+                    // Cheap JS-handle clone dodges the smaa/effects split borrow.
+                    let weights_view = render_passes
+                        .smaa
+                        .as_ref()
+                        .map(|s| s.textures.weights_view.clone());
+                    render_passes
+                        .effects
+                        .bind_groups
+                        .recreate(&ctx, weights_view.as_ref())?;
                 }
                 FunctionToCall::Display => {
                     render_passes.display.bind_groups.recreate(&ctx)?;

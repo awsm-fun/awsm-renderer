@@ -305,6 +305,14 @@ pub struct AwsmRenderer {
     pub render_passes: RenderPasses,
     pub environment: Environment,
     pub anti_aliasing: AntiAliasing,
+    /// Supersampling factor: internal render targets are allocated at
+    /// `swap_chain_size * render_scale` and the display pass downsamples
+    /// back to the canvas. 1.0 (the default) is byte-identical to no
+    /// supersampling (the display shader keeps its 1:1 `textureLoad`
+    /// variant). Runtime-settable via [`AwsmRenderer::set_render_scale`];
+    /// clamped to [1.0, 2.0]. NOT persisted scene data — a player/editor
+    /// quality option, same class as MSAA/SMAA.
+    pub(crate) render_scale: f32,
     /// Plan B shared-prep + deferred-shadow config, captured at build time
     /// (`docs/plans/deferred-shared-prep-pass.md`). The shared prep pass is
     /// unconditional; this only carries the `K` shadow-caster sizing knob.
@@ -2372,6 +2380,9 @@ impl AwsmRendererBuilder {
         all_shader_keys.extend(
             render_passes::display::pipeline::DisplayPipelines::shader_cache_keys_for(
                 &post_processing,
+                // Boot is always render_scale 1.0 (the supersample display
+                // variant recompiles via `set_render_scale`).
+                false,
             ),
         );
         // Deferred-boot: create every module SYNCHRONOUSLY without awaiting
@@ -2488,7 +2499,7 @@ impl AwsmRendererBuilder {
             .await?;
         let display_descs = render_passes_descs
             .display_pipelines()
-            .build_descriptors(&post_processing, &gpu, &mut shaders)
+            .build_descriptors(&post_processing, false, &gpu, &mut shaders)
             .await?;
 
         // ── 5. Assemble the cross-renderer compute + render cache
@@ -2662,6 +2673,7 @@ impl AwsmRendererBuilder {
             logging,
             render_textures,
             anti_aliasing,
+            render_scale: 1.0,
             prep_config,
             post_processing,
             picker,

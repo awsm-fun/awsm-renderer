@@ -501,6 +501,14 @@ fn apply_extension_textures(r: &mut AwsmRenderer, pbr: &mut PbrMaterial, def: &M
         p.tex = resolve_opt(r, &e.tex, false, K::MetallicRoughness);
         p.thickness_tex = resolve_opt(r, &e.thickness_tex, false, K::MetallicRoughness);
     }
+    if let (Some(e), Some(p)) = (ext.secondary_maps.as_ref(), pbr.secondary_maps.as_mut()) {
+        p.base_color_tex = resolve_opt(r, &e.base_color_tex, true, K::Albedo);
+        p.normal_tex = resolve_opt(r, &e.normal_tex, false, K::Normal);
+        p.metallic_roughness_tex =
+            resolve_opt(r, &e.metallic_roughness_tex, false, K::MetallicRoughness);
+        p.occlusion_tex = resolve_opt(r, &e.occlusion_tex, false, K::MetallicRoughness);
+        p.emissive_tex = resolve_opt(r, &e.emissive_tex, true, K::Albedo);
+    }
 }
 
 /// Resolve a texture ref → a renderer `MaterialTexture`, uploading the procedural
@@ -677,7 +685,8 @@ fn sampler_for(
         min_filter: Some(filt(s.min_filter)),
         mipmap_filter: Some(mip(s.mipmap_filter)),
         ..Default::default()
-    };
+    }
+    .with_anisotropy_policy(s.anisotropy);
     r.textures.get_sampler_key(&r.gpu, key).ok()
 }
 

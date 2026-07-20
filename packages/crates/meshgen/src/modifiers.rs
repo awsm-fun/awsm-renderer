@@ -114,32 +114,94 @@ fn displace(mesh: &mut MeshData, expr: &str) {
 
 /// Revolve a 2D `(height, radius)` profile around the Y axis. `angle` radians of
 /// sweep (`TAU` = closed surface of revolution); `segments` radial divisions.
+///
+/// Hard edges: a **repeated profile point** is an explicit crease, and any bend
+/// sharper than ~45° between adjacent profile segments creases automatically.
+/// Crease rows are emitted twice (one vertex ring per side) so
+/// `compute_vertex_normals` can't smooth a machined corner into a glow band.
 pub fn lathe(profile: &[[f32; 2]], segments: u32, angle: f32) -> MeshData {
     let segs = segments.max(3) as usize;
-    let rows = profile.len();
-    if rows < 2 {
+
+    // Collapse consecutive duplicate points into explicit creases.
+    let mut pts: Vec<[f32; 2]> = Vec::with_capacity(profile.len());
+    let mut crease: Vec<bool> = Vec::with_capacity(profile.len());
+    for &p in profile {
+        if let Some(&last) = pts.last() {
+            if (p[0] - last[0]).abs() < 1e-6 && (p[1] - last[1]).abs() < 1e-6 {
+                *crease.last_mut().expect("pts non-empty here") = true;
+                continue;
+            }
+        }
+        pts.push(p);
+        crease.push(false);
+    }
+    if pts.len() < 2 {
         return MeshData::default();
     }
-    let closed = (angle - TAU).abs() < 1e-4;
-    let cols = if closed { segs } else { segs + 1 };
+
+    // Auto-crease interior points where the profile turns sharper than 45°.
+    const CREASE_COS: f32 = std::f32::consts::FRAC_1_SQRT_2;
+    let seg_dir = |a: [f32; 2], b: [f32; 2]| {
+        let d = [b[0] - a[0], b[1] - a[1]];
+        let len = (d[0] * d[0] + d[1] * d[1]).sqrt();
+        [d[0] / len, d[1] / len]
+    };
+    for i in 1..pts.len() - 1 {
+        let d0 = seg_dir(pts[i - 1], pts[i]);
+        let d1 = seg_dir(pts[i], pts[i + 1]);
+        if d0[0] * d1[0] + d0[1] * d1[1] < CREASE_COS {
+            crease[i] = true;
+        }
+    }
+
+    // Emit rows; a creased interior point becomes twin rows with a degenerate
+    // (skipped) band between them, splitting the normal-smoothing groups.
+    let mut row_pts: Vec<[f32; 2]> = vec![pts[0]];
+    let mut band_skip: Vec<bool> = Vec::new();
+    for i in 1..pts.len() {
+        band_skip.push(false);
+        row_pts.push(pts[i]);
+        if i < pts.len() - 1 && crease[i] {
+            band_skip.push(true);
+            row_pts.push(pts[i]);
+        }
+    }
+
+    // UV v follows cumulative profile arc length (twin rows share a v).
+    let mut arc = vec![0.0f32; row_pts.len()];
+    for i in 1..row_pts.len() {
+        let (a, b) = (row_pts[i - 1], row_pts[i]);
+        arc[i] = arc[i - 1] + ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2)).sqrt();
+    }
+    let total_arc = arc.last().copied().unwrap_or(1.0).max(1e-6);
+
+    let rows = row_pts.len();
+    // Closed revolves also emit segs+1 columns: the seam column is DUPLICATED
+    // (identical positions at angle 0 and TAU) so u can run a full 0..=1.
+    // Index-wrapping the seam instead made the last face interpolate u from
+    // ~(segs-1)/segs back to 0 — a full backwards pass through the texture,
+    // visible as a vertical smear stripe on any textured closed lathe.
+    let cols = segs + 1;
 
     let mut positions = Vec::with_capacity(rows * cols);
     let mut uvs = Vec::with_capacity(rows * cols);
-    for (ri, p) in profile.iter().enumerate() {
+    for (ri, p) in row_pts.iter().enumerate() {
         let (h, r) = (p[0], p[1]);
         for c in 0..cols {
             let t = c as f32 / segs as f32;
             let theta = t * angle;
             positions.push([r * theta.cos(), h, r * theta.sin()]);
-            uvs.push([t, ri as f32 / (rows - 1) as f32]);
+            uvs.push([t, arc[ri] / total_arc]);
         }
     }
     let col_step = cols;
-    let wrap = |c: usize| if closed { (c + 1) % cols } else { c + 1 };
     let mut indices = Vec::new();
-    for ri in 0..rows - 1 {
+    for (ri, skip) in band_skip.iter().enumerate().take(rows - 1) {
+        if *skip {
+            continue;
+        }
         for c in 0..segs {
-            let c1 = wrap(c);
+            let c1 = c + 1;
             let a = ri * col_step + c;
             let b = ri * col_step + c1;
             let d = (ri + 1) * col_step + c;
@@ -580,11 +642,55 @@ mod tests {
     #[test]
     fn lathe_closed_surface_counts() {
         let m = lathe(&[[0.0, 1.0], [1.0, 1.0]], 8, TAU);
-        // 2 rows × 8 cols (closed wraps, no duplicate seam column).
-        assert_eq!(m.positions.len(), 16);
+        // 2 rows × 9 cols (closed revolves duplicate the seam column so the
+        // u coordinate runs a clean 0..=1).
+        assert_eq!(m.positions.len(), 18);
         // 8 quads × 2 tris × 3 = 48 indices.
         assert_eq!(m.indices.len(), 48);
         assert!(m.normals.is_some());
+    }
+
+    #[test]
+    fn lathe_sharp_corner_creases_normals() {
+        // Disc-then-wall profile: a 90° machined corner at (0.0, 1.0).
+        let m = lathe(&[[0.0, 0.5], [0.0, 1.0], [1.0, 1.0]], 8, TAU);
+        // The corner row is emitted twice (3 profile rows -> 4 vertex rows).
+        assert_eq!(m.positions.len(), 4 * 9);
+        let normals = m.normals.as_ref().expect("normals computed");
+        // Ring 1 (disc side of the corner) faces up; ring 2 (wall side,
+        // coincident positions) faces outward — the crease keeps them apart.
+        let disc_n = normals[9]; // row 1, col 0
+        let wall_n = normals[18]; // row 2, col 0
+        assert!(
+            disc_n[1].abs() > 0.9,
+            "disc side should face axially, got {disc_n:?}"
+        );
+        assert!(
+            wall_n[1].abs() < 0.1,
+            "wall side should face radially, got {wall_n:?}"
+        );
+        // Twin rows are coincident in space.
+        assert_eq!(m.positions[9], m.positions[18]);
+    }
+
+    #[test]
+    fn lathe_gentle_profile_stays_smooth() {
+        // A shallow dome-ish arc (bends < 45°) must not split rows.
+        let m = lathe(&[[0.0, 1.0], [0.3, 0.9], [0.5, 0.7], [0.6, 0.4]], 8, TAU);
+        assert_eq!(m.positions.len(), 4 * 9);
+        // 3 bands × 8 quads × 6 indices.
+        assert_eq!(m.indices.len(), 144);
+    }
+
+    #[test]
+    fn lathe_repeated_point_is_explicit_crease() {
+        // Same corner authored via a doubled point instead of a sharp angle:
+        // gentle-angle geometry but the author demands a hard edge.
+        let m = lathe(&[[0.0, 1.0], [0.4, 0.8], [0.4, 0.8], [0.8, 0.6]], 8, TAU);
+        // 3 unique rows + 1 twin at the crease.
+        assert_eq!(m.positions.len(), 4 * 9);
+        // Degenerate band between twins is skipped: 2 real bands only.
+        assert_eq!(m.indices.len(), 96);
     }
 
     #[test]

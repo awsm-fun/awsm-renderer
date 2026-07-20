@@ -120,19 +120,56 @@ pub fn start() {
     // effects/display pipelines (via `set_anti_aliasing`), so it's async + guarded
     // against redundant re-applies, mirroring the MSAA observer above. Transient
     // (not persisted) — a debug-only editor view of what a player might enable.
+    //
+    // Anisotropic filtering — swaps pool samplers to no-aniso twins when off
+    // (one TexturePool bind-group rebuild; no pipeline work).
     spawn_local(async {
-        let mut first = true;
+        controller()
+            .settings
+            .anisotropy
+            .signal()
+            .for_each(move |on| async move {
+                let handle = renderer_handle();
+                let mut r = handle.lock().await;
+                if r.anisotropy_enabled() != on {
+                    r.set_anisotropy_enabled(on);
+                }
+            })
+            .await;
+    });
+
+    // Supersampling render scale — internal targets scale up, display
+    // downsamples (`AwsmRenderer::set_render_scale`). Transient quality
+    // option like MSAA/SMAA. Cheap-ish: only the display pipeline variant
+    // recompiles on the off↔on boundary; targets rebuild lazily next frame.
+    spawn_local(async {
+        controller()
+            .settings
+            .render_scale
+            .signal()
+            .for_each(move |scale| async move {
+                let handle = renderer_handle();
+                let mut r = handle.lock().await;
+                if (r.render_scale() - scale).abs() > f32::EPSILON {
+                    if let Err(e) = r.set_render_scale(scale).await {
+                        tracing::warn!("set_render_scale: {e}");
+                    }
+                }
+            })
+            .await;
+    });
+
+    // The INITIAL emission is NOT skipped (unlike the MSAA observer): defaults
+    // are aligned (both OFF), so the initial fire is normally a no-op via the
+    // `!=` guard — but not skipping it keeps the pair self-healing if either
+    // default ever drifts.
+    spawn_local(async {
         controller()
             .settings
             .smaa
             .signal()
             .for_each(move |on| {
-                let skip = first;
-                first = false;
                 async move {
-                    if skip {
-                        return;
-                    }
                     let handle = renderer_handle();
                     let mut r = handle.lock().await;
                     if r.anti_aliasing.smaa != on {

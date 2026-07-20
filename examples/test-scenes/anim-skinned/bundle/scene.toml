@@ -6,6 +6,19 @@ skybox = "built_in_default"
 specular = "built_in_default"
 irradiance = "built_in_default"
 
+[environment.probe]
+enabled = false
+center = [
+    0.0,
+    0.0,
+    0.0,
+]
+half_extents = [
+    10.0,
+    10.0,
+    10.0,
+]
+
 [shadows]
 sscs_enabled = false
 sscs_step_count = 16
@@ -42,35 +55,39 @@ edge_fade = 0.10000000149011612
 resolution_scale = 0.5
 temporal = false
 temporal_weight = 0.8999999761581421
-
-[assets.aed58a46-5264-4f85-b769-117b8a7c9a51]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = "35d278c7b7b0b9e22881b2c435e41ce8659f230c776ef8780b4a5087abbefaa1"
-texture_encoding = "webp"
-
-[assets.aed58a46-5264-4f85-b769-117b8a7c9a51.source.texture.raster]
-display_name = "Cesium_Man-effect · base color.jpg"
-color_kind = "albedo"
-
-[assets.5e106405-4089-4a2f-bb8d-821ee0280c9a]
-gltf_material_asset_ids = ["294c160d-565c-43de-8599-77ca7837f6c7"]
-gltf_image_asset_ids = ["aed58a46-5264-4f85-b769-117b8a7c9a51"]
-content_hash = ""
-
-[assets.5e106405-4089-4a2f-bb8d-821ee0280c9a.source]
-filename = "5e106405-4089-4a2f-bb8d-821ee0280c9a.glb"
+bvh_reflections = false
 
 [assets.00000000-0000-4000-8000-000000000001]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
+lod = "none"
 
 [assets.00000000-0000-4000-8000-000000000001.source.mesh.primitive.plane]
 width = 8.0
 depth = 8.0
 segments_x = 1
 segments_z = 1
+
+[assets.5e106405-4089-4a2f-bb8d-821ee0280c9a]
+gltf_material_asset_ids = ["294c160d-565c-43de-8599-77ca7837f6c7"]
+gltf_image_asset_ids = ["aed58a46-5264-4f85-b769-117b8a7c9a51"]
+content_hash = ""
+lod = "none"
+
+[assets.5e106405-4089-4a2f-bb8d-821ee0280c9a.source]
+filename = "5e106405-4089-4a2f-bb8d-821ee0280c9a.glb"
+
+[assets.aed58a46-5264-4f85-b769-117b8a7c9a51]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = "35d278c7b7b0b9e22881b2c435e41ce8659f230c776ef8780b4a5087abbefaa1"
+texture_encoding = "ktx2"
+lod = "none"
+
+[assets.aed58a46-5264-4f85-b769-117b8a7c9a51.source.texture.raster]
+display_name = "Cesium_Man-effect · base color.jpg"
+color_kind = "albedo"
 
 [[animations]]
 id = "9e3931ff-bbe4-46cb-b263-d4d32715d454"
@@ -80273,6 +80290,7 @@ emissive = [
 ]
 normal_scale = 1.0
 occlusion_strength = 1.0
+ssr_mask = 1.0
 double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
@@ -80291,7 +80309,7 @@ cast = true
 receive = true
 
 [nodes.kind.mesh.lod]
-enabled = true
+kind = "none"
 
 [[nodes]]
 id = "c9c28731-7ddf-43c8-ab41-0acfd69542d5"
@@ -80978,6 +80996,7 @@ emissive = [
 ]
 normal_scale = 1.0
 occlusion_strength = 1.0
+ssr_mask = 1.0
 double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
@@ -81006,4 +81025,4 @@ cast = true
 receive = true
 
 [nodes.children.children.kind.skinned_mesh.lod]
-enabled = true
+kind = "none"

@@ -137,6 +137,19 @@ pub enum BuiltinParamKind {
     /// FlipBook: time offset in seconds (scalar) — phase/scrub the sheet per
     /// instance. FlipBook only.
     FlipbookTimeOffset,
+    /// Secondary/detail base-color blend strength (scalar 0..1). Applies only
+    /// when the material has the secondary-maps extension enabled (feature-
+    /// gated like EmissiveStrength: a track animates the VALUE, never the
+    /// feature). PBR only.
+    SecondaryBaseColorStrength,
+    /// Secondary/detail normal blend strength (scalar 0..1). PBR only.
+    SecondaryNormalStrength,
+    /// Secondary/detail metallic-roughness blend strength (scalar 0..1). PBR only.
+    SecondaryMetallicRoughnessStrength,
+    /// Secondary/detail occlusion (cavity) blend strength (scalar 0..1). PBR only.
+    SecondaryOcclusionStrength,
+    /// Secondary/detail emissive blend strength (scalar 0..1). PBR only.
+    SecondaryEmissiveStrength,
 }
 
 /// Which built-in material texture slot a `TextureTransform` track drives

@@ -16,7 +16,7 @@ use awsm_renderer_scene::particle::{
     ColorOverLifeDef, EmitterSpaceDef, ForceDef, SizeOverLifeDef, SpawnShapeDef,
 };
 use awsm_renderer_scene::{
-    AssetId, EnvSlot, EnvironmentConfig, MaterialDef, MaterialShading, NodeId, NodeKind,
+    AssetId, EnvSlot, EnvironmentConfig, LodKind, MaterialDef, MaterialShading, NodeId, NodeKind,
     ReflectionProbe, ToneMappingConfig, Trs, VariantId,
 };
 
@@ -148,6 +148,15 @@ pub enum BuiltinTextureSlot {
     Normal,
     Occlusion,
     Emissive,
+    /// Secondary/detail slots (secondary-maps extension). Binding requires the
+    /// mesh's selected material to have `extensions.secondary_maps` enabled
+    /// (enable it on the LIBRARY material via `update_builtin_material`) —
+    /// the extension is pipeline-shaped, the binds are per-mesh data.
+    SecondaryBaseColor,
+    SecondaryNormal,
+    SecondaryMetallicRoughness,
+    SecondaryOcclusion,
+    SecondaryEmissive,
 }
 
 /// A world axis to snap the viewport camera to (the nav-cube directions). The
@@ -220,6 +229,15 @@ pub enum EditorCommand {
     /// kind change, so geometry/material edits update live. Boxed (NodeKind is
     /// the largest payload). Inverse: restore the prior kind. Coalesces.
     SetKind { id: NodeId, kind: Box<NodeKind> },
+
+    /// Set the LOD `kind` on `root` and EVERY descendant LOD-bearing mesh (Mesh /
+    /// SkinnedMesh / Instancer / InstancesAlongCurve) in one shot — the bulk
+    /// authoring control. `root` may be any node (a Group, Light, etc.); it
+    /// applies to itself if it's a mesh and recurses into all children. Expands
+    /// internally to a `Batch` of `SetKind` edits, so it re-materializes each
+    /// affected mesh and undoes as a single step. Inverse: the `Batch` of prior
+    /// kinds.
+    SetSubtreeLod { root: NodeId, kind: LodKind },
 
     /// **Patch** a node's kind with an [RFC 7386](https://datatracker.ietf.org/doc/html/rfc7386)
     /// JSON merge-patch (§3) — the composable alternative to resending the entire
@@ -407,13 +425,13 @@ pub enum EditorCommand {
     /// variant `ImportModelFromFile`.
     ImportModelFromUrl { url: String },
 
-    /// Import a PRE-BAKED nanite/cluster-LOD asset (from the `awsm-renderer-lod-bake` CLI) as
+    /// Import a PRE-BAKED cluster/cluster-LOD asset (from the `awsm-renderer-lod-bake` CLI) as
     /// a VIEW-ONLY [`crate::tree::NodeKind::ClusterMesh`] node. `clusters_url` points
     /// at the baked `<id>.clusters.bin`; the editor fetches + parses it, renders it
     /// through the bounded cluster pipeline (the SAME path the player uses — no
     /// in-editor re-baking, no dense explode that would crash on a huge mesh), and
-    /// adds a movable node. View-only: a nanite mesh has no editable geometry stack.
-    ImportNaniteAsset { clusters_url: String },
+    /// adds a movable node. View-only: a cluster mesh has no editable geometry stack.
+    ImportClusterAsset { clusters_url: String },
 
     /// Import a glTF model from a locally-picked file. `url` is a `blob:` object
     /// URL minted from the picked `File`; `name` is the real filename (used for
@@ -696,6 +714,14 @@ pub enum EditorCommand {
         /// SMAA post-process AA (independent of MSAA).
         #[serde(default)]
         smaa: Option<bool>,
+        /// Supersampling factor (1.0 = off, up to 2.0): internal render
+        /// targets scale up and the display pass downsamples. STRUCTURAL-ish
+        /// (rebuilds render targets next frame); wait_render_settled after.
+        #[serde(default)]
+        render_scale: Option<f32>,
+        /// Anisotropic texture filtering (default on). Runtime sampler swap.
+        #[serde(default)]
+        anisotropy: Option<bool>,
     },
 
     /// Snap the viewport camera to a world axis (the nav-cube directions).
@@ -1585,6 +1611,7 @@ impl EditorCommand {
             EditorCommand::Insert { .. } | EditorCommand::InsertTree { .. } => "Insert node",
             EditorCommand::Delete { .. } => "Delete node",
             EditorCommand::SetKind { .. } => "Edit properties",
+            EditorCommand::SetSubtreeLod { .. } => "Set LOD",
             EditorCommand::PatchKind { .. } => "Patch properties",
             EditorCommand::SetParticleEmitter { .. } => "Configure emitter",
             EditorCommand::SetInstancerTransforms { .. } => "Set instancer transforms",
@@ -1598,7 +1625,7 @@ impl EditorCommand {
             EditorCommand::Reparent { .. } => "Reparent",
             EditorCommand::LoadProjectFromUrl { .. } => "Load project",
             EditorCommand::ImportModelFromUrl { .. } => "Import model",
-            EditorCommand::ImportNaniteAsset { .. } => "Import nanite asset",
+            EditorCommand::ImportClusterAsset { .. } => "Import cluster asset",
             EditorCommand::ImportModelFromFile { .. } => "Import model",
             EditorCommand::ImportTextureFromUrl { .. } => "Import texture",
             EditorCommand::ImportKtxEnvFromUrl { .. } => "Import environment",

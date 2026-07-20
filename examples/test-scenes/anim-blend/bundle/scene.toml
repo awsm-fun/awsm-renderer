@@ -6,6 +6,19 @@ skybox = "built_in_default"
 specular = "built_in_default"
 irradiance = "built_in_default"
 
+[environment.probe]
+enabled = false
+center = [
+    0.0,
+    0.0,
+    0.0,
+]
+half_extents = [
+    10.0,
+    10.0,
+    10.0,
+]
+
 [shadows]
 sscs_enabled = false
 sscs_step_count = 16
@@ -42,24 +55,27 @@ edge_fade = 0.10000000149011612
 resolution_scale = 0.5
 temporal = false
 temporal_weight = 0.8999999761581421
-
-[assets.d272761e-5db0-4a38-8af6-79cd209dc2e9]
-gltf_material_asset_ids = ["f8c021bb-def8-42a5-b588-e3a89d7c16eb"]
-gltf_image_asset_ids = ["9493a3f9-432f-4fc5-9158-235ca6beed56"]
-content_hash = ""
-
-[assets.d272761e-5db0-4a38-8af6-79cd209dc2e9.source]
-filename = "d272761e-5db0-4a38-8af6-79cd209dc2e9.glb"
+bvh_reflections = false
 
 [assets.9493a3f9-432f-4fc5-9158-235ca6beed56]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = "61c8b109ee7f8bf262791933380fafb1465f7b51cbe6472c2d21eff0b31f83a1"
-texture_encoding = "webp"
+texture_encoding = "ktx2"
+lod = "none"
 
 [assets.9493a3f9-432f-4fc5-9158-235ca6beed56.source.texture.raster]
 display_name = "fox_material · base color.png"
 color_kind = "albedo"
+
+[assets.d272761e-5db0-4a38-8af6-79cd209dc2e9]
+gltf_material_asset_ids = ["f8c021bb-def8-42a5-b588-e3a89d7c16eb"]
+gltf_image_asset_ids = ["9493a3f9-432f-4fc5-9158-235ca6beed56"]
+content_hash = ""
+lod = "none"
+
+[assets.d272761e-5db0-4a38-8af6-79cd209dc2e9.source]
+filename = "d272761e-5db0-4a38-8af6-79cd209dc2e9.glb"
 
 [[animations]]
 id = "88c2064f-d06f-45f9-bc99-3124481149ca"
@@ -83445,6 +83461,7 @@ emissive = [
 ]
 normal_scale = 1.0
 occlusion_strength = 1.0
+ssr_mask = 1.0
 double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
@@ -83466,4 +83483,4 @@ cast = true
 receive = true
 
 [nodes.kind.skinned_mesh.lod]
-enabled = true
+kind = "none"

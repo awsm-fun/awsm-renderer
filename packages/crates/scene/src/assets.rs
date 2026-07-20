@@ -270,6 +270,44 @@ pub struct AssetEntry {
     /// on normal-use KTX2 artifacts only.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub texture_two_channel_normal: bool,
+    /// For a mesh asset, the RESOLVED baked LOD — exactly one of None / Cluster /
+    /// Discrete — computed once at export from the referencing nodes' authored
+    /// [`crate::LodKind`](crate::tree::LodKind). This is the single explicit
+    /// record the player loader reads to decide what a mesh is: no probing side
+    /// files or feature flags. `Discrete` carries the level manifest inline (so
+    /// the bundle ships no `.lod.toml` sidecar); the `.lodN.glb` / `.clusters.bin`
+    /// geometry still ships as side files. `None` for non-mesh entries and
+    /// LOD-less meshes.
+    #[serde(default)]
+    pub lod: AssetLod,
+}
+
+/// The resolved, baked LOD of a mesh asset, recorded explicitly in the bundle.
+/// See [`AssetEntry::lod`].
+#[derive(Clone, Debug, PartialEq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssetLod {
+    /// No LOD — the base mesh always draws whole.
+    #[default]
+    None,
+    /// Cluster virtual geometry — the cluster DAG ships at `<id>.clusters.bin`.
+    Cluster,
+    /// Discrete whole-mesh chain. `bounds_radius` + per-level `error` are the
+    /// only data the loader needs; the level meshes ship at `<id>.lod{index}.glb`.
+    Discrete {
+        bounds_radius: f32,
+        levels: Vec<AssetLodLevel>,
+    },
+}
+
+/// One discrete level in [`AssetLod::Discrete`]: `index` names the
+/// `<id>.lod{index}.glb` side file; `error` is the object-space geometric error
+/// the selection metric projects to screen space.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct AssetLodLevel {
+    pub index: u32,
+    pub error: f32,
 }
 
 impl AssetEntry {
@@ -285,6 +323,7 @@ impl AssetEntry {
             content_hash: String::new(),
             texture_encoding: None,
             texture_two_channel_normal: false,
+            lod: AssetLod::None,
         }
     }
 
@@ -300,6 +339,7 @@ impl AssetEntry {
             content_hash,
             texture_encoding: None,
             texture_two_channel_normal: false,
+            lod: AssetLod::None,
         }
     }
 }

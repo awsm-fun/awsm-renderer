@@ -60,6 +60,7 @@ dedicated tool reaches it indirectly · **dispatch** = escape hatch only ·
 | `set_selection` | `set_selection` | tool | Transient. |
 | `set_vertex_selection` | `set_vertex_selection` | tool | Transient viewport highlight. |
 | `set_kind` | `set_mesh_shadow`, `set_mesh_lod`, `set_instance_colors` (read-modify-write wrappers) | wrapper (partial) | The general whole-kind replace is dispatch-only BY DESIGN — `patch_kind` (RFC 7386 merge-patch) is the recommended agent path. |
+| `set_subtree_lod` | `set_subtree_lod` | tool | Bulk LOD: sets `kind` on a node + every descendant mesh; expands to a `Batch` of `SetKind`s (one undo step). |
 | `patch_kind` | `patch_kind` | tool | |
 | `set_particle_emitter` | `set_particle_emitter` | tool | Flat patch-style fields; gravity force field is `acceleration`. |
 | `set_instancer_transforms` | `set_instancer_transforms` | tool | Bulk transform list + optional `per_instance_colors`. |
@@ -76,7 +77,7 @@ dedicated tool reaches it indirectly · **dispatch** = escape hatch only ·
 | `verify_roundtrip` | `verify_roundtrip` | tool | Returns the census report inline. |
 | `import_model_from_url` | `import_model_from_url` | tool | Returns the import report; settle-visible. |
 | `import_model_from_file` | — | n/a | Session-local `blob:` URL from the file picker — meaningless over MCP (use `import_model_from_url`). |
-| `import_nanite_asset` | `import_nanite_asset` | tool | |
+| `import_cluster_asset` | `import_cluster_asset` | tool | |
 | `import_texture_from_url` | `import_texture_from_url` | tool | |
 | `import_ktx_env_from_url` | `set_environment` (URL args) | wrapper | The tool mints the asset + patches the slot in one call; direct dispatch works for pre-registering. |
 | `add_material_asset` | — | dispatch | Content-Browser generic create; agents use `add_builtin_material` / `add_custom_material` (typed, id-echoing). Fine as dispatch-only. |

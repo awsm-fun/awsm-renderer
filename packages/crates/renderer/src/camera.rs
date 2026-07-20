@@ -15,7 +15,11 @@ const APPLY_JITTER: bool = false;
 impl AwsmRenderer {
     /// Updates the camera buffer with new matrices.
     pub fn update_camera(&mut self, camera_matrices: CameraMatrices) -> Result<()> {
-        let (current_width, current_height) = self.gpu.current_context_texture_size()?;
+        // Render resolution (scaled), not swap-chain: the camera uniform's
+        // viewport feeds shader screen-space math, which runs at render res.
+        let (surface_w, surface_h) = self.gpu.current_context_texture_size()?;
+        let current_width = crate::size::scale_extent(surface_w, self.render_scale);
+        let current_height = crate::size::scale_extent(surface_h, self.render_scale);
 
         self.camera.update(
             camera_matrices,

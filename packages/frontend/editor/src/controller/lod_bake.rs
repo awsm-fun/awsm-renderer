@@ -10,30 +10,53 @@
 //!   surviving vertices verbatim (the simplifier's subset property makes this
 //!   exact, no interpolation), and the skeleton + skin binding are preserved.
 //!
-//! Both write `<id>.lod{N}.glb` per level + a [`MeshLodManifest`] sidecar
-//! (`<id>.lod.toml`), and cache by content hash so re-export doesn't re-simplify.
+//! Both return `<id>.lod{N}.glb` level files + the manifest as an
+//! [`AssetLod::Discrete`] — inlined into the bundle `scene.toml` by the caller,
+//! so the bundle ships NO `.lod.toml` sidecar. Cached by content hash so
+//! re-export doesn't re-simplify.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
-use awsm_renderer_editor_protocol::BundleFile;
+use awsm_renderer_editor_protocol::{AssetLod, AssetLodLevel, BundleFile, DiscreteLod};
 use awsm_renderer_glb_export::{
     compress_glb_with, reexport_clean_scene, write_glb, CompressOptions, ExportNode,
     ExtraPrimitive, GlbScene, MeshData, MorphTarget,
 };
 use awsm_renderer_lod_bake::{
-    bounding_sphere_radius, lod_level_filename, lod_manifest_filename, plan_lod_levels, simplify,
-    MeshLodLevel, MeshLodManifest, SimplifiedMesh, SimplifyOptions,
+    bounding_sphere_radius, lod_level_filename, plan_lod_levels, simplify, MeshLodLevel,
+    MeshLodManifest, SimplifiedMesh, SimplifyOptions,
 };
 
-/// Target triangle-count fractions of the base for each discrete level (level 0
-/// is the base mesh itself, always present as `<id>.glb`).
-pub const LOD_RATIOS: &[f32] = &[0.5, 0.25, 0.125];
+/// The per-level triangle-count fractions of the base, derived from a
+/// [`DiscreteLod`] setting: level `i` targets `reduction^i` of the base
+/// (`reduction = 0.5`, `levels = 3` → `[0.5, 0.25, 0.125]`). Level 0 is the base
+/// mesh itself, always present as `<id>.glb`.
+fn ratios_from(settings: DiscreteLod) -> Vec<f32> {
+    let r = settings.reduction.clamp(0.05, 0.95);
+    (1..=settings.levels).map(|i| r.powi(i as i32)).collect()
+}
+
+/// The runtime-facing manifest: bounds radius + per-level `{index, error}`. Drops
+/// the diagnostic triangle counts the loader never reads.
+fn manifest_to_asset_lod(m: &MeshLodManifest) -> AssetLod {
+    AssetLod::Discrete {
+        bounds_radius: m.bounds_radius,
+        levels: m
+            .levels
+            .iter()
+            .map(|l| AssetLodLevel {
+                index: l.index,
+                error: l.error,
+            })
+            .collect(),
+    }
+}
 
 /// Meshes below this triangle count aren't worth simplifying (bake cost with no
-/// meaningful runtime win). Mirrors the per-mesh opt-out: this is the automatic
-/// floor on top of the explicit toggle.
+/// meaningful runtime win). The automatic floor beneath an explicit Discrete
+/// kind — a too-small mesh resolves to no LOD.
 pub const LOD_MIN_TRIANGLES: usize = 512;
 
 /// Static meshes below this triangle count don't get a cluster-LOD DAG baked
@@ -68,7 +91,7 @@ pub fn bake_static_clusters(asset_id: &str, mesh: &MeshData) -> Vec<BundleFile> 
     // with holes — drop it. The mesh still ships its discrete LOD chain
     // (`bake_static_lod`, baked separately), so this is a graceful fallback, not a
     // loss. The CLI has `--allow-degenerate-clusters`; the editor bake has no such
-    // escape (an authoring tool should never silently ship a cracking nanite mesh).
+    // escape (an authoring tool should never silently ship a cracking cluster mesh).
     let q = cm.quality(tris);
     if q.degenerate {
         tracing::warn!(
@@ -110,9 +133,11 @@ thread_local! {
     static CACHE: RefCell<HashMap<u64, BakedStaticLod>> = RefCell::new(HashMap::new());
 }
 
-/// Bake the discrete LOD chain for one static mesh and return the bundle files
-/// to add (level glbs + manifest). Returns empty when the mesh is below
-/// [`LOD_MIN_TRIANGLES`] or no level actually reduced the triangle count.
+/// Bake the discrete LOD chain for one static mesh under the given `settings`,
+/// returning the resolved [`AssetLod`] (`Discrete` with the inline manifest, or
+/// `None`) plus the level glb bundle files. Yields `(AssetLod::None, [])` when
+/// the mesh is below [`LOD_MIN_TRIANGLES`] or no level actually reduced the
+/// triangle count.
 ///
 /// `asset_id` is the mesh asset's id stringified (so files line up with the
 /// base `<id>.glb`); `mesh` is the already-resolved base geometry. Level glbs
@@ -122,58 +147,46 @@ thread_local! {
 pub fn bake_static_lod(
     asset_id: &str,
     mesh: &MeshData,
+    settings: DiscreteLod,
     compress: &CompressOptions,
-) -> Vec<BundleFile> {
+) -> (AssetLod, Vec<BundleFile>) {
     if mesh.indices.len() / 3 < LOD_MIN_TRIANGLES {
-        return Vec::new();
+        return (AssetLod::None, Vec::new());
     }
 
-    let key = geometry_key(mesh);
+    let ratios = ratios_from(settings);
+    let key = geometry_key(mesh, &ratios);
     let baked = CACHE.with(|c| c.borrow().get(&key).cloned());
     let baked = match baked {
         Some(b) => b,
         None => {
-            let b = compute(mesh);
+            let b = compute(mesh, &ratios);
             CACHE.with(|c| c.borrow_mut().insert(key, b.clone()));
             b
         }
     };
 
     if baked.levels.is_empty() {
-        return Vec::new();
+        return (AssetLod::None, Vec::new());
     }
 
-    let mut files = Vec::with_capacity(baked.levels.len() + 1);
-    for (idx, glb) in &baked.levels {
-        files.push(BundleFile::asset(
-            lod_level_filename(asset_id, *idx),
-            compress_level(asset_id, *idx, glb, compress),
-        ));
-    }
-    match toml::to_string(&baked.manifest) {
-        Ok(s) => files.push(BundleFile::asset(
-            lod_manifest_filename(asset_id),
-            s.into_bytes(),
-        )),
-        Err(e) => {
-            tracing::warn!("lod bake: failed to serialize manifest for {asset_id}: {e}");
-            // Without a manifest the runtime can't discover the levels, so drop
-            // the orphan level glbs rather than ship dead weight.
-            return Vec::new();
-        }
-    }
-    files
+    let files = baked
+        .levels
+        .iter()
+        .map(|(idx, glb)| {
+            BundleFile::asset(
+                lod_level_filename(asset_id, *idx),
+                compress_level(asset_id, *idx, glb, compress),
+            )
+        })
+        .collect();
+    (manifest_to_asset_lod(&baked.manifest), files)
 }
 
 /// Plan the chain (shared crate), then gather attributes + encode each level to
 /// a glb. Pure (no cache / no filenames) so it's trivially cacheable.
-fn compute(mesh: &MeshData) -> BakedStaticLod {
-    let plan = plan_lod_levels(
-        &mesh.positions,
-        &mesh.indices,
-        LOD_RATIOS,
-        LOD_MIN_TRIANGLES,
-    );
+fn compute(mesh: &MeshData, ratios: &[f32]) -> BakedStaticLod {
+    let plan = plan_lod_levels(&mesh.positions, &mesh.indices, ratios, LOD_MIN_TRIANGLES);
     let manifest = plan.manifest();
     let levels = plan
         .levels
@@ -200,7 +213,7 @@ fn compute(mesh: &MeshData) -> BakedStaticLod {
 /// Stable hash over the exact inputs that determine the bake: positions,
 /// indices, and the ratio schedule. Float bits are hashed directly (the bake is
 /// deterministic in the literal geometry, not an epsilon-compare).
-fn geometry_key(mesh: &MeshData) -> u64 {
+fn geometry_key(mesh: &MeshData, ratios: &[f32]) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     mesh.indices.hash(&mut h);
     for p in &mesh.positions {
@@ -208,7 +221,7 @@ fn geometry_key(mesh: &MeshData) -> u64 {
             v.to_bits().hash(&mut h);
         }
     }
-    for r in LOD_RATIOS {
+    for r in ratios {
         r.to_bits().hash(&mut h);
     }
     h.finish()
@@ -240,20 +253,22 @@ thread_local! {
 pub fn bake_skinned_lod(
     source_id: &str,
     rig_glb: &[u8],
+    settings: DiscreteLod,
     compress: &CompressOptions,
-) -> Vec<BundleFile> {
+) -> (AssetLod, Vec<BundleFile>) {
     let Some(base) = parse_rig_scene(rig_glb) else {
-        return Vec::new();
+        return (AssetLod::None, Vec::new());
     };
     let base_tris = scene_triangle_count(&base);
     if base_tris < LOD_MIN_TRIANGLES {
-        return Vec::new();
+        return (AssetLod::None, Vec::new());
     }
 
+    let ratios = ratios_from(settings);
     let key = {
         let mut h = std::collections::hash_map::DefaultHasher::new();
         rig_glb.hash(&mut h);
-        for r in LOD_RATIOS {
+        for r in &ratios {
             r.to_bits().hash(&mut h);
         }
         h.finish()
@@ -262,33 +277,26 @@ pub fn bake_skinned_lod(
     let baked = match baked {
         Some(b) => b,
         None => {
-            let b = compute_skinned(&base, base_tris);
+            let b = compute_skinned(&base, base_tris, &ratios);
             SKINNED_CACHE.with(|c| c.borrow_mut().insert(key, b.clone()));
             b
         }
     };
 
     if baked.levels.is_empty() {
-        return Vec::new();
+        return (AssetLod::None, Vec::new());
     }
-    let mut files = Vec::with_capacity(baked.levels.len() + 1);
-    for (idx, glb) in &baked.levels {
-        files.push(BundleFile::asset(
-            lod_level_filename(source_id, *idx),
-            compress_level(source_id, *idx, glb, compress),
-        ));
-    }
-    match toml::to_string(&baked.manifest) {
-        Ok(s) => files.push(BundleFile::asset(
-            lod_manifest_filename(source_id),
-            s.into_bytes(),
-        )),
-        Err(e) => {
-            tracing::warn!("lod bake: failed to serialize skinned manifest for {source_id}: {e}");
-            return Vec::new();
-        }
-    }
-    files
+    let files = baked
+        .levels
+        .iter()
+        .map(|(idx, glb)| {
+            BundleFile::asset(
+                lod_level_filename(source_id, *idx),
+                compress_level(source_id, *idx, glb, compress),
+            )
+        })
+        .collect();
+    (manifest_to_asset_lod(&baked.manifest), files)
 }
 
 /// Compress one LOD level glb under the bundle options — same
@@ -316,14 +324,14 @@ fn compress_level(id: &str, index: u32, glb: &[u8], compress: &CompressOptions) 
 
 /// Run the simplifier per ratio over a clone of the base rig scene, gathering
 /// skin + morph through each level, and encode each reducing level to a glb.
-fn compute_skinned(base: &GlbScene, base_tris: usize) -> BakedStaticLod {
+fn compute_skinned(base: &GlbScene, base_tris: usize, ratios: &[f32]) -> BakedStaticLod {
     let bounds_radius = bounding_sphere_radius(&scene_positions(base));
     let mut levels = Vec::new();
     let mut manifest_levels = Vec::new();
     let mut prev_tris = base_tris;
     let mut file_index = 1u32;
 
-    for &ratio in LOD_RATIOS {
+    for &ratio in ratios {
         let mut scene = base.clone();
         let mut tris = 0usize;
         let mut error = 0.0f32;

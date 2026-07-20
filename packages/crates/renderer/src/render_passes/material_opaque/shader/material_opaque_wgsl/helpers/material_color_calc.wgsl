@@ -30,6 +30,14 @@ struct PbrMaterialGradients {
     // KHR_materials_iridescence
     iridescence: UvDerivs,
     iridescence_thickness: UvDerivs,
+    {% if pbr_features.secondary_maps %}
+    // Secondary / detail maps (engine extension)
+    secondary_base_color: UvDerivs,
+    secondary_normal: UvDerivs,
+    secondary_metallic_roughness: UvDerivs,
+    secondary_occlusion: UvDerivs,
+    secondary_emissive: UvDerivs,
+    {% endif %}
 }
 {% endif %}
 
@@ -65,6 +73,9 @@ fn pbr_get_material_color{{ mipmap.suffix() }}(
     let diffuse_trans = pbr_material_load_diffuse_transmission(material.diffuse_transmission_index);
     let anisotropy = pbr_material_load_anisotropy(material.anisotropy_index);
     let iridescence = pbr_material_load_iridescence(material.iridescence_index);
+    {% if pbr_features.secondary_maps %}
+    let secondary = pbr_material_load_secondary_maps(material.secondary_maps_index);
+    {% endif %}
 
     var base = _pbr_material_base_color{{ mipmap.suffix() }}(
         material,
@@ -96,7 +107,26 @@ fn pbr_get_material_color{{ mipmap.suffix() }}(
     }
     {% endif %}
 
-    let metallic_roughness = _pbr_material_metallic_roughness_color{{ mipmap.suffix() }}(
+    {% if pbr_features.secondary_maps %}
+    // Secondary base color: x2 multiply overlay (mid-grey neutral). Skip
+    // branch is legal here: explicit-gradient sampling has no
+    // uniform-control-flow requirement, and the flag is uniform per material.
+    if (secondary.base_color_tex_info.exists) {
+        let s_uv = texture_uv(
+            attribute_data_offset,
+            triangle_indices,
+            barycentric,
+            secondary.base_color_tex_info,
+            vertex_attribute_stride,
+            uv_sets_index,
+        );
+        let s_tex = {{ mipmap.sample_fn() }}(secondary.base_color_tex_info, s_uv{% if mipmap.is_gradient() %}, gradients.secondary_base_color{% endif %});
+        let detail = mix(vec3<f32>(1.0), s_tex.rgb * 2.0, secondary.base_color_strength);
+        base = vec4<f32>(base.rgb * detail, base.a);
+    }
+    {% endif %}
+
+    var metallic_roughness = _pbr_material_metallic_roughness_color{{ mipmap.suffix() }}(
         material,
         texture_uv(
             attribute_data_offset,
@@ -108,6 +138,28 @@ fn pbr_get_material_color{{ mipmap.suffix() }}(
         ),
         {% if mipmap.is_gradient() %}gradients.metallic_roughness,{% endif %}
     );
+
+    {% if pbr_features.secondary_maps %}
+    // Secondary metallic-roughness: roughness (G) overlay-blends
+    // (mid-grey neutral), metallic (B) multiplies (white neutral).
+    if (secondary.metallic_roughness_tex_info.exists) {
+        let s_uv = texture_uv(
+            attribute_data_offset,
+            triangle_indices,
+            barycentric,
+            secondary.metallic_roughness_tex_info,
+            vertex_attribute_stride,
+            uv_sets_index,
+        );
+        let s_tex = {{ mipmap.sample_fn() }}(secondary.metallic_roughness_tex_info, s_uv{% if mipmap.is_gradient() %}, gradients.secondary_metallic_roughness{% endif %});
+        let detail_rough = mix(0.5, s_tex.g, secondary.metallic_roughness_strength);
+        let detail_metal = mix(1.0, s_tex.b, secondary.metallic_roughness_strength);
+        metallic_roughness = vec2<f32>(
+            metallic_roughness.x * detail_metal,
+            _pbr_overlay_scalar(metallic_roughness.y, detail_rough),
+        );
+    }
+    {% endif %}
 
     let normal = _pbr_normal_color{{ mipmap.suffix() }}(
         material,
@@ -121,9 +173,21 @@ fn pbr_get_material_color{{ mipmap.suffix() }}(
         ),
         {% if mipmap.is_gradient() %}gradients.normal,{% endif %}
         geometry_tbn,
+        {% if pbr_features.secondary_maps %}
+        secondary,
+        texture_uv(
+            attribute_data_offset,
+            triangle_indices,
+            barycentric,
+            secondary.normal_tex_info,
+            vertex_attribute_stride,
+            uv_sets_index,
+        ),
+        {% if mipmap.is_gradient() %}gradients.secondary_normal,{% endif %}
+        {% endif %}
     );
 
-    let occlusion = _pbr_occlusion_color{{ mipmap.suffix() }}(
+    var occlusion = _pbr_occlusion_color{{ mipmap.suffix() }}(
         material,
         texture_uv(
             attribute_data_offset,
@@ -136,7 +200,23 @@ fn pbr_get_material_color{{ mipmap.suffix() }}(
         {% if mipmap.is_gradient() %}gradients.occlusion,{% endif %}
     );
 
-    let emissive = _pbr_material_emissive_color{{ mipmap.suffix() }}(
+    {% if pbr_features.secondary_maps %}
+    // Secondary occlusion: cavity multiply (white neutral).
+    if (secondary.occlusion_tex_info.exists) {
+        let s_uv = texture_uv(
+            attribute_data_offset,
+            triangle_indices,
+            barycentric,
+            secondary.occlusion_tex_info,
+            vertex_attribute_stride,
+            uv_sets_index,
+        );
+        let s_tex = {{ mipmap.sample_fn() }}(secondary.occlusion_tex_info, s_uv{% if mipmap.is_gradient() %}, gradients.secondary_occlusion{% endif %});
+        occlusion *= mix(1.0, s_tex.r, secondary.occlusion_strength);
+    }
+    {% endif %}
+
+    var emissive = _pbr_material_emissive_color{{ mipmap.suffix() }}(
         material,
         emissive_strength,
         texture_uv(
@@ -149,6 +229,22 @@ fn pbr_get_material_color{{ mipmap.suffix() }}(
         ),
         {% if mipmap.is_gradient() %}gradients.emissive,{% endif %}
     );
+
+    {% if pbr_features.secondary_maps %}
+    // Secondary emissive: additive (black neutral).
+    if (secondary.emissive_tex_info.exists) {
+        let s_uv = texture_uv(
+            attribute_data_offset,
+            triangle_indices,
+            barycentric,
+            secondary.emissive_tex_info,
+            vertex_attribute_stride,
+            uv_sets_index,
+        );
+        let s_tex = {{ mipmap.sample_fn() }}(secondary.emissive_tex_info, s_uv{% if mipmap.is_gradient() %}, gradients.secondary_emissive{% endif %});
+        emissive += mix(vec3<f32>(0.0), s_tex.rgb, secondary.emissive_strength);
+    }
+    {% endif %}
 
     let specular_factor = _pbr_specular{{ mipmap.suffix() }}(
         specular,
@@ -449,22 +545,57 @@ fn _pbr_normal_color{{ mipmap.suffix() }}(
     attribute_uv: vec2<f32>,
     {% if mipmap.is_gradient() %}uv_derivs: UvDerivs,{% endif %}
     geometry_tbn: TBN,
+    {% if pbr_features.secondary_maps %}
+    secondary: PbrSecondaryMaps,
+    secondary_uv: vec2<f32>,
+    {% if mipmap.is_gradient() %}secondary_uv_derivs: UvDerivs,{% endif %}
+    {% endif %}
 ) -> vec3<f32> {
     // Branchless: unbound slot = the 1x1 NEUTRAL flat normal (0.5, 0.5, 1),
     // which unpacks to tangent (0,0,1) — and TBN * (0,0,1) is exactly the
     // geometry normal, glTF's defined no-normal-map result.
     // Sample normal map and unpack from [0,1] to [-1,1] range
     let tex = {{ mipmap.sample_fn() }}(material.normal_tex_info, attribute_uv{% if mipmap.is_gradient() %}, uv_derivs{% endif %});
-    let tangent_normal = _pbr_unpack_tangent_normal{{ mipmap.suffix() }}(
+    var tangent_normal = _pbr_unpack_tangent_normal{{ mipmap.suffix() }}(
         tex,
         material.normal_packing & 3u,
         material.normal_scale,
     );
 
+    {% if pbr_features.secondary_maps %}
+    // Secondary / detail normal: RNM blend (Barré-Brisebois & Hill) in
+    // tangent space, before the TBN transform. Strength scales the detail
+    // XY (flattening toward (0,0,1) — the blend-neutral). Detail maps are
+    // always full-RGB (no two-channel packing pair for the secondary slot).
+    if (secondary.normal_tex_info.exists) {
+        let s_tex = {{ mipmap.sample_fn() }}(secondary.normal_tex_info, secondary_uv{% if mipmap.is_gradient() %}, secondary_uv_derivs{% endif %});
+        let detail = _pbr_unpack_tangent_normal{{ mipmap.suffix() }}(
+            s_tex,
+            0u,
+            secondary.normal_strength,
+        );
+        let t = normalize(tangent_normal) + vec3<f32>(0.0, 0.0, 1.0);
+        let u = normalize(detail) * vec3<f32>(-1.0, -1.0, 1.0);
+        tangent_normal = t * dot(t, u) / t.z - u;
+    }
+    {% endif %}
+
     // Transform the tangent-space normal to world space using the TBN matrix from geometry pass
     let tbn_matrix = mat3x3<f32>(geometry_tbn.T, geometry_tbn.B, geometry_tbn.N);
     return normalize(tbn_matrix * tangent_normal);
 }
+
+{% if pbr_features.secondary_maps %}
+// Photoshop-style scalar overlay: a < 0.5 darkens (2ab), a >= 0.5
+// brightens (1 - 2(1-a)(1-b)). Neutral b = 0.5 is the identity, so the
+// secondary-roughness strength lerp toward 0.5 makes strength 0 a no-op.
+fn _pbr_overlay_scalar(a: f32, b: f32) -> f32 {
+    if (a < 0.5) {
+        return 2.0 * a * b;
+    }
+    return 1.0 - 2.0 * (1.0 - a) * (1.0 - b);
+}
+{% endif %}
 
 // Occlusion
 fn _pbr_occlusion_color{{ mipmap.suffix() }}(

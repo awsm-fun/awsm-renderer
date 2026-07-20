@@ -31,7 +31,7 @@ struct PbrMaterialHeaderRaw {
     ssr_mask: f32,
     normal_packing: u32,
 
-    // 12 u32 relative indices (word indices relative to header start)
+    // 13 u32 relative indices (word indices relative to header start)
     vertex_color_info_relative_index: u32,
     emissive_strength_relative_index: u32,
     ior_relative_index: u32,
@@ -44,6 +44,7 @@ struct PbrMaterialHeaderRaw {
     dispersion_relative_index: u32,
     anisotropy_relative_index: u32,
     iridescence_relative_index: u32,
+    secondary_maps_relative_index: u32,
 };
 
 struct PbrMaterial {
@@ -90,6 +91,7 @@ struct PbrMaterial {
     dispersion_index: u32,
     anisotropy_index: u32,
     iridescence_index: u32,
+    secondary_maps_index: u32,
 };
 
 
@@ -114,11 +116,11 @@ struct PbrMaterial {
 // = 41 words
 const PBR_CORE_WORDS: u32 = 41u;
 
-// Then we reserve 12 u32 indices right after the core:
-const PBR_FEATURE_INDEX_WORDS: u32 = 12u;
+// Then we reserve 13 u32 indices right after the core:
+const PBR_FEATURE_INDEX_WORDS: u32 = 13u;
 
 // Total fixed header words (core + indices)
-const PBR_HEADER_WORDS: u32 = PBR_CORE_WORDS + PBR_FEATURE_INDEX_WORDS; // 53
+const PBR_HEADER_WORDS: u32 = PBR_CORE_WORDS + PBR_FEATURE_INDEX_WORDS; // 54
 
 fn pbr_get_material(byte_offset: u32) -> PbrMaterial {
     // word 0 at byte_offset is shader_id; header starts right after it
@@ -192,7 +194,8 @@ fn pbr_get_material(byte_offset: u32) -> PbrMaterial {
         material_load_u32(fi + 8u),  // sheen
         material_load_u32(fi + 9u),  // dispersion
         material_load_u32(fi + 10u), // anisotropy
-        material_load_u32(fi + 11u)  // iridescence
+        material_load_u32(fi + 11u), // iridescence
+        material_load_u32(fi + 12u)  // secondary_maps
     );
 
     return PbrMaterial(
@@ -230,7 +233,8 @@ fn pbr_get_material(byte_offset: u32) -> PbrMaterial {
         abs_index(base_index, header.sheen_relative_index),
         abs_index(base_index, header.dispersion_relative_index),
         abs_index(base_index, header.anisotropy_relative_index),
-        abs_index(base_index, header.iridescence_relative_index)
+        abs_index(base_index, header.iridescence_relative_index),
+        abs_index(base_index, header.secondary_maps_relative_index)
     );
 }
 
@@ -487,4 +491,57 @@ fn pbr_material_load_iridescence(index: u32) -> PbrIridescence {
     let tmax = material_load_f32(index + 13u);
 
     return PbrIridescence(tex, factor, ior, ttex, tmin, tmax);
+}
+
+// secondary maps packed by Rust as (per slot: tex(5) + strength):
+//   base_color_tex(5) + base_color_strength
+//   + normal_tex(5) + normal_strength
+//   + metallic_roughness_tex(5) + metallic_roughness_strength
+//   + occlusion_tex(5) + occlusion_strength
+//   + emissive_tex(5) + emissive_strength
+// Unset slots are the zero SKIP sentinel (exists == 0) — callers branch on
+// `tex_info.exists` and do no fetch (legal here: the opaque kernels sample
+// with explicit gradients, so there is no uniform-control-flow requirement).
+struct PbrSecondaryMaps {
+    base_color_tex_info: TextureInfo,
+    base_color_strength: f32,
+    normal_tex_info: TextureInfo,
+    normal_strength: f32,
+    metallic_roughness_tex_info: TextureInfo,
+    metallic_roughness_strength: f32,
+    occlusion_tex_info: TextureInfo,
+    occlusion_strength: f32,
+    emissive_tex_info: TextureInfo,
+    emissive_strength: f32,
+}
+
+fn pbr_material_load_secondary_maps(index: u32) -> PbrSecondaryMaps {
+    if (index == 0u) {
+        return PbrSecondaryMaps(
+            texture_info_none(), 0.0,
+            texture_info_none(), 0.0,
+            texture_info_none(), 0.0,
+            texture_info_none(), 0.0,
+            texture_info_none(), 0.0
+        );
+    }
+
+    let bc_tex = material_load_texture_info(index + 0u);
+    let bc_strength = material_load_f32(index + 5u);
+    let n_tex = material_load_texture_info(index + 6u);
+    let n_strength = material_load_f32(index + 11u);
+    let mr_tex = material_load_texture_info(index + 12u);
+    let mr_strength = material_load_f32(index + 17u);
+    let occ_tex = material_load_texture_info(index + 18u);
+    let occ_strength = material_load_f32(index + 23u);
+    let em_tex = material_load_texture_info(index + 24u);
+    let em_strength = material_load_f32(index + 29u);
+
+    return PbrSecondaryMaps(
+        bc_tex, bc_strength,
+        n_tex, n_strength,
+        mr_tex, mr_strength,
+        occ_tex, occ_strength,
+        em_tex, em_strength
+    );
 }

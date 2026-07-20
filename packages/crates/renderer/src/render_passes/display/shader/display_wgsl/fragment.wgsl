@@ -14,7 +14,31 @@ struct FragmentInput {
 fn frag_main(in: FragmentInput) -> @location(0) vec4<f32> {
     let coords = vec2<i32>(in.full_screen_quad_position.xy);
 
+    {% if supersample %}
+    // Supersampled composite: the render targets are `render_scale` times
+    // the swap-chain size — downsample with a manual bilinear at the scaled
+    // sample point. At exactly 2.0 the sample point lands on the corner
+    // between a 2x2 block, so the bilinear IS the box average; the manual
+    // 4-tap (instead of a sampler) keeps the bind-group layout identical to
+    // the 1:1 variant. `display_uniform.scale_*` = composite_size / target.
+    let dims = vec2<i32>(textureDimensions(composite_texture));
+    let src = in.full_screen_quad_position.xy
+        * vec2<f32>(display_uniform.scale_x, display_uniform.scale_y);
+    let base = src - vec2<f32>(0.5);
+    let i0 = vec2<i32>(floor(base));
+    let f = base - floor(base);
+    let c00 = clamp(i0, vec2<i32>(0), dims - 1);
+    let c10 = clamp(i0 + vec2<i32>(1, 0), vec2<i32>(0), dims - 1);
+    let c01 = clamp(i0 + vec2<i32>(0, 1), vec2<i32>(0), dims - 1);
+    let c11 = clamp(i0 + vec2<i32>(1, 1), vec2<i32>(0), dims - 1);
+    let s00 = textureLoad(composite_texture, c00, 0);
+    let s10 = textureLoad(composite_texture, c10, 0);
+    let s01 = textureLoad(composite_texture, c01, 0);
+    let s11 = textureLoad(composite_texture, c11, 0);
+    var color: vec4<f32> = mix(mix(s00, s10, f.x), mix(s01, s11, f.x), f.y);
+    {% else %}
     var color: vec4<f32> = textureLoad(composite_texture, coords, 0);
+    {% endif %}
 
     // Apply scene exposure BEFORE tonemapping. The renderer treats
     // KHR_lights_punctual intensities as already-radiometric (the spec

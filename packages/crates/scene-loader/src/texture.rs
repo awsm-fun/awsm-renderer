@@ -343,7 +343,8 @@ fn sampler_key_for(
         min_filter: Some(filt(s.min_filter)),
         mipmap_filter: Some(mip(s.mipmap_filter)),
         ..Default::default()
-    };
+    }
+    .with_anisotropy_policy(s.anisotropy);
     renderer.textures.get_sampler_key(&renderer.gpu, key).ok()
 }
 

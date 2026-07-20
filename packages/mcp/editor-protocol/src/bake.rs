@@ -13,7 +13,8 @@
 //! what the player needs.
 
 use awsm_renderer_scene::{
-    AssetEntry as RtEntry, AssetSource as RtSource, AssetTable as RtTable, RuntimeMesh, Scene,
+    AssetEntry as RtEntry, AssetLod, AssetSource as RtSource, AssetTable as RtTable, RuntimeMesh,
+    Scene,
 };
 
 use crate::{AssetSource as AuthSource, EditorProject, MeshBase, MeshDef};
@@ -45,6 +46,9 @@ pub fn project_to_scene(project: &EditorProject) -> Scene {
                 texture_encoding: None,
                 // Likewise bake-set, on normal-use KTX2 artifacts only.
                 texture_two_channel_normal: false,
+                // Structural lowering only — the resolved LOD is filled in by the
+                // editor's export bake (bundle) or the sidecar read (editor load).
+                lod: AssetLod::None,
             },
         );
     }

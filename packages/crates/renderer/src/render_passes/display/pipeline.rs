@@ -58,9 +58,13 @@ impl DisplayPipelines {
 
     /// Returns the shader cache key for the current PP config. Folded
     /// into the cross-tail `Shaders::ensure_keys` batch.
-    pub fn shader_cache_keys_for(post_processing: &PostProcessing) -> Vec<ShaderCacheKey> {
+    pub fn shader_cache_keys_for(
+        post_processing: &PostProcessing,
+        supersample: bool,
+    ) -> Vec<ShaderCacheKey> {
         vec![ShaderCacheKey::from(ShaderCacheKeyDisplay {
             tonemapping: post_processing.tonemapping,
+            supersample,
         })]
     }
 
@@ -69,11 +73,13 @@ impl DisplayPipelines {
     pub async fn build_descriptors(
         &self,
         post_processing: &PostProcessing,
+        supersample: bool,
         gpu: &AwsmRendererWebGpu,
         shaders: &mut Shaders,
     ) -> Result<DisplayPipelinesDescriptors> {
         let shader_cache_key = ShaderCacheKeyDisplay {
             tonemapping: post_processing.tonemapping,
+            supersample,
         };
         let shader_key = shaders.get_key(gpu, shader_cache_key.clone()).await?;
         let render_pipeline_cache_key =
@@ -105,18 +111,19 @@ impl DisplayPipelines {
     pub async fn set_render_pipeline_key(
         &mut self,
         post_processing: &PostProcessing,
+        supersample: bool,
         gpu: &AwsmRendererWebGpu,
         shaders: &mut Shaders,
         pipelines: &mut Pipelines,
         pipeline_layouts: &PipelineLayouts,
         _render_texture_formats: &RenderTextureFormats,
     ) -> Result<()> {
-        let shader_cache_keys = Self::shader_cache_keys_for(post_processing);
+        let shader_cache_keys = Self::shader_cache_keys_for(post_processing, supersample);
         shaders
             .ensure_keys(gpu, shader_cache_keys.iter().cloned())
             .await?;
         let descs = self
-            .build_descriptors(post_processing, gpu, shaders)
+            .build_descriptors(post_processing, supersample, gpu, shaders)
             .await?;
         let resolved = pipelines
             .render

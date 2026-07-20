@@ -45,6 +45,7 @@ impl ShaderTemplateDisplayVertex {
 #[template(path = "display_wgsl/fragment.wgsl", whitespace = "minimize")]
 pub struct ShaderTemplateDisplayFragment {
     pub tonemapping: ToneMapping,
+    pub supersample: bool,
 }
 
 impl ShaderTemplateDisplayFragment {
@@ -52,6 +53,7 @@ impl ShaderTemplateDisplayFragment {
     pub fn new(cache_key: &ShaderCacheKeyDisplay) -> Self {
         Self {
             tonemapping: cache_key.tonemapping,
+            supersample: cache_key.supersample,
         }
     }
 }

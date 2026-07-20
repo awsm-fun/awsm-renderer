@@ -1,6 +1,6 @@
 //! Cluster LOD DAG build (Phase B, B.1c).
 //!
-//! Nanite-style: partition into clusters (level 0), then repeatedly group
+//! Cluster-style: partition into clusters (level 0), then repeatedly group
 //! adjacent clusters, **boundary-locked-simplify** each group to ~half, re-split
 //! the result into coarser clusters, and record a monotonic per-cluster error —
 //! until a single root remains (or no further reduction is possible).
@@ -69,7 +69,7 @@ pub struct ClusterDag {
 /// Knobs for [`build_cluster_dag`].
 #[derive(Clone, Copy, Debug)]
 pub struct DagOptions {
-    /// Target triangles per cluster (~128 for Nanite-style meshlets).
+    /// Target triangles per cluster (~128 for Cluster-style meshlets).
     pub cluster_target: usize,
     /// Clusters per group for the simplify step (~4–8).
     pub group_size: usize,

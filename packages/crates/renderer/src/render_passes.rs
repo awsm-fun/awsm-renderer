@@ -22,6 +22,7 @@ pub mod shadow_custom_vertex;
 pub mod shadow_masked;
 pub mod shadow_masked_custom_vertex;
 pub mod shared;
+pub mod smaa;
 pub mod ssr;
 
 use std::ops::Range;
@@ -131,6 +132,11 @@ pub struct RenderPasses {
     /// dispatches without further compiles). The per-frame `render()` /
     /// `ensure_size` wiring lives in `render.rs` and skips when `None`.
     pub bloom: Option<BloomRenderPass>,
+    /// Lazy SMAA pre-pass (edges + blend weights): `None` until SMAA is first
+    /// enabled and DROPPED again on disable, so SMAA off is zero-cost (no
+    /// textures, no dispatches; the effects shader variant without the flag
+    /// contains no SMAA code).
+    pub smaa: Option<crate::render_passes::smaa::render_pass::SmaaRenderPass>,
     /// Screen-space reflections. LAZY like bloom: `None` until
     /// `post_processing.ssr.enabled` — built at boot only when the builder's
     /// config enables SSR, otherwise compiled by `set_post_processing` on the
@@ -244,6 +250,9 @@ pub struct RenderPassesDescriptors {
     /// Fully-constructed SSR pass — self-contained like bloom, and lazy on
     /// `ssr.enabled` the same way.
     ssr: Option<SsrRenderPass>,
+    /// Fully-constructed SMAA pre-pass — self-contained + lazy on
+    /// `anti_aliasing.smaa` like bloom is on `post_processing.bloom`.
+    smaa: Option<crate::render_passes::smaa::render_pass::SmaaRenderPass>,
 }
 
 impl RenderPassesDescriptors {
@@ -794,6 +803,17 @@ impl RenderPasses {
             None
         };
 
+        // SMAA pre-pass — self-contained + lazy like bloom: built at boot only
+        // when the boot AA config enables SMAA (`set_anti_aliasing` handles
+        // enable/disable mid-session, dropping it on disable so off is
+        // zero-cost). The viewport isn't known yet at boot; textures start 1×1
+        // and the per-frame `ensure_size` resizes on first render.
+        let smaa = if ctx.anti_aliasing.smaa {
+            Some(crate::render_passes::smaa::render_pass::SmaaRenderPass::new(ctx, 1, 1).await?)
+        } else {
+            None
+        };
+
         Ok(RenderPassesDescriptors {
             bindings,
             compute_pipeline_cache_keys: compute_pool,
@@ -822,6 +842,7 @@ impl RenderPasses {
             hzb_texture,
             bloom,
             ssr,
+            smaa,
         })
     }
 
@@ -853,6 +874,7 @@ impl RenderPasses {
             hzb_texture,
             bloom,
             ssr,
+            smaa,
             ..
         } = descs;
         let RenderPassesBindings {
@@ -1057,6 +1079,7 @@ impl RenderPasses {
             effects,
             bloom,
             ssr,
+            smaa,
             display,
         })
     }

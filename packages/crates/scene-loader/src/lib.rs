@@ -135,9 +135,10 @@ use awsm_renderer_core::texture::mipmap::MipmapTextureKind;
 use awsm_renderer_gltf::loader::GltfLoader;
 use awsm_renderer_gltf::{AwsmRendererGltfExt, GltfMaterialSource, PopulateGltfOpts};
 use awsm_renderer_scene::{
-    mesh_glb_filename, AssetId, AssetSource, CameraConfig, CurveDef, DecalConfig, EditorNode,
-    InstancerDef, InstancesAlongCurveDef, LightConfig, LineDef, MaterialInstance, MaterialShading,
-    NodeId, NodeKind, ParticleEmitterDef, RuntimeMesh, Scene, SpriteDef, Trs, ASSETS_DIR,
+    mesh_glb_filename, AssetId, AssetLod, AssetLodLevel, AssetSource, CameraConfig, CurveDef,
+    DecalConfig, EditorNode, InstancerDef, InstancesAlongCurveDef, LightConfig, LineDef, LodKind,
+    MaterialInstance, MaterialShading, NodeId, NodeKind, ParticleEmitterDef, RuntimeMesh, Scene,
+    SpriteDef, Trs, ASSETS_DIR,
 };
 use glam::{Mat4, Quat, Vec3, Vec4};
 
@@ -1279,20 +1280,25 @@ pub async fn load_scene_for_player(
 
 /// Walk the node tree collecting every bundle path the materialize walk below
 /// will fetch that we can ENUMERATE up front — mesh / skinned-rig glbs and
-/// (with the `lod` feature, for opted-in nodes) their LOD manifests — for
-/// [`assets::PrefetchedAssets`] seeding. Path derivations mirror the
-/// consumption sites exactly ([`load_glb_under`], [`load_static_lod_chain`],
-/// [`load_skinned_lod_chain`]); a drifted path is only a cache miss, never a
-/// wrong load. Cluster meshes are skipped — their pages stream on demand by
-/// design.
+/// (with the `lod` feature, for opted-in Discrete meshes) their LOD level glbs,
+/// read from the asset's INLINE manifest — for [`assets::PrefetchedAssets`]
+/// seeding. Path derivations mirror the consumption sites exactly
+/// ([`load_glb_under`], [`load_static_lod_chain`], [`load_skinned_lod_chain`]);
+/// a drifted path is only a cache miss, never a wrong load. Cluster meshes are
+/// skipped — their pages stream on demand by design.
 fn collect_prefetch_paths(nodes: &[EditorNode], scene: &Scene, paths: &mut Vec<String>) {
     #[cfg(feature = "lod")]
-    let manifest_path = |asset_id: String| {
-        format!(
-            "{ASSETS_DIR}/{}",
-            awsm_renderer_lod_bake::lod_manifest_filename(&asset_id)
-        )
-    };
+    let level_paths =
+        |asset_id: String, entry: &awsm_renderer_scene::AssetEntry, paths: &mut Vec<String>| {
+            if let AssetLod::Discrete { levels, .. } = &entry.lod {
+                for lvl in levels {
+                    paths.push(format!(
+                        "{ASSETS_DIR}/{}",
+                        awsm_renderer_lod_bake::lod_level_filename(&asset_id, lvl.index)
+                    ));
+                }
+            }
+        };
     for node in nodes {
         match &node.kind {
             NodeKind::Mesh { mesh, .. } => {
@@ -1300,8 +1306,8 @@ fn collect_prefetch_paths(nodes: &[EditorNode], scene: &Scene, paths: &mut Vec<S
                     if matches!(entry.source, AssetSource::Mesh(RuntimeMesh::Glb)) {
                         paths.push(format!("{ASSETS_DIR}/{}", mesh_glb_filename(mesh.0)));
                         #[cfg(feature = "lod")]
-                        if node_lod_enabled(&node.kind) {
-                            paths.push(manifest_path(mesh.0.to_string()));
+                        if !node_lod_opt_out(&node.kind) {
+                            level_paths(mesh.0.to_string(), entry, paths);
                         }
                     }
                 }
@@ -1309,8 +1315,10 @@ fn collect_prefetch_paths(nodes: &[EditorNode], scene: &Scene, paths: &mut Vec<S
             NodeKind::SkinnedMesh { skin, .. } => {
                 paths.push(format!("{ASSETS_DIR}/{}", mesh_glb_filename(skin.source)));
                 #[cfg(feature = "lod")]
-                if node_lod_enabled(&node.kind) {
-                    paths.push(manifest_path(skin.source.to_string()));
+                if !node_lod_opt_out(&node.kind) {
+                    if let Some(entry) = scene.assets.get(skin.source) {
+                        level_paths(skin.source.to_string(), entry, paths);
+                    }
                 }
             }
             // An explicit instancer fetches its mesh asset's glb exactly like a
@@ -1449,13 +1457,20 @@ async fn materialize(
                         loaded.meshes.push(key);
                     }
                     AssetSource::Mesh(RuntimeMesh::Glb) => {
-                        // Cluster LOD (Phase B): when `virtual_geometry` is on and
-                        // this static asset has a baked cluster DAG, render its
-                        // finest cut and skip the base glb. `None` (vg off / no
-                        // cluster data) falls through to the base glb path.
-                        let cluster_key =
-                            load_cluster_lod(renderer, assets, &mesh.0.to_string(), tk, mat)
-                                .await?;
+                        // The asset's baked LOD is EXPLICIT — no probing side files
+                        // or feature flags to decide the kind. A node authoring
+                        // `LodKind::None` pins the base mesh even if the asset baked
+                        // levels for another instance.
+                        let asset_lod = entry.lod.clone();
+                        let opt_out = node_lod_opt_out(&node.kind);
+                        // Cluster: honored only when the build enables cluster
+                        // virtual geometry; otherwise (flag off) the base draws
+                        // whole — `load_cluster_lod` returns `None`.
+                        let cluster_key = if !opt_out && matches!(asset_lod, AssetLod::Cluster) {
+                            load_cluster_lod(renderer, assets, &mesh.0.to_string(), tk, mat).await?
+                        } else {
+                            None
+                        };
                         if let Some(ckey) = cluster_key {
                             maps.meshes.entry(node.id).or_insert(ckey);
                             maps.node_meshes.entry(node.id).or_default().push(ckey);
@@ -1473,21 +1488,28 @@ async fn materialize(
                             .await?;
                             if let Some(&first) = keys.first() {
                                 maps.meshes.entry(node.id).or_insert(first);
-                                // Discrete LOD (static): load + register this
-                                // asset's simplified level chain (hidden — drawn
-                                // only when a per-frame selection reroutes to it).
-                                // No-op unless the `lod` feature is on, the bundle
-                                // carries a manifest, AND this node opts in.
-                                if node_lod_enabled(&node.kind) {
-                                    load_static_lod_chain(
-                                        renderer,
-                                        assets,
-                                        &mesh.0.to_string(),
-                                        first,
-                                        tk,
-                                        mat,
-                                    )
-                                    .await?;
+                                // Discrete LOD (static): register the simplified
+                                // level chain from the asset's INLINE manifest
+                                // (no `.lod.toml` fetch). No-op unless the `lod`
+                                // feature is on and this node opts in.
+                                if !opt_out {
+                                    if let AssetLod::Discrete {
+                                        bounds_radius,
+                                        levels,
+                                    } = &asset_lod
+                                    {
+                                        load_static_lod_chain(
+                                            renderer,
+                                            assets,
+                                            &mesh.0.to_string(),
+                                            first,
+                                            tk,
+                                            mat,
+                                            *bounds_radius,
+                                            levels,
+                                        )
+                                        .await?;
+                                    }
                                 }
                             }
                             maps.node_meshes
@@ -1525,7 +1547,7 @@ async fn materialize(
         // composing a user's *repositioning* of the whole rig (it self-places at the
         // renderer root, so moving the scene node doesn't move it) — separate from
         // the now-working joint animation.
-        // Pre-baked cluster ("nanite") mesh — fetch its baked DAG side file and
+        // Pre-baked cluster ("cluster") mesh — fetch its baked DAG side file and
         // materialize through the bounded cluster pipeline (same path the editor's
         // view-only import uses). A no-op stub when the `lod` feature is off.
         #[cfg(feature = "lod")]
@@ -1642,8 +1664,18 @@ async fn materialize(
                 .entry(node.id)
                 .or_default()
                 .extend(keys.iter().copied());
-            // Discrete LOD (skinned/morph): unchanged, per node opt-in.
-            if let (Some(&base_key), true) = (keys.first(), node_lod_enabled(&node.kind)) {
+            // Discrete LOD (skinned/morph): from the skin source asset's INLINE
+            // manifest, per node opt-in. Skinned meshes never cluster.
+            let src_lod = scene.assets.get(skin.source).map(|e| e.lod.clone());
+            if let (
+                Some(&base_key),
+                false,
+                Some(AssetLod::Discrete {
+                    bounds_radius,
+                    levels,
+                }),
+            ) = (keys.first(), node_lod_opt_out(&node.kind), src_lod.as_ref())
+            {
                 load_skinned_lod_chain(
                     renderer,
                     assets,
@@ -1651,6 +1683,8 @@ async fn materialize(
                     base_key,
                     &node_index_transforms,
                     mat,
+                    *bounds_radius,
+                    levels,
                 )
                 .await?;
             }
@@ -2909,7 +2943,7 @@ const CLUSTER_PAGING_BUDGET_TRIS: usize = 30_000;
 /// global residency cap starts throttling later ones. The per-mesh budgets above
 /// each bound ONE mesh's GPU pool; this bounds the SUM across all resident cluster
 /// meshes (`per_mesh_budget * this`) so total VRAM stays bounded no matter how many
-/// nanite meshes a scene loads. Few-mesh scenes are unaffected (each gets its full
+/// cluster meshes a scene loads. Few-mesh scenes are unaffected (each gets its full
 /// budget until the sum reaches the cap); the uncapped path (budget == `MAX`, i.e.
 /// streaming + paging both off) stays uncapped, so the shipped path is unchanged.
 #[cfg(feature = "lod")]
@@ -3141,7 +3175,7 @@ async fn load_cluster_lod(
 /// resident set to the active streaming/paging budget, builds the page pool when
 /// paging, and registers the cluster render mesh `M`). This is the post-fetch core
 /// shared by the player load path ([`load_cluster_lod`]) AND the editor's
-/// pre-baked nanite import — the editor fetches the `.clusters.bin` its own way
+/// pre-baked cluster import — the editor fetches the `.clusters.bin` its own way
 /// and calls this directly. Returns the render mesh key, or `None` when
 /// `virtual_geometry` is off or the cluster mesh is empty. `asset_label` is only
 /// used for the diagnostic log line.
@@ -3447,11 +3481,12 @@ pub async fn materialize_cluster_mesh(
     Ok(Some(m_key))
 }
 
-/// Whether a node opts in to LOD (its per-mesh `MeshLodConfig.enabled`). The
-/// asset is baked with levels if *any* referencing node is enabled, so the
-/// runtime must re-check the per-node toggle: a LOD-off instance pins level 0.
-fn node_lod_enabled(kind: &NodeKind) -> bool {
-    kind.mesh_lod().map(|l| l.enabled).unwrap_or(false)
+/// Whether a node opts OUT of LOD (its per-mesh [`LodKind::None`]). The asset's
+/// baked LOD is the source of truth for *what* exists, but a single instance can
+/// still pin the base mesh: a `None`-kind node draws whole even when the asset
+/// baked levels for another instance.
+fn node_lod_opt_out(kind: &NodeKind) -> bool {
+    matches!(kind.mesh_lod().map(|l| l.kind), Some(LodKind::None))
 }
 
 /// Load + register the discrete-LOD level chain for a **static** mesh asset.
@@ -3461,9 +3496,10 @@ fn node_lod_enabled(kind: &NodeKind) -> bool {
 /// meshes are set hidden (they draw only when the per-frame selection reroutes to
 /// them) and the chain is registered on `renderer.lod` keyed by `base_key`.
 ///
-/// A no-op when the `lod` feature is off, or when the mesh has no `.lod.toml`
-/// manifest (most meshes — below the bake floor or LOD-disabled). Skinned/morph
-/// LOD selection runs on a separate path (shared skeleton) and is not loaded here.
+/// The manifest (`bounds_radius` + per-level `error`) comes INLINE from the
+/// asset's [`AssetLod::Discrete`] — no `.lod.toml` fetch. A no-op when the `lod`
+/// feature is off or `levels` is empty. Skinned/morph LOD selection runs on a
+/// separate path (shared skeleton) and is not loaded here.
 /// LOD-off stub.
 #[cfg(not(feature = "lod"))]
 async fn load_static_lod_chain(
@@ -3473,11 +3509,14 @@ async fn load_static_lod_chain(
     _base_key: MeshKey,
     _tk: TransformKey,
     _mat: MaterialKey,
+    _bounds_radius: f32,
+    _levels: &[AssetLodLevel],
 ) -> Result<()> {
     Ok(())
 }
 
 #[cfg(feature = "lod")]
+#[allow(clippy::too_many_arguments)]
 async fn load_static_lod_chain(
     renderer: &mut AwsmRenderer,
     assets: &impl SceneAssets,
@@ -3485,31 +3524,14 @@ async fn load_static_lod_chain(
     base_key: MeshKey,
     tk: TransformKey,
     mat: MaterialKey,
+    bounds_radius: f32,
+    manifest_levels: &[AssetLodLevel],
 ) -> Result<()> {
     if !renderer.features().lod {
         return Ok(());
     }
-    let manifest_path = format!(
-        "{ASSETS_DIR}/{}",
-        awsm_renderer_lod_bake::lod_manifest_filename(asset_id)
-    );
-    // Missing manifest = this mesh has no LOD; not an error.
-    let Ok(bytes) = assets.fetch(&manifest_path).await else {
-        return Ok(());
-    };
-    let manifest: awsm_renderer_lod_bake::MeshLodManifest = match std::str::from_utf8(&bytes)
-        .ok()
-        .and_then(|s| toml::from_str(s).ok())
-    {
-        Some(m) => m,
-        None => {
-            tracing::warn!("lod: ignoring unreadable manifest `{manifest_path}`");
-            return Ok(());
-        }
-    };
-
-    let mut levels = Vec::with_capacity(manifest.levels.len());
-    for lvl in &manifest.levels {
+    let mut levels = Vec::with_capacity(manifest_levels.len());
+    for lvl in manifest_levels {
         let leaf = awsm_renderer_lod_bake::lod_level_filename(asset_id, lvl.index);
         let (keys, _, _) = load_glb_under(renderer, assets, &leaf, Some(tk), mat).await?;
         let Some(&level_key) = keys.first() else {
@@ -3529,7 +3551,7 @@ async fn load_static_lod_chain(
             base_key,
             LodChain {
                 levels,
-                bounds_radius: manifest.bounds_radius,
+                bounds_radius,
                 ..Default::default()
             },
         );
@@ -3561,11 +3583,14 @@ async fn load_skinned_lod_chain(
     _base_key: MeshKey,
     _node_index_transforms: &HashMap<usize, TransformKey>,
     _mat: MaterialKey,
+    _bounds_radius: f32,
+    _levels: &[AssetLodLevel],
 ) -> Result<()> {
     Ok(())
 }
 
 #[cfg(feature = "lod")]
+#[allow(clippy::too_many_arguments)]
 async fn load_skinned_lod_chain(
     renderer: &mut AwsmRenderer,
     assets: &impl SceneAssets,
@@ -3573,6 +3598,8 @@ async fn load_skinned_lod_chain(
     base_key: MeshKey,
     node_index_transforms: &HashMap<usize, TransformKey>,
     mat: MaterialKey,
+    bounds_radius: f32,
+    manifest_levels: &[AssetLodLevel],
 ) -> Result<()> {
     use awsm_renderer::meshes::buffer_info::MeshBufferGeometryMorphInfo;
     use awsm_renderer::raw_mesh::{RawMeshData, RawMorph, RawSkin};
@@ -3580,27 +3607,10 @@ async fn load_skinned_lod_chain(
     if !renderer.features().lod {
         return Ok(());
     }
-    let manifest_path = format!(
-        "{ASSETS_DIR}/{}",
-        awsm_renderer_lod_bake::lod_manifest_filename(source_id)
-    );
-    let Ok(bytes) = assets.fetch(&manifest_path).await else {
-        return Ok(());
-    };
-    let manifest: awsm_renderer_lod_bake::MeshLodManifest = match std::str::from_utf8(&bytes)
-        .ok()
-        .and_then(|s| toml::from_str(s).ok())
-    {
-        Some(m) => m,
-        None => {
-            tracing::warn!("lod: ignoring unreadable skinned manifest `{manifest_path}`");
-            return Ok(());
-        }
-    };
 
     let root = renderer.transforms.root_node;
-    let mut levels = Vec::with_capacity(manifest.levels.len());
-    for lvl in &manifest.levels {
+    let mut levels = Vec::with_capacity(manifest_levels.len());
+    for lvl in manifest_levels {
         let leaf = awsm_renderer_lod_bake::lod_level_filename(source_id, lvl.index);
         let key = format!("{ASSETS_DIR}/{leaf}");
         let Ok(glb) = assets.fetch(&key).await else {
@@ -3702,7 +3712,7 @@ async fn load_skinned_lod_chain(
             base_key,
             LodChain {
                 levels,
-                bounds_radius: manifest.bounds_radius,
+                bounds_radius,
                 ..Default::default()
             },
         );
@@ -4026,6 +4036,33 @@ async fn bind_extension_textures(
             p.thickness_tex =
                 texture::load_texture(renderer, cache, assets, t, false, K::MetallicRoughness)
                     .await;
+        }
+    }
+    if let (Some(e), Some(p)) = (ext.secondary_maps.as_ref(), pbr.secondary_maps.as_mut()) {
+        if let Some(t) = &e.base_color_tex {
+            p.base_color_tex =
+                texture::load_texture(renderer, cache, assets, t, true, K::Albedo).await;
+        }
+        if let Some(t) = &e.normal_tex {
+            // Secondary/detail normals sample as full-RGB in the shader (no
+            // two-channel packing pair exists for the secondary slot), so
+            // they must not ride a two-channel transcode.
+            p.normal_tex =
+                texture::load_texture(renderer, cache, assets, t, false, K::Normal).await;
+        }
+        if let Some(t) = &e.metallic_roughness_tex {
+            p.metallic_roughness_tex =
+                texture::load_texture(renderer, cache, assets, t, false, K::MetallicRoughness)
+                    .await;
+        }
+        if let Some(t) = &e.occlusion_tex {
+            p.occlusion_tex =
+                texture::load_texture(renderer, cache, assets, t, false, K::MetallicRoughness)
+                    .await;
+        }
+        if let Some(t) = &e.emissive_tex {
+            p.emissive_tex =
+                texture::load_texture(renderer, cache, assets, t, true, K::Albedo).await;
         }
     }
 }
@@ -4373,10 +4410,10 @@ mod cluster_streaming_tests {
         assert_eq!(plan.overflow, 0);
     }
 
-    // --- North-star gap markers (docs/nanite-lod.md) ---
+    // --- North-star gap markers (docs/cluster-lod.md) ---
     // These #[ignore]d tests keep the unmet A2/A3/A6 claims visible in `cargo test`
     // (run with `--ignored` to see them fail). Replace each with a real assertion
-    // as the behavior lands; delete when docs/nanite-lod.md is fully met.
+    // as the behavior lands; delete when docs/cluster-lod.md is fully met.
 
     /// A2 — dynamic camera-driven streaming residency. VERIFIED ON-DEVICE (iter 38,
     /// `?vg&paging`, browser un-frozen): a genuine multi-million-triangle asset
@@ -4386,7 +4423,7 @@ mod cluster_streaming_tests {
     /// stream/evict cut is camera-driven and crack-free (watertight): far desired=509
     /// draw=4,908 tris → zoom-IN desired=1,260 draw=14,650 (rises) → zoom-OUT
     /// desired=381 draw=3,860 (falls), with NO per-frame heap allocations (iter 36).
-    /// See docs/nanite-lod.md.
+    /// See docs/cluster-lod.md.
     ///
     /// This asserts the CPU invariant underpinning the bounded-VRAM claim: the
     /// resident render mesh M's triangle count is capped by the residency BUDGET,
@@ -4484,7 +4521,7 @@ mod cluster_streaming_tests {
     }
 
     /// A6 — the multi-million-triangle benchmark TABLE is recorded. VERIFIED + committed
-    /// (iter 39): `docs/nanite-lod-benchmark.md` records, on a genuine 1,081,344-tri
+    /// (iter 39): `docs/cluster-lod-benchmark.md` records, on a genuine 1,081,344-tri
     /// source (2,393,468-tri DAG / 51,753 clusters) through the player cluster path:
     /// bounded VRAM (~83 MB pool, M capped to 29,850 tris) and bounded draw (cut 4,908–14,835
     /// tris = 0.2–0.6% of the DAG, scaling with viewport height + camera, independent of
@@ -4493,7 +4530,7 @@ mod cluster_streaming_tests {
     /// silently drift or vanish.
     #[test]
     fn a6_benchmark_table_recorded() {
-        const BENCH: &str = include_str!("../../../../docs/nanite-lod-benchmark.md");
+        const BENCH: &str = include_str!("../../../../docs/cluster-lod-benchmark.md");
         for needle in [
             "1,081,344", // source tris
             "2,393,468", // full DAG tris
@@ -4505,7 +4542,7 @@ mod cluster_streaming_tests {
             assert!(
                 BENCH.contains(needle),
                 "A6 benchmark table missing verified figure `{needle}` — \
-                 docs/nanite-lod-benchmark.md must record the multi-M-tri bench"
+                 docs/cluster-lod-benchmark.md must record the multi-M-tri bench"
             );
         }
     }

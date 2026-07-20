@@ -1,4 +1,4 @@
-//! The Help modal — a guide to the editor, the renderer, the LOD/nanite
+//! The Help modal — a guide to the editor, the renderer, the LOD/cluster
 //! pipeline, building a player, and driving it all over MCP. Opened from the
 //! top-bar Help button, and (deep-linked to the MCP tab) from the MCP connect
 //! modal's Help button.
@@ -18,7 +18,7 @@ const TABS: &[HelpTab] = &[
     ("Overview", "grid", overview_section),
     ("Editor", "sliders", editor_section),
     ("Renderer", "cube", renderer_section),
-    ("LOD & Nanite", "layers", lod_section),
+    ("LOD & Cluster", "layers", lod_section),
     ("Player", "code", player_section),
     ("Using the MCP", "link", mcp_section),
 ];
@@ -338,7 +338,7 @@ fn overview_section() -> Dom {
             "Renderer — the WebGPU engine the editor and your player both run.",
             "Player — your shipped app: load an exported scene with `populate_awsm_scene`.",
             "MCP — let an AI agent drive the editor through typed tool calls, via a local MCP server CLI.",
-            "LOD / Nanite — bounded draw + VRAM for heavy meshes, with an offline pre-bake CLI.",
+            "LOD / Cluster — bounded draw + VRAM for heavy meshes, with an offline pre-bake CLI.",
         ]),
         p("Each has its own tab in the sidebar. Start with \u{201c}Editor\u{201d} to author, \u{201c}Player\u{201d} to ship."),
         h("The basics"),
@@ -403,14 +403,14 @@ fn renderer_section() -> Dom {
             "Shadows (cascaded sun + point), image-based lighting / environment.",
             "MSAA with an edge-resolve pass; decals; GPU particles.",
             "Skinning + morph targets; instancing.",
-            "LOD: discrete level chains + cluster \u{201c}virtual geometry\u{201d} (nanite-style).",
+            "LOD: discrete level chains + cluster \u{201c}virtual geometry\u{201d} (cluster-style).",
         ]),
         h("Bounded by the screen, not the asset"),
         p(
             "With cluster LOD, the drawn triangle count tracks screen resolution + a pixel-error \
            budget — roughly a few hundred thousand to ~2M triangles for typical resolutions — \
            whether the source mesh is 1M or 500M triangles. A fixed-capacity page pool keeps \
-           VRAM bounded too (see the LOD & Nanite tab).",
+           VRAM bounded too (see the LOD & Cluster tab).",
         ),
         h("Profiles"),
         p(
@@ -427,7 +427,7 @@ fn lod_section() -> Dom {
         bullets(vec![
             "Discrete chains — simplified level meshes selected per-instance by screen-space \
              error (great for skinned/deforming and mid-size meshes).",
-            "Cluster \u{201c}virtual geometry\u{201d} (nanite-style) — a per-cluster GPU cut over a \
+            "Cluster \u{201c}virtual geometry\u{201d} (cluster-style) — a per-cluster GPU cut over a \
              baked DAG, with streaming residency so multi-million-triangle static meshes render \
              with BOUNDED draw + BOUNDED VRAM.",
         ]),
@@ -440,7 +440,7 @@ fn lod_section() -> Dom {
         h("Pre-bake offline (the CLI)"),
         p(
             "Baking a huge mesh in the browser is slow. The `awsm-renderer-lod-bake` CLI converts \
-           a glTF/GLB into nanite-ready assets OFFLINE — a base glb, the discrete levels + \
+           a glTF/GLB into cluster-ready assets OFFLINE — a base glb, the discrete levels + \
            manifest, and the cluster DAG — so you import pre-baked instead of converting \
            in-editor.",
         ),

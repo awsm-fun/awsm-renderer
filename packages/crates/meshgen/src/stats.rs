@@ -131,14 +131,32 @@ pub fn cross_section_profile(mesh: &MeshData, axis: usize, samples: u32) -> Vec<
     };
     // Axis-line origin = centroid (its u/v components), so radius is measured
     // about the mesh's own center rather than the world origin.
+    // Positions are DEDUPED first: generators legitimately duplicate vertices
+    // (lathe seam column, crease twin rows), and a vertex-average centroid
+    // over duplicates drifts off-axis, inflating every measured radius.
+    let mut unique: Vec<[f32; 3]> = Vec::with_capacity(mesh.positions.len());
+    {
+        let mut seen = std::collections::HashSet::with_capacity(mesh.positions.len());
+        let q = |f: f32| (f * 1e5).round() as i64;
+        for p in &mesh.positions {
+            if seen.insert([q(p[0]), q(p[1]), q(p[2])]) {
+                unique.push(*p);
+            }
+        }
+    }
     let stats = mesh_stats(mesh);
-    let (cu, cv) = (stats.centroid[u], stats.centroid[v]);
+    let inv = 1.0 / unique.len().max(1) as f32;
+    let (mut cu, mut cv) = (0.0f32, 0.0f32);
+    for p in &unique {
+        cu += p[u] * inv;
+        cv += p[v] * inv;
+    }
     let lo = stats.bbox_min[axis];
     let hi = stats.bbox_max[axis];
     let span = (hi - lo).max(1e-6);
 
     let mut radius = vec![0.0_f32; n];
-    for p in &mesh.positions {
+    for p in &unique {
         let t = ((p[axis] - lo) / span * n as f32).floor() as usize;
         let bin = t.min(n - 1);
         let du = p[u] - cu;

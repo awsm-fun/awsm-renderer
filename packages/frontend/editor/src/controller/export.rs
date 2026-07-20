@@ -30,9 +30,9 @@ use std::sync::Arc;
 use awsm_renderer_editor_protocol::animation::{TrackTarget, TrackValue, TransformProp};
 use awsm_renderer_editor_protocol::dynamic_material::MaterialInstance;
 use awsm_renderer_editor_protocol::{
-    AssetId, AssetSource, CameraConfig, CameraProjection, CrossSectionDef, LightConfig,
-    MaterialAlphaMode, MaterialDef, MaterialShading, NodeId, NodeKind, SweepAlongCurveDef,
-    SweepUvMode, TextureColorKind, TextureDef, TextureExport, TextureRef,
+    AssetId, AssetLod, AssetSource, CameraConfig, CameraProjection, CrossSectionDef, DiscreteLod,
+    LightConfig, LodKind, MaterialAlphaMode, MaterialDef, MaterialShading, NodeId, NodeKind,
+    SweepAlongCurveDef, SweepUvMode, TextureColorKind, TextureDef, TextureExport, TextureRef,
 };
 use awsm_renderer_glb_export::{
     write_glb, AlphaMode, AnimInterp, AnimPath, ExportAnimChannel, ExportAnimation, ExportCamera,
@@ -120,12 +120,12 @@ pub async fn bake_player_bundle(
     //    fetches `assets/<bref.asset>.bin` directly.
     emit_buffer_overrides(&scene.nodes, &mut files);
 
-    // Mesh assets whose referencing nodes opt **in** to LOD (default on). The
-    // toggle is per-node but geometry/levels are per-asset, so an asset gets LOD
-    // baked if *any* node using it is LOD-enabled; the per-instance toggle then
-    // governs runtime level selection (an opted-out instance pins level 0).
-    let mut lod_assets: HashSet<AssetId> = HashSet::new();
-    collect_lod_static_assets(&project.nodes, &mut lod_assets);
+    // The RESOLVED LOD kind per static mesh asset (None / Cluster / Discrete).
+    // Authored per node; geometry is per-asset, so nodes sharing an asset merge
+    // to one kind. The bake commits to exactly this kind and records it in the
+    // asset's `AssetEntry.lod` — no baking multiple kinds, no runtime probing.
+    let mut lod_kinds: HashMap<AssetId, LodKind> = HashMap::new();
+    collect_static_lod_kinds(&project.nodes, &mut lod_kinds);
 
     // 1. One geometry-only glb per Glb-lowered mesh asset (+ discrete LOD levels
     //    for LOD-enabled, above-floor static meshes) — DEDUPED BY CONTENT.
@@ -145,7 +145,7 @@ pub async fn bake_player_bundle(
         id: AssetId,
         glb: Vec<u8>,
         mesh: MeshData,
-        lod_wanted: bool,
+        lod_kind: LodKind,
     }
     let mut glb_mesh_ids: Vec<AssetId> = project
         .assets
@@ -175,34 +175,53 @@ pub async fn bake_player_bundle(
             nodes: vec![ExportNode::new("mesh").with_mesh(mesh.clone())],
             ..Default::default()
         });
-        let lod_wanted = lod_assets.contains(&id);
+        let lod_kind = lod_kinds.get(&id).copied().unwrap_or(LodKind::None);
         match canonicals.iter_mut().find(|c| c.glb == glb) {
             Some(canon) => {
-                canon.lod_wanted |= lod_wanted;
+                canon.lod_kind = merge_lod_kind(canon.lod_kind, lod_kind);
                 mesh_remap.insert(id, canon.id);
             }
             None => canonicals.push(MeshBake {
                 id,
                 glb,
                 mesh,
-                lod_wanted,
+                lod_kind,
             }),
         }
     }
     for canon in canonicals {
-        let lod_files = if canon.lod_wanted {
-            crate::controller::lod_bake::bake_static_lod(
+        // Bake EXACTLY the resolved kind — never both. The bake yields the
+        // resolved `AssetLod` (recorded inline in the asset's scene.toml entry)
+        // plus its side files. A requested kind that can't bake (Cluster below
+        // the floor / degenerate) falls back to `None` (base draws whole).
+        let (asset_lod, lod_files) = match canon.lod_kind {
+            LodKind::None => (AssetLod::None, Vec::new()),
+            LodKind::Cluster => {
+                let files = crate::controller::lod_bake::bake_static_clusters(
+                    &canon.id.0.to_string(),
+                    &canon.mesh,
+                );
+                if files.is_empty() {
+                    tracing::warn!(
+                        "mesh {}: Cluster LOD requested but not baked (below floor / \
+                         degenerate) — shipping base only",
+                        canon.id
+                    );
+                    (AssetLod::None, files)
+                } else {
+                    (AssetLod::Cluster, files)
+                }
+            }
+            LodKind::Discrete(settings) => crate::controller::lod_bake::bake_static_lod(
                 &canon.id.0.to_string(),
                 &canon.mesh,
+                settings,
                 &compress,
-            )
-        } else {
-            Vec::new()
+            ),
         };
-        // Cluster-LOD DAG (Phase B) for dense static meshes; consumed
-        // at load only when the `virtual_geometry` feature is on.
-        let cluster_files =
-            crate::controller::lod_bake::bake_static_clusters(&canon.id.0.to_string(), &canon.mesh);
+        if let Some(entry) = scene.assets.entries.get_mut(&canon.id) {
+            entry.lod = asset_lod;
+        }
         // Bundle meshes ship under the project's BundleOptions (default
         // meshopt + Smart quantization — docs/plans/compression.md); the
         // canonical DEDUP above stays on the uncompressed bytes. A failed
@@ -227,7 +246,6 @@ pub async fn bake_player_bundle(
         };
         files.push(BundleFile::asset(mesh_glb_filename(canon.id), mesh_glb));
         files.extend(lod_files);
-        files.extend(cluster_files);
     }
     if !mesh_remap.is_empty() {
         remap_mesh_refs(&mut scene.nodes, &mesh_remap);
@@ -651,32 +669,55 @@ pub async fn bake_player_bundle(
     // 4. Skinned meshes: one clean rig glb (skeleton + mesh + skin + morph, built
     // at import via reexport_clean_scene) per imported source. The scene.toml
     // SkinnedMesh nodes reference `skin.source` → `assets/<source>.glb`.
-    // `out` = every skinned source (always emitted); `lod` = the subset whose
-    // referencing nodes are LOD-enabled (also gets a simplified level chain).
-    fn collect_skinned(node: &Node, out: &mut HashSet<AssetId>, lod: &mut HashSet<AssetId>) {
+    // `out` = every skinned source (always emitted); `kinds` = the resolved LOD
+    // kind per source. Skinned meshes are Discrete-or-None (they can't cluster).
+    fn collect_skinned(
+        node: &Node,
+        out: &mut HashSet<AssetId>,
+        kinds: &mut HashMap<AssetId, LodKind>,
+    ) {
         if let NodeKind::SkinnedMesh { skin, lod: cfg, .. } = &node.kind.get_cloned() {
             out.insert(skin.source);
-            if cfg.enabled {
-                lod.insert(skin.source);
-            }
+            kinds
+                .entry(skin.source)
+                .and_modify(|k| *k = merge_lod_kind(*k, cfg.kind))
+                .or_insert(cfg.kind);
         }
         for c in node.children.lock_ref().iter() {
-            collect_skinned(c, out, lod);
+            collect_skinned(c, out, kinds);
         }
     }
     let mut skinned_sources: HashSet<AssetId> = HashSet::new();
-    let mut lod_skinned: HashSet<AssetId> = HashSet::new();
+    let mut skinned_kinds: HashMap<AssetId, LodKind> = HashMap::new();
     for n in &roots {
-        collect_skinned(n, &mut skinned_sources, &mut lod_skinned);
+        collect_skinned(n, &mut skinned_sources, &mut skinned_kinds);
     }
     for &src in &skinned_sources {
         if let Some(glb) = crate::engine::bridge::skinned_bake_cache::get_rig_glb(src) {
             // Bake LOD levels (from the rig glb bytes) before `glb` is moved.
-            let lod_files = if lod_skinned.contains(&src) {
-                crate::controller::lod_bake::bake_skinned_lod(&src.0.to_string(), &glb, &compress)
-            } else {
-                Vec::new()
+            // Skinned meshes can't cluster; a stray Cluster (e.g. via MCP) degrades
+            // to a default Discrete chain.
+            let (asset_lod, lod_files) = match skinned_kinds.get(&src).copied() {
+                Some(LodKind::Discrete(settings)) => crate::controller::lod_bake::bake_skinned_lod(
+                    &src.0.to_string(),
+                    &glb,
+                    settings,
+                    &compress,
+                ),
+                Some(LodKind::Cluster) => {
+                    tracing::warn!("skinned mesh {src}: Cluster LOD is invalid — using Discrete");
+                    crate::controller::lod_bake::bake_skinned_lod(
+                        &src.0.to_string(),
+                        &glb,
+                        DiscreteLod::default(),
+                        &compress,
+                    )
+                }
+                Some(LodKind::None) | None => (AssetLod::None, Vec::new()),
             };
+            if let Some(entry) = scene.assets.entries.get_mut(&src) {
+                entry.lod = asset_lod;
+            }
             // The BUNDLE copy of the rig sheds its embedded materials/images
             // (the player applies scene.toml materials to every rig primitive
             // — the bundle already ships the textures as assets/*.ktx2, so
@@ -714,7 +755,7 @@ pub async fn bake_player_bundle(
         }
     }
 
-    // 5. View-only cluster ("nanite") meshes: the pre-baked DAG per `ClusterMesh`
+    // 5. View-only cluster ("cluster") meshes: the pre-baked DAG per `ClusterMesh`
     //    node, read from the session-local `cluster_cache`. `cluster_files` returns
     //    paths already rooted at `assets/<source>.clusters.bin` — the SAME name the
     //    runtime `NodeKind::ClusterMesh` arm fetches — so they go in verbatim.
@@ -997,20 +1038,33 @@ async fn env_ktx_bundle_files(
     Ok(out)
 }
 
-/// Collect the mesh-asset ids whose referencing `NodeKind::Mesh` nodes have LOD
-/// enabled (static path only — skinned/morph LOD bakes from the rig glb on its
-/// own path). Recurses the whole node tree.
-fn collect_lod_static_assets(
+/// Resolve two authored LOD kinds for the SAME mesh asset into the ONE kind the
+/// bake commits to (nodes sharing an asset normally agree via the smart default,
+/// but a conflict must still resolve deterministically). Priority: Cluster beats
+/// Discrete beats None; when both are Discrete the first one's settings win.
+fn merge_lod_kind(a: LodKind, b: LodKind) -> LodKind {
+    match (a, b) {
+        (LodKind::Cluster, _) | (_, LodKind::Cluster) => LodKind::Cluster,
+        (LodKind::Discrete(d), _) | (_, LodKind::Discrete(d)) => LodKind::Discrete(d),
+        _ => LodKind::None,
+    }
+}
+
+/// Resolve the per-asset LOD kind for every `NodeKind::Mesh` asset (static path
+/// only — skinned/morph LOD bakes from the rig glb on its own path). Geometry is
+/// per-asset but the kind is authored per-node, so nodes sharing an asset merge
+/// via [`merge_lod_kind`]. Recurses the whole node tree.
+fn collect_static_lod_kinds(
     nodes: &[awsm_renderer_editor_protocol::EditorNode],
-    out: &mut HashSet<AssetId>,
+    out: &mut HashMap<AssetId, LodKind>,
 ) {
     for n in nodes {
         if let NodeKind::Mesh { mesh, lod, .. } = &n.kind {
-            if lod.enabled {
-                out.insert(mesh.0);
-            }
+            out.entry(mesh.0)
+                .and_modify(|k| *k = merge_lod_kind(*k, lod.kind))
+                .or_insert(lod.kind);
         }
-        collect_lod_static_assets(&n.children, out);
+        collect_static_lod_kinds(&n.children, out);
     }
 }
 

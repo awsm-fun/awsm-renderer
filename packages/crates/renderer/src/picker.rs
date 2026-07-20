@@ -122,7 +122,7 @@ impl AwsmRenderer {
         // runs outside the render loop's `viewport_size` cache, so we
         // fetch the size here directly. Cheap (single wasm↔JS hop on a
         // user-driven path, not per-frame).
-        let viewport_size = self.gpu.current_context_texture_size()?;
+        let viewport_size = self.render_size()?;
         let render_texture_views = self.render_textures.views(
             &self.gpu,
             self.anti_aliasing.clone(),
@@ -201,6 +201,11 @@ impl AwsmRenderer {
         if !self.features.picking {
             return Ok(PickResult::Disabled);
         }
+        // Callers pass swap-chain (canvas backing-buffer) coordinates; the
+        // pick id-buffer lives at render resolution — map through
+        // `render_scale` (identity at 1.0).
+        let x = crate::size::scale_extent(x.max(0) as u32, self.render_scale) as i32;
+        let y = crate::size::scale_extent(y.max(0) as u32, self.render_scale) as i32;
         self.ensure_picker_compiled().await?;
         let Some(picker) = self.picker.as_ref() else {
             return Ok(PickResult::Disabled);

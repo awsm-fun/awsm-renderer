@@ -6,6 +6,19 @@ skybox = "built_in_default"
 specular = "built_in_default"
 irradiance = "built_in_default"
 
+[environment.probe]
+enabled = false
+center = [
+    0.0,
+    0.0,
+    0.0,
+]
+half_extents = [
+    10.0,
+    10.0,
+    10.0,
+]
+
 [shadows]
 sscs_enabled = false
 sscs_step_count = 16
@@ -42,12 +55,57 @@ edge_fade = 0.10000000149011612
 resolution_scale = 0.5
 temporal = false
 temporal_weight = 0.8999999761581421
+bvh_reflections = false
+
+[assets.00000000-0000-4000-8000-000000000012]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.00000000-0000-4000-8000-000000000012.source.mesh.primitive.sphere]
+radius = 0.800000011920929
+segments_long = 32
+segments_lat = 24
+
+[assets.d90a62d8-7a2f-4ae8-b021-d039017c490f]
+gltf_material_asset_ids = ["fe10f6ef-069e-4fc7-bca7-fac2991d06ee"]
+gltf_image_asset_ids = ["dbb9d227-c085-4a08-8697-83ad83251b5d"]
+content_hash = ""
+lod = "none"
+
+[assets.d90a62d8-7a2f-4ae8-b021-d039017c490f.source]
+filename = "d90a62d8-7a2f-4ae8-b021-d039017c490f.glb"
+
+[assets.dbb9d227-c085-4a08-8697-83ad83251b5d]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = "35d278c7b7b0b9e22881b2c435e41ce8659f230c776ef8780b4a5087abbefaa1"
+texture_encoding = "ktx2"
+lod = "none"
+
+[assets.dbb9d227-c085-4a08-8697-83ad83251b5d.source.texture.raster]
+display_name = "Cesium_Man-effect · base color.jpg"
+color_kind = "albedo"
+
+[assets.00000000-0000-4000-8000-000000000001]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.00000000-0000-4000-8000-000000000001.source.mesh.primitive.plane]
+width = 20.0
+depth = 20.0
+segments_x = 1
+segments_z = 1
 
 [assets.00000000-0000-4000-8000-0000000000f1]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
-texture_encoding = "webp"
+texture_encoding = "ktx2"
+lod = "none"
 
 [assets.00000000-0000-4000-8000-0000000000f1.source.texture.procedural.checker]
 width = 512
@@ -67,20 +125,22 @@ color_b = [
     1.0,
 ]
 
-[assets.dbb9d227-c085-4a08-8697-83ad83251b5d]
+[assets.00000000-0000-4000-8000-000000000010]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
-content_hash = "35d278c7b7b0b9e22881b2c435e41ce8659f230c776ef8780b4a5087abbefaa1"
-texture_encoding = "webp"
+content_hash = ""
+lod = "none"
 
-[assets.dbb9d227-c085-4a08-8697-83ad83251b5d.source.texture.raster]
-display_name = "Cesium_Man-effect · base color.jpg"
-color_kind = "albedo"
+[assets.00000000-0000-4000-8000-000000000010.source.mesh.primitive.sphere]
+radius = 0.800000011920929
+segments_long = 32
+segments_lat = 24
 
 [assets.00000000-0000-4000-8000-000000000013]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
+lod = "none"
 
 [assets.00000000-0000-4000-8000-000000000013.source.mesh.primitive.box]
 dims = [
@@ -89,51 +149,13 @@ dims = [
     1.399999976158142,
 ]
 
-[assets.d90a62d8-7a2f-4ae8-b021-d039017c490f]
-gltf_material_asset_ids = ["fe10f6ef-069e-4fc7-bca7-fac2991d06ee"]
-gltf_image_asset_ids = ["dbb9d227-c085-4a08-8697-83ad83251b5d"]
-content_hash = ""
-
-[assets.d90a62d8-7a2f-4ae8-b021-d039017c490f.source]
-filename = "d90a62d8-7a2f-4ae8-b021-d039017c490f.glb"
-
-[assets.00000000-0000-4000-8000-000000000012]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-
-[assets.00000000-0000-4000-8000-000000000012.source.mesh.primitive.sphere]
-radius = 0.800000011920929
-segments_long = 32
-segments_lat = 24
-
 [assets.00000000-0000-4000-8000-000000000011]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
+lod = "none"
 
 [assets.00000000-0000-4000-8000-000000000011.source.mesh.primitive.sphere]
-radius = 0.800000011920929
-segments_long = 32
-segments_lat = 24
-
-[assets.00000000-0000-4000-8000-000000000001]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-
-[assets.00000000-0000-4000-8000-000000000001.source.mesh.primitive.plane]
-width = 20.0
-depth = 20.0
-segments_x = 1
-segments_z = 1
-
-[assets.00000000-0000-4000-8000-000000000010]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-
-[assets.00000000-0000-4000-8000-000000000010.source.mesh.primitive.sphere]
 radius = 0.800000011920929
 segments_long = 32
 segments_lat = 24
@@ -80339,6 +80361,7 @@ emissive = [
 ]
 normal_scale = 1.0
 occlusion_strength = 1.0
+ssr_mask = 1.0
 double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
@@ -80357,7 +80380,7 @@ cast = true
 receive = true
 
 [nodes.kind.mesh.lod]
-enabled = true
+kind = "none"
 
 [[nodes]]
 id = "00000000-0000-4000-8000-000000000010"
@@ -80413,6 +80436,7 @@ emissive = [
 ]
 normal_scale = 1.0
 occlusion_strength = 1.0
+ssr_mask = 1.0
 double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
@@ -80431,7 +80455,7 @@ cast = true
 receive = true
 
 [nodes.kind.mesh.lod]
-enabled = true
+kind = "none"
 
 [[nodes]]
 id = "00000000-0000-4000-8000-000000000011"
@@ -80487,6 +80511,7 @@ emissive = [
 ]
 normal_scale = 1.0
 occlusion_strength = 1.0
+ssr_mask = 1.0
 double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
@@ -80505,7 +80530,7 @@ cast = true
 receive = true
 
 [nodes.kind.mesh.lod]
-enabled = true
+kind = "none"
 
 [[nodes]]
 id = "00000000-0000-4000-8000-000000000012"
@@ -80561,6 +80586,7 @@ emissive = [
 ]
 normal_scale = 1.0
 occlusion_strength = 1.0
+ssr_mask = 1.0
 double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
@@ -80579,7 +80605,7 @@ cast = true
 receive = true
 
 [nodes.kind.mesh.lod]
-enabled = true
+kind = "none"
 
 [[nodes]]
 id = "00000000-0000-4000-8000-000000000013"
@@ -80635,6 +80661,7 @@ emissive = [
 ]
 normal_scale = 1.0
 occlusion_strength = 1.0
+ssr_mask = 1.0
 double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
@@ -80656,7 +80683,7 @@ cast = true
 receive = true
 
 [nodes.kind.mesh.lod]
-enabled = true
+kind = "none"
 
 [[nodes]]
 id = "30000000-0000-4000-8000-000000000000"
@@ -81730,6 +81757,7 @@ emissive = [
 ]
 normal_scale = 1.0
 occlusion_strength = 1.0
+ssr_mask = 1.0
 double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
@@ -81758,4 +81786,4 @@ cast = true
 receive = true
 
 [nodes.children.children.kind.skinned_mesh.lod]
-enabled = true
+kind = "none"

@@ -220,7 +220,7 @@ every command/query, and each tool self-describes over the MCP schema.
   tool result) and the tool returns the path + a file manifest.
 - `verify_roundtrip` — destructive save→load losslessness self-test; returns a
   before/after census report (`{ before, after, equal, lossless }`).
-- `import_nanite_asset { clusters_url }` — import a **pre-baked nanite / cluster-LOD**
+- `import_cluster_asset { clusters_url }` — import a **pre-baked cluster-LOD**
   asset as a **view-only** mesh, rendered through the bounded cluster pipeline (the
   same path the player uses). Use this instead of `import_model_from_url` for **heavy
   static meshes**: it renders multi-million-triangle geometry without the dense
@@ -228,8 +228,8 @@ every command/query, and each tool self-describes over the MCP schema.
   points at a `<id>.clusters.bin` produced offline by the `awsm-renderer-lod-bake` CLI
   (`awsm-renderer-lod-bake model.glb --out ./assets`). The node is **not editable** (no
   geometry stack — it IS the LOD); move/scale it and assign a material like any node.
-  Per-mesh LOD for *editable* meshes is the separate `set_mesh_lod { node, enabled }`
-  opt-out (consumed by the export bake).
+  Per-mesh LOD for *editable* meshes is the separate `set_mesh_lod { node, kind }`
+  (`none` / `cluster` / `discrete`, consumed by the export bake).
 
 **Materials**
 - `add_builtin_material { shading }` (pbr/unlit), `add_custom_material` — **return
