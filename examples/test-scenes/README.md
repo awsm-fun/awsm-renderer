@@ -61,6 +61,19 @@ bundles, which are window-independent.
 | `instancing-stress` | N×1000s instanced meshes (axis-5 instancer NodeKind) | thousands of instances, ONE geometry upload, interactive frame rate |
 | `kitchen-sink` | everything at once | the smoke test; also the startup-census scene |
 
+### Layer-A only (no `bundle/`, no `golden.png`)
+
+Some scenes test **view-time** behaviour — editor `set_view_options` toggles and
+render-path concerns that are not player-bundle state — so there is nothing for
+`export_player_bundle` to bake, and a golden would pin the wrong layer. These
+ship `author.js` + `verify.md` and are checked by following the recipe in
+`verify.md`:
+
+| Scene | Features under test | What "correct" looks like |
+|---|---|---|
+| `aa-edges` | MSAA / SMAA view toggles on a crisp diagonal silhouette | `msaa` and `smaa` both visibly smoother than `no-aa` on the same framed edges |
+| `env-bc6h-spheres` | BC6H environment cubemaps (skybox/specular/irradiance), skybox ray reconstruction, the `--ibl-ld` roughness ladder; doubles as the MSAA silhouette probe | skybox tracks camera direction; metals blur monotonically with roughness; 0 flickering px static-camera, and ~55% RMS error reduction vs a supersampled reference along silhouettes |
+
 ## The optimization axes (plan 006)
 
 The sweep this suite exists to measure. Every axis lands with before/after

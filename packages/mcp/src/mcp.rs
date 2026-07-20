@@ -6113,9 +6113,16 @@ A) Quick two-color sky (no hosting):
 
 B) Baked HDRI / studio KTX2 cubemaps by URL (read awsm://docs/asset-workflows for full flags):
    1. Make an .hdr/.exr (a real HDRI, or generate an equirect panorama procedurally — numpy → flat-RGBE .hdr).
+      Check the source actually HAS HDR range: a .hdr extension only means the container is float, and \
+many 'HDRIs' are tonemapped LDR re-saved as RGBE (max channel ~1.0), which bakes to flat IBL.
    2. cmgen → skybox faces (-x skybox), prefiltered spec (--ibl-ld), irradiance (--ibl-irradiance).
       The equirect→cubemap projection happens HERE, offline (there is no runtime equirect).
-   3. ktx create --cubemap --format B10G11R11_UFLOAT_PACK32 … → skybox.ktx2, env.ktx2, irradiance.ktx2.
+   3. awsm-renderer-env-bake --skybox-faces … --specular-faces … --irradiance-faces … --out … --format bc6h \
+→ skybox.ktx2, env.ktx2, irradiance.ktx2. BC6H stays block-compressed in VRAM (1 B/texel vs \
+B10G11R11's 4). --format rg11b10 gives the uncompressed fallback; ktx create --cubemap --format \
+B10G11R11_UFLOAT_PACK32 … also produces that variant but cannot encode BC6H. NEVER --encode \
+uastc/basis-lz here: both write supercompressed KTX2 (which the cubemap loader rejects) and are LDR \
+codecs that clip everything above 1.0.
    4. Serve them (a local CORS static server is fine), then:
       set_environment { skybox: \"<url>/skybox.ktx2\", specular: \"<url>/env.ktx2\", irradiance: \"<url>/irradiance.ktx2\" }.
       (Slots are independent — set only the ones you want. Mix freely: e.g. skybox: \"builtin\" for a \
