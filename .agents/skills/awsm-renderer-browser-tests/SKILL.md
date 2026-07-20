@@ -137,8 +137,10 @@ For each selected `examples/test-scenes/<scene>/verify.md`:
    wrong-looking outcomes to reject).
 4. **Drive** the scene. Replay the scene's `author.js` (or `load_project` the
    baked project) through `window.wasmBindings.editor_dispatch_json(json)` /
-   `editor_query_json(json)` via `evaluate_script`. `editor_dispatch_json` is
-   fire-and-forget (returns before apply) — settle with `editor_query_json({query:'wait_render_settled'})`
+   `editor_query_json(json)` via `evaluate_script`. `editor_dispatch_json` AWAITS
+   the command and returns `"ok"` / `"error: …"` / `"decode error: …"` — CHECK it
+   (the `author.js` guards depend on it). It settles the COMMAND, not the frame,
+   so still settle with `editor_query_json({query:'wait_render_settled'})`
    before every capture. Use `editor_tick_animation` to advance the clock
    deterministically (shadows/animation states), `editor_query_texture_png` for
    texture reads.
