@@ -217,4 +217,56 @@ mod tests {
         assert!((ndc_z(po, -0.5) - 1.0).abs() < 1e-5);
         assert!((ndc_z(po, -100.0) - 0.0).abs() < 1e-5);
     }
+
+    /// Unprojecting NDC z=0 under infinite-far reverse-Z yields w == 0 EXACTLY.
+    ///
+    /// This is the trap `sample_skybox` fell into: it unprojected the far plane
+    /// and perspective-divided, so every pixel got Inf → normalize() → NaN →
+    /// a NaN cube-map fetch, which samples one implementation-defined texel.
+    /// The skybox rendered as a flat block of colour at every camera angle.
+    /// `compute_view_frustum_rays` documents the same hazard.
+    #[test]
+    fn unprojecting_reverse_z_far_plane_yields_w_zero() {
+        let r = DepthConvention { reverse_z: true };
+        let inv = r.perspective(1.0, 1.6, 0.1, 1000.0).inverse();
+        for (x, y) in [(0.0f32, 0.0f32), (-1.0, -1.0), (1.0, 1.0), (0.5, -0.25)] {
+            let h = inv * glam::Vec4::new(x, y, 0.0, 1.0);
+            assert_eq!(
+                h.w, 0.0,
+                "NDC z=0 is the far plane at infinity under infinite-far \
+                 reverse-Z — dividing by w here is what produced NaN rays"
+            );
+        }
+    }
+
+    /// The skybox's ray reconstruction must stay convention-independent: taking
+    /// the UNDIVIDED `xyz` of the unprojected homogeneous point gives the right
+    /// direction under both conventions, because inv_proj's 4th row carries no
+    /// x/y terms (so w is a per-image constant that `normalize` divides out).
+    #[test]
+    fn undivided_unprojection_gives_correct_ray_under_both_conventions() {
+        let (fov, aspect, near) = (1.0f32, 1.6f32, 0.1f32);
+        for reverse_z in [false, true] {
+            let c = DepthConvention { reverse_z };
+            let inv = c.perspective(fov, aspect, near, 1000.0).inverse();
+
+            // Reference: the true view-space direction through the pixel,
+            // taken at the NEAR plane where the divide is always well-defined.
+            let near_h = inv * glam::Vec4::new(0.5, -0.25, c.near_ndc_z(), 1.0);
+            let expected = (near_h.truncate() / near_h.w).normalize();
+
+            // What the shader does: unproject NDC z=0, skip the divide.
+            let h = inv * glam::Vec4::new(0.5, -0.25, 0.0, 1.0);
+            let actual = h.truncate().normalize();
+
+            assert!(
+                actual.abs_diff_eq(expected, 1e-5),
+                "reverse_z={reverse_z}: undivided ray {actual:?} != {expected:?}"
+            );
+            assert!(
+                actual.is_finite(),
+                "reverse_z={reverse_z}: ray must be finite"
+            );
+        }
+    }
 }

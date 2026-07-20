@@ -15,10 +15,30 @@ fn sample_skybox(
     let ndc = vec2<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
 
     if (is_perspective) {
-        // PERSPECTIVE: Unproject NDC point to get diverging rays
+        // PERSPECTIVE: unproject the pixel to a view-space DIRECTION.
+        //
+        // Deliberately NO perspective divide. Under the renderer's reverse-Z
+        // convention the main camera uses the INFINITE-far projection
+        // (`perspective_infinite_reverse_rh`), so NDC z=0 is the far plane —
+        // which sits at infinity. `inv_proj * vec4(ndc, 0, 1)` therefore comes
+        // back with w == 0 EXACTLY, and `xyz / w` yields ±Inf → normalize() →
+        // NaN → a NaN cube-map fetch. A NaN direction samples one
+        // implementation-defined texel, so every pixel at every camera angle
+        // got the same colour: the skybox rendered as a flat solid block of
+        // the environment's average tone. `compute_view_frustum_rays` in
+        // camera.rs documents this same w=0 hazard and avoids the far plane.
+        //
+        // The divide was never needed here: we want a direction, not a
+        // position, and inv_proj's 4th row carries no x/y terms for any
+        // projection this renderer builds (perspective, orthographic, and the
+        // TAA-jittered variants — jitter is a translation in x/y, which leaves
+        // that row untouched). So w is a per-image constant and the undivided
+        // xyz is already proportional to the correct per-pixel direction;
+        // normalize() below removes the scale. This also stays correct under
+        // forward-Z, where z=0 is the near plane and w is a positive constant.
         let clip_pos = vec4<f32>(ndc.x, ndc.y, 0.0, 1.0);
         let view_pos_h = camera.inv_proj * clip_pos;
-        view_ray = view_pos_h.xyz / view_pos_h.w;
+        view_ray = view_pos_h.xyz;
     } else {
         // ORTHOGRAPHIC: Use fixed angular scale for zoom-independent skybox
         // Simple ray based on NDC with constant field of view
