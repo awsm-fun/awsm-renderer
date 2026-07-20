@@ -1,0 +1,33 @@
+[package]
+# Binary-only tool, so it takes the `-cli` suffix like `lod-bake-cli`; the
+# shipped binary is `awsm-renderer-env-bake` (see `[[bin]]`). There is no
+# library half — the whole thing is offline asset baking.
+name = "awsm-renderer-env-bake-cli"
+version.workspace = true
+edition = "2021"
+description = "Offline CLI that packs cmgen's EXR cubemap faces into the skybox/specular/irradiance KTX2 cubemaps the renderer loads — including BC6H, which the Khronos `ktx` CLI cannot encode."
+license = "MIT OR Apache-2.0"
+publish = false
+
+# Ship the prebuilt binary on GitHub Releases, same as lod-bake-cli and the MCP
+# server: `publish = false` otherwise reads to dist as "don't ship".
+[package.metadata.dist]
+dist = true
+
+[[bin]]
+name = "awsm-renderer-env-bake"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = { workspace = true }
+clap = { version = "4.5", features = ["derive"] }
+exr = { workspace = true }
+half = { workspace = true }
+# BC6H block encoder. Ships prebuilt ISPC kernels, so no ISPC toolchain is
+# needed to build this crate — and it never compiles to wasm (native CLI only).
+intel_tex_2 = "0.4"
+rayon = "1.10"
+
+[dev-dependencies]
+# Read back what we write, with the exact crate the renderer parses KTX2 with.
+ktx2 = { workspace = true }
