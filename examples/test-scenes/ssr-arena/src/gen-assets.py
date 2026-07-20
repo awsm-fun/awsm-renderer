@@ -258,11 +258,15 @@ def gen_floor():
 
 # ------------------------------------------------------------- KTX2 writer
 def write_ktx2(path, size, face_mips, vk_format=None):
-    if vk_format is None:
-        vk_format = VK_R8G8B8A8_SRGB
     """face_mips: list of levels; each level = list of 6 face bytearrays
     (RGBA8, tight). Levels ordered mip0..mipN-1 (largest first)."""
+    # Bind BEFORE the `vk_format is None` default below. Assigning this name
+    # anywhere in the function makes it local for the whole body, so reading it
+    # first raised UnboundLocalError and no .ktx2 was ever written — the PNGs
+    # still were, so the breakage only surfaced when regenerating the cubemaps.
     VK_R8G8B8A8_SRGB = 43
+    if vk_format is None:
+        vk_format = VK_R8G8B8A8_SRGB
     levels = len(face_mips)
     ident = b"\xabKTX 20\xbb\r\n\x1a\n"
     # basic DFD for RGBA8 SRGB: 24-byte block header + 4 samples x 16 bytes
