@@ -27,6 +27,7 @@ use crate::{
             ShaderTemplateOcclusionCompaction, ShaderTemplateOcclusionCull,
         },
         shader_cache_key::ShaderCacheKeyRenderPass,
+        smaa::shader::template::ShaderTemplateSmaa,
         ssr::shader::template::ShaderTemplateSsr,
     },
     shaders::AwsmShaderError,
@@ -43,6 +44,7 @@ pub enum ShaderTemplateRenderPass {
     HzbReduce(ShaderTemplateHzbReduce),
     BloomDownsample(ShaderTemplateBloomDownsample),
     BloomCombine(ShaderTemplateBloomCombine),
+    Smaa(ShaderTemplateSmaa),
     LightCulling(ShaderTemplateLightCulling),
     MaterialClassify(ShaderTemplateMaterialClassify),
     MaterialPrep(ShaderTemplateMaterialPrep),
@@ -95,6 +97,9 @@ impl TryFrom<&ShaderCacheKeyRenderPass> for ShaderTemplateRenderPass {
             ShaderCacheKeyRenderPass::BloomCombine(cache_key) => Ok(
                 ShaderTemplateRenderPass::BloomCombine(cache_key.try_into()?),
             ),
+            ShaderCacheKeyRenderPass::Smaa(cache_key) => {
+                Ok(ShaderTemplateRenderPass::Smaa(cache_key.try_into()?))
+            }
             ShaderCacheKeyRenderPass::LightCulling(cache_key) => Ok(
                 ShaderTemplateRenderPass::LightCulling(cache_key.try_into()?),
             ),
@@ -162,6 +167,7 @@ impl ShaderTemplateRenderPass {
             ShaderTemplateRenderPass::HzbReduce(tmpl) => tmpl.into_source(),
             ShaderTemplateRenderPass::BloomDownsample(tmpl) => tmpl.into_source(),
             ShaderTemplateRenderPass::BloomCombine(tmpl) => tmpl.into_source(),
+            ShaderTemplateRenderPass::Smaa(tmpl) => tmpl.into_source(),
             ShaderTemplateRenderPass::LightCulling(tmpl) => tmpl.into_source(),
             ShaderTemplateRenderPass::MaterialClassify(tmpl) => tmpl.into_source(),
             ShaderTemplateRenderPass::MaterialPrep(tmpl) => tmpl.into_source(),
@@ -196,6 +202,7 @@ impl ShaderTemplateRenderPass {
             ShaderTemplateRenderPass::HzbSeed(tmpl) => tmpl.debug_label(),
             ShaderTemplateRenderPass::HzbReduce(tmpl) => tmpl.debug_label(),
             ShaderTemplateRenderPass::BloomDownsample(tmpl) => tmpl.debug_label(),
+            ShaderTemplateRenderPass::Smaa(tmpl) => tmpl.debug_label(),
             ShaderTemplateRenderPass::BloomCombine(tmpl) => tmpl.debug_label(),
             ShaderTemplateRenderPass::LightCulling(tmpl) => tmpl.debug_label(),
             ShaderTemplateRenderPass::MaterialClassify(tmpl) => tmpl.debug_label(),

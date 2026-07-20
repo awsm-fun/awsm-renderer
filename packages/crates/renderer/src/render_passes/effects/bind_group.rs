@@ -28,6 +28,9 @@ pub struct EffectsBindGroups {
     pub singlesampled_bind_group_layout_key: BindGroupLayoutKey,
     // this is set via `recreate` mechanism
     bind_group: Option<web_sys::GpuBindGroup>,
+    /// 1×1 zero texture bound at the SMAA-weights slot while SMAA is off
+    /// (keeps the layout shape stable across the toggle at 4 bytes of VRAM).
+    dummy_weights_view: Option<web_sys::GpuTextureView>,
 }
 
 impl EffectsBindGroups {
@@ -47,10 +50,24 @@ impl EffectsBindGroups {
             .bind_group_layouts
             .get_key(ctx.gpu, multisampled_bind_group_layout_cache_key)?;
 
+        let dummy_tex = ctx.gpu.create_texture(
+            &awsm_renderer_core::texture::TextureDescriptor::new(
+                awsm_renderer_core::texture::TextureFormat::Rgba8unorm,
+                awsm_renderer_core::texture::Extent3d::new(1, Some(1), None),
+                awsm_renderer_core::texture::TextureUsage::new().with_texture_binding(),
+            )
+            .with_label("Effects SMAA Dummy Weights")
+            .into(),
+        )?;
+        let dummy_weights_view = dummy_tex.create_view().map_err(|e| {
+            awsm_renderer_core::error::AwsmCoreError::create_texture_view(format!("{e:?}").into())
+        })?;
+
         Ok(Self {
             multisampled_bind_group_layout_key,
             singlesampled_bind_group_layout_key,
             bind_group: None,
+            dummy_weights_view: Some(dummy_weights_view),
         })
     }
 
@@ -64,7 +81,13 @@ impl EffectsBindGroups {
     }
 
     /// Recreates bind groups for the current render textures.
-    pub fn recreate(&mut self, ctx: &BindGroupRecreateContext<'_>) -> Result<()> {
+    /// `smaa_weights_view` is the SMAA pre-pass's weights texture when SMAA is
+    /// enabled; `None` binds the internal 1×1 zero dummy.
+    pub fn recreate(
+        &mut self,
+        ctx: &BindGroupRecreateContext<'_>,
+        smaa_weights_view: Option<&web_sys::GpuTextureView>,
+    ) -> Result<()> {
         let mut entries = Vec::new();
 
         entries.push(BindGroupEntry::new(
@@ -90,6 +113,13 @@ impl EffectsBindGroups {
         entries.push(BindGroupEntry::new(
             entries.len() as u32,
             BindGroupResource::Buffer(BufferBinding::new(&ctx.frame_globals.gpu_buffer)),
+        ));
+        let weights_view = smaa_weights_view
+            .or(self.dummy_weights_view.as_ref())
+            .expect("dummy weights view exists after new()");
+        entries.push(BindGroupEntry::new(
+            entries.len() as u32,
+            BindGroupResource::TextureView(Cow::Borrowed(weights_view)),
         ));
 
         let descriptor = BindGroupDescriptor::new(
@@ -173,6 +203,17 @@ fn bind_group_layout_cache_key(
             BindGroupLayoutCacheKeyEntry {
                 resource: BindGroupLayoutResource::Buffer(
                     BufferBindingLayout::new().with_binding_type(BufferBindingType::Uniform),
+                ),
+                visibility_vertex: false,
+                visibility_fragment: false,
+                visibility_compute: true,
+            },
+            // SMAA blend-weights texture (1x1 zero dummy when SMAA is off).
+            BindGroupLayoutCacheKeyEntry {
+                resource: BindGroupLayoutResource::Texture(
+                    TextureBindingLayout::new()
+                        .with_view_dimension(TextureViewDimension::N2d)
+                        .with_sample_type(TextureSampleType::UnfilterableFloat),
                 ),
                 visibility_vertex: false,
                 visibility_fragment: false,

@@ -19,6 +19,7 @@ dirs = [
     "src/render_passes/display/shader",
     "src/render_passes/effects/shader",
     "src/render_passes/ssr/shader",
+    "src/render_passes/smaa/shader",
     "src/picker/shader",
     "src/shadows/shader",
 ]

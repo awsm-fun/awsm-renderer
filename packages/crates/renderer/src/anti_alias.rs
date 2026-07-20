@@ -29,6 +29,14 @@ impl Default for AntiAliasing {
             // Some(4) is the only supported option for now
             msaa_sample_count: Some(4),
             //msaa_sample_count: None,
+            // OFF by default. On-device A/B on real content (thin HDR emissive
+            // lines over 4x MSAA) showed marginal gains at best: SMAA was
+            // designed as an MSAA *replacement* for renderers that couldn't
+            // afford MSAA, and layered on top of an MSAA resolve it has little
+            // left to fix — while on 1–2px bright lines its revectorization
+            // redistributes line energy visibly. Off is zero-cost (no pass, no
+            // textures, no shader variant); the toggle remains for A/B and for
+            // MSAA-less configurations, where it earns its keep.
             smaa: false,
             mipmap: true,
         }
@@ -80,6 +88,41 @@ impl AwsmRenderer {
         let prev_msaa_on = self.anti_aliasing.has_msaa_checked()?;
         self.anti_aliasing = aa;
         let new_msaa_on = self.anti_aliasing.has_msaa_checked()?;
+
+        // ── SMAA lifecycle: build the pre-pass on enable, DROP it on disable
+        //    (textures destroyed — SMAA off is zero-cost; the effects pass's
+        //    smaa-off shader variant contains no SMAA code and binds a 1×1
+        //    dummy weights texture). Enable-side construction mirrors bloom's
+        //    lazy `set_post_processing` build.
+        if self.anti_aliasing.smaa && self.render_passes.smaa.is_none() {
+            let mut ctx = crate::render_passes::RenderPassInitContext {
+                gpu: &self.gpu,
+                bind_group_layouts: &mut self.bind_group_layouts,
+                pipeline_layouts: &mut self.pipeline_layouts,
+                pipelines: &mut self.pipelines,
+                shaders: &mut self.shaders,
+                render_texture_formats: &mut self.render_textures.formats,
+                textures: &mut self.textures,
+                features: &self.features,
+                anti_aliasing: &self.anti_aliasing,
+                post_processing: &self.post_processing,
+                prep_config: &self.prep_config,
+                max_edge_budget: self
+                    .material_edge_buffers
+                    .as_ref()
+                    .map(|b| b.max_edge_budget)
+                    .unwrap_or(
+                        crate::render_passes::material_opaque::edge_buffers::DEFAULT_MAX_EDGE_BUDGET_DESKTOP,
+                    ),
+            };
+            let smaa = crate::render_passes::smaa::render_pass::SmaaRenderPass::new(&mut ctx, 1, 1)
+                .await?;
+            self.render_passes.smaa = Some(smaa);
+        } else if !self.anti_aliasing.smaa {
+            if let Some(smaa) = self.render_passes.smaa.take() {
+                smaa.textures.destroy();
+            }
+        }
 
         // MSAA off → on transition: allocate `material_edge_buffers`
         // + `material_edge_layout_uniform` if they're not already
@@ -547,6 +590,81 @@ impl AwsmRenderer {
             self.render_passes.ssr = Some(ssr);
         }
 
+        Ok(())
+    }
+}
+
+impl AwsmRenderer {
+    /// Current supersampling factor (1.0 = off).
+    pub fn render_scale(&self) -> f32 {
+        self.render_scale
+    }
+
+    /// True when supersampling is active (drives the display shader's
+    /// downsample variant).
+    pub(crate) fn render_scale_supersamples(&self) -> bool {
+        (self.render_scale - 1.0).abs() > f32::EPSILON
+    }
+
+    /// The internal render resolution: swap-chain size scaled by
+    /// [`Self::render_scale`] (identical to the swap-chain size at 1.0).
+    /// Every viewport-derived consumer (render targets, light-culling
+    /// froxels, LOD screen-error, camera viewport uniform, picker) reads
+    /// THIS, never the raw swap-chain size — the display pass output and
+    /// swap-chain readbacks are the only canvas-sized stages.
+    pub(crate) fn render_size(&self) -> Result<(u32, u32)> {
+        let (w, h) = self.gpu.current_context_texture_size()?;
+        Ok((
+            crate::size::scale_extent(w, self.render_scale),
+            crate::size::scale_extent(h, self.render_scale),
+        ))
+    }
+
+    /// Runtime anisotropic-filtering toggle (default ON). OFF rebinds every
+    /// anisotropic material sampler to its no-aniso twin — pool indices and
+    /// material data untouched, so the flip is one texture-pool bind-group
+    /// rebuild (next frame), no pipeline work.
+    pub fn set_anisotropy_enabled(&mut self, on: bool) {
+        if self.textures.set_anisotropy_enabled(on) {
+            self.bind_groups.mark_create(BindGroupCreate::TexturePool);
+        }
+    }
+
+    pub fn anisotropy_enabled(&self) -> bool {
+        self.textures.anisotropy_enabled()
+    }
+
+    /// Sets the supersampling factor (clamped to [1.0, 2.0]).
+    ///
+    /// Optional quality setting shared by players and the editor — OFF
+    /// (1.0) by default; 2.0 renders 4x the pixels and box-downsamples,
+    /// which is the honest fix for sub-pixel/thin-feature crawl that
+    /// post-process AA cannot reconstruct. Render targets rebuild lazily
+    /// on the next frame (the size change flows through
+    /// `RenderTextures::views` + the bind-group ledger); only the display
+    /// pipeline (1:1 load vs downsample variant) recompiles here.
+    pub async fn set_render_scale(&mut self, scale: f32) -> Result<()> {
+        let scale = scale.clamp(1.0, 2.0);
+        if (scale - self.render_scale).abs() <= f32::EPSILON {
+            return Ok(());
+        }
+        let was_supersampling = self.render_scale_supersamples();
+        self.render_scale = scale;
+        if self.render_scale_supersamples() != was_supersampling {
+            self.render_passes
+                .display
+                .pipelines
+                .set_render_pipeline_key(
+                    &self.post_processing,
+                    self.render_scale_supersamples(),
+                    &self.gpu,
+                    &mut self.shaders,
+                    &mut self.pipelines,
+                    &self.pipeline_layouts,
+                    &self.render_textures.formats,
+                )
+                .await?;
+        }
         Ok(())
     }
 }

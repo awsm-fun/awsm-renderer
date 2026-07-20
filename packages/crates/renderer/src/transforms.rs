@@ -493,7 +493,18 @@ impl Transforms {
 
         self.locals.remove(key);
         self.world_matrices.remove(key);
-        self.children.remove(key);
+        // Relink any children to the root rather than leaving their `parents`
+        // entries dangling at a dead key. Subtree removals delete those
+        // children next anyway; anything else stays alive at the root.
+        if let Some(orphans) = self.children.remove(key) {
+            for orphan in orphans {
+                self.parents.insert(orphan, self.root_node);
+                if let Some(root_children) = self.children.get_mut(self.root_node) {
+                    root_children.push(orphan);
+                }
+                self.dirties.insert(orphan);
+            }
+        }
         self.dirties.remove(&key);
         self.buffer.remove(key);
 
@@ -533,7 +544,18 @@ impl Transforms {
             return;
         }
 
-        let parent = parent.unwrap_or(self.root_node);
+        let mut parent = parent.unwrap_or(self.root_node);
+        // A caller can hand us a parent that was already removed (observed
+        // during editor reload/reparent ordering — the old line 547 panic).
+        // Degrade to the root instead of crashing the renderer: the child
+        // stays alive and visible, and the warn names the stale key.
+        if !self.children.contains_key(parent) {
+            tracing::warn!(
+                "set_parent: parent {parent:?} has no transform (already removed?) — \
+                 parenting {child:?} to root instead"
+            );
+            parent = self.root_node;
+        }
 
         if let Some(existing_parent) = self.parents.get(child) {
             if *existing_parent == parent {
@@ -543,7 +565,7 @@ impl Transforms {
             }
         }
 
-        // safe because all transforms have children vec when created
+        // the parent's children vec is guaranteed above (fallback = root)
         self.children.get_mut(parent).unwrap().push(child);
 
         self.parents.insert(child, parent);

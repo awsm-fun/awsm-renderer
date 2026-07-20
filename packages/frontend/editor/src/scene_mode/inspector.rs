@@ -2147,7 +2147,7 @@ fn material_editor(node: &Arc<Node>, mat: &MaterialDef, _has_custom: bool) -> Do
             ("emissive_texture", "Emissive map", def.emissive_texture),
         ];
         // KHR-extension texture slots the material declares.
-        let ext_slots: [(&'static str, &'static str); 14] = [
+        let ext_slots: [(&'static str, &'static str); 19] = [
             ("specular.tex", "Specular"),
             ("specular.color_tex", "Specular color"),
             ("transmission.tex", "Transmission"),
@@ -2162,6 +2162,11 @@ fn material_editor(node: &Arc<Node>, mat: &MaterialDef, _has_custom: bool) -> Do
             ("anisotropy.tex", "Anisotropy"),
             ("iridescence.tex", "Iridescence"),
             ("iridescence.thickness_tex", "Iridescence thick."),
+            ("secondary_maps.base_color_tex", "2nd base color"),
+            ("secondary_maps.normal_tex", "2nd normal"),
+            ("secondary_maps.metallic_roughness_tex", "2nd metal/rough"),
+            ("secondary_maps.occlusion_tex", "2nd occlusion"),
+            ("secondary_maps.emissive_tex", "2nd emissive"),
         ];
         let mut entries: Vec<(
             &'static str,
@@ -2198,9 +2203,15 @@ fn material_editor(node: &Arc<Node>, mat: &MaterialDef, _has_custom: bool) -> Do
             sec = sec.child(uniform_subhead("Textures"));
             let assets = collect_texture_assets();
             for (slot, label, default_ref, is_ext) in entries {
-                for r in texture_slot_rows(node, label, slot, default_ref, is_ext, &assets) {
-                    sec = sec.child(r);
-                }
+                // Each slot is a collapsible block (collapsed by default): the
+                // header shows the bound texture's name, the body carries the
+                // picker + UV/transform/flow/sampler/codec rows.
+                let cur = read_slot(node, slot, is_ext).or(default_ref);
+                let summary = cur
+                    .map(|t| texture_asset_name(t.asset))
+                    .unwrap_or_else(|| "None".to_string());
+                let slot_rows = texture_slot_rows(node, label, slot, default_ref, is_ext, &assets);
+                sec = sec.child(collapsible_section(label, Some(summary), slot_rows));
             }
         }
     }
@@ -2231,6 +2242,52 @@ fn uniform_subhead(text: &str) -> Dom {
         .style("letter-spacing", ".04em").style("text-transform", "uppercase")
         .style("color", "var(--text-3)")
         .text(text)
+    })
+}
+
+/// A collapsible group of property rows: a clickable header (disclosure arrow +
+/// uppercase title + an optional dim summary of the current value) over a body
+/// that is COLLAPSED by default — the inspector's antidote to 13-row texture
+/// blocks. Collapsing is view state only (a per-render `Mutable`, nothing
+/// persisted).
+fn collapsible_section(title: &str, summary: Option<String>, body: Vec<Dom>) -> Dom {
+    use futures_signals::signal::SignalExt;
+    let open = Mutable::new(false);
+    html!("div", {
+        .child(html!("div", {
+            .style("display", "flex").style("align-items", "center").style("gap", "6px")
+            .style("margin", "8px 0 2px").style("cursor", "pointer")
+            .style("user-select", "none")
+            .child(html!("span", {
+                .style("font-size", "9px").style("color", "var(--text-3)")
+                .style("width", "10px")
+                .text_signal(open.signal().map(|o| if o { "\u{25BE}" } else { "\u{25B8}" }))
+            }))
+            .child(html!("span", {
+                .style("font-size", "11px").style("font-weight", "600")
+                .style("letter-spacing", ".04em").style("text-transform", "uppercase")
+                .style("color", "var(--text-3)")
+                .text(title)
+            }))
+            .apply_if(summary.is_some(), |d| d.child(html!("span", {
+                .style("font-size", "11px").style("color", "var(--text-3)")
+                .style("opacity", "0.75")
+                .style("overflow", "hidden").style("text-overflow", "ellipsis")
+                .style("white-space", "nowrap").style("max-width", "140px")
+                .style("margin-left", "auto")
+                .text(&summary.unwrap_or_default())
+            })))
+            .event({
+                let open = open.clone();
+                move |_: dominator::events::Click| {
+                    open.set(!open.get());
+                }
+            })
+        }))
+        .child(html!("div", {
+            .style_signal("display", open.signal().map(|o| if o { "block" } else { "none" }))
+            .children(body)
+        }))
     })
 }
 
@@ -2496,12 +2553,11 @@ fn builtin_uniform_extras(
         || e.dispersion.is_some()
         || e.anisotropy.is_some()
         || e.iridescence.is_some();
-    if any {
-        rows.push(uniform_subhead("Extensions"));
-    }
+    let _ = any;
+    let mut ext_rows: Vec<Dom> = Vec::new();
     if e.emissive_strength.is_some() {
         let v = ie.emissive_strength.unwrap_or_default();
-        rows.push(ext_num_row(
+        ext_rows.push(ext_num_row(
             node,
             "Emissive strength",
             v.strength,
@@ -2517,13 +2573,13 @@ fn builtin_uniform_extras(
     }
     if e.ior.is_some() {
         let v = ie.ior.unwrap_or_default();
-        rows.push(ext_num_row(node, "IOR", v.ior, 1.0, 3.0, 0.01, |x, val| {
+        ext_rows.push(ext_num_row(node, "IOR", v.ior, 1.0, 3.0, 0.01, |x, val| {
             x.ior.get_or_insert_with(Default::default).ior = val
         }));
     }
     if e.specular.is_some() {
         let v = ie.specular.unwrap_or_default();
-        rows.push(ext_num_row(
+        ext_rows.push(ext_num_row(
             node,
             "Specular",
             v.factor,
@@ -2532,7 +2588,7 @@ fn builtin_uniform_extras(
             0.05,
             |x, val| x.specular.get_or_insert_with(Default::default).factor = val,
         ));
-        rows.push(ext_color_row(
+        ext_rows.push(ext_color_row(
             node,
             "Specular color",
             v.color_factor,
@@ -2541,7 +2597,7 @@ fn builtin_uniform_extras(
     }
     if e.transmission.is_some() {
         let v = ie.transmission.unwrap_or_default();
-        rows.push(ext_num_row(
+        ext_rows.push(ext_num_row(
             node,
             "Transmission",
             v.factor,
@@ -2553,7 +2609,7 @@ fn builtin_uniform_extras(
     }
     if e.diffuse_transmission.is_some() {
         let v = ie.diffuse_transmission.unwrap_or_default();
-        rows.push(ext_num_row(
+        ext_rows.push(ext_num_row(
             node,
             "Diffuse transmission",
             v.factor,
@@ -2566,7 +2622,7 @@ fn builtin_uniform_extras(
                     .factor = val
             },
         ));
-        rows.push(ext_color_row(
+        ext_rows.push(ext_color_row(
             node,
             "Diffuse trans. color",
             v.color_factor,
@@ -2579,7 +2635,7 @@ fn builtin_uniform_extras(
     }
     if e.volume.is_some() {
         let v = ie.volume.unwrap_or_default();
-        rows.push(ext_num_row(
+        ext_rows.push(ext_num_row(
             node,
             "Thickness",
             v.thickness_factor,
@@ -2592,7 +2648,7 @@ fn builtin_uniform_extras(
                     .thickness_factor = val
             },
         ));
-        rows.push(ext_num_row(
+        ext_rows.push(ext_num_row(
             node,
             "Attenuation dist",
             v.attenuation_distance,
@@ -2605,7 +2661,7 @@ fn builtin_uniform_extras(
                     .attenuation_distance = val
             },
         ));
-        rows.push(ext_color_row(
+        ext_rows.push(ext_color_row(
             node,
             "Attenuation color",
             v.attenuation_color,
@@ -2618,7 +2674,7 @@ fn builtin_uniform_extras(
     }
     if e.clearcoat.is_some() {
         let v = ie.clearcoat.unwrap_or_default();
-        rows.push(ext_num_row(
+        ext_rows.push(ext_num_row(
             node,
             "Clearcoat",
             v.factor,
@@ -2627,7 +2683,7 @@ fn builtin_uniform_extras(
             0.05,
             |x, val| x.clearcoat.get_or_insert_with(Default::default).factor = val,
         ));
-        rows.push(ext_num_row(
+        ext_rows.push(ext_num_row(
             node,
             "Clearcoat rough",
             v.roughness_factor,
@@ -2643,7 +2699,7 @@ fn builtin_uniform_extras(
     }
     if e.sheen.is_some() {
         let v = ie.sheen.unwrap_or_default();
-        rows.push(ext_num_row(
+        ext_rows.push(ext_num_row(
             node,
             "Sheen rough",
             v.roughness_factor,
@@ -2656,7 +2712,7 @@ fn builtin_uniform_extras(
                     .roughness_factor = val
             },
         ));
-        rows.push(ext_color_row(
+        ext_rows.push(ext_color_row(
             node,
             "Sheen color",
             v.color_factor,
@@ -2665,7 +2721,7 @@ fn builtin_uniform_extras(
     }
     if e.dispersion.is_some() {
         let v = ie.dispersion.unwrap_or_default();
-        rows.push(ext_num_row(
+        ext_rows.push(ext_num_row(
             node,
             "Dispersion",
             v.dispersion,
@@ -2677,7 +2733,7 @@ fn builtin_uniform_extras(
     }
     if e.anisotropy.is_some() {
         let v = ie.anisotropy.unwrap_or_default();
-        rows.push(ext_num_row(
+        ext_rows.push(ext_num_row(
             node,
             "Anisotropy",
             v.strength,
@@ -2686,7 +2742,7 @@ fn builtin_uniform_extras(
             0.05,
             |x, val| x.anisotropy.get_or_insert_with(Default::default).strength = val,
         ));
-        rows.push(ext_num_row(
+        ext_rows.push(ext_num_row(
             node,
             "Anisotropy rot",
             v.rotation,
@@ -2698,7 +2754,7 @@ fn builtin_uniform_extras(
     }
     if e.iridescence.is_some() {
         let v = ie.iridescence.unwrap_or_default();
-        rows.push(ext_num_row(
+        ext_rows.push(ext_num_row(
             node,
             "Iridescence",
             v.factor,
@@ -2707,7 +2763,7 @@ fn builtin_uniform_extras(
             0.05,
             |x, val| x.iridescence.get_or_insert_with(Default::default).factor = val,
         ));
-        rows.push(ext_num_row(
+        ext_rows.push(ext_num_row(
             node,
             "Iridescence IOR",
             v.ior,
@@ -2716,7 +2772,7 @@ fn builtin_uniform_extras(
             0.01,
             |x, val| x.iridescence.get_or_insert_with(Default::default).ior = val,
         ));
-        rows.push(ext_num_row(
+        ext_rows.push(ext_num_row(
             node,
             "Thickness min",
             v.thickness_min,
@@ -2729,7 +2785,7 @@ fn builtin_uniform_extras(
                     .thickness_min = val
             },
         ));
-        rows.push(ext_num_row(
+        ext_rows.push(ext_num_row(
             node,
             "Thickness max",
             v.thickness_max,
@@ -2742,6 +2798,78 @@ fn builtin_uniform_extras(
                     .thickness_max = val
             },
         ));
+    }
+    if e.secondary_maps.is_some() {
+        let v = ie.secondary_maps.unwrap_or_default();
+        ext_rows.push(ext_num_row(
+            node,
+            "2nd base color str",
+            v.base_color_strength,
+            0.0,
+            1.0,
+            0.01,
+            |x, val| {
+                x.secondary_maps
+                    .get_or_insert_with(Default::default)
+                    .base_color_strength = val
+            },
+        ));
+        ext_rows.push(ext_num_row(
+            node,
+            "2nd normal str",
+            v.normal_strength,
+            0.0,
+            1.0,
+            0.01,
+            |x, val| {
+                x.secondary_maps
+                    .get_or_insert_with(Default::default)
+                    .normal_strength = val
+            },
+        ));
+        ext_rows.push(ext_num_row(
+            node,
+            "2nd rough/metal str",
+            v.metallic_roughness_strength,
+            0.0,
+            1.0,
+            0.01,
+            |x, val| {
+                x.secondary_maps
+                    .get_or_insert_with(Default::default)
+                    .metallic_roughness_strength = val
+            },
+        ));
+        ext_rows.push(ext_num_row(
+            node,
+            "2nd occlusion str",
+            v.occlusion_strength,
+            0.0,
+            1.0,
+            0.01,
+            |x, val| {
+                x.secondary_maps
+                    .get_or_insert_with(Default::default)
+                    .occlusion_strength = val
+            },
+        ));
+        ext_rows.push(ext_num_row(
+            node,
+            "2nd emissive str",
+            v.emissive_strength,
+            0.0,
+            1.0,
+            0.01,
+            |x, val| {
+                x.secondary_maps
+                    .get_or_insert_with(Default::default)
+                    .emissive_strength = val
+            },
+        ));
+    }
+    // All extension params live in one collapsible (collapsed by default).
+    if !ext_rows.is_empty() {
+        rows.push(collapsible_section("Extensions", None, ext_rows));
     }
 
     rows
@@ -3501,6 +3629,15 @@ fn texture_slot_rows(
     rows
 }
 
+/// Display name of a texture asset (for collapsible slot summaries).
+fn texture_asset_name(id: AssetId) -> String {
+    collect_texture_assets()
+        .into_iter()
+        .find(|(a, _)| *a == id)
+        .map(|(_, n)| n)
+        .unwrap_or_else(|| "None".to_string())
+}
+
 /// The single per-mesh `MaterialInstance` on a geometry node, if assigned.
 fn node_material_instance(
     node: &Arc<Node>,
@@ -3855,7 +3992,7 @@ fn mesh_lod_editor(node: &Arc<Node>, lod: MeshLodConfig) -> Dom {
                 if !fire { return; }
                 if let Some(lod) = node.kind.get_cloned().mesh_lod().copied() {
                     if lod.enabled != on {
-                        set_mesh_lod(&node, MeshLodConfig { enabled: on });
+                        set_mesh_lod(&node, MeshLodConfig { enabled: on, ..lod });
                     }
                 }
             })

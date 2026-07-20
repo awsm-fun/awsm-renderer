@@ -1,286 +1,110 @@
 // ============================================================================
-// SMAA 1x - Simplified Single-Pass Implementation
+// SMAA pass 3 — neighborhood blending. Faithful port of the reference
+// `SMAANeighborhoodBlendingPS` (Jimenez et al.).
 // ============================================================================
 //
-// Based on "Subpixel Morphological Anti-Aliasing" by Jorge Jimenez et al.
-// This is a simplified single-pass version optimized for:
-// - Texture aliasing (what MSAA doesn't catch)
-// - Specular aliasing
-// - Shader aliasing
+// Consumes the blend-weights texture produced by the SMAA pre-pass
+// (render_passes/smaa: reference edge detection → AreaTex/SearchTex weight
+// calculation) and revectorizes each edge by blending along the dominant
+// direction with the reference's dual-tap scheme.
 //
-// Strategy:
-// 1. Edge detection using luma contrast (in perceptual/gamma space)
-// 2. Pattern-based neighborhood blending
-// 3. Sub-pixel edge handling
-//
-// Performance: ~15-25 ALU ops per pixel (very affordable for post-process)
-// ============================================================================
+// HDR-safe: color blending happens in COMPRESSED space (t = s/(1+s), matching
+// the MSAA edge resolve and the pre-pass's edge detection), then expands —
+// a linear-space blend of hot emissive against background saturates the
+// tonemapper and erases the AA. The composite is bound unfilterable, so the
+// fractional-offset fetches do a manual 2-tap lerp along the blend axis.
 
-const SMAA_THRESHOLD: f32 = 0.03;          // Edge detection threshold (lower = more sensitive) - aggressive for thin lines
-const SMAA_BLEND_STRENGTH: f32 = 0.6;     // How strongly to blend with neighbors (0-1)
+fn smaa_compress(c: vec3<f32>) -> vec3<f32> {
+    return c / (vec3<f32>(1.0) + c);
+}
+fn smaa_expand(c: vec3<f32>) -> vec3<f32> {
+    let t = clamp(c, vec3<f32>(0.0), vec3<f32>(0.9995));
+    return t / (vec3<f32>(1.0) - t);
+}
+
+// Compressed-space composite fetch at a fractional pixel offset along ONE
+// axis (manual bilinear — exactly what the reference's linear sampler does
+// for its blending coordinates).
+fn smaa_fetch_offset(coords: vec2<i32>, dims: vec2<i32>, offset: vec2<f32>) -> vec3<f32> {
+    // Standard bilinear at pixel-space sample point (coords + 0.5 + offset),
+    // correct in both offset directions.
+    let base = vec2<f32>(coords) + offset;   // == sample point - 0.5
+    let i0 = vec2<i32>(floor(base));
+    let f = base - floor(base);
+    let c00 = clamp(i0, vec2<i32>(0), dims - 1);
+    let c10 = clamp(i0 + vec2<i32>(1, 0), vec2<i32>(0), dims - 1);
+    let c01 = clamp(i0 + vec2<i32>(0, 1), vec2<i32>(0), dims - 1);
+    let c11 = clamp(i0 + vec2<i32>(1, 1), vec2<i32>(0), dims - 1);
+    let s00 = smaa_compress(textureLoad(composite_tex, c00, 0).rgb);
+    let s10 = smaa_compress(textureLoad(composite_tex, c10, 0).rgb);
+    let s01 = smaa_compress(textureLoad(composite_tex, c01, 0).rgb);
+    let s11 = smaa_compress(textureLoad(composite_tex, c11, 0).rgb);
+    return mix(mix(s00, s10, f.x), mix(s01, s11, f.x), f.y);
+}
 
 fn apply_smaa(color: vec4<f32>, coords: vec2<i32>) -> vec4<f32> {
-    let dimensions = textureDimensions(composite_tex);
-    let tex_size = vec2<f32>(f32(dimensions.x), f32(dimensions.y));
-    let inv_tex_size = vec2<f32>(1.0 / tex_size.x, 1.0 / tex_size.y);
+    let dims_u = textureDimensions(composite_tex);
+    let dims = vec2<i32>(i32(dims_u.x), i32(dims_u.y));
 
-    // Convert to perceptual space for edge detection (humans perceive edges in gamma space, not linear)
-    let center_perceptual = linear_to_srgb(color.rgb);
-    let center_luma = rgb_to_luma(center_perceptual);
+    // Reference gather:
+    //   a.x = right-neighbor's .a (blend rightward across our east border)
+    //   a.y = bottom-neighbor's .g (blend downward across our south border)
+    //   a.w = own .r (blend upward), a.z = own .b (blend leftward)
+    let cr = clamp(coords + vec2<i32>(1, 0), vec2<i32>(0), dims - 1);
+    let cb = clamp(coords + vec2<i32>(0, 1), vec2<i32>(0), dims - 1);
+    var a = vec4<f32>(0.0);
+    a.x = textureLoad(smaa_weights_tex, cr, 0).a;
+    a.y = textureLoad(smaa_weights_tex, cb, 0).g;
+    let own = textureLoad(smaa_weights_tex, coords, 0);
+    a.w = own.r;
+    a.z = own.b;
 
-
-    // Sample neighbors and convert to perceptual space
-    let left_luma   = rgb_to_luma(linear_to_srgb(textureLoad(composite_tex, coords + vec2<i32>(-1, 0), 0).rgb));
-    let right_luma  = rgb_to_luma(linear_to_srgb(textureLoad(composite_tex, coords + vec2<i32>(1, 0), 0).rgb));
-    let top_luma    = rgb_to_luma(linear_to_srgb(textureLoad(composite_tex, coords + vec2<i32>(0, -1), 0).rgb));
-    let bottom_luma = rgb_to_luma(linear_to_srgb(textureLoad(composite_tex, coords + vec2<i32>(0, 1), 0).rgb));
-
-    // Sample diagonals for better thin line detection
-    let top_left_luma     = rgb_to_luma(linear_to_srgb(textureLoad(composite_tex, coords + vec2<i32>(-1, -1), 0).rgb));
-    let top_right_luma    = rgb_to_luma(linear_to_srgb(textureLoad(composite_tex, coords + vec2<i32>(1, -1), 0).rgb));
-    let bottom_left_luma  = rgb_to_luma(linear_to_srgb(textureLoad(composite_tex, coords + vec2<i32>(-1, 1), 0).rgb));
-    let bottom_right_luma = rgb_to_luma(linear_to_srgb(textureLoad(composite_tex, coords + vec2<i32>(1, 1), 0).rgb));
-
-    // Calculate luma deltas (edge strength)
-    let delta_left   = abs(center_luma - left_luma);
-    let delta_right  = abs(center_luma - right_luma);
-    let delta_top    = abs(center_luma - top_luma);
-    let delta_bottom = abs(center_luma - bottom_luma);
-
-    // Calculate diagonal deltas for thin line detection
-    let delta_top_left     = abs(center_luma - top_left_luma);
-    let delta_top_right    = abs(center_luma - top_right_luma);
-    let delta_bottom_left  = abs(center_luma - bottom_left_luma);
-    let delta_bottom_right = abs(center_luma - bottom_right_luma);
-
-    // Find maximum edge (strongest contrast) including diagonals
-    let max_horizontal = max(delta_left, delta_right);
-    let max_vertical = max(delta_top, delta_bottom);
-    let max_diagonal = max(max(delta_top_left, delta_top_right), max(delta_bottom_left, delta_bottom_right));
-    let max_delta = max(max(max_horizontal, max_vertical), max_diagonal);
-
-    // Early exit if no significant edge
-    if (max_delta < SMAA_THRESHOLD) {
-        {% if debug.smaa_edges %}
-            // No edge - show black
-            return vec4<f32>(0.0, 0.0, 0.0, 1.0);
-        {% endif %}
+    // Is there any blending weight with a value greater than 0.0?
+    if (dot(a, vec4<f32>(1.0)) < 1e-5) {
         return color;
     }
 
-    // Determine edge orientation (including diagonal detection)
-    let is_horizontal_edge = max_horizontal > max_vertical;
-    let is_diagonal_edge = max_diagonal > max(max_horizontal, max_vertical);
-
-    // Calculate blending weights based on edge pattern
-    var weights = vec2<f32>(0.0);
-    var blended = color;
-
-    if (is_diagonal_edge) {
-        // Diagonal edge - use 4-way blending for better thin line handling
-        blended = diagonal_blending(
-            coords,
-            center_luma,
-            top_left_luma, top_right_luma,
-            bottom_left_luma, bottom_right_luma,
-            delta_top_left, delta_top_right,
-            delta_bottom_left, delta_bottom_right
-        );
-    } else if (is_horizontal_edge) {
-        // Horizontal edge - blend vertically
-        weights = calculate_blending_weights_horizontal(
-            coords,
-            center_luma,
-            left_luma,
-            right_luma,
-            top_luma,
-            bottom_luma,
-            delta_left,
-            delta_right
-        );
-        blended = neighborhood_blending(coords, weights, true);
+    // Max of horizontal vs vertical weights decides the blend direction:
+    let h = max(a.x, a.z) > max(a.y, a.w);
+    var blending_offset: vec4<f32>;
+    var blending_weight: vec2<f32>;
+    if (h) {
+        blending_offset = vec4<f32>(a.x, 0.0, a.z, 0.0);
+        blending_weight = vec2<f32>(a.x, a.z);
     } else {
-        // Vertical edge - blend horizontally
-        weights = calculate_blending_weights_vertical(
-            coords,
-            center_luma,
-            top_luma,
-            bottom_luma,
-            left_luma,
-            right_luma,
-            delta_top,
-            delta_bottom
-        );
-        blended = neighborhood_blending(coords, weights, false);
+        blending_offset = vec4<f32>(0.0, a.y, 0.0, a.w);
+        blending_weight = vec2<f32>(a.y, a.w);
     }
+    blending_weight = blending_weight / dot(blending_weight, vec2<f32>(1.0));
 
-    {% if debug.smaa_edges %}
-        // Debug visualization:
-        // Red channel: edge strength (0-1)
-        // Green channel: blending amount (how much the color changed)
-        let edge_strength = saturate(max_delta / SMAA_THRESHOLD);
-        let blend_amount = length(blended.rgb - color.rgb) * 10.0; // Scale up to make visible
-        return vec4<f32>(edge_strength, blend_amount, 0.0, 1.0);
-    {% endif %}
-
-    return blended;
-}
-
-fn calculate_blending_weights_horizontal(
-    coords: vec2<i32>,
-    center: f32,
-    left: f32,
-    right: f32,
-    top: f32,
-    bottom: f32,
-    delta_left: f32,
-    delta_right: f32
-) -> vec2<f32> {
-    // For horizontal edges, we blend vertically (top/bottom)
-    // Weight calculation based on edge pattern and contrast
-
-    let edge_left = delta_left > SMAA_THRESHOLD;
-    let edge_right = delta_right > SMAA_THRESHOLD;
-
-    var weight_top = 0.0;
-    var weight_bottom = 0.0;
-
-    // Calculate blend weights based on how close neighbors are to center
-    // Closer neighbors get more weight (helps average the edge smoothly)
-    let top_contrast = abs(center - top);
-    let bottom_contrast = abs(center - bottom);
-
-    // Inverse weighting: closer neighbors (lower contrast) get higher weight
-    // Add small epsilon to avoid division by zero
-    weight_top = 1.0 / (top_contrast + 0.001);
-    weight_bottom = 1.0 / (bottom_contrast + 0.001);
-
-    // Normalize weights so they sum to 1
-    let total = weight_top + weight_bottom;
-    weight_top /= total;
-    weight_bottom /= total;
-
-    return vec2<f32>(weight_top, weight_bottom) * SMAA_BLEND_STRENGTH;
-}
-
-fn calculate_blending_weights_vertical(
-    coords: vec2<i32>,
-    center: f32,
-    top: f32,
-    bottom: f32,
-    left: f32,
-    right: f32,
-    delta_top: f32,
-    delta_bottom: f32
-) -> vec2<f32> {
-    // For vertical edges, we blend horizontally (left/right)
-
-    let edge_top = delta_top > SMAA_THRESHOLD;
-    let edge_bottom = delta_bottom > SMAA_THRESHOLD;
-
-    var weight_left = 0.0;
-    var weight_right = 0.0;
-
-    // Calculate blend weights based on how close neighbors are to center
-    let left_contrast = abs(center - left);
-    let right_contrast = abs(center - right);
-
-    // Inverse weighting: closer neighbors (lower contrast) get higher weight
-    weight_left = 1.0 / (left_contrast + 0.001);
-    weight_right = 1.0 / (right_contrast + 0.001);
-
-    // Normalize weights so they sum to 1
-    let total = weight_left + weight_right;
-    weight_left /= total;
-    weight_right /= total;
-
-    return vec2<f32>(weight_left, weight_right) * SMAA_BLEND_STRENGTH;
-}
-
-fn diagonal_blending(
-    coords: vec2<i32>,
-    center_luma: f32,
-    top_left_luma: f32,
-    top_right_luma: f32,
-    bottom_left_luma: f32,
-    bottom_right_luma: f32,
-    delta_top_left: f32,
-    delta_top_right: f32,
-    delta_bottom_left: f32,
-    delta_bottom_right: f32
-) -> vec4<f32> {
-    let center = textureLoad(composite_tex, coords, 0);
-
-    // Calculate adaptive weights for each diagonal based on inverse contrast
-    // Closer neighbors (lower contrast) get higher weight
-    let weight_tl = 1.0 / (delta_top_left + 0.001);
-    let weight_tr = 1.0 / (delta_top_right + 0.001);
-    let weight_bl = 1.0 / (delta_bottom_left + 0.001);
-    let weight_br = 1.0 / (delta_bottom_right + 0.001);
-
-    let total_weight = weight_tl + weight_tr + weight_bl + weight_br;
-
-    // Normalize weights so they sum to 1
-    let norm_weight_tl = weight_tl / total_weight;
-    let norm_weight_tr = weight_tr / total_weight;
-    let norm_weight_bl = weight_bl / total_weight;
-    let norm_weight_br = weight_br / total_weight;
-
-    // Sample diagonal neighbors
-    let top_left = textureLoad(composite_tex, coords + vec2<i32>(-1, -1), 0);
-    let top_right = textureLoad(composite_tex, coords + vec2<i32>(1, -1), 0);
-    let bottom_left = textureLoad(composite_tex, coords + vec2<i32>(-1, 1), 0);
-    let bottom_right = textureLoad(composite_tex, coords + vec2<i32>(1, 1), 0);
-
-    // Compute weighted sum of diagonal neighbors
-    let neighbor_blend = top_left * norm_weight_tl +
-                         top_right * norm_weight_tr +
-                         bottom_left * norm_weight_bl +
-                         bottom_right * norm_weight_br;
-
-    // Blend center with weighted neighbor average
-    return mix(center, neighbor_blend, SMAA_BLEND_STRENGTH);
-}
-
-fn neighborhood_blending(
-    coords: vec2<i32>,
-    weights: vec2<f32>,
-    is_horizontal: bool
-) -> vec4<f32> {
-    let center = textureLoad(composite_tex, coords, 0);
-
-    if (weights.x <= 0.0 && weights.y <= 0.0) {
-        return center;
-    }
-
-    var result = center;
-
-    if (is_horizontal) {
-        // Blend vertically (top/bottom)
-        if (weights.x > 0.0) {
-            let top = textureLoad(composite_tex, coords + vec2<i32>(0, -1), 0);
-            result = mix(result, top, weights.x);
-        }
-        if (weights.y > 0.0) {
-            let bottom = textureLoad(composite_tex, coords + vec2<i32>(0, 1), 0);
-            result = mix(result, bottom, weights.y);
-        }
+    // Blend along the reconstructed edge, dual-tap:
+    var c1: vec3<f32>;
+    var c2: vec3<f32>;
+    if (h) {
+        c1 = smaa_fetch_offset(coords, dims, vec2<f32>(blending_offset.x, 0.0));
+        c2 = smaa_fetch_offset(coords, dims, vec2<f32>(-blending_offset.z, 0.0));
     } else {
-        // Blend horizontally (left/right)
-        if (weights.x > 0.0) {
-            let left = textureLoad(composite_tex, coords + vec2<i32>(-1, 0), 0);
-            result = mix(result, left, weights.x);
-        }
-        if (weights.y > 0.0) {
-            let right = textureLoad(composite_tex, coords + vec2<i32>(1, 0), 0);
-            result = mix(result, right, weights.y);
-        }
+        c1 = smaa_fetch_offset(coords, dims, vec2<f32>(0.0, blending_offset.y));
+        c2 = smaa_fetch_offset(coords, dims, vec2<f32>(0.0, -blending_offset.w));
     }
+    var blended = blending_weight.x * c1 + blending_weight.y * c2;
 
-    return result;
-}
+    // Ridge guard — beyond the reference. Morphological AA treats a 1-pixel
+    // bright line (distant neon tube) as two opposing edges and blends the
+    // line's OWN pixels toward the background: cores dim unevenly and the
+    // line goes lumpy/perforated. A line core is a local luma maximum across
+    // the blend axis; real shape edges are not (their inside neighbor matches
+    // them), so this only suppresses blending on isolated ridges. Neighbors
+    // still blend, which is where the actual stairstep smoothing happens.
+    let lum = vec3<f32>(0.2126, 0.7152, 0.0722);
+    let axis = select(vec2<i32>(0, 1), vec2<i32>(1, 0), h);
+    let n1 = textureLoad(composite_tex, clamp(coords + axis, vec2<i32>(0), dims - 1), 0).rgb;
+    let n2 = textureLoad(composite_tex, clamp(coords - axis, vec2<i32>(0), dims - 1), 0).rgb;
+    let center_c = smaa_compress(color.rgb);
+    let ridge_amt = dot(center_c, lum)
+        - max(dot(smaa_compress(n1), lum), dot(smaa_compress(n2), lum));
+    let ridge = smoothstep(0.02, 0.10, ridge_amt);
+    blended = mix(blended, center_c, ridge);
 
-// Convert RGB to perceptual luma (Rec. 709)
-fn rgb_to_luma(rgb: vec3<f32>) -> f32 {
-    return dot(rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
+    return vec4<f32>(smaa_expand(blended), color.a);
 }

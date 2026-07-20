@@ -75,6 +75,13 @@ impl LodRegistry {
         self.chains.insert(base, chain);
     }
 
+    /// Remove a chain (authored far-swap teardown). Returns it so the caller
+    /// can restore visibility (un-hide the base, re-hide/show levels as its
+    /// ownership dictates).
+    pub fn unregister(&mut self, base: MeshKey) -> Option<LodChain> {
+        self.chains.remove(base)
+    }
+
     pub fn get(&self, base: MeshKey) -> Option<&LodChain> {
         self.chains.get(base)
     }

@@ -66,6 +66,7 @@ pub struct PbrMaterial {
     pub dispersion: Option<PbrMaterialDispersion>,
     pub anisotropy: Option<PbrMaterialAnisotropy>,
     pub iridescence: Option<PbrMaterialIridescence>,
+    pub secondary_maps: Option<PbrMaterialSecondaryMaps>,
 
     // Things that affect shader generation and therefore can't be changed
     // dynamically — create a new material instead.
@@ -118,6 +119,7 @@ pub struct PbrFeatures {
     pub dispersion: bool,
     pub anisotropy: bool,
     pub iridescence: bool,
+    pub secondary_maps: bool,
 }
 
 impl PbrFeatures {
@@ -139,9 +141,10 @@ impl PbrFeatures {
     const BIT_DISPERSION: u32 = 1 << 14;
     const BIT_ANISOTROPY: u32 = 1 << 15;
     const BIT_IRIDESCENCE: u32 = 1 << 16;
+    const BIT_SECONDARY_MAPS: u32 = 1 << 17;
 
     /// The number of distinct feature bits (≤ 32 so [`Self::bits`] fits a u32).
-    pub const COUNT: u32 = 17;
+    pub const COUNT: u32 = 18;
 
     /// Derives the feature set from a material. The five texture-slot bits
     /// are RETIRED — always `false` (bit positions kept for the stable
@@ -167,6 +170,7 @@ impl PbrFeatures {
             dispersion: m.dispersion.is_some(),
             anisotropy: m.anisotropy.is_some(),
             iridescence: m.iridescence.is_some(),
+            secondary_maps: m.secondary_maps.is_some(),
         }
     }
 
@@ -193,6 +197,7 @@ impl PbrFeatures {
             dispersion: true,
             anisotropy: true,
             iridescence: true,
+            secondary_maps: true,
         }
     }
 
@@ -251,6 +256,9 @@ impl PbrFeatures {
         if self.iridescence {
             b |= Self::BIT_IRIDESCENCE;
         }
+        if self.secondary_maps {
+            b |= Self::BIT_SECONDARY_MAPS;
+        }
         b
     }
 
@@ -274,6 +282,7 @@ impl PbrFeatures {
             dispersion: b & Self::BIT_DISPERSION != 0,
             anisotropy: b & Self::BIT_ANISOTROPY != 0,
             iridescence: b & Self::BIT_IRIDESCENCE != 0,
+            secondary_maps: b & Self::BIT_SECONDARY_MAPS != 0,
         }
     }
 }
@@ -402,6 +411,28 @@ pub struct PbrMaterialIridescence {
     pub thickness_max: f32,
 }
 
+/// Secondary / detail maps extension data (engine extension, not KHR).
+/// One optional high-tiled texture per core PBR slot, blended over the
+/// primary in the OPAQUE kernels (the transparent forward path ignores
+/// them — implicit-derivative sampling there can't take the per-slot
+/// skip branch). Unset slots pack the zero SKIP sentinel (`exists == 0`),
+/// so the shader takes the per-slot branch and does no fetch at all;
+/// each strength (0..1) lerps the sampled value toward that slot's
+/// blend-neutral, making strength 0 exactly equal to "slot off".
+#[derive(Clone, Debug, Default)]
+pub struct PbrMaterialSecondaryMaps {
+    pub base_color_tex: Option<MaterialTexture>,
+    pub base_color_strength: f32,
+    pub normal_tex: Option<MaterialTexture>,
+    pub normal_strength: f32,
+    pub metallic_roughness_tex: Option<MaterialTexture>,
+    pub metallic_roughness_strength: f32,
+    pub occlusion_tex: Option<MaterialTexture>,
+    pub occlusion_strength: f32,
+    pub emissive_tex: Option<MaterialTexture>,
+    pub emissive_strength: f32,
+}
+
 impl PbrMaterial {
     /// Creates a PBR material with default parameters.
     pub fn new(alpha_mode: MaterialAlphaMode, double_sided: bool) -> Self {
@@ -429,6 +460,7 @@ impl PbrMaterial {
             dispersion: None,
             anisotropy: None,
             iridescence: None,
+            secondary_maps: None,
             debug: PbrMaterialDebug::None,
             ssr_mask: 1.0,
             normal_packing: 0,
@@ -608,10 +640,11 @@ impl MaterialShader for PbrMaterial {
             pub dispersion: u32,
             pub anisotropy: u32,
             pub iridescence: u32,
+            pub secondary_maps: u32,
         }
 
         impl FeatureIndices {
-            pub fn to_u32_array(&self) -> [u32; 12] {
+            pub fn to_u32_array(&self) -> [u32; 13] {
                 [
                     self.vertex_color_info,
                     self.emissive_strength,
@@ -625,6 +658,7 @@ impl MaterialShader for PbrMaterial {
                     self.dispersion,
                     self.anisotropy,
                     self.iridescence,
+                    self.secondary_maps,
                 ]
             }
         }
@@ -792,6 +826,40 @@ impl MaterialShader for PbrMaterial {
             write_material_texture_or_skip(data, thickness_tex.as_ref(), ctx);
             write(data, thickness_min.into());
             write(data, thickness_max.into());
+        }
+
+        if let Some(PbrMaterialSecondaryMaps {
+            base_color_tex,
+            base_color_strength,
+            normal_tex,
+            normal_strength,
+            metallic_roughness_tex,
+            metallic_roughness_strength,
+            occlusion_tex,
+            occlusion_strength,
+            emissive_tex,
+            emissive_strength,
+        }) = &self.secondary_maps
+        {
+            feature_indices.secondary_maps = current_index(data);
+
+            // 5 slots x 6 words (TextureInfo 5 + strength 1). Unset slots
+            // write the zero SKIP sentinel (exists == 0) so the opaque
+            // kernel's per-slot branch does no fetch at all.
+            write_material_texture_or_skip(data, base_color_tex.as_ref(), ctx);
+            write(data, (*base_color_strength).into());
+
+            write_material_texture_or_skip(data, normal_tex.as_ref(), ctx);
+            write(data, (*normal_strength).into());
+
+            write_material_texture_or_skip(data, metallic_roughness_tex.as_ref(), ctx);
+            write(data, (*metallic_roughness_strength).into());
+
+            write_material_texture_or_skip(data, occlusion_tex.as_ref(), ctx);
+            write(data, (*occlusion_strength).into());
+
+            write_material_texture_or_skip(data, emissive_tex.as_ref(), ctx);
+            write(data, (*emissive_strength).into());
         }
 
         // Re-write indices.

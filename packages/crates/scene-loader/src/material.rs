@@ -206,6 +206,20 @@ fn apply_extensions(pbr: &mut PbrMaterial, ext: &PbrExtensions) {
             thickness_max: e.thickness_max,
         });
     }
+    if let Some(e) = ext.secondary_maps {
+        pbr.secondary_maps = Some(r::PbrMaterialSecondaryMaps {
+            base_color_tex: None,
+            base_color_strength: e.base_color_strength,
+            normal_tex: None,
+            normal_strength: e.normal_strength,
+            metallic_roughness_tex: None,
+            metallic_roughness_strength: e.metallic_roughness_strength,
+            occlusion_tex: None,
+            occlusion_strength: e.occlusion_strength,
+            emissive_tex: None,
+            emissive_strength: e.emissive_strength,
+        });
+    }
 }
 
 /// A [`TextureColorKind`]'s upload semantics: `(srgb_to_linear, mipmap kind)`.

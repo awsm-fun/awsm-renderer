@@ -210,9 +210,19 @@ pub struct Settings {
     /// SMAA (post-process morphological AA). Transient, like [`Self::msaa`] —
     /// NOT persisted (AA is a player/runtime decision, not scene data); it's here
     /// only so aliasing can be eyeballed/debugged in the editor viewport. Drives
-    /// the renderer's `AntiAliasing::smaa` via `settings_sync`. Off by default
-    /// (MSAA already on), independent of MSAA so both can be compared.
+    /// the renderer's `AntiAliasing::smaa` via `settings_sync`. OFF by default
+    /// (matching `AntiAliasing::default()` — on top of 4x MSAA it adds little
+    /// and can visibly redistribute 1-2px emissive lines), independent of MSAA
+    /// so both can be compared.
     pub smaa: Mutable<bool>,
+    /// Supersampling render scale (1.0 = off … 2.0). Transient like
+    /// [`Self::msaa`]/[`Self::smaa`] — a runtime quality option, not scene
+    /// data. Drives `AwsmRenderer::set_render_scale` via `settings_sync`.
+    pub render_scale: Mutable<f32>,
+    /// Anisotropic texture filtering (default on). Transient runtime quality
+    /// toggle like [`Self::msaa`]; drives `AwsmRenderer::set_anisotropy_enabled`
+    /// via `settings_sync` (pool samplers rebind to no-aniso twins when off).
+    pub anisotropy: Mutable<bool>,
     pub heatmap: Mutable<bool>,
     /// Edge-aware shadow denoise blur (global). Drives the renderer's
     /// `ShadowsConfig::denoise` via `settings_sync`.
@@ -249,6 +259,8 @@ impl Default for Settings {
             auto_key: Mutable::new(true),
             msaa: Mutable::new(true),
             smaa: Mutable::new(false),
+            render_scale: Mutable::new(1.0),
+            anisotropy: Mutable::new(true),
             heatmap: Mutable::new(false),
             // On by default — matches the renderer's `ShadowsConfig::denoise`
             // default; keeps point-light soft/PCSS penumbras clean out of box.
@@ -512,7 +524,7 @@ impl EditorController {
         };
         // Re-evaluate → re-bake the cache (the bridge re-materializes via the
         // mesh-revision bump in `apply`).
-        let baked = crate::controller::mesh_eval::evaluate_def(&self.scene, &def);
+        let baked = crate::controller::mesh_eval::evaluate_def_recorded(&self.scene, mesh, &def);
         mesh_cache::store_with_id(mesh, mesh_cache::from_mesh_data(baked));
         self.scene.bump_revision();
 
@@ -709,7 +721,7 @@ impl EditorController {
                 }
             }
         };
-        let baked = crate::controller::mesh_eval::evaluate_def(&self.scene, &def);
+        let baked = crate::controller::mesh_eval::evaluate_def_recorded(&self.scene, mesh, &def);
         mesh_cache::store_with_id(mesh, mesh_cache::from_mesh_data(baked));
         self.scene.bump_revision();
         Ok(prior)
@@ -919,11 +931,28 @@ impl EditorController {
                 let patch = awsm_renderer_editor_protocol::coerce_patch(patch)
                     .map_err(crate::error::EditorError::msg)?;
                 awsm_renderer_editor_protocol::json_merge_patch(&mut json, &patch);
-                let next: NodeKind = serde_json::from_value(json).map_err(|e| {
+                let next: NodeKind = serde_json::from_value(json.clone()).map_err(|e| {
                     crate::error::EditorError::msg(format!(
                         "patched kind is not a valid NodeKind: {e}"
                     ))
                 })?;
+                // Reject patches that deserialization silently DROPPED (§3 "never
+                // store-and-ignore"): serde ignores unknown fields, so a typo'd or
+                // misdocumented path (e.g. `mesh.material.…` — no such field; the
+                // palette is `mesh.material_variants`) would otherwise no-op with
+                // an "ok". Round-trip the parsed kind and error on any merged key
+                // that didn't survive.
+                let round_trip = serde_json::to_value(&next)
+                    .map_err(|e| crate::error::EditorError::msg(format!("serialize kind: {e}")))?;
+                let mut dropped = Vec::new();
+                collect_dropped_json_paths(&json, &round_trip, String::new(), &mut dropped);
+                if !dropped.is_empty() {
+                    return Err(crate::error::EditorError::msg(format!(
+                        "patch paths not recognized by this node kind (silently ignored): {} — \
+                         check the kind's schema via get_kind_schema",
+                        dropped.join(", ")
+                    )));
+                }
                 Box::pin(self.apply_inner(EditorCommand::SetKind {
                     id,
                     kind: Box::new(next),
@@ -2079,7 +2108,11 @@ impl EditorController {
                                 _ => continue,
                             }
                         };
-                        let baked = crate::controller::mesh_eval::evaluate_def(&self.scene, &def);
+                        let baked = crate::controller::mesh_eval::evaluate_def_recorded(
+                            &self.scene,
+                            mesh,
+                            &def,
+                        );
                         crate::engine::bridge::mesh_cache::store_with_id(
                             mesh,
                             crate::engine::bridge::mesh_cache::from_mesh_data(baked),
@@ -2850,10 +2883,64 @@ impl EditorController {
                                 ));
                             }
                         }
+                        // Reject loudly: an unassigned mesh renders the magenta
+                        // placeholder and has no inline store — an "ok" here
+                        // would write to state that never draws.
+                        if prev.selected_material().is_none() {
+                            return Err(crate::error::EditorError::msg(
+                                "node has no material (renders the magenta \
+                                 placeholder) — builtin params have nothing to \
+                                 patch; add_builtin_material + add_material_variant \
+                                 + select_material_variant first",
+                            ));
+                        }
                         let mut next = prev.clone();
                         let patched = patch_builtin_param(&mut next, param, &value);
                         if !patched {
-                            return Ok(None);
+                            return Err(crate::error::EditorError::msg(
+                                "value has too few floats for this param \
+                                 (base_color/emissive take 3, scalar params take 1)",
+                            ));
+                        }
+                        // Extension params (emissive_strength / secondary_*) write
+                        // the INLINE store, but extension ENABLES are owned by the
+                        // LIBRARY material — the effective-def merge DROPS an
+                        // inline-only extension, so without the library enable
+                        // this write would store data that never renders. Reject
+                        // loudly with the fix instead of an "ok" no-op.
+                        {
+                            use awsm_renderer_editor_protocol::animation::BuiltinParamKind as P;
+                            let needs_enable = match param {
+                                P::EmissiveStrength => Some("emissive_strength"),
+                                P::SecondaryBaseColorStrength
+                                | P::SecondaryNormalStrength
+                                | P::SecondaryMetallicRoughnessStrength
+                                | P::SecondaryOcclusionStrength
+                                | P::SecondaryEmissiveStrength => Some("secondary_maps"),
+                                _ => None,
+                            };
+                            if let Some(ext_name) = needs_enable {
+                                let inst = next.selected_material().expect("checked above");
+                                let lib_enables = find_material(&self.custom_materials, inst.asset)
+                                    .and_then(|m| m.builtin.get_cloned())
+                                    .map(|def| match ext_name {
+                                        "emissive_strength" => {
+                                            def.extensions.emissive_strength.is_some()
+                                        }
+                                        _ => def.extensions.secondary_maps.is_some(),
+                                    })
+                                    .unwrap_or(false);
+                                if !lib_enables {
+                                    return Err(crate::error::EditorError::msg(format!(
+                                        "the library material for this node's selected variant \
+                                         does not enable the `{ext_name}` extension, so this \
+                                         per-mesh value would be dropped by the effective-def \
+                                         merge and never render. Enable it first via \
+                                         update_builtin_material (set extensions.{ext_name} on \
+                                         the library def), then set the per-mesh value."
+                                    )));
+                                }
+                            }
                         }
                         n.kind.set(next);
                         self.scene.bump_revision();
@@ -2898,8 +2985,15 @@ impl EditorController {
                 Some(n) => {
                     let prev = n.kind.get_cloned();
                     let mut next = prev.clone();
+                    // Reject loudly: unassigned mesh = magenta placeholder with
+                    // no inline texture slots — see SetBuiltinParam.
                     if !patch_builtin_texture(&mut next, slot, texture) {
-                        return Ok(None);
+                        return Err(crate::error::EditorError::msg(
+                            "node has no material (renders the magenta \
+                             placeholder) — there is no inline texture slot to \
+                             bind; add_builtin_material + add_material_variant + \
+                             select_material_variant first",
+                        ));
                     }
                     n.kind.set(next);
                     self.scene.bump_revision();
@@ -3382,6 +3476,8 @@ impl EditorController {
                 mcp_notifications,
                 msaa,
                 smaa,
+                render_scale,
+                anisotropy,
             } => {
                 let s = &self.settings;
                 if let Some(v) = grid {
@@ -3410,6 +3506,12 @@ impl EditorController {
                 }
                 if let Some(v) = smaa {
                     s.smaa.set_neq(v);
+                }
+                if let Some(v) = render_scale {
+                    s.render_scale.set_neq(v.clamp(1.0, 2.0));
+                }
+                if let Some(v) = anisotropy {
+                    s.anisotropy.set_neq(v);
                 }
                 // Transient view state — no undo entry (same class as camera).
                 Ok(None)
@@ -5661,6 +5763,19 @@ impl EditorController {
                         entries.insert("surface_area".to_string(), json!(s.surface_area));
                         entries.insert("volume".to_string(), json!(s.volume));
                         entries.insert("watertight".to_string(), json!(s.watertight));
+                        // Last in-session recipe-eval duration (None until an
+                        // edit re-bakes; loads restore caches and never eval).
+                        let asset = mutate::find_by_id(&self.scene, node).and_then(|n| {
+                            match n.kind.get_cloned() {
+                                NodeKind::Mesh { mesh, .. } => Some(mesh.0),
+                                NodeKind::Instancer(def) => Some(def.mesh.0),
+                                _ => None,
+                            }
+                        });
+                        entries.insert(
+                            "recipe_eval_ms".to_string(),
+                            json!(asset.and_then(crate::controller::mesh_eval::recorded_eval_ms)),
+                        );
                         QueryResult::Map(query::MapResult {
                             kind: "mesh_stats".to_string(),
                             entries,
@@ -6179,6 +6294,8 @@ impl EditorController {
                         "mcp_notifications": crate::remote::show_notifications().get(),
                         "msaa": self.settings.msaa.get(),
                         "smaa": self.settings.smaa.get(),
+                        "render_scale": self.settings.render_scale.get(),
+                        "anisotropy": self.settings.anisotropy.get(),
                     })
                     .to_string(),
                 )
@@ -7782,6 +7899,24 @@ fn read_readback_target(
                     Material::FlipBook(f) => json!(f.time_offset),
                     _ => serde_json::Value::Null,
                 },
+                P::SecondaryBaseColorStrength
+                | P::SecondaryNormalStrength
+                | P::SecondaryMetallicRoughnessStrength
+                | P::SecondaryOcclusionStrength
+                | P::SecondaryEmissiveStrength => match m {
+                    Material::Pbr(p) => json!(p
+                        .secondary_maps
+                        .as_ref()
+                        .map(|e| match param {
+                            P::SecondaryBaseColorStrength => e.base_color_strength,
+                            P::SecondaryNormalStrength => e.normal_strength,
+                            P::SecondaryMetallicRoughnessStrength => e.metallic_roughness_strength,
+                            P::SecondaryOcclusionStrength => e.occlusion_strength,
+                            _ => e.emissive_strength,
+                        })
+                        .unwrap_or(1.0)),
+                    _ => serde_json::Value::Null,
+                },
             }
         }
         R::LightParam { node, param } => {
@@ -8013,6 +8148,33 @@ fn resolve_vertex_selection_or(
 /// NOT invisible); anything else is `"none"` (not a geometry node). The magenta
 /// render itself lives in `node_sync::resolve_assigned_material` (`None` →
 /// `insert_magenta`).
+/// Collect merged-JSON paths that vanished after a serde round-trip — the
+/// PatchKind guard against silently-ignored patch keys (unknown fields don't
+/// error in serde). Only OBJECT keys are compared (array contents and scalar
+/// values legitimately differ through defaults/normalization); a key present
+/// in `merged` but absent from `round_trip` at the same object path was
+/// dropped by deserialization and gets reported.
+fn collect_dropped_json_paths(
+    merged: &serde_json::Value,
+    round_trip: &serde_json::Value,
+    path: String,
+    out: &mut Vec<String>,
+) {
+    if let (serde_json::Value::Object(m), serde_json::Value::Object(r)) = (merged, round_trip) {
+        for (k, mv) in m {
+            let sub_path = if path.is_empty() {
+                k.clone()
+            } else {
+                format!("{path}.{k}")
+            };
+            match r.get(k) {
+                None => out.push(sub_path),
+                Some(rv) => collect_dropped_json_paths(mv, rv, sub_path, out),
+            }
+        }
+    }
+}
+
 fn unassigned_material_kind(kind: &NodeKind) -> &'static str {
     if matches!(kind, NodeKind::Mesh { .. } | NodeKind::SkinnedMesh { .. }) {
         "unassigned"
@@ -8211,6 +8373,31 @@ fn patch_builtin_param(
                 _ => {} // material isn't the matching kind: no-op
             }
         }
+        // Secondary-maps blend strengths: seeds the inline extension on first
+        // set (like EmissiveStrength). NOTE the enable set is variant-only —
+        // an inline-only extension is dropped by the merge, so this renders
+        // only once `update_builtin_material` enables secondary_maps on the
+        // library material.
+        P::SecondaryBaseColorStrength
+        | P::SecondaryNormalStrength
+        | P::SecondaryMetallicRoughnessStrength
+        | P::SecondaryOcclusionStrength
+        | P::SecondaryEmissiveStrength => {
+            let Some(&v) = value.first() else {
+                return false;
+            };
+            let sm = inline
+                .extensions
+                .secondary_maps
+                .get_or_insert_with(Default::default);
+            match param {
+                P::SecondaryBaseColorStrength => sm.base_color_strength = v,
+                P::SecondaryNormalStrength => sm.normal_strength = v,
+                P::SecondaryMetallicRoughnessStrength => sm.metallic_roughness_strength = v,
+                P::SecondaryOcclusionStrength => sm.occlusion_strength = v,
+                _ => sm.emissive_strength = v,
+            }
+        }
     }
     true
 }
@@ -8234,6 +8421,26 @@ fn patch_builtin_texture(
         S::Normal => inline.normal_texture = tref,
         S::Occlusion => inline.occlusion_texture = tref,
         S::Emissive => inline.emissive_texture = tref,
+        // Secondary/detail slots live in the secondary-maps extension —
+        // seeded inline on first bind. Renders only once the LIBRARY
+        // material enables the extension (variant-only enable set).
+        S::SecondaryBaseColor
+        | S::SecondaryNormal
+        | S::SecondaryMetallicRoughness
+        | S::SecondaryOcclusion
+        | S::SecondaryEmissive => {
+            let sm = inline
+                .extensions
+                .secondary_maps
+                .get_or_insert_with(Default::default);
+            match slot {
+                S::SecondaryBaseColor => sm.base_color_tex = tref,
+                S::SecondaryNormal => sm.normal_tex = tref,
+                S::SecondaryMetallicRoughness => sm.metallic_roughness_tex = tref,
+                S::SecondaryOcclusion => sm.occlusion_tex = tref,
+                _ => sm.emissive_tex = tref,
+            }
+        }
     }
     true
 }
@@ -8271,6 +8478,24 @@ fn patch_builtin_texture_transform(
         S::Normal => &mut inline.normal_texture,
         S::Occlusion => &mut inline.occlusion_texture,
         S::Emissive => &mut inline.emissive_texture,
+        S::SecondaryBaseColor
+        | S::SecondaryNormal
+        | S::SecondaryMetallicRoughness
+        | S::SecondaryOcclusion
+        | S::SecondaryEmissive => {
+            let Some(sm) = inline.extensions.secondary_maps.as_mut() else {
+                return Err(format!(
+                    "texture slot `{slot:?}` has no texture bound — bind one with set_node_texture first"
+                ));
+            };
+            match slot {
+                S::SecondaryBaseColor => &mut sm.base_color_tex,
+                S::SecondaryNormal => &mut sm.normal_tex,
+                S::SecondaryMetallicRoughness => &mut sm.metallic_roughness_tex,
+                S::SecondaryOcclusion => &mut sm.occlusion_tex,
+                _ => &mut sm.emissive_tex,
+            }
+        }
     };
     let Some(tref) = tref.as_mut() else {
         return Err(format!(
@@ -8687,6 +8912,7 @@ pub(crate) fn ext_slot_enabled(
         "sheen" => ext.sheen.is_some(),
         "anisotropy" => ext.anisotropy.is_some(),
         "iridescence" => ext.iridescence.is_some(),
+        "secondary_maps" => ext.secondary_maps.is_some(),
         _ => false,
     }
 }
@@ -8711,6 +8937,13 @@ pub(crate) fn get_ext_texture(
         "anisotropy.tex" => ext.anisotropy.and_then(|e| e.tex),
         "iridescence.tex" => ext.iridescence.and_then(|e| e.tex),
         "iridescence.thickness_tex" => ext.iridescence.and_then(|e| e.thickness_tex),
+        "secondary_maps.base_color_tex" => ext.secondary_maps.and_then(|e| e.base_color_tex),
+        "secondary_maps.normal_tex" => ext.secondary_maps.and_then(|e| e.normal_tex),
+        "secondary_maps.metallic_roughness_tex" => {
+            ext.secondary_maps.and_then(|e| e.metallic_roughness_tex)
+        }
+        "secondary_maps.occlusion_tex" => ext.secondary_maps.and_then(|e| e.occlusion_tex),
+        "secondary_maps.emissive_tex" => ext.secondary_maps.and_then(|e| e.emissive_tex),
         _ => None,
     }
 }
@@ -8792,6 +9025,31 @@ pub(crate) fn set_ext_texture(
         "iridescence.thickness_tex" => {
             if let Some(e) = &mut ext.iridescence {
                 e.thickness_tex = tref;
+            }
+        }
+        "secondary_maps.base_color_tex" => {
+            if let Some(e) = &mut ext.secondary_maps {
+                e.base_color_tex = tref;
+            }
+        }
+        "secondary_maps.normal_tex" => {
+            if let Some(e) = &mut ext.secondary_maps {
+                e.normal_tex = tref;
+            }
+        }
+        "secondary_maps.metallic_roughness_tex" => {
+            if let Some(e) = &mut ext.secondary_maps {
+                e.metallic_roughness_tex = tref;
+            }
+        }
+        "secondary_maps.occlusion_tex" => {
+            if let Some(e) = &mut ext.secondary_maps {
+                e.occlusion_tex = tref;
+            }
+        }
+        "secondary_maps.emissive_tex" => {
+            if let Some(e) = &mut ext.secondary_maps {
+                e.emissive_tex = tref;
             }
         }
         _ => {}

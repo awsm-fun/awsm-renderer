@@ -30,6 +30,9 @@ fn pbr_get_gradients(
     let diffuse_trans = pbr_material_load_diffuse_transmission(material.diffuse_transmission_index);
     let anisotropy = pbr_material_load_anisotropy(material.anisotropy_index);
     let iridescence = pbr_material_load_iridescence(material.iridescence_index);
+    {% if pbr_features.secondary_maps %}
+    let secondary = pbr_material_load_secondary_maps(material.secondary_maps_index);
+    {% endif %}
 
     if (material.base_color_tex_info.exists) {
         out.base_color = get_uv_derivatives(
@@ -282,6 +285,45 @@ fn pbr_get_gradients(
             view_matrix
         );
     }
+
+    {% if pbr_features.secondary_maps %}
+    // Secondary / detail maps (engine extension) — one gradient per bound slot.
+    if (secondary.base_color_tex_info.exists) {
+        out.secondary_base_color = get_uv_derivatives(
+            barycentric, bary_derivs, triangle_indices,
+            attribute_data_offset, vertex_attribute_stride, uv_sets_index,
+            secondary.base_color_tex_info, world_normal, view_matrix
+        );
+    }
+    if (secondary.normal_tex_info.exists) {
+        out.secondary_normal = get_uv_derivatives(
+            barycentric, bary_derivs, triangle_indices,
+            attribute_data_offset, vertex_attribute_stride, uv_sets_index,
+            secondary.normal_tex_info, world_normal, view_matrix
+        );
+    }
+    if (secondary.metallic_roughness_tex_info.exists) {
+        out.secondary_metallic_roughness = get_uv_derivatives(
+            barycentric, bary_derivs, triangle_indices,
+            attribute_data_offset, vertex_attribute_stride, uv_sets_index,
+            secondary.metallic_roughness_tex_info, world_normal, view_matrix
+        );
+    }
+    if (secondary.occlusion_tex_info.exists) {
+        out.secondary_occlusion = get_uv_derivatives(
+            barycentric, bary_derivs, triangle_indices,
+            attribute_data_offset, vertex_attribute_stride, uv_sets_index,
+            secondary.occlusion_tex_info, world_normal, view_matrix
+        );
+    }
+    if (secondary.emissive_tex_info.exists) {
+        out.secondary_emissive = get_uv_derivatives(
+            barycentric, bary_derivs, triangle_indices,
+            attribute_data_offset, vertex_attribute_stride, uv_sets_index,
+            secondary.emissive_tex_info, world_normal, view_matrix
+        );
+    }
+    {% endif %}
 
     return out;
 }

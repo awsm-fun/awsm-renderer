@@ -634,6 +634,36 @@ fn export_player_bundle(options: awsm_renderer_editor_protocol::BundleOptions) {
     });
 }
 
+/// Segmented 1x / 1.5x / 2x picker for the supersampling render scale,
+/// bound directly to the `Mutable<f32>` (external writes — e.g. the MCP
+/// `set_view_options` — reflect back via the signal).
+fn render_scale_select(value: Mutable<f32>) -> Dom {
+    let seg = |label: &'static str, v: f32, value: Mutable<f32>| {
+        html!("button", {
+            .class("t")
+            .class("focusring")
+            .style("padding", "2px 8px")
+            .style("border-radius", "6px")
+            .style("cursor", "pointer")
+            .style("border-style", "solid")
+            .style("border-width", "1px")
+            .style("font-size", "11px")
+            .style_signal("border-color", value.signal().map(move |cur| if (cur - v).abs() < 0.01 { "transparent" } else { "var(--line)" }))
+            .style_signal("background", value.signal().map(move |cur| if (cur - v).abs() < 0.01 { "var(--accent)" } else { "var(--bg-3)" }))
+            .style_signal("color", value.signal().map(move |cur| if (cur - v).abs() < 0.01 { "oklch(0.18 0.02 255)" } else { "var(--text-2)" }))
+            .text(label)
+            .event(clone!(value => move |_: events::Click| value.set_neq(v)))
+        })
+    };
+    html!("div", {
+        .style("display", "flex")
+        .style("gap", "4px")
+        .child(seg("1x", 1.0, value.clone()))
+        .child(seg("1.5x", 1.5, value.clone()))
+        .child(seg("2x", 2.0, value))
+    })
+}
+
 fn settings_drawer() -> Dom {
     let s = controller().settings.clone();
     RightDrawer::new("Settings")
@@ -648,6 +678,8 @@ fn settings_drawer() -> Dom {
                 .child(row("Skeleton overlay", toggle(s.skeleton_viz.clone())))
                 .child(row("MSAA", toggle(s.msaa.clone())))
                 .child(row("SMAA", toggle(s.smaa.clone())))
+                .child(row("Supersampling", render_scale_select(s.render_scale.clone())))
+                .child(row("Anisotropic filtering", toggle(s.anisotropy.clone())))
                 .child(row("Shadow denoise", toggle(s.shadow_denoise.clone())))
                 .child(row("Light heatmap", toggle(s.heatmap.clone())))
                 .child(row(

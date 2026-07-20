@@ -11,3 +11,7 @@
 
 // Renderer-wide per-frame uniform — see `shared_wgsl/frame_globals.wgsl`.
 @group(0) @binding(5) var<uniform> frame_globals_raw: FrameGlobalsRaw;
+// SMAA blend weights (up/down/left/right) from the SMAA pre-pass; a 1x1
+// zero dummy when SMAA is off (the smaa-off shader variant never reads it,
+// but the layout keeps a stable shape across the toggle).
+@group(0) @binding(6) var smaa_weights_tex: texture_2d<f32>;

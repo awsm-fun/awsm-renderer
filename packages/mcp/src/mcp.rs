@@ -558,6 +558,18 @@ pub struct SetMeshLodParams {
     /// Whether the export-time LOD bake generates simplified levels for this
     /// mesh. LOD is opt-out (default on); set false for hero/low-poly/UI meshes.
     pub enabled: bool,
+    /// Authored far-LOD swap target node UUID ("geometry mipmap"): beyond the
+    /// distance where `far_swap_error` metres project below the screen-error
+    /// budget, that node's mesh draws INSTEAD of this one (runtime visibility
+    /// swap; the far node stops drawing on its own while registered). Pass
+    /// null/omit to clear. The far node must be a plain Mesh with exactly one
+    /// primitive, used by only ONE base.
+    #[serde(default)]
+    pub far_swap_node: Option<String>,
+    /// Object-space error (metres) the swap hides — the relief depth being
+    /// flattened (e.g. 0.06 for 6cm floor grooves). Default 0.05.
+    #[serde(default)]
+    pub far_swap_error: Option<f32>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -868,6 +880,13 @@ pub enum BuiltinParamArg {
     ToonRimPower,
     FlipbookFps,
     FlipbookTimeOffset,
+    /// Secondary/detail blend strengths (secondary-maps extension; enable it
+    /// on the LIBRARY material via update_builtin_material first).
+    SecondaryBaseColorStrength,
+    SecondaryNormalStrength,
+    SecondaryMetallicRoughnessStrength,
+    SecondaryOcclusionStrength,
+    SecondaryEmissiveStrength,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -1390,6 +1409,13 @@ pub struct ViewOptionsParams {
     /// unchanged.
     #[serde(default)]
     pub smaa: Option<bool>,
+    /// Supersampling render scale, 1.0 (off) to 2.0. Internal render
+    /// targets scale up; display downsamples. Omit to leave unchanged.
+    #[serde(default)]
+    pub render_scale: Option<f32>,
+    /// Anisotropic texture filtering (default on). Omit to leave unchanged.
+    #[serde(default)]
+    pub anisotropy: Option<bool>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -2027,7 +2053,7 @@ impl EditorMcp {
 
     #[tool(
         annotations(read_only_hint = true),
-        description = "Geometry stats for a node's resolved mesh (Primitive/Mesh/Sweep): vertex+triangle counts, bbox, centroid, surface area, volume, watertight. The perceive half of a measure→adjust loop."
+        description = "Geometry stats for a node's resolved mesh (Primitive/Mesh/Sweep): vertex+triangle counts, bbox, centroid, surface area, volume, watertight, plus recipe_eval_ms — the last IN-SESSION modifier-stack bake duration (null until an edit re-bakes; project LOAD restores persisted caches and never evaluates recipes). Use recipe_eval_ms to decide data-driven whether a heavy stack is worth collapse_mesh_stack. The perceive half of a measure→adjust loop."
     )]
     async fn get_mesh_stats(
         &self,
@@ -2429,7 +2455,17 @@ impl EditorMcp {
                 None,
             )
         })?;
-        *lod = MeshLodConfig { enabled: p.enabled };
+        let far_swap = match p.far_swap_node.as_deref() {
+            Some(n) => Some(awsm_renderer_editor_protocol::MeshLodFarSwap {
+                node: parse_node(n)?,
+                error: p.far_swap_error.unwrap_or(0.05),
+            }),
+            None => None,
+        };
+        *lod = MeshLodConfig {
+            enabled: p.enabled,
+            far_swap,
+        };
         self.dispatch(EditorCommand::SetKind {
             id: node,
             kind: Box::new(kind),
@@ -3038,7 +3074,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Bake an editable mesh's modifier stack into raw triangles and clear the recipe (the deliberate heavy snapshot, undoable). After this the mesh is raw-vertex-edited via set_vertex_positions / soft_transform_vertices."
+        description = "Bake an editable mesh's modifier stack into raw triangles and clear the recipe (the deliberate heavy snapshot, undoable — the undo entry restores the prior stack; the baked cache is regenerated on demand). NOTE this is NOT needed for editor load speed: project save/load persists the baked .mesh.bin cache per mesh, so loads never re-evaluate recipes (corollary: after a meshgen code change, re-send the stack to re-bake). Collapse when you want to FREEZE topology / drop the recipe / hand-edit raw verts. Player bundles independently lower heavy meshes to meshopt glb at export (bare primitives stay procedural), so no manual glb export/re-import is ever needed for performance. After this the mesh is raw-vertex-edited via set_vertex_positions / soft_transform_vertices."
     )]
     async fn collapse_mesh_stack(
         &self,
@@ -3181,7 +3217,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Project-wide FINALIZE: collapse every Mesh asset's modifier stack to a frozen-topology Captured base (bakes all procedural params + override layers into the geometry cache). The deliberate whole-project bake before export/handoff. Undoable (restores every mesh's prior stack as one step). No params."
+        description = "Project-wide FINALIZE: collapse every Mesh asset's modifier stack to a frozen-topology Captured base (bakes all procedural params + override layers into the geometry cache). The deliberate whole-project bake before export/handoff — NOT a load-time optimization (editor loads already restore persisted .mesh.bin caches without evaluating recipes, and bundle export bakes/lowers independently). Undoable (restores every mesh's prior stack as one step). No params."
     )]
     async fn bake_all(&self) -> Result<CallToolResult, McpError> {
         self.dispatch(EditorCommand::BakeAll {}).await
@@ -3832,7 +3868,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Set a built-in material factor on a mesh node's inline material. param: base_color (value = 3 floats RGB, OR 4 floats RGBA where the 4th is the base-color ALPHA — pair with set_builtin_alpha_mode blend for glass) | emissive (3 floats) | metallic | roughness | normal_scale | occlusion_strength | ssr_mask (1 float; ssr_mask 0..1 scales how strongly the surface RECEIVES screen-space reflections — 0 fully opts the material out of SSR, IBL specular stays). For KHR extension PARAMS (clearcoat, sheen, transmission, ior, ...) use patch_kind on mesh.material.inline.extensions — e.g. {\"mesh\":{\"material\":{\"inline\":{\"extensions\":{\"clearcoat\":{\"factor\":1.0,\"roughness_factor\":0.0}}}}}}. Extension ENABLES are owned by the library material (update_builtin_material) — inline params only take effect when the material enables the extension; an inline-only extension is dropped."
+        description = "Set a built-in material factor on a mesh node's inline material. param: base_color (value = 3 floats RGB, OR 4 floats RGBA where the 4th is the base-color ALPHA — pair with set_builtin_alpha_mode blend for glass) | emissive (3 floats) | metallic | roughness | normal_scale | occlusion_strength | ssr_mask (1 float; ssr_mask 0..1 scales how strongly the surface RECEIVES screen-space reflections — 0 fully opts the material out of SSR, IBL specular stays). Extension params here: emissive_strength (1 float, KHR emissive multiplier) + the secondary_* strengths — these REQUIRE the extension to be ENABLED on the library material first (update_builtin_material), else this command errors (extension enables are library-owned; an inline-only extension never renders). For OTHER per-mesh KHR extension params (clearcoat, sheen, ior, ...) there is currently no per-mesh wire path — NodeKind has no `mesh.material` field (a patch_kind on that path errors as unrecognized); author them on the library material def instead (make a dedicated library material if only one mesh should differ)."
     )]
     async fn set_builtin_param(
         &self,
@@ -3855,6 +3891,19 @@ impl EditorMcp {
             BuiltinParamArg::ToonRimPower => BuiltinParamKind::ToonRimPower,
             BuiltinParamArg::FlipbookFps => BuiltinParamKind::FlipbookFps,
             BuiltinParamArg::FlipbookTimeOffset => BuiltinParamKind::FlipbookTimeOffset,
+            BuiltinParamArg::SecondaryBaseColorStrength => {
+                BuiltinParamKind::SecondaryBaseColorStrength
+            }
+            BuiltinParamArg::SecondaryNormalStrength => BuiltinParamKind::SecondaryNormalStrength,
+            BuiltinParamArg::SecondaryMetallicRoughnessStrength => {
+                BuiltinParamKind::SecondaryMetallicRoughnessStrength
+            }
+            BuiltinParamArg::SecondaryOcclusionStrength => {
+                BuiltinParamKind::SecondaryOcclusionStrength
+            }
+            BuiltinParamArg::SecondaryEmissiveStrength => {
+                BuiltinParamKind::SecondaryEmissiveStrength
+            }
         };
         self.dispatch(EditorCommand::SetBuiltinParam {
             node: parse_node(&p.node)?,
@@ -3901,7 +3950,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Patch a node's kind with a JSON merge-patch (RFC 7386) — edit only the fields you name instead of resending the whole NodeKind via dispatch_command SetKind. `node` is the node UUID; `patch` is a partial JSON **object** (send it as an object, not a stringified object) merged over the node's current kind (fields present overwrite; null removes a key; nested objects merge recursively; arrays replace wholesale). Read get_node_details to see the exact shape + field names, then send just the delta. The result must still be a valid NodeKind (rejected loudly with the deserialize error otherwise). Ideal for escape-hatch edits with no typed tool: particle-emitter config, decal, sprite, collider, and per-mesh PBR extension params (mesh.material.inline.extensions.clearcoat = {\"factor\":1.0,\"roughness_factor\":0.0} enables + parameterizes clearcoat on JUST this mesh; null disables)."
+        description = "Patch a node's kind with a JSON merge-patch (RFC 7386) — edit only the fields you name instead of resending the whole NodeKind via dispatch_command SetKind. `node` is the node UUID; `patch` is a partial JSON **object** (send it as an object, not a stringified object) merged over the node's current kind (fields present overwrite; null removes a key; nested objects merge recursively; arrays replace wholesale). Read get_node_details to see the exact shape + field names, then send just the delta. The result must still be a valid NodeKind (rejected loudly with the deserialize error otherwise). Ideal for escape-hatch edits with no typed tool: particle-emitter config, decal, sprite, collider, mesh shadow/lod flags. NOTE: per-mesh material data does NOT live at `mesh.material` (no such field — the palette is `mesh.material_variants`, an ARRAY, which merge-patch can only replace wholesale); use set_builtin_param / set_builtin_alpha_mode / set_node_texture for per-mesh material edits, and update_builtin_material for library defs + extension enables. Unrecognized patch paths are rejected loudly (never silently dropped)."
     )]
     async fn patch_kind(
         &self,
@@ -4483,7 +4532,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Set editor viewport view options (partial update — only the fields you pass change; transient view state, never persisted): grid, gizmos, light_gizmos, skeleton_viz, follow_agent, activity_overlay, mcp_notifications, msaa, smaa (all bool; msaa is STRUCTURAL — wait_render_settled after flipping). FOR CLEAN VERIFICATION SCREENSHOTS: set {grid:false, gizmos:false, light_gizmos:false, skeleton_viz:false} before screenshot_scene so viewport chrome does not contaminate the pixels, and restore afterwards. follow_agent / activity_overlay / mcp_notifications default OFF and are human-courtesy toggles — leave them off during automated work. Read the current values back with get_view_options."
+        description = "Set editor viewport view options (partial update — only the fields you pass change; transient view state, never persisted): grid, gizmos, light_gizmos, skeleton_viz, follow_agent, activity_overlay, mcp_notifications, msaa, smaa (all bool; msaa is STRUCTURAL — wait_render_settled after flipping), render_scale (float 1.0–2.0 supersampling; targets rebuild next frame — wait_render_settled after), and anisotropy (bool, default on — runtime sampler swap). FOR CLEAN VERIFICATION SCREENSHOTS: set {grid:false, gizmos:false, light_gizmos:false, skeleton_viz:false} before screenshot_scene so viewport chrome does not contaminate the pixels, and restore afterwards. follow_agent / activity_overlay / mcp_notifications default OFF and are human-courtesy toggles — leave them off during automated work. Read the current values back with get_view_options."
     )]
     async fn set_view_options(
         &self,
@@ -4499,13 +4548,15 @@ impl EditorMcp {
             mcp_notifications: p.mcp_notifications,
             msaa: p.msaa,
             smaa: p.smaa,
+            render_scale: p.render_scale,
+            anisotropy: p.anisotropy,
         })
         .await
     }
 
     #[tool(
         annotations(read_only_hint = true),
-        description = "Current editor viewport view options as JSON booleans (grid, gizmos, light_gizmos, skeleton_viz, follow_agent, activity_overlay, mcp_notifications, msaa, smaa) — the read half of set_view_options. Pure read."
+        description = "Current editor viewport view options as JSON (grid, gizmos, light_gizmos, skeleton_viz, follow_agent, activity_overlay, mcp_notifications, msaa, smaa, anisotropy booleans + render_scale float) — the read half of set_view_options. Pure read."
     )]
     async fn get_view_options(&self) -> Result<CallToolResult, McpError> {
         self.query(EditorQuery::ViewOptions).await
@@ -5363,7 +5414,33 @@ impl ServerHandler for EditorMcp {
             "Drive the awsm-renderer editor. Call get_snapshot to discover node/asset ids, \
              mutate with the scene/material/animation tools (or dispatch_command/dispatch_batch \
              for anything without a dedicated tool), then wait_render_settled + screenshot_scene \
-             to see the result. For custom WGSL materials read get_material_contract first and \
+             to see the result.\n\n\
+             CAPABILITY MAP — before deciding this system can't do something (or reaching for an \
+             external DCC tool), check the family below; every listed verb is a real tool here:\n\
+             • Procedural geometry (non-destructive recipes, persisted + re-bakeable): \
+             set_mesh_modifiers with MeshBase primitive|lathe (partial-arc revolves; repeated \
+             profile points = hard creases)|superquadric|sweep-along-curve, plus modifier stack \
+             taper/twist/bend/inflate/spherify/roughen/subdivide/smooth/mirror/array/displace \
+             (expression-driven). get_kind_schema gives the exact config shape.\n\
+             • SCULPTING (yes, organic vertex sculpting): soft_transform_vertices = falloff grab \
+             brush; transform_where / paint_where = fused predicate select+sculpt/paint; \
+             select_vertices_where (server-side stored selections via store:true); \
+             set_vertex_positions/normals/uvs, paint_vertex_colors, displace_from_texture \
+             (heightmap sculpt), strip_parameterize, separate_mesh, solve_ik, skin-weight editing.\n\
+             • Instancing at scale: insert_instancer + set_instancer_transforms (bulk transforms \
+             + per-instance colors, one draw); the instanced MESH's material lives on its donor \
+             mesh node. insert_particle for CPU sprites; insert_decal for projected detail.\n\
+             • Materials: built-in PBR incl. KHR extensions + secondary/detail maps \
+             (set_node_texture secondary_* slots), per-slot UV transform/flow/sampler, material \
+             variants per mesh; custom WGSL materials (get_material_contract first).\n\
+             • Animation: clips/tracks/keyframes over transforms, morphs, uniforms, texture \
+             transforms; two-bone IK; playback transport.\n\
+             • Verification: screenshot_scene/material/texture, canvas_stats, get_mesh_stats/\
+             cross_section/uv_layout/vertex_data, get_console_logs, verify_roundtrip, \
+             load_player_bundle self-test.\n\
+             Discover the full raw vocabulary with list_commands; per-node config shapes with \
+             get_kind_schema.\n\n\
+             For custom WGSL materials read get_material_contract first and \
              check get_material_diagnostics after editing. Assets (textures, environments, \
              heightmaps) come from URLs — generate + host them, then import/reference by URL; \
              there is NO inline-base64 texture or equirect tool. For the environment / texture / \

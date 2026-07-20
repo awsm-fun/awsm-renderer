@@ -1319,6 +1319,9 @@ pub async fn apply_inmem(
     ctrl.dirty.set_neq(false);
     ctrl.env_saved_baseline
         .set(ctrl.scene.environment.get_cloned());
+    // Loaded nodes may author `lod.far_swap` — register the chains now that
+    // every mesh is materialized.
+    crate::engine::bridge::lod_sync::resync().await;
     Ok(())
 }
 

@@ -91,8 +91,19 @@ fn fs_main(input: FragmentInput) -> FragmentOutput {
     // perspective-correct barycentrics by default. Derivatives are taken of the
     // CENTER-sampled copy (the centroid `barycentric` used for UV has undefined
     // screen-space derivatives).
-    let ddx = dpdx(input.barycentric_center);          // (db1/dx, db2/dx)
-    let ddy = dpdy(input.barycentric_center);          // (db1/dy, db2/dy)
+    //
+    // CLAMP to fp16-safe range: on SUB-PIXEL skinny triangles (grazing-angle
+    // floor detail, thin bevel strips) the center-interpolated barycentric
+    // EXTRAPOLATES enormously between neighboring quad pixels, so dpdx/dpdy
+    // overflow the Rgba16float target to ±Inf. Downstream `get_uv_derivatives`
+    // then NaN-guards to ZERO gradients → LOD 0 point-sampling → dash/sparkle
+    // aliasing no AA can fix. Clamped-huge instead selects the COARSEST mip —
+    // the correct filtering direction for a sub-pixel triangle.
+    const BARY_DERIV_LIMIT: f32 = 6.0e4; // < fp16 max (65504)
+    let ddx = clamp(dpdx(input.barycentric_center),
+        vec2<f32>(-BARY_DERIV_LIMIT), vec2<f32>(BARY_DERIV_LIMIT)); // (db1/dx, db2/dx)
+    let ddy = clamp(dpdy(input.barycentric_center),
+        vec2<f32>(-BARY_DERIV_LIMIT), vec2<f32>(BARY_DERIV_LIMIT)); // (db1/dy, db2/dy)
 
     out.barycentric_derivatives = vec4<f32>(ddx.x, ddy.x, ddx.y, ddy.y);
 

@@ -406,7 +406,7 @@ impl AwsmRenderer {
         // `ensure_viewport` may recreate `light_culling_buffers.storage_buffer`
         // (the froxel storage), so it must land before the cull dispatch
         // writes the per-froxel slices into it for this frame.
-        let (viewport_w_for_cull, viewport_h_for_cull) = self.gpu.current_context_texture_size()?;
+        let (viewport_w_for_cull, viewport_h_for_cull) = self.render_size()?;
         if self.light_culling_buffers.ensure_viewport(
             &self.gpu,
             viewport_w_for_cull,
@@ -487,7 +487,11 @@ impl AwsmRenderer {
         // upload below) now consults the same cached pair. Each
         // `current_context_texture_size()` is a `getCurrentTexture().getSize()`
         // wasm↔JS hop — cheap individually but it stacked up.
-        let viewport_size = self.gpu.current_context_texture_size()?;
+        let surface_size = self.gpu.current_context_texture_size()?;
+        let viewport_size = (
+            crate::size::scale_extent(surface_size.0, self.render_scale),
+            crate::size::scale_extent(surface_size.1, self.render_scale),
+        );
         // FrameGlobals — renderer-wide per-frame uniform. Written after
         // Camera so it shares the same upload batch and lands before any
         // pass that reads it. Resolution comes from the live context
@@ -595,6 +599,21 @@ impl AwsmRenderer {
             )? {
                 self.bind_groups
                     .mark_create(BindGroupCreate::TextureViewRecreate);
+            }
+        }
+
+        // SMAA pre-pass upkeep — resize its edges/weights textures to the
+        // viewport. Lazy pass: `None` while SMAA is off (zero-cost).
+        if self.anti_aliasing.smaa {
+            if let Some(smaa) = self.render_passes.smaa.as_mut() {
+                if smaa.ensure_size(
+                    &self.gpu,
+                    render_texture_views.width,
+                    render_texture_views.height,
+                )? {
+                    self.bind_groups
+                        .mark_create(BindGroupCreate::TextureViewRecreate);
+                }
             }
         }
 
@@ -923,6 +942,7 @@ impl AwsmRenderer {
                 crate::optimization_policy::FrameOptimizations::default(),
             ),
             viewport_size,
+            surface_size,
             prep_config: &self.prep_config,
             // GPU timestamp handle — `None` (no slots ever allocated) unless the
             // `gpu` tier is on AND the device supports timestamp queries.
@@ -1046,7 +1066,7 @@ impl AwsmRenderer {
                 if let Some(cam) = self.camera.last_matrices.as_ref() {
                     let proj_yy = cam.projection.y_axis.y.abs();
                     if proj_yy > 1e-6 {
-                        if let Ok((_, vh)) = self.gpu.current_context_texture_size() {
+                        if let Ok((_, vh)) = self.render_size() {
                             // Cut + compaction for EVERY resident cluster mesh; returns
                             // the diagnostics readback kick (first resident mesh, on
                             // cadence) for the async consumer further below.
@@ -1647,6 +1667,17 @@ impl AwsmRenderer {
                     ctx.render_texture_views.height,
                     ctx.post_processing.ssr.resolution_scale < 1.0,
                 )?;
+            }
+        }
+
+        // SMAA pre-pass — edge detection + blend-weight calculation from the
+        // composite. The effects pass consumes the weights via its
+        // `smaa_anti_alias` shader variant (the neighborhood-blend stage).
+        if ctx.anti_aliasing.smaa {
+            if let Some(smaa) = self.render_passes.smaa.as_ref() {
+                let _maybe_span_guard =
+                    crate::profiling::cpu_scope(&self.logging, "SMAA Pre-Pass", true);
+                smaa.render(&ctx)?;
             }
         }
 
@@ -2344,6 +2375,10 @@ pub struct RenderContext<'a> {
     /// [`crate::profiling::GpuTimestamps`].
     pub gpu_timestamps: Option<&'a crate::profiling::GpuTimestamps>,
     pub viewport_size: (u32, u32),
+    /// The raw swap-chain `(width, height)` — differs from
+    /// `viewport_size` only when `render_scale != 1.0`. Only the display
+    /// pass (downsample ratio) should need it.
+    pub surface_size: (u32, u32),
     /// Plan B shared-prep config. Inert today — the prep pass is dispatched
     /// only when `render_passes.material_prep` is `Some` (i.e. when this is
     /// enabled). Threaded through so later stages can branch shading on it.
@@ -2591,7 +2626,7 @@ impl AwsmRenderer {
             return;
         }
         let tan_half_fov_y = 1.0 / proj_yy;
-        let viewport_h = match self.gpu.current_context_texture_size() {
+        let viewport_h = match self.render_size() {
             Ok((_, h)) => h as f32,
             Err(_) => return,
         };
@@ -2634,7 +2669,7 @@ impl AwsmRenderer {
             return;
         }
         let tan_half_fov_y = 1.0 / proj_yy;
-        let viewport_h = match self.gpu.current_context_texture_size() {
+        let viewport_h = match self.render_size() {
             Ok((_, h)) => h as f32,
             Err(_) => return,
         };

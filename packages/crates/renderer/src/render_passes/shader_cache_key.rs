@@ -25,6 +25,7 @@ use crate::render_passes::{
     occlusion::shader::cache_key::{
         ShaderCacheKeyOcclusionCompaction, ShaderCacheKeyOcclusionCull,
     },
+    smaa::shader::cache_key::ShaderCacheKeySmaa,
     ssr::shader::cache_key::ShaderCacheKeySsr,
 };
 
@@ -50,6 +51,8 @@ pub enum ShaderCacheKeyRenderPass {
     BloomDownsample(ShaderCacheKeyBloomDownsample),
     /// Bloom mip-sum combine → full-res bloom.
     BloomCombine(ShaderCacheKeyBloomCombine),
+    /// SMAA pre-pass shaders (edges / weights).
+    Smaa(ShaderCacheKeySmaa),
     LightCulling(ShaderCacheKeyLightCulling),
     MaterialClassify(ShaderCacheKeyMaterialClassify),
     /// Plan B shared prep pass (docs/plans/deferred-shared-prep-pass.md).

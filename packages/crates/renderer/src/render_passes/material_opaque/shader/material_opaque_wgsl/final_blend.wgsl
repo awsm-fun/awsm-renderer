@@ -3,13 +3,23 @@
 // Indirect-dispatched over edge pixels (one thread per edge_pixel_id,
 // workgroup_size = 64). Reads up to 4 accumulator slots
 // (`accumulator[edge_pixel_id × 4 .. +4]`) — each slot holds
-// `vec4<f32>(karis_weighted_color_sum, karis_weight_sum)` written by either
-// a per-shader-id edge_resolve pass or the skybox_edge_resolve pass. The
-// division below therefore computes the KARIS (tonemap-weighted) average:
-// every writer weights each HDR sample by 1/(1+maxc), which keeps one hot
-// emissive sample from dominating the resolve and collapsing the edge
-// gradient after tonemapping (plain linear averaging read as barely-AA'd
-// on bright silhouettes at 4x).
+// `vec4<f32>(Σ t(sample), sample_count)` written by either a per-shader-id
+// edge_resolve pass or the skybox_edge_resolve pass, with
+// t(s) = s/(1+s) per channel (a Reinhard-style compressive curve).
+//
+// TONEMAPPED-SPACE RESOLVE: the blend averages in t-space and INVERTS the
+// curve back to HDR below, so after display tonemapping the pixel lands on
+// (approximately) the average of the tonemapped samples. This is monotonic
+// across an edge gradient by construction — unlike the previous Karis
+// 1/(1+maxc) WEIGHTED mean, which over-dimmed pixels whose samples mixed
+// bright and dim shading and produced a visible dark seam (a non-monotonic
+// luminance dip) where edge-classified pixels meet interior-path pixels —
+// read as "stairstepping" along bright emissive silhouettes (wall tubes)
+// and as dashes where grazing-angle tessellation seams alternate the two
+// regimes. Plain linear averaging is worse still: one hot HDR sample
+// saturates the tonemapper and collapses the edge gradient entirely.
+// Uniform samples round-trip exactly (t then t⁻¹ is the identity on the
+// average), so interior-equivalent content is bit-comparable.
 
 @compute @workgroup_size(64)
 fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -86,7 +96,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
 
-    let final_color = color_sum / total_count;
+    // Average in t-space, then invert t(s)=s/(1+s): S = τ/(1-τ). τ is
+    // clamped just below 1 so a fully-saturated accumulator maps to a large
+    // finite HDR value instead of Inf (post-tonemap both display as white).
+    let t_avg = clamp(color_sum / total_count, vec3<f32>(0.0), vec3<f32>(0.9995));
+    let final_color = t_avg / (vec3<f32>(1.0) - t_avg);
     // Alpha resolution: simplification — opaque outputs assume alpha
     // tracks count for visibility (1.0 if any contribution). For
     // alpha-blended edges, a parallel alpha-accumulator buffer would

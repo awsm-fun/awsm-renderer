@@ -196,10 +196,17 @@ fn get_uv_derivatives(
     // dudy /= lod_bias_scale;
     // dvdy /= lod_bias_scale;
 
-    // NaN/Inf guard (don't clamp magnitudes)
+    // NaN/Inf guard. Fail toward BLUR, not sparkle: zero gradients mean LOD 0
+    // (the sharpest mip), which turns a degenerate sub-pixel triangle into
+    // full-res point-sampling — dash/shimmer aliasing no AA can fix. A huge
+    // gradient instead selects the coarsest mip: the correct filtering
+    // direction when the true footprint is unknown-but-large. (The zero-`m`
+    // short-circuit above stays: truly-zero stored derivs mean an UNWRITTEN
+    // G-buffer sample, where LOD 0 is the least-wrong choice for magnified
+    // texels.)
     let ok = (dudx == dudx) && (dudy == dudy) && (dvdx == dvdx) && (dvdy == dvdy);
     if (!ok) {
-        return UvDerivs(vec2<f32>(0.0), vec2<f32>(0.0));
+        return UvDerivs(vec2<f32>(1.0e3, 0.0), vec2<f32>(0.0, 1.0e3));
     }
 
     return UvDerivs(vec2<f32>(dudx, dvdx), vec2<f32>(dudy, dvdy));

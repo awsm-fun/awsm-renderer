@@ -20,6 +20,7 @@
 use std::sync::Arc;
 
 use awsm_renderer::meshes::buffer_info::MeshBufferGeometryMorphInfo;
+use awsm_renderer::meshes::MeshKey;
 use awsm_renderer::raw_mesh::{RawMeshData, RawMorph, RawSkin};
 use awsm_renderer::transforms::{Transform, TransformKey};
 use awsm_renderer_meshgen::MeshData;
@@ -189,6 +190,110 @@ fn order_snapshot(parent_id: Option<NodeId>) -> Vec<NodeId> {
 fn order_reset(parent_id: Option<NodeId>) {
     let b = bridge();
     b.child_order.lock().unwrap().insert(parent_id, Vec::new());
+}
+
+/// The bridge-side parent of `id`, derived from `child_order` (the bridge keeps
+/// no parent pointers). Returns `None` both for scene-root nodes and for nodes
+/// not yet ordered (mid-load) — callers treat either as "top of the chain".
+/// Toggle/materialize-path only, never per-frame.
+fn parent_of(id: NodeId) -> Option<NodeId> {
+    let b = bridge();
+    let co = b.child_order.lock().unwrap();
+    co.iter()
+        .find(|(_, kids)| kids.contains(&id))
+        .and_then(|(parent, _)| *parent)
+}
+
+/// EFFECTIVE visibility of a node: its own eye AND every ancestor's. The
+/// renderer's mesh-hidden flag is FLAT (no scene-graph inheritance), so every
+/// materialize path applies this AND at creation and the visibility observer
+/// fans a toggle out to the whole subtree — without it, hiding a GROUP left
+/// every descendant mesh/light rendering (the eye only worked on the node
+/// carrying the geometry itself).
+fn effective_visible(id: NodeId) -> bool {
+    let mut cur = Some(id);
+    while let Some(c) = cur {
+        let own = {
+            let b = bridge();
+            let nodes = b.nodes.lock().unwrap();
+            nodes.get(&c).map(|e| e.node.visible.get())
+        };
+        match own {
+            Some(false) => return false,
+            Some(true) => cur = parent_of(c),
+            // Not bridged (shouldn't happen for a live chain): stop the walk.
+            None => break,
+        }
+    }
+    true
+}
+
+/// Push effective visibility for `root`'s whole subtree to the renderer:
+/// meshes get `set_mesh_hidden(!effective)`, lights are removed/re-inserted
+/// (there is no per-light hide flag). Each descendant's state is the AND of
+/// its own eye with its ancestors' — a child hidden directly stays hidden
+/// when its group re-shows.
+async fn apply_subtree_visibility(root: NodeId) {
+    let parent_eff = match parent_of(root) {
+        Some(p) => effective_visible(p),
+        None => true,
+    };
+    let mut mesh_ops: Vec<(MeshKey, bool)> = Vec::new();
+    let mut light_on: Vec<Arc<RendererNode>> = Vec::new();
+    let mut light_off: Vec<Arc<RendererNode>> = Vec::new();
+    let mut stack = vec![(root, parent_eff)];
+    while let Some((id, above)) = stack.pop() {
+        let entry = {
+            let b = bridge();
+            let nodes = b.nodes.lock().unwrap();
+            nodes.get(&id).cloned()
+        };
+        let Some(entry) = entry else { continue };
+        let eff = above && entry.node.visible.get();
+        for mk in entry.model_meshes.lock().unwrap().iter() {
+            mesh_ops.push((*mk, !eff));
+        }
+        if matches!(entry.node.kind.get_cloned(), NodeKind::Light(_)) {
+            if eff {
+                light_on.push(entry.clone());
+            } else {
+                light_off.push(entry.clone());
+            }
+        }
+        for kid in order_snapshot(Some(id)) {
+            stack.push((kid, eff));
+        }
+    }
+    if !mesh_ops.is_empty() {
+        with_renderer_mut(move |r| {
+            for (mk, hidden) in mesh_ops {
+                let _ = r.set_mesh_hidden(mk, hidden);
+            }
+        })
+        .await;
+    }
+    let mut light_churned = false;
+    for e in light_off {
+        let taken = e.light_key.lock().unwrap().take();
+        if let Some(lk) = taken {
+            with_renderer_mut(move |r| r.remove_light(lk)).await;
+            light_churned = true;
+        }
+    }
+    for e in light_on {
+        // Re-insert only if the hide arm removed it (an already-lit light
+        // keeps its key untouched).
+        if e.light_key.lock().unwrap().is_none() {
+            if let NodeKind::Light(cfg) = e.node.kind.get_cloned() {
+                apply_light(e.clone(), cfg).await;
+                light_churned = true;
+            }
+        }
+    }
+    if light_churned {
+        // LightKeys churned — re-lower so animation channels rebind.
+        super::animation_sync::schedule_relower();
+    }
 }
 
 /// Establish a node's renderer transform + bridge entry — the transforms-first half
@@ -368,6 +473,10 @@ async fn add_node(
                         // still recompiling" race for MCP screenshot-after-edit.
                         let _guard = crate::controller::CompileGuard::new();
                         apply_kind(entry, kind, false).await;
+                        // Kind edits can add/remove `lod.far_swap` (or swap the
+                        // mesh a chain points at) — reconcile the authored
+                        // far-swap LOD chains.
+                        crate::engine::bridge::lod_sync::resync().await;
                     }
                 })
             })).await;
@@ -410,48 +519,29 @@ async fn add_node(
         }));
         entry.loaders.lock().unwrap().push(loader);
     }
-    // Visibility observer — hide/show this node's meshes; for a Light node the
+    // Visibility observer — a toggle fans out to the node's WHOLE SUBTREE with
+    // EFFECTIVE visibility (own eye AND ancestors' — the renderer's hidden flag
+    // is flat, so group-hide must reach every descendant); for a Light node the
     // eye actually turns the light OFF/ON (remove/re-insert the renderer
     // light — there is no per-light hide flag), so hiding a light darkens the
     // scene instead of silently doing nothing.
     {
         let loader = AsyncLoader::new();
         loader.load(clone!(entry => async move {
-            // Skip the initial (current-value) emission for the LIGHT arm:
-            // materialization itself honors `visible` (`apply_light` early-
-            // returns when hidden), and reacting to the initial fire here
-            // could double-insert against the in-flight kind observer.
+            // Skip the initial (current-value) emission entirely: every
+            // materialize path applies effective visibility at creation
+            // (meshes via `set_mesh_hidden`, `apply_light` early-returns when
+            // hidden), and reacting to the initial fire here could walk a
+            // subtree that is still mid-load (children not yet ordered) or
+            // double-insert a light against the in-flight kind observer.
             let first = std::cell::Cell::new(true);
-            entry.node.visible.signal().for_each(move |visible| {
+            entry.node.visible.signal().for_each(move |_visible| {
                 let initial = first.replace(false);
                 clone!(entry => async move {
-                    let meshes: Vec<_> = entry.model_meshes.lock().unwrap().clone();
-                    with_renderer_mut(move |r| {
-                        for mk in meshes {
-                            let _ = r.set_mesh_hidden(mk, !visible);
-                        }
-                    }).await;
                     if initial {
                         return;
                     }
-                    if let NodeKind::Light(cfg) = entry.node.kind.get_cloned() {
-                        if visible {
-                            // Re-insert only if the hide arm removed it (an
-                            // already-lit light keeps its key untouched).
-                            if entry.light_key.lock().unwrap().is_none() {
-                                apply_light(entry.clone(), cfg).await;
-                                // The LightKey churned — re-lower so animation
-                                // channels targeting this light rebind.
-                                super::animation_sync::schedule_relower();
-                            }
-                        } else {
-                            let taken = entry.light_key.lock().unwrap().take();
-                            if let Some(lk) = taken {
-                                with_renderer_mut(move |r| r.remove_light(lk)).await;
-                                super::animation_sync::schedule_relower();
-                            }
-                        }
-                    }
+                    apply_subtree_visibility(entry.node_id).await;
                 })
             }).await;
         }));
@@ -1214,7 +1304,7 @@ async fn materialize_static_duplicate(
     material: Option<&awsm_renderer_editor_protocol::dynamic_material::MaterialInstance>,
     declare_only: bool,
 ) -> bool {
-    let visible = entry.node.visible.get();
+    let visible = effective_visible(entry.node_id);
     let shadow_cfg = entry
         .node
         .kind
@@ -1331,7 +1421,7 @@ async fn materialize_skinned_duplicate(
     material: Option<&awsm_renderer_editor_protocol::dynamic_material::MaterialInstance>,
     declare_only: bool,
 ) -> bool {
-    let visible = entry.node.visible.get();
+    let visible = effective_visible(entry.node_id);
     let shadow_cfg = entry
         .node
         .kind
@@ -1497,7 +1587,7 @@ async fn materialize_skinned_mesh(
         return;
     };
 
-    let visible = entry.node.visible.get();
+    let visible = effective_visible(entry.node_id);
     let shadow_cfg = entry
         .node
         .kind
@@ -1561,7 +1651,7 @@ async fn materialize_cluster_mesh_node(
         );
         return;
     };
-    let visible = entry.node.visible.get();
+    let visible = effective_visible(entry.node_id);
     let shadow_cfg = entry
         .node
         .kind
@@ -1655,7 +1745,7 @@ async fn materialize_skinned_from_template(
         return;
     }
 
-    let visible = entry.node.visible.get();
+    let visible = effective_visible(entry.node_id);
     let shadow_cfg = entry
         .node
         .kind
@@ -2134,7 +2224,7 @@ async fn upload_simple_mesh(
                 .copied()
                 .unwrap_or_default();
             let _ = r.set_mesh_shadow_flags(mk, mesh_shadow_flags_from_config(&shadow_cfg));
-            let _ = r.set_mesh_hidden(mk, !entry.node.visible.get());
+            let _ = r.set_mesh_hidden(mk, !effective_visible(entry.node_id));
             if !declare_only {
                 if let Err(e) = r
                     .commit_load(crate::engine::activity::commit_phase_handler())
@@ -2380,13 +2470,14 @@ async fn materialize_particle(
 
 async fn apply_light(entry: Arc<RendererNode>, cfg: LightConfig) {
     let node_id = entry.node_id;
-    // A hidden light node contributes NO light: honor `visible` at materialize
-    // time (mirrors meshes applying hidden-at-creation), so the outliner eye
-    // survives re-materialization and a project saved with a hidden light
-    // loads dark. Still registered in `light_node_ids` so the viewport icon
-    // keeps marking the node. The visibility observer re-materializes on
-    // show (see the Light arm there).
-    if !entry.node.visible.get() {
+    // A hidden light node contributes NO light: honor EFFECTIVE visibility
+    // (own eye AND ancestors' — a light inside a hidden group is off too) at
+    // materialize time (mirrors meshes applying hidden-at-creation), so the
+    // outliner eye survives re-materialization and a project saved with a
+    // hidden light loads dark. Still registered in `light_node_ids` so the
+    // viewport icon keeps marking the node. The visibility observer
+    // re-materializes on show (see `apply_subtree_visibility`).
+    if !effective_visible(entry.node_id) {
         bridge().light_node_ids.lock().unwrap().insert(node_id);
         return;
     }

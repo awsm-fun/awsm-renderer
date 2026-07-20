@@ -255,6 +255,39 @@ fn reverse_z_shadow_shaders_validate() {
 }
 
 #[test]
+fn secondary_maps_shaders_validate_and_gate() {
+    // On: the full opaque PBR shader with the secondary-maps feature bit
+    // must render, naga-validate, and contain the secondary sampling code
+    // in BOTH AA configs (primary kernel and edge_resolve share the module).
+    let feat = awsm_renderer_materials::pbr::PbrFeatures {
+        secondary_maps: true,
+        ..Default::default()
+    };
+    for (msaa, mips) in CONFIGS {
+        let label = format!("opaque/pbr+secondary msaa={msaa:?} mips={mips}");
+        let mut key = first_party_key(MaterialShaderId::PBR, ShadingBase::Pbr, false, msaa, mips);
+        key.pbr_features = feat.bits();
+        let src = render(&key, &label);
+        naga_validate(&src, &label);
+        assert!(
+            src.contains("pbr_material_load_secondary_maps"),
+            "{label}: secondary-maps loader must be emitted"
+        );
+        // Off: the SAMPLING/BLEND code is compile-time stripped — non-users
+        // compile none of it. (The decode helper in the materials-crate WGSL
+        // fragment is ungated dead code naga strips at pipeline time, so it
+        // is deliberately not asserted here.)
+        let key_off = first_party_key(MaterialShaderId::PBR, ShadingBase::Pbr, false, msaa, mips);
+        let src_off = render(&key_off, &label);
+        assert!(
+            !src_off.contains("_pbr_overlay_scalar")
+                && !src_off.contains("secondary.base_color_tex_info"),
+            "{label}: absent secondary maps must be compile-time stripped"
+        );
+    }
+}
+
+#[test]
 fn first_party_opaque_shaders_validate() {
     let bases = [
         (MaterialShaderId::PBR, ShadingBase::Pbr, false, "pbr"),
@@ -1881,6 +1914,72 @@ fn decal_classify_shader_validates_for_both_depth_conventions() {
 /// natively validated here: every pyramid step (prefilter / downsample /
 /// tent upsample, all routed through the `BloomDownsample` cache key) and
 /// the combine must parse + validate and carry the compute entry point.
+/// The SMAA pre-pass shaders are config-lazy like bloom (compiled only when
+/// `anti_aliasing.smaa` turns on) — keep them natively validated: both steps
+/// must parse + validate and carry the compute entry point, and the weights
+/// pass must keep its bounded search (the reference SearchTex replacement).
+#[test]
+fn display_shaders_validate() {
+    use crate::post_process::ToneMapping;
+    use crate::render_passes::display::shader::{
+        cache_key::ShaderCacheKeyDisplay, template::ShaderTemplateDisplay,
+    };
+
+    for supersample in [false, true] {
+        for tonemapping in [ToneMapping::KhronosNeutralPbr, ToneMapping::None] {
+            let label = format!("display supersample={supersample} tonemapping={tonemapping:?}");
+            let src = ShaderTemplateDisplay::try_from(&ShaderCacheKeyDisplay {
+                tonemapping,
+                supersample,
+            })
+            .unwrap_or_else(|e| panic!("{label}: template dispatch failed: {e:?}"))
+            .into_source()
+            .unwrap_or_else(|e| panic!("{label}: render failed: {e:?}"));
+            naga_validate(&src, &label);
+            // The 1:1 variant must keep its exact single textureLoad (the
+            // byte-identical default path); the supersample variant carries
+            // the 4-tap manual bilinear instead.
+            let loads = src.matches("textureLoad(composite_texture").count();
+            if supersample {
+                assert_eq!(loads, 4, "{label}: expected 4-tap bilinear, got {loads}");
+            } else {
+                assert_eq!(loads, 1, "{label}: expected single 1:1 load, got {loads}");
+            }
+        }
+    }
+}
+
+#[test]
+fn smaa_shaders_validate() {
+    use crate::render_passes::smaa::shader::{
+        cache_key::{ShaderCacheKeySmaa, SmaaStep},
+        template::ShaderTemplateSmaa,
+    };
+
+    for step in [SmaaStep::Edges, SmaaStep::Weights] {
+        let label = format!("smaa step={step:?}");
+        let src = ShaderTemplateSmaa::try_from(&ShaderCacheKeySmaa { step })
+            .unwrap_or_else(|e| panic!("{label}: template dispatch failed: {e:?}"))
+            .into_source()
+            .unwrap_or_else(|e| panic!("{label}: render failed: {e:?}"));
+        naga_validate(&src, &label);
+        assert!(
+            src.contains("fn main("),
+            "{label}: module missing `fn main` entry point"
+        );
+        if matches!(step, SmaaStep::Weights) {
+            assert!(
+                src.contains("SMAA_MAX_SEARCH_STEPS"),
+                "{label}: bounded edge search (SMAA_MAX_SEARCH_STEPS) missing"
+            );
+            assert!(
+                src.contains("area_tex") && src.contains("search_tex"),
+                "{label}: reference AreaTex/SearchTex bindings missing"
+            );
+        }
+    }
+}
+
 #[test]
 fn bloom_shaders_validate() {
     use crate::render_passes::bloom::shader::{

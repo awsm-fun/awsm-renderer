@@ -161,14 +161,13 @@ fn cs_shade(
         }
         if (is_sky) {
             let sky_col = sample_skybox(coords, sky_screen_dims_f32, camera, skybox_tex, skybox_sampler);
-            // Karis weighting — MUST match the material edge arm (both
-            // writers feed the same accumulator; mixing weighted and
-            // unweighted slots would bias the final_blend division).
-            let karis_w = 1.0 / (1.0 + max(sky_col.r, max(sky_col.g, sky_col.b)));
-            color_sum += sky_col.rgb * karis_w;
+            // Tonemapped-space accumulate — MUST match the material edge arm
+            // (both writers feed the same accumulator): Σ t(s), t(s)=s/(1+s),
+            // weight word = plain sample count. See final_blend.wgsl.
+            color_sum += sky_col.rgb / (vec3<f32>(1.0) + sky_col.rgb);
             alpha_sum += sky_col.a;
             sample_count += 1u;
-            weight_sum += karis_w;
+            weight_sum += 1.0;
         }
     }
 
@@ -183,7 +182,7 @@ fn cs_shade(
     edge_data[accum_word_index + 0u] = bitcast<u32>(color_sum.x);
     edge_data[accum_word_index + 1u] = bitcast<u32>(color_sum.y);
     edge_data[accum_word_index + 2u] = bitcast<u32>(color_sum.z);
-    // Karis WEIGHT sum, not the raw sample count (matches the material arm).
+    // Plain SAMPLE COUNT (matches the material arm — tonemapped-space resolve).
     edge_data[accum_word_index + 3u] = bitcast<u32>(weight_sum);
     edge_data[accum_word_index + 4u] = 0u;
     edge_data[accum_word_index + 5u] = 0u;

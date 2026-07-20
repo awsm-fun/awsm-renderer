@@ -34,6 +34,15 @@ pub fn half_extent(full: u32) -> u32 {
     full.div_ceil(2).max(1)
 }
 
+/// A viewport extent scaled by the supersampling `render_scale`,
+/// **rounded to nearest**, clamped to >= 1. The single home for the
+/// canvas->render-resolution mapping (same rule as the half-res helpers
+/// above: derive on BOTH the allocation side and every dispatch/compare
+/// side; never invert the math to recover the canvas size).
+pub fn scale_extent(extent: u32, render_scale: f32) -> u32 {
+    ((extent as f64 * render_scale as f64).round() as u32).max(1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

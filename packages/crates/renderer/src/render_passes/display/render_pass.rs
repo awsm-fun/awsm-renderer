@@ -21,16 +21,15 @@ use crate::{
 pub struct DisplayRenderPass {
     pub bind_groups: DisplayBindGroups,
     pub pipelines: DisplayPipelines,
-    /// Last `exposure_scale` (i.e. `exposure.exp2()`) we uploaded.
+    /// Last `(exposure_scale, scale_x, scale_y)` we uploaded.
     /// `None` until the first frame so the first call always writes;
-    /// subsequent frames re-upload only when the value changes.
-    /// Exposure rarely changes (camera setting, not animated per
-    /// frame), so this gates out the per-frame 4-byte wasm↔JS
-    /// `writeBuffer` round trip on the steady-state path. Public so
-    /// the renderer-internal struct-literal construction (in
-    /// `render_passes.rs::from_resolved`) can initialize it; the
-    /// uploader logic still owns the only writes.
-    pub last_exposure_scale: Cell<Option<f32>>,
+    /// subsequent frames re-upload only when a value changes (exposure
+    /// and render-scale both change rarely), gating out the per-frame
+    /// 16-byte wasm↔JS `writeBuffer` round trip on the steady-state
+    /// path. Public so the renderer-internal struct-literal
+    /// construction (in `render_passes.rs::from_resolved`) can
+    /// initialize it; the uploader logic still owns the only writes.
+    pub last_exposure_scale: Cell<Option<(f32, f32, f32)>>,
 }
 
 impl DisplayRenderPass {
@@ -53,13 +52,28 @@ impl DisplayRenderPass {
         // Exposure is a camera setting that rarely changes between frames
         // — skip the `writeBuffer` when the value matches the prior frame.
         let exposure_scale = ctx.post_processing.exposure.exp2();
+        // Downsample ratio for the supersample shader variant: composite
+        // (render-res) extent over swap-chain extent. Exactly 1.0 when
+        // render_scale is off (ctx.viewport_size == ctx.surface_size).
+        let scale_x = ctx.viewport_size.0 as f32 / ctx.surface_size.0.max(1) as f32;
+        let scale_y = ctx.viewport_size.1 as f32 / ctx.surface_size.1.max(1) as f32;
+        let current = (exposure_scale, scale_x, scale_y);
         let needs_upload = match self.last_exposure_scale.get() {
-            Some(prev) => prev.to_bits() != exposure_scale.to_bits(),
+            Some(prev) => {
+                (prev.0.to_bits(), prev.1.to_bits(), prev.2.to_bits())
+                    != (
+                        current.0.to_bits(),
+                        current.1.to_bits(),
+                        current.2.to_bits(),
+                    )
+            }
             None => true,
         };
         if needs_upload {
             let mut bytes = [0u8; super::bind_group::DISPLAY_UNIFORM_SIZE];
             bytes[0..4].copy_from_slice(&exposure_scale.to_le_bytes());
+            bytes[4..8].copy_from_slice(&scale_x.to_le_bytes());
+            bytes[8..12].copy_from_slice(&scale_y.to_le_bytes());
             ctx.gpu.write_buffer(
                 &self.bind_groups.uniform_buffer,
                 None,
@@ -67,7 +81,7 @@ impl DisplayRenderPass {
                 None,
                 None,
             )?;
-            self.last_exposure_scale.set(Some(exposure_scale));
+            self.last_exposure_scale.set(Some(current));
         }
 
         let render_pass = ctx.command_encoder.begin_render_pass(

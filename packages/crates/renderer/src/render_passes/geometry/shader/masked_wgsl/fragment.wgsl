@@ -119,8 +119,14 @@ fn fs_main(input: FragmentInput) -> FragmentOutput {
     }
     out.normal_tangent = pack_normal_tangent(N, T, s);
 
-    let ddx = dpdx(input.barycentric_center);
-    let ddy = dpdy(input.barycentric_center);
+    // fp16-overflow clamp — see the plain geometry fragment for the rationale
+    // (sub-pixel skinny triangles overflow the Rgba16float target → Inf →
+    // zeroed gradients → LOD-0 sparkle).
+    const BARY_DERIV_LIMIT: f32 = 6.0e4;
+    let ddx = clamp(dpdx(input.barycentric_center),
+        vec2<f32>(-BARY_DERIV_LIMIT), vec2<f32>(BARY_DERIV_LIMIT));
+    let ddy = clamp(dpdy(input.barycentric_center),
+        vec2<f32>(-BARY_DERIV_LIMIT), vec2<f32>(BARY_DERIV_LIMIT));
     out.barycentric_derivatives = vec4<f32>(ddx.x, ddy.x, ddx.y, ddy.y);
 
     return out;

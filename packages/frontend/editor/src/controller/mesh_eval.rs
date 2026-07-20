@@ -6,12 +6,46 @@
 //! and `Captured` references the mesh store, so those are resolved here and fed
 //! to `apply_modifiers`.
 
+use awsm_renderer_editor_protocol::{AssetId, MeshDef, VertexOverrides};
 use awsm_renderer_editor_protocol::{MeshBase, ModifierStack};
-use awsm_renderer_editor_protocol::{MeshDef, VertexOverrides};
 use awsm_renderer_meshgen::MeshData;
 
 use crate::engine::bridge::mesh_cache;
 use crate::engine::scene::Scene;
+
+std::thread_local! {
+    /// Last in-session recipe-eval duration per mesh asset (ms). Feeds the
+    /// `recipe_eval_ms` field of the MeshStats query so tooling can decide
+    /// data-driven when a stack is heavy enough to be worth collapsing /
+    /// lowering. Session-only by design: project LOAD restores the persisted
+    /// `.mesh.bin` caches and never evaluates recipes, so a load-time entry
+    /// would be a lie.
+    static EVAL_MS: std::cell::RefCell<std::collections::HashMap<AssetId, f64>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// [`evaluate_def`] + record the wall-clock eval duration for `mesh` (the
+/// telemetry read back by `recorded_eval_ms` / MeshStats.`recipe_eval_ms`).
+pub(crate) fn evaluate_def_recorded(scene: &Scene, mesh: AssetId, def: &MeshDef) -> MeshData {
+    // `js_sys::Date::now` panics off-wasm (native tests exercise this path),
+    // so time with the platform-appropriate clock.
+    #[cfg(target_arch = "wasm32")]
+    let start = js_sys::Date::now();
+    #[cfg(not(target_arch = "wasm32"))]
+    let start = std::time::Instant::now();
+    let md = evaluate_def(scene, def);
+    #[cfg(target_arch = "wasm32")]
+    let ms = (js_sys::Date::now() - start).max(0.0);
+    #[cfg(not(target_arch = "wasm32"))]
+    let ms = start.elapsed().as_secs_f64() * 1000.0;
+    EVAL_MS.with(|m| m.borrow_mut().insert(mesh, ms));
+    md
+}
+
+/// The last recorded in-session eval duration for `mesh`, if any bake ran.
+pub(crate) fn recorded_eval_ms(mesh: AssetId) -> Option<f64> {
+    EVAL_MS.with(|m| m.borrow().get(&mesh).copied())
+}
 
 /// Evaluate a full [`MeshDef`] to its baked geometry: run the modifier `stack`,
 /// then layer the sparse per-vertex `overrides` on top. The `.mesh.bin` cache is

@@ -1042,6 +1042,15 @@ pub struct Textures {
     cubemaps: SlotMap<CubemapTextureKey, web_sys::GpuTexture>,
     samplers: SlotMap<SamplerKey, web_sys::GpuSampler>,
     sampler_cache: HashMap<SamplerCacheKey, SamplerKey>,
+    /// Runtime anisotropic-filtering master switch (default ON). When OFF,
+    /// [`Self::get_sampler`] transparently redirects any anisotropic sampler
+    /// to its pre-built no-aniso twin — pool indices and material data are
+    /// untouched, only the bound sampler objects differ, so a toggle is just
+    /// a `BindGroupCreate::TexturePool` rebuild away.
+    anisotropy_enabled: bool,
+    /// key-with-aniso → identical-key-with-aniso-stripped twin. Populated
+    /// eagerly by [`Self::get_sampler_key`] for every anisotropic sampler.
+    aniso_twin: SecondaryMap<SamplerKey, SamplerKey>,
     // We keep a mirror of the sampler address modes so that materials can adjust UVs manually when
     sampler_address_modes: SecondaryMap<SamplerKey, (Option<AddressMode>, Option<AddressMode>)>,
     // Stores the CPU-side `TextureTransform` per key (not just `()`), so an
@@ -1099,6 +1108,21 @@ impl SamplerCacheKey {
             | (_, _, Some(MipmapFilterMode::Nearest)) => false,
             _ => true,
         }
+    }
+
+    /// Apply the AUTO-anisotropy policy for material-texture samplers:
+    /// `requested = None` means 16× whenever the filter trio allows it (all
+    /// linear — the default-on direction: thin texture detail survives grazing
+    /// angles); `Some(n)` is an explicit level clamped to 1..=16 (1 = off).
+    /// Anisotropy is always dropped when a `nearest` filter is present —
+    /// WebGPU validation requires linear min/mag/mipmap with anisotropy > 1.
+    pub fn with_anisotropy_policy(mut self, requested: Option<u16>) -> Self {
+        let level = match requested {
+            None => 16,
+            Some(n) => n.clamp(1, 16),
+        };
+        self.max_anisotropy = (level > 1 && self.allowed_ansiotropy()).then_some(level);
+        self
     }
 }
 
@@ -1256,6 +1280,8 @@ impl Textures {
             texture_transform_identity_offset,
             samplers,
             sampler_cache,
+            anisotropy_enabled: true,
+            aniso_twin: SecondaryMap::new(),
             sampler_address_modes,
             texture_transforms_uploader: crate::buffer::mapped_uploader::MappedUploader::new(
                 "Texture Transforms",
@@ -1676,13 +1702,32 @@ impl Textures {
             return Ok(*sampler_key);
         }
 
-        create_sampler_key(
+        let key = create_sampler_key(
             gpu,
-            cache_key,
+            cache_key.clone(),
             &mut self.samplers,
             &mut self.sampler_cache,
             &mut self.sampler_address_modes,
-        )
+        )?;
+        // Eagerly build the no-aniso twin so the runtime anisotropy switch
+        // never has to create GPU objects on the hot toggle path.
+        if cache_key.max_anisotropy.is_some_and(|a| a > 1) {
+            let mut stripped = cache_key;
+            stripped.max_anisotropy = None;
+            let twin = if let Some(existing) = self.sampler_cache.get(&stripped) {
+                *existing
+            } else {
+                create_sampler_key(
+                    gpu,
+                    stripped,
+                    &mut self.samplers,
+                    &mut self.sampler_cache,
+                    &mut self.sampler_address_modes,
+                )?
+            };
+            self.aniso_twin.insert(key, twin);
+        }
+        Ok(key)
     }
 
     /// Register `sampler_key` in `pool_sampler_set` if it's not already
@@ -1724,11 +1769,31 @@ impl Textures {
         std::mem::take(&mut self.sampler_pool_dirty)
     }
 
-    /// Returns a sampler by key.
+    /// Returns a sampler by key. When the runtime anisotropy switch is OFF,
+    /// anisotropic samplers resolve to their no-aniso twin (same filters and
+    /// address modes, `max_anisotropy` stripped).
     pub fn get_sampler(&self, key: SamplerKey) -> Result<&web_sys::GpuSampler> {
+        let key = if self.anisotropy_enabled {
+            key
+        } else {
+            self.aniso_twin.get(key).copied().unwrap_or(key)
+        };
         self.samplers
             .get(key)
             .ok_or(AwsmTextureError::SamplerNotFound(key))
+    }
+
+    /// Runtime anisotropic-filtering switch. Returns `true` when the value
+    /// changed (caller marks `BindGroupCreate::TexturePool` so the pool bind
+    /// groups rebind the redirected samplers).
+    pub fn set_anisotropy_enabled(&mut self, on: bool) -> bool {
+        let changed = self.anisotropy_enabled != on;
+        self.anisotropy_enabled = on;
+        changed
+    }
+
+    pub fn anisotropy_enabled(&self) -> bool {
+        self.anisotropy_enabled
     }
 
     /// Returns cached sampler address modes.
@@ -1761,7 +1826,12 @@ fn create_sampler_key(
         compare: cache_key.compare,
         lod_min_clamp: cache_key.lod_min_clamp.map(|x| x.into_inner()),
         lod_max_clamp: cache_key.lod_max_clamp.map(|x| x.into_inner()),
-        max_anisotropy: cache_key.max_anisotropy,
+        // Guard: anisotropy > 1 with any `nearest` filter is a WebGPU
+        // validation error — drop it rather than fail sampler creation
+        // (callers can request aniso without re-checking their filter trio).
+        max_anisotropy: cache_key
+            .max_anisotropy
+            .filter(|&a| a > 1 && cache_key.allowed_ansiotropy()),
         mag_filter: cache_key.mag_filter,
         min_filter: cache_key.min_filter,
         mipmap_filter: cache_key.mipmap_filter,

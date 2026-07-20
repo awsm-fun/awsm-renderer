@@ -1262,12 +1262,13 @@ fn cs_shade(
             {% endif %}
             let ss = shade_sample(coords, s, edge_camera, edge_screen_dims, edge_screen_dims_f32{% if inc.light_access %}, lights_info{% endif %});
             let shaded = ss.color;
-            // Karis (tonemap-weighted) resolve; rationale in final_blend.wgsl.
-            let karis_w = 1.0 / (1.0 + max(shaded.r, max(shaded.g, shaded.b)));
-            color_sum += shaded.rgb * karis_w;
+            // Tonemapped-space resolve; rationale in final_blend.wgsl. Store
+            // Σ t(s) per channel with t(s) = s/(1+s); final_blend averages
+            // then inverts. The weight word carries the plain SAMPLE COUNT.
+            color_sum += shaded.rgb / (vec3<f32>(1.0) + shaded.rgb);
             alpha_sum += shaded.a;
             sample_count += 1u;
-            weight_sum += karis_w;
+            weight_sum += 1.0;
             {% if write_ssr_descriptor %}
             // SSR descriptor accumulation — RAW sums (final_blend divides by
             // the 4 MSAA samples); spread weighted by its own reflectivity.
@@ -1292,7 +1293,7 @@ fn cs_shade(
     edge_data[accum_word_index + 0u] = bitcast<u32>(color_sum.x);
     edge_data[accum_word_index + 1u] = bitcast<u32>(color_sum.y);
     edge_data[accum_word_index + 2u] = bitcast<u32>(color_sum.z);
-    // Karis WEIGHT sum, not the raw sample count.
+    // Plain SAMPLE COUNT (tonemapped-space resolve — see final_blend.wgsl).
     edge_data[accum_word_index + 3u] = bitcast<u32>(weight_sum);
     {% if write_ssr_descriptor %}
     edge_data[accum_word_index + 4u] = bitcast<u32>(desc_rgb_sum.x);

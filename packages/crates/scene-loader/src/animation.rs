@@ -316,6 +316,19 @@ fn builtin_param(p: BuiltinParamKind) -> BuiltinMaterialParam {
         BuiltinParamKind::ToonRimPower => BuiltinMaterialParam::ToonRimPower,
         BuiltinParamKind::FlipbookFps => BuiltinMaterialParam::FlipbookFps,
         BuiltinParamKind::FlipbookTimeOffset => BuiltinMaterialParam::FlipbookTimeOffset,
+        BuiltinParamKind::SecondaryBaseColorStrength => {
+            BuiltinMaterialParam::SecondaryBaseColorStrength
+        }
+        BuiltinParamKind::SecondaryNormalStrength => BuiltinMaterialParam::SecondaryNormalStrength,
+        BuiltinParamKind::SecondaryMetallicRoughnessStrength => {
+            BuiltinMaterialParam::SecondaryMetallicRoughnessStrength
+        }
+        BuiltinParamKind::SecondaryOcclusionStrength => {
+            BuiltinMaterialParam::SecondaryOcclusionStrength
+        }
+        BuiltinParamKind::SecondaryEmissiveStrength => {
+            BuiltinMaterialParam::SecondaryEmissiveStrength
+        }
     }
 }
 

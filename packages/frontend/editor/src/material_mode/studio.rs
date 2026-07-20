@@ -708,6 +708,22 @@ fn extensions_section(mat: &Arc<CustomMaterial>) -> Dom {
                 sec = sec.child(builtin_num_row(&mat, "  IOR", x.ior as f64, 1.0, 3.0, 0.01,
                     |d, v| { if let Some(ref mut a) = d.extensions.iridescence { a.ior = v as f32; } }));
             }
+            toggle!("Secondary maps", e.secondary_maps.is_some(), |d, on| d.extensions.secondary_maps = on.then(<_>::default));
+            if let Some(x) = e.secondary_maps {
+                // Textures + per-slot uv transforms are per-mesh binds (the
+                // node inspector's Secondary maps block); the shared variant
+                // carries the default blend strengths.
+                sec = sec.child(builtin_num_row(&mat, "  Base color str", x.base_color_strength as f64, 0.0, 1.0, 0.01,
+                    |d, v| { if let Some(ref mut a) = d.extensions.secondary_maps { a.base_color_strength = v as f32; } }));
+                sec = sec.child(builtin_num_row(&mat, "  Normal str", x.normal_strength as f64, 0.0, 1.0, 0.01,
+                    |d, v| { if let Some(ref mut a) = d.extensions.secondary_maps { a.normal_strength = v as f32; } }));
+                sec = sec.child(builtin_num_row(&mat, "  Rough/metal str", x.metallic_roughness_strength as f64, 0.0, 1.0, 0.01,
+                    |d, v| { if let Some(ref mut a) = d.extensions.secondary_maps { a.metallic_roughness_strength = v as f32; } }));
+                sec = sec.child(builtin_num_row(&mat, "  Occlusion str", x.occlusion_strength as f64, 0.0, 1.0, 0.01,
+                    |d, v| { if let Some(ref mut a) = d.extensions.secondary_maps { a.occlusion_strength = v as f32; } }));
+                sec = sec.child(builtin_num_row(&mat, "  Emissive str", x.emissive_strength as f64, 0.0, 1.0, 0.01,
+                    |d, v| { if let Some(ref mut a) = d.extensions.secondary_maps { a.emissive_strength = v as f32; } }));
+            }
             Some(sec.render())
         })))
     })

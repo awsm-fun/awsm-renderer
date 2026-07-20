@@ -169,6 +169,13 @@ impl MaterialDef {
             visit(K::Specular, &mut e.tex);
             visit(K::VolumeThickness, &mut e.thickness_tex);
         }
+        if let Some(e) = &mut ext.secondary_maps {
+            visit(K::Albedo, &mut e.base_color_tex);
+            visit(K::Normal, &mut e.normal_tex);
+            visit(K::MetallicRoughness, &mut e.metallic_roughness_tex);
+            visit(K::Occlusion, &mut e.occlusion_tex);
+            visit(K::Emissive, &mut e.emissive_tex);
+        }
     }
 }
 
@@ -334,6 +341,11 @@ pub struct PbrExtensions {
     pub dispersion: Option<DispersionExt>,
     pub anisotropy: Option<AnisotropyExt>,
     pub iridescence: Option<IridescenceExt>,
+    /// Detail / secondary maps (engine extension, not a KHR one): a second,
+    /// typically high-tiled texture per core PBR slot, blended over the
+    /// primary before shading. Not part of glTF — bundles carry it in the
+    /// scene's own material table.
+    pub secondary_maps: Option<SecondaryMapsExt>,
 }
 
 impl PbrExtensions {
@@ -358,6 +370,7 @@ impl PbrExtensions {
             dispersion,
             anisotropy,
             iridescence,
+            secondary_maps,
         );
     }
 
@@ -392,6 +405,9 @@ impl PbrExtensions {
             dispersion: variant.dispersion.map(|v| inline.dispersion.unwrap_or(v)),
             anisotropy: variant.anisotropy.map(|v| inline.anisotropy.unwrap_or(v)),
             iridescence: variant.iridescence.map(|v| inline.iridescence.unwrap_or(v)),
+            secondary_maps: variant
+                .secondary_maps
+                .map(|v| inline.secondary_maps.unwrap_or(v)),
         }
     }
 }
@@ -444,6 +460,28 @@ ext_struct!(/// `KHR_materials_anisotropy` — directional specular (brushed met
 ext_struct!(/// `KHR_materials_iridescence` — thin-film interference (soap bubble).
     IridescenceExt { factor: f32 = 1.0, ior: f32 = 1.3, thickness_min: f32 = 100.0, thickness_max: f32 = 400.0,
         tex: Option<TextureRef> = None, thickness_tex: Option<TextureRef> = None });
+ext_struct!(/// Detail / secondary maps (engine extension). One optional secondary
+/// texture per core PBR slot, blended over the primary AFTER its factor is
+/// applied: base color = ×2 multiply (mid-grey neutral), normal = RNM
+/// detail blend, metallic-roughness = roughness overlay + metallic
+/// multiply, occlusion = multiply (cavity), emissive = additive. Each
+/// slot's `TextureRef` carries its OWN uv transform / sampler / flow —
+/// tile detail sets via `transform.scale` (matched scales recommended for
+/// physically coherent sets). Each `*_strength` (0..1, per-mesh uniform)
+/// lerps that slot's sample toward its blend-neutral value, so strength 0
+/// is exactly "slot off". Unset slots are skipped in-shader.
+SecondaryMapsExt {
+    base_color_tex: Option<TextureRef> = None,
+    normal_tex: Option<TextureRef> = None,
+    metallic_roughness_tex: Option<TextureRef> = None,
+    occlusion_tex: Option<TextureRef> = None,
+    emissive_tex: Option<TextureRef> = None,
+    base_color_strength: f32 = 1.0,
+    normal_strength: f32 = 1.0,
+    metallic_roughness_strength: f32 = 1.0,
+    occlusion_strength: f32 = 1.0,
+    emissive_strength: f32 = 1.0,
+});
 
 /// Procedural texture parameters. The renderer materializes these into a real
 /// GPU texture at load time via `awsm-renderer-meshgen::procedural_texture::*`.
@@ -614,6 +652,14 @@ mod texture_use_tests {
                 iridescence: Some(IridescenceExt {
                     tex: t(),
                     thickness_tex: t(),
+                    ..Default::default()
+                }),
+                secondary_maps: Some(SecondaryMapsExt {
+                    base_color_tex: t(),
+                    normal_tex: t(),
+                    metallic_roughness_tex: t(),
+                    occlusion_tex: t(),
+                    emissive_tex: t(),
                     ..Default::default()
                 }),
             },

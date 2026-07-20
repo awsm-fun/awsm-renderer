@@ -148,6 +148,15 @@ pub enum BuiltinTextureSlot {
     Normal,
     Occlusion,
     Emissive,
+    /// Secondary/detail slots (secondary-maps extension). Binding requires the
+    /// mesh's selected material to have `extensions.secondary_maps` enabled
+    /// (enable it on the LIBRARY material via `update_builtin_material`) —
+    /// the extension is pipeline-shaped, the binds are per-mesh data.
+    SecondaryBaseColor,
+    SecondaryNormal,
+    SecondaryMetallicRoughness,
+    SecondaryOcclusion,
+    SecondaryEmissive,
 }
 
 /// A world axis to snap the viewport camera to (the nav-cube directions). The
@@ -696,6 +705,14 @@ pub enum EditorCommand {
         /// SMAA post-process AA (independent of MSAA).
         #[serde(default)]
         smaa: Option<bool>,
+        /// Supersampling factor (1.0 = off, up to 2.0): internal render
+        /// targets scale up and the display pass downsamples. STRUCTURAL-ish
+        /// (rebuilds render targets next frame); wait_render_settled after.
+        #[serde(default)]
+        render_scale: Option<f32>,
+        /// Anisotropic texture filtering (default on). Runtime sampler swap.
+        #[serde(default)]
+        anisotropy: Option<bool>,
     },
 
     /// Snap the viewport camera to a world axis (the nav-cube directions).

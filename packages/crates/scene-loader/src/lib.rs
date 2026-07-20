@@ -4028,6 +4028,33 @@ async fn bind_extension_textures(
                     .await;
         }
     }
+    if let (Some(e), Some(p)) = (ext.secondary_maps.as_ref(), pbr.secondary_maps.as_mut()) {
+        if let Some(t) = &e.base_color_tex {
+            p.base_color_tex =
+                texture::load_texture(renderer, cache, assets, t, true, K::Albedo).await;
+        }
+        if let Some(t) = &e.normal_tex {
+            // Secondary/detail normals sample as full-RGB in the shader (no
+            // two-channel packing pair exists for the secondary slot), so
+            // they must not ride a two-channel transcode.
+            p.normal_tex =
+                texture::load_texture(renderer, cache, assets, t, false, K::Normal).await;
+        }
+        if let Some(t) = &e.metallic_roughness_tex {
+            p.metallic_roughness_tex =
+                texture::load_texture(renderer, cache, assets, t, false, K::MetallicRoughness)
+                    .await;
+        }
+        if let Some(t) = &e.occlusion_tex {
+            p.occlusion_tex =
+                texture::load_texture(renderer, cache, assets, t, false, K::MetallicRoughness)
+                    .await;
+        }
+        if let Some(t) = &e.emissive_tex {
+            p.emissive_tex =
+                texture::load_texture(renderer, cache, assets, t, true, K::Albedo).await;
+        }
+    }
 }
 
 /// A magenta unlit placeholder for unassigned meshes (and glb meshes until their

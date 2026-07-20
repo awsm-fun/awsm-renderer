@@ -691,6 +691,52 @@ impl AwsmRenderer {
                         }
                         _ => None,
                     },
+                    // Rest = current strength (1.0 when the extension is off).
+                    BuiltinMaterialParam::SecondaryBaseColorStrength => match m {
+                        Material::Pbr(p) => Some(AnimationData::F32(
+                            p.secondary_maps
+                                .as_ref()
+                                .map(|e| e.base_color_strength)
+                                .unwrap_or(1.0),
+                        )),
+                        _ => None,
+                    },
+                    BuiltinMaterialParam::SecondaryNormalStrength => match m {
+                        Material::Pbr(p) => Some(AnimationData::F32(
+                            p.secondary_maps
+                                .as_ref()
+                                .map(|e| e.normal_strength)
+                                .unwrap_or(1.0),
+                        )),
+                        _ => None,
+                    },
+                    BuiltinMaterialParam::SecondaryMetallicRoughnessStrength => match m {
+                        Material::Pbr(p) => Some(AnimationData::F32(
+                            p.secondary_maps
+                                .as_ref()
+                                .map(|e| e.metallic_roughness_strength)
+                                .unwrap_or(1.0),
+                        )),
+                        _ => None,
+                    },
+                    BuiltinMaterialParam::SecondaryOcclusionStrength => match m {
+                        Material::Pbr(p) => Some(AnimationData::F32(
+                            p.secondary_maps
+                                .as_ref()
+                                .map(|e| e.occlusion_strength)
+                                .unwrap_or(1.0),
+                        )),
+                        _ => None,
+                    },
+                    BuiltinMaterialParam::SecondaryEmissiveStrength => match m {
+                        Material::Pbr(p) => Some(AnimationData::F32(
+                            p.secondary_maps
+                                .as_ref()
+                                .map(|e| e.emissive_strength)
+                                .unwrap_or(1.0),
+                        )),
+                        _ => None,
+                    },
                     BuiltinMaterialParam::ToonDiffuseBands => match m {
                         Material::Toon(t) => Some(AnimationData::F32(t.diffuse_bands as f32)),
                         _ => None,
@@ -1005,7 +1051,12 @@ impl AwsmRenderer {
             | BuiltinMaterialParam::ToonRimStrength
             | BuiltinMaterialParam::ToonRimPower
             | BuiltinMaterialParam::FlipbookFps
-            | BuiltinMaterialParam::FlipbookTimeOffset => {
+            | BuiltinMaterialParam::FlipbookTimeOffset
+            | BuiltinMaterialParam::SecondaryBaseColorStrength
+            | BuiltinMaterialParam::SecondaryNormalStrength
+            | BuiltinMaterialParam::SecondaryMetallicRoughnessStrength
+            | BuiltinMaterialParam::SecondaryOcclusionStrength
+            | BuiltinMaterialParam::SecondaryEmissiveStrength => {
                 let scalar = data_to_f32(value)?;
                 // A band/step count is a positive integer — round + floor at 1.
                 let count = |v: f32| (v.round() as i64).max(1) as u32;
@@ -1025,6 +1076,33 @@ impl AwsmRenderer {
                         }
                         // No-op on Opaque/Blend (the mode isn't animatable).
                         BuiltinMaterialParam::AlphaCutoff => pbr.set_alpha_cutoff(scalar),
+                        // Animate the VALUE only when secondary maps are enabled
+                        // (the enable is pipeline-shaped, like EmissiveStrength).
+                        BuiltinMaterialParam::SecondaryBaseColorStrength => {
+                            if let Some(sm) = pbr.secondary_maps.as_mut() {
+                                sm.base_color_strength = scalar;
+                            }
+                        }
+                        BuiltinMaterialParam::SecondaryNormalStrength => {
+                            if let Some(sm) = pbr.secondary_maps.as_mut() {
+                                sm.normal_strength = scalar;
+                            }
+                        }
+                        BuiltinMaterialParam::SecondaryMetallicRoughnessStrength => {
+                            if let Some(sm) = pbr.secondary_maps.as_mut() {
+                                sm.metallic_roughness_strength = scalar;
+                            }
+                        }
+                        BuiltinMaterialParam::SecondaryOcclusionStrength => {
+                            if let Some(sm) = pbr.secondary_maps.as_mut() {
+                                sm.occlusion_strength = scalar;
+                            }
+                        }
+                        BuiltinMaterialParam::SecondaryEmissiveStrength => {
+                            if let Some(sm) = pbr.secondary_maps.as_mut() {
+                                sm.emissive_strength = scalar;
+                            }
+                        }
                         _ => {}
                     },
                     Material::Toon(toon) => match param {

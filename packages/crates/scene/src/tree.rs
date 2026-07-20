@@ -365,18 +365,47 @@ fn default_true_msc() -> bool {
 /// [`MeshShadowConfig`]) and consumed by the **export-time** LOD bake — it has
 /// no meaning at import. One `enabled: bool` to start; grows later to carry
 /// params (target ratios, level count, error threshold).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct MeshLodConfig {
     /// Whether the export bake generates simplified LOD levels for this mesh.
     #[serde(default = "default_true_mlc")]
     pub enabled: bool,
+    /// Authored far-LOD swap ("geometry mipmap"): beyond the distance where
+    /// `error` (object-space metres) projects below the screen-error budget,
+    /// the renderer draws `node`'s mesh INSTEAD of this one (visibility swap
+    /// via the discrete-LOD registry — the far node stops drawing on its own).
+    /// The canonical cure for grazing-angle shimmer of small relief detail
+    /// (grooves, rails, tubes): author a flat/simplified far version and swap.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub far_swap: Option<MeshLodFarSwap>,
+}
+
+/// See [`MeshLodConfig::far_swap`].
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub struct MeshLodFarSwap {
+    /// The node whose mesh replaces this one at distance.
+    pub node: NodeId,
+    /// Object-space error (metres) hidden by the swap — typically the relief
+    /// depth flattened away (e.g. 0.06 for 6cm floor grooves). Bigger = swaps
+    /// closer to the camera.
+    #[serde(default = "default_far_swap_error")]
+    pub error: f32,
+}
+
+fn default_far_swap_error() -> f32 {
+    0.05
 }
 
 impl Default for MeshLodConfig {
     fn default() -> Self {
-        Self { enabled: true }
+        Self {
+            enabled: true,
+            far_swap: None,
+        }
     }
 }
 
@@ -647,7 +676,10 @@ mod tests {
                     cast: false,
                     receive: true,
                 },
-                lod: MeshLodConfig { enabled: false },
+                lod: MeshLodConfig {
+                    enabled: false,
+                    far_swap: None,
+                },
             }),
             locked: false,
             visible: true,
@@ -701,7 +733,10 @@ mod tests {
     #[test]
     fn mesh_lod_config_default_and_round_trip() {
         // Explicit opt-out survives a round-trip.
-        let off = MeshLodConfig { enabled: false };
+        let off = MeshLodConfig {
+            enabled: false,
+            far_swap: None,
+        };
         let text = toml::to_string(&off).expect("serialize");
         let back: MeshLodConfig = toml::from_str(&text).expect("deserialize");
         assert_eq!(off, back);
@@ -714,7 +749,10 @@ mod tests {
         let kind: NodeKind = toml::from_str(legacy).expect("deserialize legacy mesh kind");
         assert_eq!(
             kind.mesh_lod().copied(),
-            Some(MeshLodConfig { enabled: true }),
+            Some(MeshLodConfig {
+                enabled: true,
+                far_swap: None
+            }),
             "absent `lod` must default to enabled (opt-out, default on)"
         );
     }
