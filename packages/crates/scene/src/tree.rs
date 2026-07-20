@@ -410,12 +410,6 @@ pub struct DiscreteLod {
     pub reduction: f32,
 }
 
-/// Triangle floor below which a static mesh gets no cluster DAG (cluster LOD
-/// only pays off on dense geometry); also the default-kind threshold.
-pub const CLUSTER_MIN_TRIANGLES: usize = 4096;
-/// Triangle floor below which a mesh gets no discrete chain.
-pub const DISCRETE_MIN_TRIANGLES: usize = 512;
-
 fn default_discrete_levels() -> u32 {
     3
 }
@@ -432,24 +426,12 @@ impl Default for DiscreteLod {
     }
 }
 
-impl LodKind {
-    /// The smart default kind for a mesh at authoring time. `cluster_eligible`
-    /// is true only for static rigid `Mesh` nodes (skinned/instanced can't
-    /// cluster). `tri_count` is the base triangle count.
-    pub fn default_for(cluster_eligible: bool, tri_count: usize) -> Self {
-        if cluster_eligible && tri_count >= CLUSTER_MIN_TRIANGLES {
-            LodKind::Cluster
-        } else if tri_count >= DISCRETE_MIN_TRIANGLES {
-            LodKind::Discrete(DiscreteLod::default())
-        } else {
-            LodKind::None
-        }
-    }
-}
-
 impl Default for LodKind {
+    /// LOD is **opt-in**: every mesh defaults to `None`, and an author (or the
+    /// recursive `SetSubtreeLod` command) explicitly sets a kind. There is no
+    /// class/size-based auto-derivation — the kind is always an explicit choice.
     fn default() -> Self {
-        LodKind::Discrete(DiscreteLod::default())
+        LodKind::None
     }
 }
 

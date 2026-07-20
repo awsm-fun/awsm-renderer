@@ -45,12 +45,14 @@ async () => {
     await d({ cmd: 'set_builtin_param', node: n, param: 'base_color', value: base });
   }
   // Collapse the two lod-on spheres to raw geometry so they lower to GLB and get
-  // a discrete LOD chain baked (bare primitives stay procedural and bake no LOD).
-  // They keep the default `Discrete` kind. Opt the third sphere OUT (kind None) so
-  // the player test can contrast tri-drop-at-distance vs no-drop.
+  // a discrete LOD chain baked (bare primitives stay procedural and bake no LOD),
+  // then set them to `discrete` (LOD is opt-in — every mesh defaults to `none`).
+  // The third sphere stays `none` so the player test can contrast tri-drop-at-
+  // distance vs no-drop.
   await d({ cmd: 'collapse_mesh_stack', mesh: ID(0x10) });
   await d({ cmd: 'collapse_mesh_stack', mesh: ID(0x11) });
-  await d({ cmd: 'patch_kind', id: ID(0x12), patch: { mesh: { lod: { kind: 'none' } } } });
+  await d({ cmd: 'patch_kind', id: ID(0x10), patch: { mesh: { lod: { kind: { discrete: { levels: 3, reduction: 0.5 } } } } } });
+  await d({ cmd: 'patch_kind', id: ID(0x11), patch: { mesh: { lod: { kind: { discrete: { levels: 3, reduction: 0.5 } } } } } });
   await d({ cmd: 'set_camera_orbit', yaw: 0.4, pitch: 0.35, radius: 10, look_at: [0, 0.9, 0] });
   await d({ cmd: 'set_view_options', grid: false, gizmos: false, light_gizmos: false });
   await q({ query: 'wait_render_settled' });

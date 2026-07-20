@@ -571,6 +571,23 @@ pub struct SetMeshLodParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct SetSubtreeLodParams {
+    /// Subtree root node UUID. Applies to this node if it's a mesh AND every
+    /// descendant mesh. May be any kind (Group, Light, scene root, ...).
+    pub node: String,
+    /// The LOD strategy for the whole subtree — `"none"`, `"cluster"`, or
+    /// `"discrete"`. (Skinned/instanced meshes can't cluster; the export bakes
+    /// them Discrete instead.)
+    pub kind: String,
+    /// (Discrete only) number of simplified levels baked beyond the base. Default 3.
+    #[serde(default)]
+    pub discrete_levels: Option<u32>,
+    /// (Discrete only) per-level triangle fraction of the previous level. Default 0.5.
+    #[serde(default)]
+    pub discrete_reduction: Option<f32>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct SetInstanceColorsParams {
     /// InstancesAlongCurve node UUID.
     pub node: String,
@@ -2474,6 +2491,38 @@ impl EditorMcp {
         self.dispatch(EditorCommand::SetKind {
             id: node,
             kind: Box::new(kind),
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Set the LOD kind on a node AND every descendant mesh in one shot — the bulk control. `node` may be ANY kind (a Group, Light, the scene root, ...): it applies to `node` itself if it's a mesh and recurses into all children, setting each Mesh / SkinnedMesh / InstancesAlongCurve to `kind` (`none` / `cluster` / `discrete`, with optional `discrete_levels`/`discrete_reduction`). One undo step. Use this to turn LOD on/off across a whole subtree without touching each mesh — LOD is opt-in (every mesh defaults to `none`)."
+    )]
+    async fn set_subtree_lod(
+        &self,
+        Parameters(p): Parameters<SetSubtreeLodParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let root = parse_node(&p.node)?;
+        let lod_kind = match p.kind.as_str() {
+            "none" => LodKind::None,
+            "cluster" => LodKind::Cluster,
+            "discrete" => {
+                let d = DiscreteLod::default();
+                LodKind::Discrete(DiscreteLod {
+                    levels: p.discrete_levels.unwrap_or(d.levels),
+                    reduction: p.discrete_reduction.unwrap_or(d.reduction),
+                })
+            }
+            other => {
+                return Err(McpError::invalid_params(
+                    format!("unknown lod kind `{other}` (expected none|cluster|discrete)"),
+                    None,
+                ))
+            }
+        };
+        self.dispatch(EditorCommand::SetSubtreeLod {
+            root,
+            kind: lod_kind,
         })
         .await
     }

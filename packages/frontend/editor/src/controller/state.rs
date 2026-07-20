@@ -912,6 +912,45 @@ impl EditorController {
                     "target id not found — command not applied (check ids against get_snapshot)",
                 )),
             },
+            EditorCommand::SetSubtreeLod { root, kind } => {
+                // Collect `root` + every descendant LOD-bearing mesh whose kind
+                // actually changes, then delegate to a `Batch` of `SetKind`s: each
+                // mesh re-materializes through the normal kind path and the whole
+                // thing undoes in one step.
+                use awsm_renderer_editor_protocol::LodKind;
+                fn collect(
+                    node: &std::sync::Arc<crate::engine::scene::node::Node>,
+                    kind: LodKind,
+                    out: &mut Vec<EditorCommand>,
+                ) {
+                    let mut k = node.kind.get_cloned();
+                    if let Some(lod) = k.mesh_lod_mut() {
+                        if lod.kind != kind {
+                            lod.kind = kind;
+                            out.push(EditorCommand::SetKind {
+                                id: node.id,
+                                kind: Box::new(k),
+                            });
+                        }
+                    }
+                    for c in node.children.lock_ref().iter() {
+                        collect(c, kind, out);
+                    }
+                }
+                let mut cmds = Vec::new();
+                match mutate::find_by_id(&self.scene, root) {
+                    Some(node) => collect(&node, kind, &mut cmds),
+                    None => {
+                        return Err(crate::error::EditorError::msg(
+                            "target id not found — command not applied (check ids against \
+                             get_snapshot)",
+                        ))
+                    }
+                }
+                // Nothing to change (no meshes, or all already this kind) — a no-op
+                // that still records cleanly (empty Batch inverts to empty Batch).
+                Box::pin(self.apply_inner(EditorCommand::Batch(cmds))).await
+            }
             EditorCommand::PatchKind { id, patch } => {
                 // RFC 7386 merge-patch over the node's serialized kind (§3). Reject
                 // loudly if the result isn't a valid NodeKind — never store-and-

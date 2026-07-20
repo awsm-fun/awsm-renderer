@@ -60,6 +60,7 @@ dedicated tool reaches it indirectly · **dispatch** = escape hatch only ·
 | `set_selection` | `set_selection` | tool | Transient. |
 | `set_vertex_selection` | `set_vertex_selection` | tool | Transient viewport highlight. |
 | `set_kind` | `set_mesh_shadow`, `set_mesh_lod`, `set_instance_colors` (read-modify-write wrappers) | wrapper (partial) | The general whole-kind replace is dispatch-only BY DESIGN — `patch_kind` (RFC 7386 merge-patch) is the recommended agent path. |
+| `set_subtree_lod` | `set_subtree_lod` | tool | Bulk LOD: sets `kind` on a node + every descendant mesh; expands to a `Batch` of `SetKind`s (one undo step). |
 | `patch_kind` | `patch_kind` | tool | |
 | `set_particle_emitter` | `set_particle_emitter` | tool | Flat patch-style fields; gravity force field is `acceleration`. |
 | `set_instancer_transforms` | `set_instancer_transforms` | tool | Bulk transform list + optional `per_instance_colors`. |

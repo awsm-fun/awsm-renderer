@@ -16,7 +16,7 @@ use awsm_renderer_scene::particle::{
     ColorOverLifeDef, EmitterSpaceDef, ForceDef, SizeOverLifeDef, SpawnShapeDef,
 };
 use awsm_renderer_scene::{
-    AssetId, EnvSlot, EnvironmentConfig, MaterialDef, MaterialShading, NodeId, NodeKind,
+    AssetId, EnvSlot, EnvironmentConfig, LodKind, MaterialDef, MaterialShading, NodeId, NodeKind,
     ReflectionProbe, ToneMappingConfig, Trs, VariantId,
 };
 
@@ -229,6 +229,15 @@ pub enum EditorCommand {
     /// kind change, so geometry/material edits update live. Boxed (NodeKind is
     /// the largest payload). Inverse: restore the prior kind. Coalesces.
     SetKind { id: NodeId, kind: Box<NodeKind> },
+
+    /// Set the LOD `kind` on `root` and EVERY descendant LOD-bearing mesh (Mesh /
+    /// SkinnedMesh / Instancer / InstancesAlongCurve) in one shot — the bulk
+    /// authoring control. `root` may be any node (a Group, Light, etc.); it
+    /// applies to itself if it's a mesh and recurses into all children. Expands
+    /// internally to a `Batch` of `SetKind` edits, so it re-materializes each
+    /// affected mesh and undoes as a single step. Inverse: the `Batch` of prior
+    /// kinds.
+    SetSubtreeLod { root: NodeId, kind: LodKind },
 
     /// **Patch** a node's kind with an [RFC 7386](https://datatracker.ietf.org/doc/html/rfc7386)
     /// JSON merge-patch (§3) — the composable alternative to resending the entire
@@ -1602,6 +1611,7 @@ impl EditorCommand {
             EditorCommand::Insert { .. } | EditorCommand::InsertTree { .. } => "Insert node",
             EditorCommand::Delete { .. } => "Delete node",
             EditorCommand::SetKind { .. } => "Edit properties",
+            EditorCommand::SetSubtreeLod { .. } => "Set LOD",
             EditorCommand::PatchKind { .. } => "Patch properties",
             EditorCommand::SetParticleEmitter { .. } => "Configure emitter",
             EditorCommand::SetInstancerTransforms { .. } => "Set instancer transforms",

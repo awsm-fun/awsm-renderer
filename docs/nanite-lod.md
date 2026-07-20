@@ -8,24 +8,33 @@ it is the Nanite-style approach, under a consistent name.)
 
 | Kind | What it does | Which meshes | Authoring |
 |---|---|---|---|
-| **None** | Always draws the mesh whole — no LOD. | any | hero assets, already-low-poly meshes, UI/HUD |
-| **Cluster** | Bakes a cluster DAG; the GPU cuts a distance-appropriate subset *within the single mesh* each frame (continuous, no whole-mesh pop). | **static rigid `Mesh` only** — skinned/instanced geometry can't cluster | automatic for dense static meshes |
-| **Discrete** | Bakes progressively simplified **whole-mesh copies** (auto QEM); one is selected per instance by projected screen error (classic whole-mesh pop). Tunable: `levels` + `reduction`. | any (the only option for skinned/morph/instanced) | automatic for mid-size meshes; tune when fine relief shimmers |
+| **None** | Always draws the mesh whole — no LOD. **The default for every mesh.** | any | hero assets, already-low-poly meshes, UI/HUD |
+| **Cluster** | Bakes a cluster DAG; the GPU cuts a distance-appropriate subset *within the single mesh* each frame (continuous, no whole-mesh pop). | **static rigid `Mesh` only** — skinned/instanced geometry can't cluster | dense static geometry |
+| **Discrete** | Bakes progressively simplified **whole-mesh copies** (auto QEM); one is selected per instance by projected screen error (classic whole-mesh pop). Tunable: `levels` + `reduction`. | any (the only option for skinned/morph/instanced) | mid-size meshes; tune when fine relief shimmers |
 
 ## Choosing the kind
 
-Every mesh gets a **smart default** by class + triangle count, which you can override:
+**LOD is opt-in.** Every mesh defaults to **`None`** — setting a kind is always an
+explicit choice; there is no class/size auto-derivation. Set it two ways:
 
-- static `Mesh`: **Cluster** if ≥ 4096 triangles, **Discrete** if ≥ 512, else **None**.
-- skinned / morph / instanced: **Discrete** if ≥ 512 triangles, else **None** (no Cluster — they deform or draw many copies).
+- **Per mesh** — the editor inspector's **LOD** section (a Kind selector; under
+  Discrete, `Levels` + `Reduction` fields), or MCP:
 
-Override per mesh in the editor inspector's **LOD** section (a Kind selector; under
-Discrete, `Levels` + `Reduction` fields), or over MCP:
+  ```
+  set_mesh_lod { node, kind: "none" | "cluster" | "discrete",
+                 discrete_levels?, discrete_reduction? }
+  ```
 
-```
-set_mesh_lod { node, kind: "none" | "cluster" | "discrete",
-               discrete_levels?, discrete_reduction? }
-```
+- **A whole subtree at once** — **right-click any node → `LOD → None / Discrete /
+  Cluster`** (applies to that node if it's a mesh *and* every descendant mesh, one
+  undo step; the node itself can be a Group/Light/etc.), or MCP:
+
+  ```
+  set_subtree_lod { node, kind, discrete_levels?, discrete_reduction? }
+  ```
+
+  Skinned/instanced meshes can't cluster — a subtree set to `cluster` bakes those as
+  Discrete.
 
 **Tuning Discrete:** `levels` is how many simplified copies to bake (default 3);
 `reduction` is each level's triangle fraction of the previous (default 0.5 →

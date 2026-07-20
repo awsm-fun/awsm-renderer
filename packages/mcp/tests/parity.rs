@@ -196,6 +196,7 @@ const EXPECTED_COMMANDS: &[&str] = &[
     "set_skin_weights",
     "set_solo_root",
     "set_strip_repeat",
+    "set_subtree_lod",
     "set_texture_export",
     "set_texture_use_profile",
     "set_track_keys",
