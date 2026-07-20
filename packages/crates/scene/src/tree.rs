@@ -396,8 +396,13 @@ pub struct MeshLodFarSwap {
     pub error: f32,
 }
 
+/// The authored far-swap error a fresh swap starts at (6cm — a typical shallow
+/// relief depth). Single source of truth shared by the serde default and the
+/// editor's far-swap picker so a UI-minted swap and a hand-authored one agree.
+pub const DEFAULT_FAR_SWAP_ERROR: f32 = 0.05;
+
 fn default_far_swap_error() -> f32 {
-    0.05
+    DEFAULT_FAR_SWAP_ERROR
 }
 
 impl Default for MeshLodConfig {

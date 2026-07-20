@@ -2458,7 +2458,9 @@ impl EditorMcp {
         let far_swap = match p.far_swap_node.as_deref() {
             Some(n) => Some(awsm_renderer_editor_protocol::MeshLodFarSwap {
                 node: parse_node(n)?,
-                error: p.far_swap_error.unwrap_or(0.05),
+                error: p
+                    .far_swap_error
+                    .unwrap_or(awsm_renderer_editor_protocol::DEFAULT_FAR_SWAP_ERROR),
             }),
             None => None,
         };

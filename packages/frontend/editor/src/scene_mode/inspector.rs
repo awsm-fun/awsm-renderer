@@ -16,8 +16,9 @@ use crate::prelude::*;
 use awsm_renderer_editor_protocol::{
     AssetSource, BillboardMode, CubeFaceUpdateRate, CurveDef, DecalConfig, EvsmCutoff,
     FarCascadeUpdateRate, LightShadowConfig, LightShadowHardness, LineDef, MaterialAlphaMode,
-    MaterialDef, MaterialShading, MeshLodConfig, MeshShadowConfig, ParticleEmitterDef,
-    PrimitiveShape, ProceduralTextureDef, SpriteAlphaMode, SpriteDef, TextureDef, TextureExport,
+    MaterialDef, MaterialShading, MeshLodConfig, MeshLodFarSwap, MeshShadowConfig,
+    ParticleEmitterDef, PrimitiveShape, ProceduralTextureDef, SpriteAlphaMode, SpriteDef,
+    TextureDef, TextureExport,
 };
 
 /// The right rail shows the **Asset Inspector** when an asset is selected in the
@@ -3999,9 +4000,99 @@ fn mesh_lod_editor(node: &Arc<Node>, lod: MeshLodConfig) -> Dom {
         }).await;
     }));
 
-    Section::new("LOD")
-        .child(row("Enabled", toggle(enabled)))
-        .render()
+    let mut section = Section::new("LOD").child(row("Enabled", toggle(enabled)));
+
+    // Authored far-swap ("geometry mipmap") is only consumed for static Mesh
+    // bases: the renderer's resync (bridge::lod_sync) registers a discrete LOD
+    // chain for `NodeKind::Mesh` alone, so surfacing the control on skinned/other
+    // kinds would persist a swap that silently never fires. Scope it to meshes.
+    if matches!(node.kind.get_cloned(), NodeKind::Mesh { .. }) {
+        section = section.child(far_swap_editor(node, lod));
+    }
+
+    section.render()
+}
+
+/// Far-swap ("geometry mipmap") sub-editor for a static Mesh base: pick the
+/// low-detail far node that replaces this mesh at distance, and — once one is
+/// set — tune the object-space error that decides how close the swap happens.
+/// The inspector rebuilds when far_swap presence flips (see `structure_key` in
+/// the controller), so the error row's build-time presence stays in sync.
+fn far_swap_editor(node: &Arc<Node>, lod: MeshLodConfig) -> Dom {
+    let id = node.id;
+    // Eligible far targets: every OTHER static mesh node. The 1:1 contract (a far
+    // node belongs to exactly one base — see lod_sync) and self-reference are
+    // both handled here by excluding self; picking a node already used by another
+    // base is left to the author (the last writer wins in the registry diff).
+    let far_nodes: Vec<(NodeId, String)> =
+        collect_kind_nodes(|k| matches!(k, NodeKind::Mesh { .. }))
+            .into_iter()
+            .filter(|(nid, _)| *nid != id)
+            .collect();
+    let current = lod.far_swap.map(|fs| fs.node).unwrap_or_else(NodeId::nil);
+
+    let n_pick = node.clone();
+    let picker = ref_picker("Far mesh", far_nodes, current, move |picked| {
+        let Some(cur) = n_pick.kind.get_cloned().mesh_lod().copied() else {
+            return;
+        };
+        let far_swap = if picked == NodeId::nil() {
+            None
+        } else {
+            // Changing only the target keeps the tuned error; a fresh swap starts
+            // at the shared default.
+            let error = cur
+                .far_swap
+                .map(|fs| fs.error)
+                .unwrap_or(awsm_renderer_editor_protocol::DEFAULT_FAR_SWAP_ERROR);
+            Some(MeshLodFarSwap {
+                node: picked,
+                error,
+            })
+        };
+        set_mesh_lod(&n_pick, MeshLodConfig { far_swap, ..cur });
+    });
+
+    // No far node yet → just the picker.
+    let Some(fs) = lod.far_swap else {
+        return html!("div", { .child(picker) });
+    };
+
+    // Far node set → picker + error dial + a one-line semantics hint.
+    let n_err = node.clone();
+    let dial = row(
+        "Swap error",
+        NumField::new(fs.error as f64)
+            .min(0.0)
+            .step(0.005)
+            .suffix(" m")
+            .on_change(move |v| {
+                let Some(cur) = n_err.kind.get_cloned().mesh_lod().copied() else {
+                    return;
+                };
+                if let Some(mut f) = cur.far_swap {
+                    f.error = v as f32;
+                    set_mesh_lod(
+                        &n_err,
+                        MeshLodConfig {
+                            far_swap: Some(f),
+                            ..cur
+                        },
+                    );
+                }
+            })
+            .render(),
+    );
+    html!("div", {
+        .child(picker)
+        .child(dial)
+        .child(html!("div", {
+            .style("font-size", "11.5px").style("color", "var(--text-3)").style("line-height", "1.5")
+            .style("margin-top", "4px")
+            .text("Object-space relief (metres) the swap flattens — e.g. 0.06 for \
+                   6 cm floor grooves. Larger swaps to the far mesh closer to the camera.")
+        }))
+    })
 }
 
 fn mesh_shadow_editor(node: &Arc<Node>, shadow: MeshShadowConfig) -> Dom {

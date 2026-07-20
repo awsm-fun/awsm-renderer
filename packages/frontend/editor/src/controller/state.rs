@@ -9776,7 +9776,14 @@ fn structure_key(kind: &NodeKind) -> String {
                         .join(",")
                 })
                 .unwrap_or_default();
-            format!("mesh/{shading}/{:?}/{palette}", kind.selected_variant_id())
+            // Far-swap presence flips whether the error dial + hint rows exist,
+            // so it belongs in the structural key (adding/clearing a far node
+            // must rebuild the inspector; a pure error scrub must not).
+            let far = kind.mesh_lod().and_then(|l| l.far_swap).is_some();
+            format!(
+                "mesh/{shading}/{:?}/{palette}/fs{far}",
+                kind.selected_variant_id()
+            )
         }
         NodeKind::Camera(c) => match c.projection {
             CameraProjection::Perspective { .. } => "cam/persp".into(),
