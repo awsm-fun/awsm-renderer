@@ -8,6 +8,19 @@ skybox = "built_in_default"
 specular = "built_in_default"
 irradiance = "built_in_default"
 
+[environment.probe]
+enabled = false
+center = [
+    0.0,
+    0.0,
+    0.0,
+]
+half_extents = [
+    10.0,
+    10.0,
+    10.0,
+]
+
 [shadows]
 sscs_enabled = false
 sscs_step_count = 16
@@ -44,6 +57,7 @@ edge_fade = 0.10000000149011612
 resolution_scale = 0.5
 temporal = false
 temporal_weight = 0.8999999761581421
+bvh_reflections = false
 
 [assets.08d127b5-e983-474a-afdb-994ae119f03b]
 gltf_material_asset_ids = []
@@ -102,6 +116,7 @@ emissive = [
 ]
 normal_scale = 1.0
 occlusion_strength = 1.0
+ssr_mask = 1.0
 double_sided = true
 vertex_colors_enabled = false
 alpha_mode = "opaque"
@@ -111,6 +126,12 @@ shading = "pbr"
 
 [anim_mixer]
 layers = []
+
+[bundle_options]
+mesh_compression = "meshopt"
+mesh_quantization = "smart"
+smart_threshold_mm = 0.10000000149011612
+texture_compression = "ktx2"
 
 [[nodes]]
 id = "040aed24-8fbf-49ba-8604-2d2c18fe7b64"
@@ -218,6 +239,7 @@ emissive = [
 ]
 normal_scale = 1.0
 occlusion_strength = 1.0
+ssr_mask = 1.0
 double_sided = true
 vertex_colors_enabled = false
 alpha_mode = "opaque"
@@ -234,3 +256,37 @@ shading = "pbr"
 [nodes.kind.cluster_mesh.shadow]
 cast = true
 receive = true
+
+[[nodes]]
+id = "00000000-0000-4000-8000-0000000000cb"
+name = "golden-camera"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    1.6829419136047363,
+    1.9177021980285645,
+    3.0806045532226563,
+]
+rotation = [
+    -0.23971277475357056,
+    0.23971277475357056,
+    0.06120871752500534,
+    0.9387912750244141,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.camera]
+near = 0.05000000074505806
+far = 100.0
+behavior = "static"
+
+[nodes.kind.camera.projection.perspective]
+fov_y_rad = 0.7853981852531433

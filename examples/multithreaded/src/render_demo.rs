@@ -101,7 +101,7 @@ fn render_main(payload: JsValue) -> Result<(), JsValue> {
         .with_device_request_limits(DeviceRequestLimits::max_all());
 
     wasm_bindgen_futures::spawn_local(async move {
-        if let Err(err) = run_renderer(gpu_builder, use_arena, spin, canvas_handle).await {
+        if let Err(err) = run_renderer(gpu_builder, use_arena, spin).await {
             tracing::error!("render demo: {err:?}");
         }
     });
@@ -112,9 +112,8 @@ async fn run_renderer(
     gpu_builder: awsm_renderer_core::renderer::AwsmRendererWebGpuBuilder,
     use_arena: bool,
     spin: bool,
-    canvas: web_sys::OffscreenCanvas,
 ) -> Result<(), JsValue> {
-    use awsm_renderer::camera::CameraMatrices;
+    use awsm_renderer::camera::CameraParams;
     use awsm_renderer::materials::Material;
     use awsm_renderer::raw_mesh::RawMeshData;
     use awsm_renderer::transforms::Transform;
@@ -207,23 +206,12 @@ async fn run_renderer(
             );
         }
         let view = Mat4::look_at_rh(Vec3::new(0.0, 1.5, 3.0), Vec3::new(0.0, 0.0, -3.0), Vec3::Y);
-        let projection = Mat4::perspective_rh(
-            60.0_f32.to_radians(),
-            crate::viewport::aspect(&canvas),
-            0.1,
-            100.0,
-        );
-        let _ = r.update_camera(CameraMatrices {
+        // The renderer supplies the depth convention AND the live aspect,
+        // so neither can drift from what it actually renders with.
+        let _ = r.set_camera(
             view,
-            projection,
-            position_world: Vec3::new(0.0, 1.5, 3.0),
-            focus_distance: 10.0,
-            aperture: 5.6,
-            // Examples/model-tests stay forward-Z (features default; 003)
-            reverse_z: false,
-            near: 0.1,
-            far: 100.0,
-        });
+            CameraParams::perspective(60.0_f32.to_radians(), 0.1, 100.0),
+        );
         r.update_transforms();
         if let Err(err) = r.render(None) {
             tracing::warn!("render demo: render error: {err}");

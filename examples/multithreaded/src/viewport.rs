@@ -111,11 +111,6 @@ pub fn try_apply_resize(canvas: &web_sys::OffscreenCanvas, data: &JsValue) -> Op
     Some((w, h))
 }
 
-/// Worker thread: current backing aspect ratio (width / height).
-pub fn aspect(canvas: &web_sys::OffscreenCanvas) -> f32 {
-    (canvas.width().max(1) as f32) / (canvas.height().max(1) as f32)
-}
-
 /// Worker thread: install a scope `onmessage` that only handles resize messages
 /// — for demos that need no other main→worker channel. Demos that already own
 /// `onmessage` should call [`try_apply_resize`] inside their handler instead.

@@ -139,6 +139,7 @@ const EXPECTED_COMMANDS: &[&str] = &[
     "restore_track",
     "select_material_variant",
     "separate_mesh",
+    "set_active_camera",
     "set_anim_fps",
     "set_anim_selection",
     "set_anim_view",

@@ -51,7 +51,7 @@ impl FeatureToggle {
 /// `Option`-shaped owning fields on `AwsmRenderer` (gated buffers /
 /// textures / render passes) are populated once based on the active
 /// feature set.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RendererFeatures {
     /// Enable GPU-driven culling: HZB build, occlusion cull,
     /// `IndirectDrawArgs` compaction, and the `drawIndirect` geometry
@@ -197,6 +197,36 @@ pub struct RendererFeatures {
     /// on those that don't. Both paths are independently optimized;
     /// neither is a "degraded" mode.
     pub indirect_first_instance: FeatureToggle,
+}
+
+impl Default for RendererFeatures {
+    /// Written out FIELD BY FIELD rather than derived, because the derive made
+    /// the depth convention fall out of `bool::default()` — i.e. forward-Z —
+    /// which silently contradicted the project's own stated default. Reverse-Z
+    /// is the convention this renderer is built and verified around (plan 003
+    /// rollout complete: all nine stages landed + browser-verified; the
+    /// synthetic coplanar-plane repro z-fights under forward and renders clean
+    /// under reverse). A new consumer should get the good one without knowing
+    /// this flag exists.
+    ///
+    /// Everything else keeps its zero value; only `reverse_z` is a deliberate
+    /// non-zero default. Adding a field here is a conscious choice, which is
+    /// the point.
+    fn default() -> Self {
+        Self {
+            gpu_culling: false,
+            reverse_z: true,
+            decals: false,
+            coverage_lod: false,
+            picking: false,
+            lod: false,
+            virtual_geometry: false,
+            cluster_streaming: false,
+            cluster_streaming_budget: None,
+            cluster_paging: false,
+            indirect_first_instance: FeatureToggle::default(),
+        }
+    }
 }
 
 impl RendererFeatures {

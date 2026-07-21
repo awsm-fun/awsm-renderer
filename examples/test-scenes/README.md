@@ -14,6 +14,18 @@ suite. Each scene is three artifacts:
 Scenes are AUTHORED under the reverse-Z depth convention (default since plan
 003) and act as its permanent regression lock.
 
+### Player-golden scenes (`golden-<camera>.png` via bundle-player)
+
+Some scenes additionally (or instead) carry **player goldens**: screenshots of
+`task bundle-player` (:9092) rendering the committed `bundle/` through an
+**authored Camera node exported in the bundle** — the player pixels, with the
+player's `RendererFeatures::default()`, no editor machinery at all. Files are
+`golden-<camera-node-name>.png` at the page's native 800×600, one per camera;
+the scene's `verify.md` documents the exact drive (viewport 800×600, wait for
+the `#hud` `READY` line, screenshot). `player-cameras` is the reference scene:
+one perspective + one orthographic authored camera over an asymmetric
+arrangement, so a wrong camera, projection, or mirrored axis is unmistakable.
+
 ## Regenerating
 
 Scenes are authored headlessly through the MCP editor link (`task mcp-dev`,
@@ -60,6 +72,19 @@ bundles, which are window-independent.
 | `lod-nanite-open` | cluster cut on a GENUINELY OPEN mesh (outer rim + 2 punched holes; A2 input class) | exactly the two authored holes at every radius/budget — any extra gap = a torn cut (fixture: `gen-open-sheet.py`, deterministic) |
 | `instancing-stress` | N×1000s instanced meshes (axis-5 instancer NodeKind) | thousands of instances, ONE geometry upload, interactive frame rate |
 | `kitchen-sink` | everything at once | the smoke test; also the startup-census scene |
+
+### Layer-A only (no `bundle/`, no `golden.png`)
+
+Some scenes test **view-time** behaviour — editor `set_view_options` toggles and
+render-path concerns that are not player-bundle state — so there is nothing for
+`export_player_bundle` to bake, and a golden would pin the wrong layer. These
+ship `author.js` + `verify.md` and are checked by following the recipe in
+`verify.md`:
+
+| Scene | Features under test | What "correct" looks like |
+|---|---|---|
+| `aa-edges` | MSAA / SMAA view toggles on a crisp diagonal silhouette | `msaa` and `smaa` both visibly smoother than `no-aa` on the same framed edges |
+| `env-bc6h-spheres` | BC6H environment cubemaps (skybox/specular/irradiance), skybox ray reconstruction, the `--ibl-ld` roughness ladder; doubles as the MSAA silhouette probe | skybox tracks camera direction; metals blur monotonically with roughness; 0 flickering px static-camera, and ~55% RMS error reduction vs a supersampled reference along silhouettes |
 
 ## The optimization axes (plan 006)
 

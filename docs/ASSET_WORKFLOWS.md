@@ -34,13 +34,25 @@ procedurally (numpy → a flat-RGBE Radiance `.hdr`) — then project it to a cu
 **offline** with filament `cmgen` (this is where equirect→cubemap happens; there is
 no runtime equirect projection). Pipeline (full flags in `docs/DEVELOPMENT.md`):
 
-1. Make an `.hdr`/`.exr` (procedural or a real HDRI).
+1. Make an `.hdr`/`.exr` (procedural or a real HDRI). **Check it actually has HDR
+   range** — a `.hdr` extension only means the container is float, and plenty of
+   "HDRIs" are tonemapped LDR re-saved as RGBE (max channel ≈ 1.0). Those bake
+   into flat IBL no matter how carefully you pack them.
 2. `cmgen` → three face sets:
    - skybox faces:      `cmgen -s 2048 -f exr -x skybox my.hdr`
    - prefiltered spec:  `cmgen -s 512 -f exr --ibl-ld=ibl-env my.hdr` (6 roughness mips)
    - irradiance:        `cmgen -s 64 -f exr --ibl-irradiance=ibl-irradiance my.hdr`
-3. `ktx create --cubemap --format B10G11R11_UFLOAT_PACK32 …` → `skybox.ktx2`,
-   `env.ktx2` (prefiltered, `--levels 6`, all mip faces), `irradiance.ktx2`.
+3. `awsm-renderer-env-bake --skybox-faces … --specular-faces … --irradiance-faces …
+   --out … --format bc6h` → `skybox.ktx2`, `env.ktx2`, `irradiance.ktx2`.
+   BC6H stays block-compressed in VRAM at 1 byte/texel vs `B10G11R11`'s 4 (a 4x
+   saving), under the `texture-compression-bc` feature the renderer already
+   requests. `--format rg11b10` gives the uncompressed fallback; the raw
+   `ktx create --cubemap --format B10G11R11_UFLOAT_PACK32 …` recipes still work
+   for that variant but cannot produce BC6H.
+   **Never `--encode uastc` / `--encode basis-lz` for these cubemaps** — both
+   write a supercompressed KTX2, which the cubemap loader rejects outright, and
+   both are LDR codecs that would clip everything above 1.0. `KHR_texture_basisu`
+   transcoding is for glTF *material* textures, not environment maps.
 4. Serve them, then:
    `set_environment { skybox:"<url>/skybox.ktx2", specular:"<url>/env.ktx2", irradiance:"<url>/irradiance.ktx2" }`
 

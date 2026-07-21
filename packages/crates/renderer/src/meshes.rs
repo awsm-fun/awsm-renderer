@@ -2467,6 +2467,46 @@ impl Meshes {
             .ok_or(AwsmMeshError::VisibilityGeometryBufferNotFound(key))
     }
 
+    /// Overwrite `bytes` at `offset_in_section` within this mesh's
+    /// visibility-data section, THROUGH the geometry pool's CPU mirror
+    /// (+ a precise dirty range uploaded by the next `write_gpu`).
+    ///
+    /// This is the Gap-B cluster-paging slot streamer's write path. It MUST go
+    /// through the mirror: the pool re-uploads `raw_slice()` wholesale on any
+    /// RESIZE (any later mesh insert can trigger one), so bytes written
+    /// straight to the GPU buffer are silently reverted to the mirror's stale
+    /// content — which is exactly how streamed cluster slots snapped back to
+    /// their empty spare state and tore the mesh (the nanite-paging holes bug).
+    pub fn write_visibility_geometry_bytes(
+        &mut self,
+        key: MeshKey,
+        offset_in_section: usize,
+        bytes: &[u8],
+    ) -> Result<()> {
+        let resource_key = self.resource_key(key)?;
+        let section_abs = self
+            .resources
+            .get(resource_key)
+            .and_then(|r| r.visibility_geometry_data_offset)
+            .ok_or(AwsmMeshError::VisibilityGeometryBufferNotFound(key))?;
+        let entry_abs = self
+            .mesh_geometry_pool_buffers
+            .offset(resource_key)
+            .ok_or(AwsmMeshError::VisibilityGeometryBufferNotFound(key))?;
+        // The vis section leads the combined [vis || attr_index || attr_data]
+        // entry, but derive its in-entry delta rather than assuming 0.
+        let delta = section_abs
+            .checked_sub(entry_abs)
+            .ok_or(AwsmMeshError::VisibilityGeometryBufferNotFound(key))?;
+        self.mesh_geometry_pool_buffers
+            .update_subrange(resource_key, delta + offset_in_section, bytes)
+            .map_err(|e| {
+                AwsmMeshError::BufferCapacityOverflow(format!("visibility geometry subrange: {e}"))
+            })?;
+        self.mesh_geometry_pool_dirty = true;
+        Ok(())
+    }
+
     /// Returns the GPU buffer for visibility geometry indices.
     pub fn visibility_geometry_index_gpu_buffer(&self) -> &web_sys::GpuBuffer {
         &self.visibility_geometry_index_gpu_buffer

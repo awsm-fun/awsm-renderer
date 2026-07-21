@@ -15,6 +15,14 @@
 // imported static models do.
 // Streaming budgets (?stream / ?streambudget=N) are runtime player flags —
 // exercised by plan 007 over this scene's bundle.
+//
+// GOLDEN RECAPTURE (reproducible framing): the committed project/ carries a
+// `golden-camera` Camera NODE with the authored framing (camera nodes persist
+// in project.toml; the editor free camera does not). To regenerate:
+// load_project_from_url {base_url: <this scene>/project} →
+// set_active_camera {camera: <golden-camera id>} →
+// set_view_options {grid:false, gizmos:false, light_gizmos:false} →
+// wait_render_settled → screenshot_scene at a 672x1028 canvas.
 async () => {
   return 'see recipe comment — authoring requires a prior export bake URL';
 }

@@ -153,10 +153,12 @@ pub async fn create_context(canvas: web_sys::HtmlCanvasElement) -> EditorResult<
     let worker_pool: WorkerPoolHandle = Arc::new(worker_pool);
 
     let camera = {
-        let mut cam = Camera::new_default_cube(16.0 / 9.0);
-        // Depth convention (003): the viewport camera's projections must match
-        // the renderer's reverse_z feature — same flag source as editor_features.
-        cam.set_reverse_z(reverse_z_flag());
+        // Depth convention (003): drives the camera's auto clip-plane policy —
+        // same flag source as editor_features (matrices are built by the
+        // renderer itself, so they cannot disagree with it).
+        let mut cam = Camera::new_default_cube(awsm_renderer::depth_convention::DepthConvention {
+            reverse_z: reverse_z_flag(),
+        });
         cam.set_aperture(super::config::CONFIG.camera_aperture);
         cam.set_focus_distance(super::config::CONFIG.camera_focus_distance);
         Arc::new(std::sync::Mutex::new(cam))
@@ -358,12 +360,13 @@ fn create_resize_observer(
                     renderer.gpu.canvas().set_width(width);
                     renderer.gpu.canvas().set_height(height);
                     renderer.gpu.sync_canvas_buffer_with_css();
-                    let camera_matrices = {
-                        let mut camera = camera.lock().unwrap();
-                        camera.set_aspect(width as f32 / height as f32);
-                        camera.matrices()
+                    let (view, params) = {
+                        let camera = camera.lock().unwrap();
+                        (camera.view(), camera.params())
                     };
-                    if let Err(err) = renderer.update_camera(camera_matrices) {
+                    // Aspect comes from the just-reconfigured surface inside
+                    // `set_camera` — nothing to push into the camera on resize.
+                    if let Err(err) = renderer.set_camera(view, params) {
                         tracing::error!("camera update on resize: {err:?}");
                     }
                     let hooks = render_hooks.read().unwrap();
@@ -425,12 +428,11 @@ pub fn sync_canvas_size() {
                 // reconfigure + render, and the RAF loop uses `try_lock` (skips while
                 // we hold it), so there's no in-flight-submit race against the
                 // texture recreation.
-                let camera_matrices = {
-                    let mut camera = camera_handle.lock().unwrap();
-                    camera.set_aspect(width as f32 / height as f32);
-                    camera.matrices()
+                let (view, params) = {
+                    let camera = camera_handle.lock().unwrap();
+                    (camera.view(), camera.params())
                 };
-                if let Err(err) = renderer.update_camera(camera_matrices) {
+                if let Err(err) = renderer.set_camera(view, params) {
                     tracing::error!("camera update on canvas sync: {err:?}");
                 }
                 let hooks = render_hooks_handle();

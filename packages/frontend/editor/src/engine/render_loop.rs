@@ -2,11 +2,10 @@
 //! per-frame scene→GPU sync (lights / decals / gizmo / particles / colliders)
 //! is layered in via the renderer bridge.
 
-use awsm_renderer::camera::CameraMatrices;
-use awsm_renderer::cameras::CameraProjectionParams;
+use awsm_renderer::camera::CameraParams;
 use awsm_renderer::AwsmRenderer;
-use awsm_renderer_editor_protocol::{CameraProjection, NodeKind};
-use glam::{Mat4, Vec3};
+use awsm_renderer_editor_protocol::NodeKind;
+use glam::Mat4;
 
 use super::context;
 use crate::controller::controller;
@@ -273,7 +272,8 @@ fn render_one_frame(dt_ms: f64) {
             canvas.set_width(cw as u32);
             canvas.set_height(ch as u32);
             renderer.gpu.sync_canvas_buffer_with_css();
-            context::try_with_camera_mut(|c| c.set_aspect(cw as f32 / ch as f32));
+            // No camera aspect to push — `set_camera` below reads the live
+            // surface every frame, so the reconfigure alone is enough.
         }
 
         // A scene camera reads from the renderer's transform graph, so refresh
@@ -283,21 +283,32 @@ fn render_one_frame(dt_ms: f64) {
         }
         // Reading the free camera each tick reflects orbit/pan/zoom immediately;
         // a scene camera locks the view to its node's transform + config (and if
-        // that node has gone away, we fall back to the free camera).
-        let scene_matrices = active.and_then(|id| scene_camera_matrices(renderer, id));
-        let matrices =
-            match scene_matrices.or_else(|| context::try_with_camera_mut(|c| c.matrices())) {
-                Some(m) => m,
-                None => return, // context not ready yet
-            };
-        if let Err(err) = renderer.update_camera(matrices.clone()) {
-            tracing::error!("update_camera failed: {err}");
+        // that node has gone away, we fall back to the free camera). Both paths
+        // produce the same (view, params) pair `set_camera` takes — the renderer
+        // supplies the depth convention and live aspect itself.
+        let scene_camera = active.and_then(|id| scene_camera_view_params(renderer, id));
+        let (view, params) = match scene_camera
+            .or_else(|| context::try_with_camera_mut(|c| (c.view(), c.params())))
+        {
+            Some(vp) => vp,
+            None => return, // context not ready yet
+        };
+        if let Err(err) = renderer.set_camera(view, params) {
+            tracing::error!("set_camera failed: {err}");
         }
+        // The snapshot the renderer just built — gizmo/selection consumers below
+        // read the same matrices the frame renders with.
+        let matrices = match renderer.camera_matrices() {
+            Some(m) => m.clone(),
+            None => return,
+        };
         // Keep the gizmo screen-constant + anchored under the selection, and
         // enforce its visibility against the selection + toggle.
         super::gizmo::per_frame_update(renderer);
         // Re-anchor + zoom the pickable light icons (one per light node).
         super::light_icons::per_frame_update(renderer, &matrices);
+        // Wireframe frustum per camera node (Settings toggle).
+        super::camera_gizmos::per_frame_update(renderer);
         // Bone-line skeleton overlay for skinned rigs (Settings toggle).
         super::skeleton_viz::per_frame_update(renderer);
         // Keep curve control-point handles screen-constant + anchored.
@@ -354,10 +365,16 @@ fn render_one_frame(dt_ms: f64) {
     }
 }
 
-/// Build `CameraMatrices` from a scene `Camera` node's world transform + its
-/// `CameraConfig`. Returns `None` if the node is gone, isn't a camera, or has no
-/// renderer transform yet — the caller then falls back to the free camera.
-fn scene_camera_matrices(renderer: &AwsmRenderer, node_id: NodeId) -> Option<CameraMatrices> {
+/// Resolve a scene `Camera` node into the `(view, params)` pair
+/// `AwsmRenderer::set_camera` takes: the view from its world transform (glTF
+/// camera convention, via `camera::view_from_world`), the params from the
+/// renderer's camera store. Returns `None` if the node is gone, isn't a
+/// camera, or has no renderer transform yet — the caller then falls back to
+/// the free camera.
+fn scene_camera_view_params(
+    renderer: &AwsmRenderer,
+    node_id: NodeId,
+) -> Option<(Mat4, CameraParams)> {
     let node = crate::engine::scene::mutate::find_by_id(&controller().scene, node_id)?;
     let cfg = match node.kind.get_cloned() {
         NodeKind::Camera(c) => c,
@@ -371,77 +388,19 @@ fn scene_camera_matrices(renderer: &AwsmRenderer, node_id: NodeId) -> Option<Cam
         (entry.transform_key, camera_key)
     };
     let world = *renderer.transforms.get_world(transform_key).ok()?;
-
-    // The camera looks down its local -Z, with +Y up (glTF convention).
-    let pos = world.w_axis.truncate();
-    let mut forward = (-world.z_axis.truncate()).normalize_or_zero();
-    let mut up = world.y_axis.truncate().normalize_or_zero();
-    if forward == Vec3::ZERO {
-        forward = Vec3::NEG_Z;
-    }
-    if up == Vec3::ZERO {
-        up = Vec3::Y;
-    }
-    let view = Mat4::look_at_rh(pos, pos + forward, up);
-
-    let (w, h) = renderer.gpu.current_context_texture_size().ok()?;
-    let aspect = if h > 0 { w as f32 / h as f32 } else { 1.0 };
+    let view = awsm_renderer::camera::view_from_world(world);
 
     // Read the *animatable* params from the renderer cameras store when this node
     // has a materialized slot — that's what an `AnimationTarget::Camera` channel
     // mutates, so an animated camera is live. The slot mirrors the node config for
-    // a static camera (node_sync keeps it synced), so the matrices are identical
+    // a static camera (node_sync keeps it synced), so the params are identical
     // to reading the config directly. Fall back to the node config if the slot
     // hasn't materialized yet (e.g. the very first frame after insert).
-    let (projection_params, near, far, focus_distance, aperture) =
-        match camera_key.and_then(|key| renderer.cameras.get(key)) {
-            Some(p) => (p.projection, p.near, p.far, p.focus_distance, p.aperture),
-            None => {
-                let projection = match cfg.projection {
-                    CameraProjection::Perspective { fov_y_rad } => {
-                        CameraProjectionParams::Perspective { fov_y_rad }
-                    }
-                    CameraProjection::Orthographic { half_height } => {
-                        CameraProjectionParams::Orthographic { half_height }
-                    }
-                };
-                (projection, cfg.near, cfg.far, 10.0, 5.6)
-            }
-        };
-
-    // Scene cameras follow the renderer's depth convention (003) exactly like
-    // the free camera — a forward-Z projection on a reverse-Z renderer would
-    // invert every depth test.
-    let convention = awsm_renderer::depth_convention::DepthConvention {
-        reverse_z: crate::engine::context::reverse_z_flag(),
+    let params = match camera_key.and_then(|key| renderer.cameras.get(key)) {
+        Some(p) => *p,
+        None => awsm_renderer_scene_loader::camera::camera_params_from_config(&cfg),
     };
-    let projection = match projection_params {
-        CameraProjectionParams::Perspective { fov_y_rad } => {
-            convention.perspective(fov_y_rad, aspect, near, far)
-        }
-        CameraProjectionParams::Orthographic { half_height } => {
-            let half_width = half_height * aspect;
-            convention.orthographic(
-                -half_width,
-                half_width,
-                -half_height,
-                half_height,
-                near,
-                far,
-            )
-        }
-    };
-
-    Some(CameraMatrices {
-        view,
-        projection,
-        position_world: pos,
-        focus_distance,
-        aperture,
-        reverse_z: convention.reverse_z,
-        near,
-        far,
-    })
+    Some((view, params))
 }
 
 #[cfg(test)]

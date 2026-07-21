@@ -18,6 +18,8 @@ includes:
     taskfile: ./taskfiles/examples/multithreaded.yml
   pt:
     taskfile: ./taskfiles/examples/player-tests.yml
+  bp:
+    taskfile: ./taskfiles/examples/bundle-player.yml
   debug-mobile:
     taskfile: ./taskfiles/debugging/mobile.yml
 
@@ -113,6 +115,11 @@ tasks:
     desc: "Player-runtime test harness (plan 007). Start `task test-scenes` (:{{.PORT_TEST_SCENES_DEV}}) FIRST — the harness loads the baked player bundles from http://localhost:{{.PORT_TEST_SCENES_DEV}}/<scene>/bundle through the player loader — then this serves the wasm harness on :{{.PORT_PLAYER_TESTS_DEV}}. Open http://localhost:{{.PORT_PLAYER_TESTS_DEV}} and read the console: one `PLAYER-TEST <name>: PASS/FAIL — <detail>` line per check, ending with `PLAYER-TESTS COMPLETE: <pass>/<total>`."
     deps:
       - pt:dev
+
+  bundle-player:
+    desc: "Player visual-regression page. Start `task test-scenes` (:{{.PORT_TEST_SCENES_DEV}}) FIRST, then this serves the page on :{{.PORT_BUNDLE_PLAYER_DEV}}. Open http://localhost:{{.PORT_BUNDLE_PLAYER_DEV}}/?scene=<name>&camera=<node-name> — it loads the exported bundle through the real player path, renders through that AUTHORED scene camera on a fixed 800x600 canvas, and reports READY in #hud. Screenshot the canvas against examples/test-scenes/<scene>/golden-<camera>.png."
+    deps:
+      - bp:dev
 
   lint:
     desc: "Run the exact lints CI runs (rustfmt + clippy with -D warnings, all features, tests). Mirrors .github/workflows/test.yml."

@@ -1,9 +1,8 @@
 use wasm_bindgen_futures::spawn_local;
 
-use crate::{
-    pages::app::{context::AppContext, scene::camera::CameraId},
-    prelude::*,
-};
+use awsm_renderer_web_shared::util::free_camera::ProjectionMode;
+
+use crate::{pages::app::context::AppContext, prelude::*};
 
 use super::{render_dropdown_label, render_input_label};
 
@@ -45,8 +44,8 @@ impl SidebarCamera {
                     state.ctx.camera_id.set_neq(*id);
                 }))
                 .with_options([
-                    ("Orthographic".to_string(), CameraId::Orthographic),
-                    ("Perspective".to_string(), CameraId::Perspective),
+                    ("Orthographic".to_string(), ProjectionMode::Orthographic),
+                    ("Perspective".to_string(), ProjectionMode::Perspective),
                 ])
                 .render(),
         )

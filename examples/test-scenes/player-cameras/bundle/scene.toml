@@ -1,0 +1,617 @@
+name = "untitled.awsm"
+custom_materials = []
+animations = []
+
+[environment]
+skybox = "built_in_default"
+specular = "built_in_default"
+irradiance = "built_in_default"
+
+[environment.probe]
+enabled = false
+center = [
+    0.0,
+    0.0,
+    0.0,
+]
+half_extents = [
+    10.0,
+    10.0,
+    10.0,
+]
+
+[shadows]
+sscs_enabled = false
+sscs_step_count = 16
+sscs_step_world = 0.03999999910593033
+sscs_thickness = 0.05000000074505806
+sscs_directional_darkening = 0.3499999940395355
+sscs_punctual_darkening = 0.8999999761581421
+atlas_size = 4096
+evsm_atlas_size = 2048
+evsm_exponent = 10.0
+evsm_blur_radius = 6
+max_point_shadows = 8
+point_shadow_resolution = 1024
+debug_cascade_colors = false
+
+[post_process]
+tonemapping = "khronos_neutral_pbr"
+bloom = false
+dof = false
+exposure = 0.0
+bloom_threshold = 1.0
+bloom_knee = 0.5
+bloom_intensity = 1.0
+bloom_scatter = 1.0
+
+[post_process.ssr]
+enabled = false
+intensity = 1.0
+max_distance = 100.0
+thickness = 1.0
+max_steps = 96
+spread_cutoff = 0.6000000238418579
+edge_fade = 0.03999999910593033
+resolution_scale = 0.5
+temporal = false
+temporal_weight = 0.8999999761581421
+bvh_reflections = false
+
+[assets.00000000-0000-4000-8000-000000000001]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.00000000-0000-4000-8000-000000000001.source.mesh.primitive.plane]
+width = 20.0
+depth = 20.0
+segments_x = 1
+segments_z = 1
+
+[assets.00000000-0000-4000-8000-000000000004]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.00000000-0000-4000-8000-000000000004.source.mesh.primitive.box]
+dims = [
+    0.800000011920929,
+    2.4000000953674316,
+    0.800000011920929,
+]
+
+[assets.00000000-0000-4000-8000-000000000002]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.00000000-0000-4000-8000-000000000002.source.mesh.primitive.box]
+dims = [
+    1.2000000476837158,
+    1.2000000476837158,
+    1.2000000476837158,
+]
+
+[assets.00000000-0000-4000-8000-000000000005]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.00000000-0000-4000-8000-000000000005.source.mesh.primitive.box]
+dims = [
+    0.6000000238418579,
+    0.6000000238418579,
+    0.6000000238418579,
+]
+
+[assets.00000000-0000-4000-8000-000000000003]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.00000000-0000-4000-8000-000000000003.source.mesh.primitive.sphere]
+radius = 0.800000011920929
+segments_long = 32
+segments_lat = 20
+
+[mixer]
+layers = []
+
+[[nodes]]
+id = "4f478f3e-2bcc-45e4-a739-5a8f9b2928df"
+name = "Directional Light"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    0.0,
+    0.0,
+    0.0,
+]
+rotation = [
+    -0.4226182699203491,
+    0.0,
+    0.0,
+    0.9063077569007874,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.light.directional]
+color = [
+    1.0,
+    1.0,
+    1.0,
+]
+intensity = 4.0
+
+[nodes.kind.light.directional.shadow]
+cast = true
+depth_bias = 0.0010000000474974513
+normal_bias = 0.0
+resolution = 2048
+hardness = "soft"
+pcss_penumbra_scale = 1.0
+kernel_slack = 0.0
+shadow_samples = 16
+max_distance = 0.0
+cascade_count = 4
+cascade_split_lambda = 0.5
+evsm_cutoff = "last_cascade"
+far_cascade_update_rate = "every4_frames"
+cube_face_update_rate = "every_frame"
+
+[[nodes]]
+id = "00000000-0000-4000-8000-000000000001"
+name = "floor"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    0.0,
+    0.0,
+    0.0,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-000000000001"
+selected_variant = "00000000-0000-4000-8000-0000000000f0"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-0000000000f0"
+name = "main"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000060"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = ""
+base_color = [
+    0.41999998688697815,
+    0.4399999976158142,
+    0.47999998927116394,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.6499999761581421
+emissive = [
+    0.0,
+    0.0,
+    0.0,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions]
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = true
+receive = true
+
+[nodes.kind.mesh.lod]
+kind = "none"
+
+[[nodes]]
+id = "00000000-0000-4000-8000-000000000002"
+name = "red-box"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    -2.0,
+    0.6000000238418579,
+    0.0,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-000000000002"
+selected_variant = "00000000-0000-4000-8000-0000000000f0"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-0000000000f0"
+name = "main"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000061"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = ""
+base_color = [
+    0.75,
+    0.11999999731779099,
+    0.10000000149011612,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.6499999761581421
+emissive = [
+    0.0,
+    0.0,
+    0.0,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions]
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = true
+receive = true
+
+[nodes.kind.mesh.lod]
+kind = "none"
+
+[[nodes]]
+id = "00000000-0000-4000-8000-000000000003"
+name = "green-sphere"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    0.5,
+    0.800000011920929,
+    1.5,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-000000000003"
+selected_variant = "00000000-0000-4000-8000-0000000000f0"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-0000000000f0"
+name = "main"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000062"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = ""
+base_color = [
+    0.10000000149011612,
+    0.6200000047683716,
+    0.2199999988079071,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.6499999761581421
+emissive = [
+    0.0,
+    0.0,
+    0.0,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions]
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = true
+receive = true
+
+[nodes.kind.mesh.lod]
+kind = "none"
+
+[[nodes]]
+id = "00000000-0000-4000-8000-000000000004"
+name = "blue-pillar"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    2.200000047683716,
+    1.2000000476837158,
+    -1.2000000476837158,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-000000000004"
+selected_variant = "00000000-0000-4000-8000-0000000000f0"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-0000000000f0"
+name = "main"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000063"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = ""
+base_color = [
+    0.10000000149011612,
+    0.2199999988079071,
+    0.7200000286102295,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.6499999761581421
+emissive = [
+    0.0,
+    0.0,
+    0.0,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions]
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = true
+receive = true
+
+[nodes.kind.mesh.lod]
+kind = "none"
+
+[[nodes]]
+id = "00000000-0000-4000-8000-000000000005"
+name = "yellow-box"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    0.0,
+    0.30000001192092896,
+    -2.200000047683716,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-000000000005"
+selected_variant = "00000000-0000-4000-8000-0000000000f0"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-0000000000f0"
+name = "main"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000064"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = ""
+base_color = [
+    0.8500000238418579,
+    0.7200000286102295,
+    0.10000000149011612,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.6499999761581421
+emissive = [
+    0.0,
+    0.0,
+    0.0,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions]
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = true
+receive = true
+
+[nodes.kind.mesh.lod]
+kind = "none"
+
+[[nodes]]
+id = "00000000-0000-4000-8000-000000000010"
+name = "cam-perspective"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    4.773687362670898,
+    3.886080265045166,
+    6.97767972946167,
+]
+rotation = [
+    -0.16633185744285583,
+    0.29100659489631653,
+    0.05145247280597687,
+    0.9407451748847961,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.camera]
+near = 0.10000000149011612
+far = 100.0
+behavior = "static"
+
+[nodes.kind.camera.projection.perspective]
+fov_y_rad = 0.7853981852531433
+
+[[nodes]]
+id = "00000000-0000-4000-8000-000000000011"
+name = "cam-ortho"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    -6.459412097930908,
+    5.149655342102051,
+    6.273475170135498,
+]
+rotation = [
+    -0.20549456775188446,
+    -0.37960270047187805,
+    -0.08688171207904816,
+    0.8978448510169983,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.camera]
+near = 0.10000000149011612
+far = 100.0
+behavior = "static"
+
+[nodes.kind.camera.projection.orthographic]
+half_height = 3.200000047683716

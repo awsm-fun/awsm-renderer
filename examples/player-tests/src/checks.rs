@@ -113,6 +113,17 @@ fn nanite_budget() -> Option<usize> {
 /// The parametrized scene list (plan 007 check 1).
 const SCENES: &[SceneSpec] = &[
     SceneSpec {
+        // The bundle-player tier's reference scene (player goldens through
+        // authored cameras) — the structural sweep here just locks its load:
+        // 8 nodes (floor + 4 shapes + light + TWO Camera nodes).
+        name: "player-cameras",
+        min_nodes: 8,
+        expect_meshes: true,
+        expected_min_textures: 0,
+        features: base_features,
+        extra: Extra::None,
+    },
+    SceneSpec {
         name: "kitchen-sink",
         min_nodes: 10,
         expect_meshes: true,

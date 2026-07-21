@@ -29,7 +29,7 @@ use awsm_renderer::animation::{
     AnimationClipGroup, AnimationClipKey, AnimationTarget, BuiltinMaterialParam, CameraParam,
     LightParam, TargetMask, TexSlot, TexTransformProp,
 };
-use awsm_renderer::cameras::CameraKey;
+use awsm_renderer::camera::CameraKey;
 use awsm_renderer::decals::DecalKey;
 use awsm_renderer::lights::LightKey;
 use awsm_renderer::materials::MaterialKey;

@@ -365,7 +365,7 @@ async fn run_render(
     count: usize,
     canvas: web_sys::OffscreenCanvas,
 ) -> Result<(), JsValue> {
-    use awsm_renderer::camera::CameraMatrices;
+    use awsm_renderer::camera::CameraParams;
     use glam::{Mat4, Vec3};
 
     let (renderer, transform_keys) = build_renderer_and_scene(gpu_builder, count).await?;
@@ -436,29 +436,25 @@ async fn run_render(
         };
         let eye = Vec3::new(0.0, 0.0, 9.0);
         let view = Mat4::look_at_rh(eye, Vec3::ZERO, Vec3::Y);
-        let projection = Mat4::perspective_rh(
-            60.0_f32.to_radians(),
-            crate::viewport::aspect(&canvas),
-            0.1,
-            100.0,
-        );
-        let _ = r.update_camera(CameraMatrices {
+        // The renderer supplies the depth convention AND the live aspect,
+        // so neither can drift from what it actually renders with.
+        let _ = r.set_camera(
             view,
-            projection,
-            position_world: eye,
-            focus_distance: 10.0,
-            aperture: 5.6,
-            // Examples/model-tests stay forward-Z (features default; 003)
-            reverse_z: false,
-            near: 0.1,
-            far: 100.0,
-        });
+            CameraParams::perspective(60.0_f32.to_radians(), 0.1, 100.0),
+        );
         r.update_transforms();
         // Probe the spatial index AFTER the descent has refreshed sim-owned
         // bounds — this is what frustum culling / shadows / picking consult.
         {
-            let frustum =
-                awsm_renderer::frustum::Frustum::from_view_projection(projection * view, false);
+            // Read the SNAPSHOT back rather than rebuilding matrices by hand —
+            // it carries the view-projection AND the reverse_z flag the frustum
+            // extraction must match (this used to hardcode `false`, which went
+            // stale the day the renderer default flipped to reverse-Z).
+            let m = r.camera_matrices().expect("set_camera ran above");
+            let frustum = awsm_renderer::frustum::Frustum::from_view_projection(
+                m.view_projection(),
+                m.reverse_z,
+            );
             let visible = r.scene_spatial.query_frustum_raw(&frustum).count();
             let mn = &mut *min_visible.borrow_mut();
             if visible < *mn {

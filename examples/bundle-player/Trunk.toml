@@ -1,0 +1,8 @@
+# Trunk config for the bundle-player page.
+#
+# Deliberately NO COOP/COEP headers (same rationale as examples/player-tests):
+# a single-threaded main-thread embedding on the stable toolchain, and
+# cross-origin isolation would block the bundle fetches from the test-scenes
+# server on :9084 (plain CORS — which `http-server --cors` sends — is all it
+# needs).
+[serve]

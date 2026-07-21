@@ -197,6 +197,8 @@ pub struct Settings {
     pub gizmo: Mutable<bool>,
     /// Show the pickable light-icon HUD markers (one per light node).
     pub light_gizmos: Mutable<bool>,
+    /// Show the camera frustum gizmo (wireframe frustum per camera node).
+    pub camera_gizmos: Mutable<bool>,
     /// Show the skeleton bone-line overlay on skinned rigs.
     pub skeleton_viz: Mutable<bool>,
     /// Auto-key: in ANIMATION mode, a gizmo edit on a node that the current
@@ -255,6 +257,7 @@ impl Default for Settings {
             grid: Mutable::new(false),
             gizmo: Mutable::new(true),
             light_gizmos: Mutable::new(false),
+            camera_gizmos: Mutable::new(false),
             skeleton_viz: Mutable::new(true),
             auto_key: Mutable::new(true),
             msaa: Mutable::new(true),
@@ -2595,6 +2598,18 @@ impl EditorController {
                     )));
                 };
                 let mut next = n.kind.get_cloned();
+                // An Instancer deliberately has no variant palette (one shared
+                // mesh = one material) — point at the API that DOES set its
+                // material instead of the generic no-palette error. This used
+                // to fail silently and leave the instancer on the flat default
+                // (the dynamic-material-attributes false-positive).
+                if matches!(next, awsm_renderer_editor_protocol::NodeKind::Instancer(_)) {
+                    return Err(crate::error::EditorError::msg(
+                        "add_material_variant: an Instancer has a single `material` field, not a \
+                         variant palette — set it with patch_kind {instancer: {material: \
+                         {asset: <material-id>}}}",
+                    ));
+                }
                 let Some(variants) = next.material_variants_mut() else {
                     return Err(crate::error::EditorError::msg(
                         "add_material_variant: node has no material palette",
@@ -3520,6 +3535,7 @@ impl EditorController {
                 grid,
                 gizmos,
                 light_gizmos,
+                camera_gizmos,
                 skeleton_viz,
                 follow_agent,
                 activity_overlay,
@@ -3538,6 +3554,9 @@ impl EditorController {
                 }
                 if let Some(v) = light_gizmos {
                     s.light_gizmos.set_neq(v);
+                }
+                if let Some(v) = camera_gizmos {
+                    s.camera_gizmos.set_neq(v);
                 }
                 if let Some(v) = skeleton_viz {
                     s.skeleton_viz.set_neq(v);
@@ -3679,6 +3698,30 @@ impl EditorController {
                     });
                 })
                 .await;
+                Ok(None)
+            }
+            EditorCommand::SetActiveCamera { camera } => {
+                // Validate loudly: a stale/wrong id silently falling back to the
+                // free camera would make a headless capture LOOK framed while
+                // rendering the wrong view.
+                if let Some(id) = camera {
+                    let Some(n) = mutate::find_by_id(&self.scene, id) else {
+                        return Err(crate::error::EditorError::msg(format!(
+                            "set_active_camera: no node with id {id}"
+                        )));
+                    };
+                    if !matches!(
+                        n.kind.get_cloned(),
+                        awsm_renderer_editor_protocol::NodeKind::Camera(_)
+                    ) {
+                        return Err(crate::error::EditorError::msg(format!(
+                            "set_active_camera: node {id} is not a Camera node"
+                        )));
+                    }
+                }
+                // Same reactive field the viewport dropdown writes — the render
+                // loop reads it each frame (None = built-in free camera).
+                self.active_camera.set_neq(camera);
                 Ok(None)
             }
             EditorCommand::ResetPose { node } => {
@@ -6338,6 +6381,7 @@ impl EditorController {
                         "grid": self.settings.grid.get(),
                         "gizmos": self.settings.gizmo.get(),
                         "light_gizmos": self.settings.light_gizmos.get(),
+                        "camera_gizmos": self.settings.camera_gizmos.get(),
                         "skeleton_viz": self.settings.skeleton_viz.get(),
                         "follow_agent": crate::engine::activity_feed::follow_enabled().get(),
                         "activity_overlay": crate::engine::activity_feed::enabled().get(),
@@ -8029,7 +8073,7 @@ fn read_readback_target(
             // Null if the camera slot isn't materialized yet, or FovY on an
             // orthographic camera.
             use animation::CameraParamKind as P;
-            use awsm_renderer::cameras::CameraProjectionParams;
+            use awsm_renderer::camera::CameraProjectionParams;
             let camera_key = crate::engine::bridge::bridge()
                 .nodes
                 .lock()

@@ -137,7 +137,7 @@ fn render_main(payload: JsValue) -> Result<(), JsValue> {
         .with_device_request_limits(DeviceRequestLimits::max_all());
 
     wasm_bindgen_futures::spawn_local(async move {
-        if let Err(err) = run_render(gpu_builder, count, canvas_handle).await {
+        if let Err(err) = run_render(gpu_builder, count).await {
             tracing::error!("crowd demo render: {err:?}");
         }
     });
@@ -147,9 +147,8 @@ fn render_main(payload: JsValue) -> Result<(), JsValue> {
 async fn run_render(
     gpu_builder: awsm_renderer_core::renderer::AwsmRendererWebGpuBuilder,
     count: usize,
-    canvas: web_sys::OffscreenCanvas,
 ) -> Result<(), JsValue> {
-    use awsm_renderer::camera::CameraMatrices;
+    use awsm_renderer::camera::CameraParams;
     use awsm_renderer::instances::InstanceAttr;
     use awsm_renderer::materials::Material;
     use awsm_renderer::raw_mesh::RawMeshData;
@@ -302,23 +301,12 @@ async fn run_render(
 
         let eye = Vec3::new(0.0, 0.0, (count as f32).sqrt() * 2.2 + 4.0);
         let view = Mat4::look_at_rh(eye, Vec3::ZERO, Vec3::Y);
-        let projection = Mat4::perspective_rh(
-            60.0_f32.to_radians(),
-            crate::viewport::aspect(&canvas),
-            0.1,
-            200.0,
-        );
-        let _ = r.update_camera(CameraMatrices {
+        // The renderer supplies the depth convention AND the live aspect,
+        // so neither can drift from what it actually renders with.
+        let _ = r.set_camera(
             view,
-            projection,
-            position_world: eye,
-            focus_distance: 10.0,
-            aperture: 5.6,
-            // Examples/model-tests stay forward-Z (features default; 003)
-            reverse_z: false,
-            near: 0.1,
-            far: 200.0,
-        });
+            CameraParams::perspective(60.0_f32.to_radians(), 0.1, 200.0),
+        );
         r.update_transforms();
         if let Err(err) = r.render(None) {
             tracing::warn!("crowd demo: render error: {err}");

@@ -9,15 +9,17 @@ plus the later bvh-reflections design (shipped behind `ssr.bvh_reflections`)
 and compression.md (shipped: `EXT_meshopt_compression` + `KHR_mesh_quantization`
 mesh codec + KTX2/Basis textures block-compressed into VRAM; KTX2 the bundle
 default). Earlier deletions: nanite-follow-up.md, save-load-roundtrip.md,
-offscreen-editor-screenshots.md.
+offscreen-editor-screenshots.md, crashes.md (the editor-tab 70 GB VA leak —
+shipped as the zero-cost-by-default tracing/logging redesign, 221cf2a5; the
+soak harness it produced lives on at `tools/soak/`).
 
 | Plan | Status | One-liner |
 |------|--------|-----------|
 | [007-player-tests](007-player-tests.md) | shipped; 2 optional scenarios open | `examples/player-tests/` runtime harness (29/29 — the standing regression gate). Open: animation stress (5), post/SSR/bloom runtime toggles (7) |
 | [browser-test-suite](browser-test-suite.md) | ✅ shipped; kept as skill SSOT | 3-layer on-device suite (A visual verify.md, B player-tests, C native audits) driving the `awsm-renderer-browser-tests` skill. Done — retained as the design record the skill references, not an active plan |
 | [ssr-followups](ssr-followups.md) | dormant queue (no active SSR work planned) | Reflections roadmap + what shipped (probe, BVH fallback, ssr_mask, zero-cost-off). All remaining items are future tiers, none are defects: planar reflections (content-triggered), prefiltered scene mips, glass-shell shading aliasing, probe tier 2, BVH thin-emitter hit quality |
+| [todo](todo.md) | active | Camera API consolidation (~7 overlapping ways to build one — collapse to a single module, view/projection decoupled, reverse-Z default but not hardcoded, all consumers migrated) + branch leftovers: instancer materials, `SetActiveCamera` + the 2 nanite goldens, camera frustum gizmo |
 | [atmosphere](atmosphere.md) | designed, not started | Haze as a real feature: view-path fog (effects pass) + reflection-path haze; replaces the arena's probe-baked fake |
-| [crashes](crashes.md) | planned, not started | Editor-tab 70 GB VA-leak crash investigation (soak harness) |
 
 ## Working rules (unchanged)
 - `task lint` (fmt + clippy -D warnings) + `cargo test --all-features` green at

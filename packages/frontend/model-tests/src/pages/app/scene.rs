@@ -1,4 +1,3 @@
-pub mod camera;
 pub mod editor;
 mod ibl;
 mod skybox;
@@ -23,11 +22,11 @@ use awsm_renderer_gltf::AwsmRendererGltfExt;
 use awsm_renderer::materials::Material;
 use awsm_renderer::picker::PickResult;
 use awsm_renderer::AwsmRenderer;
+use awsm_renderer_web_shared::util::free_camera::{FreeCamera as Camera, ProjectionMode};
 use awsm_renderer_web_shared::viewport3d::transform_controller::{
     GizmoSpace, TransformController, TransformObject,
 };
 use awsm_web::dom::resize::ResizeObserver;
-use camera::{Camera, CameraId};
 use gloo_events::EventListener;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::PointerEvent;
@@ -209,7 +208,7 @@ pub struct AppScene {
     gltf_node_transforms: Mutex<HashMap<usize, TransformKey>>,
     move_action: Cell<Option<MoveAction>>,
     last_size: Cell<(f64, f64)>,
-    last_camera_id: Cell<CameraId>,
+    last_camera_id: Cell<ProjectionMode>,
     last_shader_kind: Cell<Option<FragmentShaderKind>>,
 }
 
@@ -236,7 +235,7 @@ impl AppScene {
             last_request_animation_frame: Cell::new(None),
             event_listeners: Mutex::new(Vec::new()),
             last_size: Cell::new((0.0, 0.0)),
-            last_camera_id: Cell::new(CameraId::default()),
+            last_camera_id: Cell::new(ProjectionMode::Orthographic),
             last_shader_kind: Cell::new(None),
             editor: Mutex::new(None),
             move_action: Cell::new(None),
@@ -337,7 +336,7 @@ impl AppScene {
                         }
                         Some(MoveAction::CameraMoving) => {
                             if let Some(camera) = state.camera.lock().unwrap().as_mut() {
-                                camera.on_pointer_move(event.movement_x(), event.movement_y());
+                                camera.on_pointer_move(event.movement_x(), event.movement_y(), false);
                             }
                         }
                         None => {}
@@ -455,7 +454,6 @@ impl AppScene {
 
         match AppSceneEditor::new(
             state.renderer.clone(),
-            state.camera.clone(),
             state.ctx.editor_grid_enabled.clone(),
             state.ctx.editor_gizmo_translation_enabled.clone(),
             state.ctx.editor_gizmo_rotation_enabled.clone(),
@@ -1205,10 +1203,10 @@ impl AppScene {
     pub async fn reset_camera(self: &Arc<Self>) -> Result<()> {
         let mut renderer = self.renderer.lock().await;
         if let Some(camera) = self.camera.lock().unwrap().as_mut() {
-            camera.aperture = self.ctx.camera_aperture.get();
-            camera.focus_distance = self.ctx.camera_focus_distance.get();
+            camera.set_aperture(self.ctx.camera_aperture.get());
+            camera.set_focus_distance(self.ctx.camera_focus_distance.get());
 
-            renderer.update_camera(camera.matrices())?;
+            renderer.set_camera(camera.view(), camera.params())?;
         }
 
         Ok(())
@@ -1232,37 +1230,22 @@ impl AppScene {
         // Ensure canvas buffer size matches CSS display size
         renderer.gpu.sync_canvas_buffer_with_css();
 
-        let (canvas_width, canvas_height) = renderer.gpu.canvas_size(false);
-
         // call these first so we can get the extents
         renderer.update_animations(0.0)?;
         renderer.update_transforms();
 
-        let camera_aspect = canvas_width as f32 / canvas_height as f32;
-        let camera_id = self.ctx.camera_id.get();
+        let mode = self.ctx.camera_id.get();
 
-        // Check if we can just resize the existing camera
         let mut camera_guard = self.camera.lock().unwrap();
-        let needs_new_camera = force_new_camera
-            || match camera_guard.as_ref() {
-                None => true,
-                Some(camera) => {
-                    // Need new camera if type changed
-                    match camera_id {
-                        CameraId::Orthographic => !camera.is_orthographic(),
-                        CameraId::Perspective => !camera.is_perspective(),
-                    }
-                }
-            };
-
-        if !needs_new_camera {
-            // Just update the aspect ratio on the existing camera
+        if !force_new_camera {
             if let Some(camera) = camera_guard.as_mut() {
-                camera.on_resize(camera_aspect);
-                // Update renderer's camera matrices so gizmo interactions work correctly
-                renderer.update_camera(camera.matrices())?;
+                // View and projection are decoupled: a projection switch is a
+                // cheap mode flip that keeps the orbit pose, and the aspect is
+                // the renderer's business at `set_camera` — nothing to resize.
+                camera.set_projection_mode(mode);
+                renderer.set_camera(camera.view(), camera.params())?;
+                return Ok(());
             }
-            return Ok(());
         }
 
         // Need to create a new camera - compute scene bounds
@@ -1280,32 +1263,22 @@ impl AppScene {
             }
         }
 
-        let gltf_doc = self
-            .latest_gltf_data
-            .lock()
-            .unwrap()
-            .as_ref()
-            .map(|data| data.doc.clone());
+        let aabb = scene_aabb.unwrap_or_else(|| {
+            let doc = self.latest_gltf_data.lock().unwrap();
+            match doc.as_ref() {
+                Some(data) => awsm_renderer_gltf::aabb_from_gltf_doc(&data.doc),
+                None => Aabb::new_unit_cube(),
+            }
+        });
 
-        let new_camera = match camera_id {
-            CameraId::Orthographic => Camera::new_orthographic(
-                scene_aabb,
-                gltf_doc,
-                camera_aspect,
-                self.ctx.camera_aperture.get(),
-                self.ctx.camera_focus_distance.get(),
-            ),
-            CameraId::Perspective => Camera::new_perspective(
-                scene_aabb,
-                gltf_doc,
-                camera_aspect,
-                self.ctx.camera_aperture.get(),
-                self.ctx.camera_focus_distance.get(),
-            ),
-        };
+        let mut new_camera = Camera::new_aabb(aabb, 1.1, renderer.features.depth());
+        new_camera.set_projection_mode(mode);
+        new_camera.set_aperture(self.ctx.camera_aperture.get());
+        new_camera.set_focus_distance(self.ctx.camera_focus_distance.get());
+        apply_cam_url_override(&mut new_camera);
 
-        // Update renderer's camera matrices immediately so gizmo interactions work correctly
-        renderer.update_camera(new_camera.matrices())?;
+        // Push the camera immediately so gizmo interactions work correctly
+        renderer.set_camera(new_camera.view(), new_camera.params())?;
 
         *camera_guard = Some(new_camera);
 
@@ -1315,10 +1288,11 @@ impl AppScene {
     pub async fn update_all(self: &Arc<Self>, global_time_delta: f64) -> Result<()> {
         let camera = { self.camera.lock().unwrap().clone() };
         if let Some(camera) = camera {
-            self.renderer
-                .lock()
-                .await
-                .update_all(global_time_delta, camera.matrices())?;
+            self.renderer.lock().await.update_all(
+                global_time_delta,
+                camera.view(),
+                camera.params(),
+            )?;
         }
 
         Ok(())
@@ -1364,5 +1338,37 @@ impl AppScene {
                 })));
             }
         }));
+    }
+}
+
+/// Optional `?cam=yaw,pitch,radius,lx,ly,lz` URL override for reproducible
+/// repro shots — applied to a freshly built viewport camera. Ignored unless
+/// all six comma-separated floats parse.
+fn apply_cam_url_override(camera: &mut Camera) {
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let Ok(query) = window.location().search() else {
+        return;
+    };
+    for pair in query.trim_start_matches('?').split('&') {
+        if let Some(val) = pair.strip_prefix("cam=") {
+            let parts: Vec<f32> = val
+                .split(',')
+                .filter_map(|s| s.parse::<f32>().ok())
+                .collect();
+            tracing::info!(
+                target: "awsm_renderer::camera_debug",
+                "cam= URL override seen: parts={:?}",
+                parts,
+            );
+            if let [yaw, pitch, radius, lx, ly, lz] = parts[..] {
+                camera.set_orbit(yaw, pitch, radius, glam::Vec3::new(lx, ly, lz));
+                tracing::info!(
+                    target: "awsm_renderer::camera_debug",
+                    "cam= URL override APPLIED: yaw={yaw} pitch={pitch} radius={radius} look_at=({lx}, {ly}, {lz})",
+                );
+            }
+        }
     }
 }

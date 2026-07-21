@@ -1,4 +1,4 @@
-use crate::{pages::app::scene::camera::Camera, prelude::*};
+use crate::prelude::*;
 use anyhow::Result;
 use awsm_renderer::{render::RenderHooks, AwsmRenderer};
 use dominator_helpers::futures::AsyncLoader;
@@ -25,7 +25,6 @@ pub struct AppSceneEditor {
 impl AppSceneEditor {
     pub async fn new(
         renderer: Arc<futures::lock::Mutex<AwsmRenderer>>,
-        camera: Arc<std::sync::Mutex<Option<Camera>>>,
         grid_enabled: Mutable<bool>,
         gizmo_translation_enabled: Mutable<bool>,
         gizmo_rotation_enabled: Mutable<bool>,
@@ -57,13 +56,14 @@ impl AppSceneEditor {
                     let mut render_hooks = render_hooks.write().unwrap();
 
                     *render_hooks = Some(Arc::new(RenderHooks {
-                        pre_render: Some(Box::new(clone!(transform_controller, camera => move |renderer| {
-                            #[allow(clippy::single_match)]
-                            match (transform_controller.lock().unwrap().as_mut(), camera.lock().unwrap().as_ref()) {
-                                (Some(transform_controller), Some(camera)) => {
-                                    transform_controller.zoom_gizmo_transforms(renderer, &camera.matrices())?;
-                                }
-                                _ => {}
+                        pre_render: Some(Box::new(clone!(transform_controller => move |renderer| {
+                            // The renderer's own snapshot IS the camera this frame
+                            // renders with (set in `update_all` just before).
+                            let matrices = renderer.camera_matrices().cloned();
+                            if let (Some(transform_controller), Some(matrices)) =
+                                (transform_controller.lock().unwrap().as_mut(), matrices)
+                            {
+                                transform_controller.zoom_gizmo_transforms(renderer, &matrices)?;
                             }
 
                             Ok(())

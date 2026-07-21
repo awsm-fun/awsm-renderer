@@ -130,20 +130,51 @@ cmgen -s 64 -f exr --ibl-irradiance ibl-irradiance myHDR.exr
 
 After all these are done, you probably want to move the created subdirectories into the parent directories
 
-2. Package as KTX2 ([GpuTextureFormat::Rg11b10ufloat](https://docs.rs/web-sys/latest/web_sys/enum.GpuTextureFormat.html#variant.Rg11b10ufloat) in webgpu jargon, B10G11R11_UFLOAT_PACK32 for the tool)
+> **Check that your "HDR" source actually has HDR range first.** A `.hdr`/`.exr`
+> extension only tells you the *container* is float — plenty of panoramas sold
+> as HDRIs are tonemapped LDR images re-saved as 32-bit RGBE, with no channel
+> above 1.0. Those bake into flat IBL: no blown-out sun, dull specular
+> response. If the max channel value across the source is ~1.0, the asset has
+> no HDR range to preserve and no amount of care in the packing step will add
+> any.
+
+2. Package as KTX2
 
 _if your EXRs come in flipped, use --convert-texcoord-origin top-left (rarely needed with cmgen output)_
 
-Skybox (simple PNG, no mipmaps)
+Two target formats, both HDR:
+
+| Format | Bytes/texel | Notes |
+|---|---|---|
+| `BC6H_UFLOAT_BLOCK` ([`Bc6hRgbUfloat`](https://docs.rs/web-sys/latest/web_sys/enum.GpuTextureFormat.html#variant.Bc6hRgbUfloat)) | 1 | Stays compressed in VRAM (4x saving). Needs the WebGPU `texture-compression-bc` feature, which the renderer already requests. |
+| `B10G11R11_UFLOAT_PACK32` ([`Rg11b10ufloat`](https://docs.rs/web-sys/latest/web_sys/enum.GpuTextureFormat.html#variant.Rg11b10ufloat)) | 4 | Uncompressed. Loads everywhere — the fallback when BC is unavailable. |
+
+**Preferred: `awsm-renderer-env-bake`** packs all three cubemaps in one shot, and
+is the only way to get BC6H (the Khronos `ktx` CLI cannot *encode* BC6H — it
+only carries pre-encoded blocks via `--raw`):
 
 ```bash
-
-ktx create \
-    --cubemap \
-    --encode uastc --uastc 2 \
-    skybox/px.png skybox/nx.png skybox/py.png skybox/ny.png skybox/pz.png skybox/nz.png \
-    skybox.ktx2
+cargo run --release -p awsm-renderer-env-bake-cli -- \
+    --skybox-faces      skybox/<name> \
+    --specular-faces    ibl-env/<name> \
+    --irradiance-faces  ibl-irradiance/<name> \
+    --out               <output dir> \
+    --format            bc6h          # or rg11b10 for the fallback variant
 ```
+
+It reuses cmgen's own mip chains rather than regenerating them, so the skybox
+bottoms out at 16x16 (comfortably above BC6H's 4x4 block floor) and the
+specular ladder keeps exactly the 6 roughness levels the shader expects.
+
+> **Do not use `--encode uastc` / `--encode basis-lz` for these cubemaps.**
+> Both write a *supercompressed* KTX2, and `renderer-core/src/cubemap/ktx.rs`
+> rejects any file with `supercompressionScheme != 0`. They are also LDR
+> codecs, so on a genuine HDRI they would clip everything above 1.0 — exactly
+> the range IBL depends on. `KHR_texture_basisu` transcoding applies to glTF
+> *material* textures, not to environment maps.
+
+The raw `ktx create` recipes below still work for the uncompressed variant.
+
 Skybox (HDR EXR with mipmaps)
 
 ```bash

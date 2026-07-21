@@ -352,7 +352,7 @@ mod tests {
         assert!(!mask.contains(AnimationTarget::Transform(tkey(1))));
         // ...but still does not gate non-transforms.
         let cam = AnimationTarget::Camera {
-            camera: crate::cameras::CameraKey::null(),
+            camera: crate::camera::CameraKey::null(),
             param: crate::animation::CameraParam::FovY,
         };
         assert!(mask.contains(cam));

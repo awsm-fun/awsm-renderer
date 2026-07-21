@@ -65,6 +65,14 @@ pub struct InstancerDef {
     /// [`InstancesAlongCurveDef::per_instance_colors`]).
     #[serde(default)]
     pub per_instance_colors: Vec<[f32; 4]>,
+    /// The ONE material every instance renders with (instancing shares one
+    /// mesh + one pipeline, so this is mesh-level — there is no per-node
+    /// variant palette here and `add_material_variant` rejects instancers).
+    /// `None` = the flat default; per-instance colours apply either way. A
+    /// custom-WGSL assignment reads them via `material_vertex_color(input, 0u)`.
+    /// Set via `patch_kind {instancer: {material: ..}}`.
+    #[serde(default)]
+    pub material: Option<crate::dynamic_material::MaterialInstance>,
     /// Shadow cast / receive flags. Applies to every instance (instancing
     /// shares one mesh, so this is a mesh-level flag).
     #[serde(default)]
@@ -80,6 +88,7 @@ impl Default for InstancerDef {
             mesh: MeshRef(crate::AssetId::nil()),
             transforms: Vec::new(),
             per_instance_colors: Vec::new(),
+            material: None,
             shadow: MeshShadowConfig::default(),
             lod: MeshLodConfig::default(),
         }

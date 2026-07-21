@@ -315,7 +315,7 @@ fn render_main(payload: JsValue) -> Result<(), JsValue> {
     on_input.forget();
 
     wasm_bindgen_futures::spawn_local(async move {
-        if let Err(err) = run_render(gpu_builder, camera, canvas_handle).await {
+        if let Err(err) = run_render(gpu_builder, camera).await {
             tracing::error!("input demo render: {err:?}");
         }
     });
@@ -360,9 +360,8 @@ fn apply_input(cam: &mut CameraState, ev: WorkerInputEvent) {
 async fn run_render(
     gpu_builder: awsm_renderer_core::renderer::AwsmRendererWebGpuBuilder,
     camera: Rc<RefCell<CameraState>>,
-    canvas: web_sys::OffscreenCanvas,
 ) -> Result<(), JsValue> {
-    use awsm_renderer::camera::CameraMatrices;
+    use awsm_renderer::camera::CameraParams;
     use awsm_renderer::materials::Material;
     use awsm_renderer::raw_mesh::RawMeshData;
     use awsm_renderer::transforms::Transform;
@@ -432,23 +431,12 @@ async fn run_render(
             cam.distance * cam.pitch.cos() * cam.yaw.cos(),
         );
         let view = Mat4::look_at_rh(eye, Vec3::ZERO, Vec3::Y);
-        let projection = Mat4::perspective_rh(
-            60.0_f32.to_radians(),
-            crate::viewport::aspect(&canvas),
-            0.1,
-            100.0,
-        );
-        let _ = r.update_camera(CameraMatrices {
+        // The renderer supplies the depth convention AND the live aspect,
+        // so neither can drift from what it actually renders with.
+        let _ = r.set_camera(
             view,
-            projection,
-            position_world: eye,
-            focus_distance: 10.0,
-            aperture: 5.6,
-            // Examples/model-tests stay forward-Z (features default; 003)
-            reverse_z: false,
-            near: 0.1,
-            far: 100.0,
-        });
+            CameraParams::perspective(60.0_f32.to_radians(), 0.1, 100.0),
+        );
         r.update_transforms();
         let _ = r.render(None);
         if let Some(cb) = raf_run.borrow().as_ref() {

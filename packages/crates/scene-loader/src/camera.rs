@@ -4,7 +4,7 @@
 //! on the node config yet, so it defaults to the values `scene_camera_matrices`
 //! has always used.
 
-use awsm_renderer::cameras::{CameraParams, CameraProjectionParams};
+use awsm_renderer::camera::{CameraParams, CameraProjectionParams};
 use awsm_renderer_scene::{CameraConfig, CameraProjection};
 
 /// Schema camera config → renderer camera params (projection kind + clip planes).

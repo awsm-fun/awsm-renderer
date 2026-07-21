@@ -4,7 +4,11 @@
 //! planes, depth-of-field). This is the animation/editor-facing store the
 //! `AnimationTarget::Camera` channel drives — it holds the *parameters*, not
 //! the per-frame view/projection matrices (those live in
-//! [`crate::camera`]). Mirrors the shape of [`crate::lights::Lights`].
+//! [`super::CameraMatrices`]). Mirrors the shape of [`crate::lights::Lights`].
+//!
+//! [`CameraParams`] is also the parameter half of the renderer's ONE
+//! camera-setting entry point, [`crate::AwsmRenderer::set_camera`] — the store
+//! and the live camera speak the same type by design.
 
 use slotmap::{new_key_type, SlotMap};
 
@@ -16,28 +20,74 @@ new_key_type! {
 /// Projection parameters for a camera. Mirrors the two projection kinds the
 /// renderer supports; `AnimationTarget::Camera { param: FovY }` only touches
 /// the perspective arm (it's a no-op on an orthographic camera).
+///
+/// This is a *parameter* form — the matrix is only built where the depth
+/// convention and live aspect ratio are both known
+/// ([`super::CameraMatrices::new`]), so neither can drift.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CameraProjectionParams {
     /// Perspective projection driven by vertical field-of-view (radians).
     Perspective { fov_y_rad: f32 },
-    /// Orthographic projection driven by half the view-volume height.
+    /// Orthographic projection driven by half the view-volume height (world
+    /// units) — the half-WIDTH follows from the live aspect ratio at matrix
+    /// build, so there are no left/right/bottom/top values to transpose.
     Orthographic { half_height: f32 },
 }
 
-/// Authorable per-camera parameters.
+/// Authorable per-camera parameters: projection + clip planes + depth of
+/// field. The parameter half of [`crate::AwsmRenderer::set_camera`] (the view
+/// matrix is the other half), and the value type of the [`Cameras`] store.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CameraParams {
     /// Projection kind + its driving parameter.
     pub projection: CameraProjectionParams,
-    /// Near clip plane.
+    /// Near clip plane (world units).
     pub near: f32,
-    /// Far clip plane.
+    /// Far clip plane (world units). Carried even where the projection matrix
+    /// ignores it (infinite-far reverse-Z) — froxel slicing / cascade fitting
+    /// clamp against it.
     pub far: f32,
-    /// Depth-of-field aperture (f-stop). Mirrors `CameraMatrices.aperture`;
-    /// default `5.6`.
+    /// Depth-of-field aperture (f-stop). Default
+    /// [`Self::DEFAULT_APERTURE`].
     pub aperture: f32,
-    /// Depth-of-field focus distance. Default `10.0`.
+    /// Depth-of-field focus distance (world units). Default
+    /// [`Self::DEFAULT_FOCUS_DISTANCE`].
     pub focus_distance: f32,
+}
+
+impl CameraParams {
+    /// The one depth-of-field aperture default (f/5.6), shared by every
+    /// constructor and consumer — the store, the editor free camera and the
+    /// scene loader all used 5.6 already; the renderer's old matrix builder
+    /// baking f/16 was the odd one out.
+    pub const DEFAULT_APERTURE: f32 = 5.6;
+    /// The one depth-of-field focus-distance default (10 m).
+    pub const DEFAULT_FOCUS_DISTANCE: f32 = 10.0;
+
+    /// Perspective camera parameters (`fov_y_rad` = vertical field of view in
+    /// radians) with default depth of field.
+    pub fn perspective(fov_y_rad: f32, near: f32, far: f32) -> Self {
+        Self {
+            projection: CameraProjectionParams::Perspective { fov_y_rad },
+            near,
+            far,
+            aperture: Self::DEFAULT_APERTURE,
+            focus_distance: Self::DEFAULT_FOCUS_DISTANCE,
+        }
+    }
+
+    /// Orthographic camera parameters (`half_height` = half the view-volume
+    /// height in world units; width follows the live aspect) with default
+    /// depth of field.
+    pub fn orthographic(half_height: f32, near: f32, far: f32) -> Self {
+        Self {
+            projection: CameraProjectionParams::Orthographic { half_height },
+            near,
+            far,
+            aperture: Self::DEFAULT_APERTURE,
+            focus_distance: Self::DEFAULT_FOCUS_DISTANCE,
+        }
+    }
 }
 
 /// A slotmap of [`CameraParams`], keyed by [`CameraKey`].
@@ -89,13 +139,21 @@ mod tests {
     use super::*;
 
     fn params() -> CameraParams {
-        CameraParams {
-            projection: CameraProjectionParams::Perspective { fov_y_rad: 1.0 },
-            near: 0.1,
-            far: 100.0,
-            aperture: 5.6,
-            focus_distance: 10.0,
-        }
+        CameraParams::perspective(1.0, 0.1, 100.0)
+    }
+
+    #[test]
+    fn constructors_carry_the_one_dof_default() {
+        let p = CameraParams::perspective(1.0, 0.1, 100.0);
+        assert_eq!(p.aperture, CameraParams::DEFAULT_APERTURE);
+        assert_eq!(p.focus_distance, CameraParams::DEFAULT_FOCUS_DISTANCE);
+        let o = CameraParams::orthographic(4.0, 0.1, 100.0);
+        assert_eq!(o.aperture, CameraParams::DEFAULT_APERTURE);
+        assert_eq!(o.focus_distance, CameraParams::DEFAULT_FOCUS_DISTANCE);
+        assert_eq!(
+            o.projection,
+            CameraProjectionParams::Orthographic { half_height: 4.0 }
+        );
     }
 
     #[test]

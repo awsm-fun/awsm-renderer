@@ -2076,3 +2076,52 @@ fn cluster_lod_shaders_validate() {
         "cluster compaction: module missing `fn cs_main` entry point"
     );
 }
+
+/// The MSAA edge accumulator has ONE slot stride, and all three shaders that
+/// index the region must agree on it: classify's per-edge clear, the two
+/// accumulate writers (material arm in `compute.wgsl`, sky arm in
+/// `skybox_primary.wgsl`), and `final_blend`'s resolve. The stride is keyed on
+/// SSR — 8 words (32 B, Karis color + weight, then the SSR descriptor sums)
+/// when on, 4 words (16 B, color only; the descriptor half is NOT ALLOCATED)
+/// when off. See `accumulator_slot_bytes` in edge_buffers.rs.
+///
+/// REGRESSION: `skybox_primary.wgsl` hardcoded `* 8u` and unconditionally wrote
+/// words 4..8. With SSR OFF (the default) the buffer is narrow, so the sky
+/// writer indexed at double stride and ran 4 words past its slot — into a
+/// DIFFERENT edge pixel's region. `edge_pixel_id` comes from an `atomicAdd` in
+/// classify, so which pixel got corrupted was reshuffled every frame and
+/// geometry↔sky silhouettes flickered with a completely static camera. It was
+/// invisible with SSR ON, where 8 is the correct stride. `final_blend` already
+/// had this assertion, which is exactly why its stride stayed correct.
+#[test]
+fn skybox_edge_accumulator_stride_tracks_the_ssr_axis() {
+    for write_ssr_descriptor in [false, true] {
+        let mut key = first_party_key(
+            MaterialShaderId::SKYBOX,
+            ShadingBase::Pbr,
+            true, // owns_skybox → renders skybox_primary.wgsl
+            Some(4),
+            false,
+        );
+        key.write_ssr_descriptor = write_ssr_descriptor;
+        let label = format!("skybox_primary ssr={write_ssr_descriptor}");
+        let src = render(&key, &label);
+
+        let stride = if write_ssr_descriptor { "8u" } else { "4u" };
+        assert!(
+            src.contains(&format!("(edge_pixel_id * 4u + slot_index) * {stride}")),
+            "{label}: sky edge writer must use the {stride}-word accumulator \
+             stride — a hardcoded stride corrupts a neighbouring edge pixel's \
+             slot and flickers silhouettes frame to frame"
+        );
+
+        // The descriptor half only exists in the wide layout. Writing it when
+        // narrow is the out-of-bounds half of the same bug.
+        let writes_descriptor = src.contains("edge_data[accum_word_index + 7u] = 0u;");
+        assert_eq!(
+            writes_descriptor, write_ssr_descriptor,
+            "{label}: sky writer must zero the SSR descriptor words IFF the \
+             wide layout allocated them"
+        );
+    }
+}

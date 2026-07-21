@@ -263,10 +263,19 @@ pub struct ShaderTemplateMaterialOpaqueSkyboxPrimary {
     pub inc: crate::dynamic_materials::ShaderIncludeFlags,
     pub owns_skybox: bool,
     pub pbr_features: awsm_renderer_materials::pbr::PbrFeatures,
-    /// The skybox writer never writes the reflection descriptor itself, but
-    /// the shared `brdf_pbr.wgsl` include gates the SSR IBL-specular
-    /// suppression (`ssr-spread-gate`) on this field, so it must exist for
-    /// askama. Carried from the compute template (matches the cache key).
+    /// Gates BOTH the shared `brdf_pbr.wgsl` SSR IBL-specular suppression
+    /// (`ssr-spread-gate`) AND, in the MSAA edge arm, the accumulator slot
+    /// stride + the descriptor-word zeroing — which must track
+    /// `accumulator_slot_bytes` exactly as `compute.wgsl` and
+    /// `final_blend.wgsl` do.
+    ///
+    /// (This doc once read "the skybox writer never writes the reflection
+    /// descriptor itself". It always did — unconditionally, at a hardcoded
+    /// 8-word stride — so with SSR off it wrote past its 4-word slot into a
+    /// neighbouring edge pixel's region. See
+    /// `skybox_edge_accumulator_stride_tracks_the_ssr_axis`.)
+    ///
+    /// Carried from the compute template (matches the cache key).
     pub write_ssr_descriptor: bool,
     pub dynamic_struct_decl: String,
     pub dynamic_loader_decl: String,

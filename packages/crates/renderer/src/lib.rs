@@ -40,7 +40,6 @@ pub mod bounds;
 pub mod buffer;
 pub mod bvh;
 pub mod camera;
-pub mod cameras;
 #[cfg(feature = "lod")]
 pub mod cluster_lod;
 pub mod coverage;

@@ -61,6 +61,7 @@ bvh_reflections = false
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
+lod = "none"
 
 [assets.00000000-0000-4000-8000-000000000010.source.mesh.primitive.box]
 dims = [
@@ -73,6 +74,7 @@ dims = [
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
+lod = "none"
 
 [assets.00000000-0000-4000-8000-000000000001.source.mesh.primitive.plane]
 width = 30.0
@@ -89,7 +91,7 @@ folder = "assets/materials/new-material-2-00000000-0000-4000-8000-000000000005"
 layers = []
 
 [[nodes]]
-id = "da633307-03e1-4a57-9dcb-ad5447d50d63"
+id = "64e8b206-ea96-4d64-824f-1ca483f17f3b"
 name = "Directional Light"
 locked = false
 visible = true
@@ -211,7 +213,7 @@ cast = true
 receive = true
 
 [nodes.kind.mesh.lod]
-enabled = true
+kind = "none"
 
 [[nodes]]
 id = "00000000-0000-4000-8000-000000000010"
@@ -248,7 +250,7 @@ cast = true
 receive = true
 
 [nodes.kind.mesh.lod]
-enabled = true
+kind = "none"
 
 [[nodes]]
 id = "00000000-0000-4000-8000-000000000020"
@@ -569,9 +571,43 @@ scale = [
     1.0,
 ]
 
+[nodes.kind.instancer.material]
+asset = "00000000-0000-4000-8000-000000000005"
+
+[nodes.kind.instancer.material.inline]
+label = ""
+base_color = [
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.699999988079071
+emissive = [
+    0.0,
+    0.0,
+    0.0,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.instancer.material.inline.extensions]
+
+[nodes.kind.instancer.material.uniform_overrides]
+
+[nodes.kind.instancer.material.texture_overrides]
+
+[nodes.kind.instancer.material.buffer_overrides]
+
 [nodes.kind.instancer.shadow]
 cast = true
 receive = true
 
 [nodes.kind.instancer.lod]
-enabled = true
+kind = "none"

@@ -675,6 +675,7 @@ fn settings_drawer() -> Dom {
                 .child(row("Show grid", toggle(s.grid.clone())))
                 .child(row("Show gizmo", toggle(s.gizmo.clone())))
                 .child(row("Light gizmos", toggle(s.light_gizmos.clone())))
+                .child(row("Camera gizmos", toggle(s.camera_gizmos.clone())))
                 .child(row("Skeleton overlay", toggle(s.skeleton_viz.clone())))
                 .child(row("MSAA", toggle(s.msaa.clone())))
                 .child(row("SMAA", toggle(s.smaa.clone())))

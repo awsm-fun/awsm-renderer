@@ -63,13 +63,12 @@ fn render_main(payload: JsValue) -> Result<(), JsValue> {
     use awsm_renderer_core::renderer::{AwsmRendererWebGpuBuilder, DeviceRequestLimits};
 
     let canvas: web_sys::OffscreenCanvas = payload.unchecked_into();
-    let canvas_handle = canvas.clone();
     let gpu = navigator_gpu().ok_or_else(|| JsValue::from_str("worker: no navigator.gpu"))?;
     let gpu_builder = AwsmRendererWebGpuBuilder::new_with_offscreen_canvas(gpu, canvas)
         .with_device_request_limits(DeviceRequestLimits::max_all());
 
     wasm_bindgen_futures::spawn_local(async move {
-        if let Err(err) = run_render(gpu_builder, canvas_handle).await {
+        if let Err(err) = run_render(gpu_builder).await {
             tracing::error!("lights demo render: {err:?}");
         }
     });
@@ -78,9 +77,8 @@ fn render_main(payload: JsValue) -> Result<(), JsValue> {
 
 async fn run_render(
     gpu_builder: awsm_renderer_core::renderer::AwsmRendererWebGpuBuilder,
-    canvas: web_sys::OffscreenCanvas,
 ) -> Result<(), JsValue> {
-    use awsm_renderer::camera::CameraMatrices;
+    use awsm_renderer::camera::CameraParams;
     use awsm_renderer::lights::Light;
     use awsm_renderer::materials::Material;
     use awsm_renderer::raw_mesh::RawMeshData;
@@ -208,23 +206,11 @@ async fn run_render(
         };
         let eye = Vec3::new(0.0, 9.0, 10.0);
         let view = Mat4::look_at_rh(eye, Vec3::new(0.0, -2.0, 0.0), Vec3::Y);
-        let projection = Mat4::perspective_rh(
-            55.0_f32.to_radians(),
-            crate::viewport::aspect(&canvas),
-            0.1,
-            100.0,
-        );
-        let _ = r.update_camera(CameraMatrices {
-            view,
-            projection,
-            position_world: eye,
-            focus_distance: 12.0,
-            aperture: 5.6,
-            // Examples/model-tests stay forward-Z (features default; 003)
-            reverse_z: false,
-            near: 0.1,
-            far: 100.0,
-        });
+        // The renderer supplies the depth convention AND the live aspect,
+        // so neither can drift from what it actually renders with.
+        let mut camera_params = CameraParams::perspective(55.0_f32.to_radians(), 0.1, 100.0);
+        camera_params.focus_distance = 12.0;
+        let _ = r.set_camera(view, camera_params);
         r.update_transforms();
         if let Err(err) = r.render(None) {
             tracing::warn!("lights demo: render error: {err}");

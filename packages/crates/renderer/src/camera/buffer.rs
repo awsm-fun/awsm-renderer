@@ -1,37 +1,16 @@
-//! Camera buffers and matrices.
+//! The GPU camera uniform buffer — upload plumbing behind
+//! [`crate::AwsmRenderer::set_camera`].
 
 use awsm_renderer_core::buffers::{BufferDescriptor, BufferUsage};
-use awsm_renderer_core::error::AwsmCoreError;
 use awsm_renderer_core::renderer::AwsmRendererWebGpu;
 use glam::{Mat4, Vec2, Vec3, Vec4};
-use thiserror::Error;
 
+use super::{CameraMatrices, Result};
 use crate::bind_groups::BindGroups;
 use crate::render_textures::RenderTextures;
-use crate::{AwsmRenderer, AwsmRendererLogging};
+use crate::AwsmRendererLogging;
 
 const APPLY_JITTER: bool = false;
-
-impl AwsmRenderer {
-    /// Updates the camera buffer with new matrices.
-    pub fn update_camera(&mut self, camera_matrices: CameraMatrices) -> Result<()> {
-        // Render resolution (scaled), not swap-chain: the camera uniform's
-        // viewport feeds shader screen-space math, which runs at render res.
-        let (surface_w, surface_h) = self.gpu.current_context_texture_size()?;
-        let current_width = crate::size::scale_extent(surface_w, self.render_scale);
-        let current_height = crate::size::scale_extent(surface_h, self.render_scale);
-
-        self.camera.update(
-            camera_matrices,
-            &self.render_textures,
-            current_width as f32,
-            current_height as f32,
-            self.features.depth(),
-        )?;
-
-        Ok(())
-    }
-}
 
 /// GPU camera buffer and cached state.
 pub struct CameraBuffer {
@@ -40,81 +19,10 @@ pub struct CameraBuffer {
     pub last_matrices: Option<CameraMatrices>,
     camera_moved: bool,
     gpu_dirty: bool,
+    /// One-shot latch for the depth-convention mismatch error — a static
+    /// misconfiguration, so it must not spam once per frame.
+    warned_convention: bool,
     uploader: crate::buffer::mapped_uploader::MappedUploader,
-}
-
-/// Camera matrices and parameters.
-#[derive(Clone, Debug)]
-pub struct CameraMatrices {
-    pub view: Mat4,
-    pub projection: Mat4,
-    pub position_world: Vec3,
-    /// Focus distance for depth of field (world units). Default: 10.0
-    pub focus_distance: f32,
-    /// Aperture f-stop for depth of field. Lower = more blur. Default: 5.6
-    pub aperture: f32,
-    /// Depth convention the `projection` was built under (003). Consumers that
-    /// derive convention-dependent data from these matrices (frustum-plane
-    /// extraction, near/far recovery) read this instead of guessing from the
-    /// matrix. MUST match the renderer's `features.reverse_z`.
-    pub reverse_z: bool,
-    /// Near clip plane in world units — carried EXPLICITLY (003 stage 5) so
-    /// froxel z-slicing / cascade fitting never recover it from the matrix
-    /// (that algebra breaks under reverse-Z and outright fails under
-    /// infinite-far, where `proj[2][2] == 0`).
-    pub near: f32,
-    /// Far clip plane in world units. May be `f32::INFINITY` under the
-    /// stage-8 infinite-far projection — consumers that need a finite bound
-    /// (froxel slicing, cascade fitting) clamp it themselves.
-    pub far: f32,
-}
-
-impl CameraMatrices {
-    /// Right-handed perspective camera from eye/target/up + frustum params — the
-    /// common case, so a consumer doesn't hand-roll glam matrices. `fov_y` is in
-    /// radians; `aspect` = width / height. Depth-of-field defaults to focusing on
-    /// `target` at f/16 (tweak `focus_distance` / `aperture` afterward if needed).
-    /// `convention` MUST match the renderer's `features.depth()` — a forward-Z
-    /// projection on a reverse-Z renderer inverts every depth test.
-    pub fn perspective(
-        convention: crate::depth_convention::DepthConvention,
-        eye: Vec3,
-        target: Vec3,
-        up: Vec3,
-        fov_y: f32,
-        aspect: f32,
-        near: f32,
-        far: f32,
-    ) -> Self {
-        Self {
-            view: Mat4::look_at_rh(eye, target, up),
-            projection: convention.perspective(fov_y, aspect, near, far),
-            reverse_z: convention.reverse_z,
-            near,
-            far,
-            position_world: eye,
-            focus_distance: (target - eye).length().max(0.001),
-            aperture: 16.0,
-        }
-    }
-
-    /// Returns the combined view-projection matrix.
-    pub fn view_projection(&self) -> Mat4 {
-        self.projection * self.view
-    }
-
-    /// Returns the inverse view-projection matrix.
-    pub fn inv_view_projection(&self) -> Mat4 {
-        self.view_projection().inverse()
-    }
-
-    /// Returns true if the projection is orthographic.
-    pub fn is_orthographic(&self) -> bool {
-        // Orthographic projections have m[3][3] = 1.0 (no perspective divide)
-        // Perspective projections have m[3][3] = 0.0 (w' = -z for perspective divide)
-        // This is the definitive check for standard projection matrices.
-        self.projection.w_axis.w.abs() > 0.5
-    }
 }
 
 impl CameraBuffer {
@@ -165,6 +73,7 @@ impl CameraBuffer {
             gpu_dirty: true,
             last_matrices: None,
             camera_moved: false,
+            warned_convention: false,
             gpu_buffer,
             uploader: crate::buffer::mapped_uploader::MappedUploader::new("Camera"),
         })
@@ -185,6 +94,25 @@ impl CameraBuffer {
         screen_height: f32,
         convention: crate::depth_convention::DepthConvention,
     ) -> Result<()> {
+        // Since `set_camera` became the only public entry point, the projection
+        // and the convention are built from the same `features.depth()` value
+        // and cannot disagree from the OUTSIDE. This tripwire guards in-crate
+        // misuse (an internal caller hand-building `CameraMatrices` against the
+        // wrong convention): a mismatch inverts every depth test — geometry
+        // still draws, just occluded backwards, which is miserable to diagnose
+        // from the symptom. Logged once per renderer: it is a static
+        // misconfiguration, not a per-frame event.
+        if camera_matrices_orig.reverse_z != convention.reverse_z && !self.warned_convention {
+            self.warned_convention = true;
+            tracing::error!(
+                "camera/renderer depth-convention MISMATCH: the projection was built with \
+                 reverse_z={}, the renderer runs reverse_z={}. Every depth test is inverted. \
+                 Build matrices with `CameraMatrices::new(features.depth(), ..)` so the two \
+                 cannot drift.",
+                camera_matrices_orig.reverse_z,
+                convention.reverse_z
+            );
+        }
         let mut camera_matrices = camera_matrices_orig.clone();
 
         self.camera_moved = match &self.last_matrices {
@@ -231,10 +159,6 @@ impl CameraBuffer {
         let inv_view_projection = camera_matrices.inv_view_projection();
         let inv_view = camera_matrices.view.inverse();
         let frustum_rays = compute_view_frustum_rays(inv_projection, convention.near_ndc_z());
-
-        // let s = format!("CameraBuffer Update, inv_projection: {inv_projection:?} inv_view_projection: {inv_view_projection:?} inv_view: {inv_view:?} frustum rays: {frustum_rays:?}");
-
-        // debug_unique_string(1, &s, || tracing::info!("{s}"));
 
         let mut offset = 0;
 
@@ -342,6 +266,7 @@ impl CameraBuffer {
         Ok(())
     }
 }
+
 fn get_halton_jitter(frame_count: u32) -> Vec2 {
     let x = halton(frame_count, 2) - 0.5;
     let y = halton(frame_count, 3) - 0.5;
@@ -400,21 +325,7 @@ fn write_f32_slice(buffer: &mut [u8], offset: &mut usize, values: &[f32]) {
     // way keeps the CPU-side layout authoritative and avoids duplicating offset math.
     let byte_len = std::mem::size_of_val(values);
 
-    // crate::debug::debug_unique_string(*offset as u32, &format!("{:?}", values), || {
-    //     tracing::info!("[{}]: {:?}", offset, values);
-    // });
-
     let bytes = unsafe { std::slice::from_raw_parts(values.as_ptr() as *const u8, byte_len) };
     buffer[*offset..*offset + byte_len].copy_from_slice(bytes);
     *offset += byte_len;
-}
-
-/// Result type for camera operations.
-type Result<T> = std::result::Result<T, AwsmCameraError>;
-
-/// Camera-related errors.
-#[derive(Error, Debug)]
-pub enum AwsmCameraError {
-    #[error("[camera] {0:?}")]
-    Core(#[from] AwsmCoreError),
 }

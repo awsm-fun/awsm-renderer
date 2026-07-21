@@ -1,7 +1,7 @@
 use std::cell::OnceCell;
 use std::collections::{HashMap, HashSet};
 
-use awsm_renderer::cameras::CameraKey;
+use awsm_renderer::camera::CameraKey;
 use awsm_renderer::decals::DecalKey;
 use awsm_renderer::lights::LightKey;
 use awsm_renderer::materials::MaterialKey;

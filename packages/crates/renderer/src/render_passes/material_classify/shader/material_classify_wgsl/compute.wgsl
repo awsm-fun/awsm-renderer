@@ -39,7 +39,21 @@ fn view_space_depth(camera: Camera, depth: f32, pixel_coords: vec2<f32>, screen_
     );
     let clip_pos = vec4<f32>(ndc_xy, depth, 1.0);
     let view_pos_h = camera.inv_proj * clip_pos;
-    let view_pos = view_pos_h.xyz / view_pos_h.w;
+    // GUARD w — never divide raw here. Under reverse-Z the BACKGROUND/sky
+    // carries the depth clear value 0.0, which is the FAR plane; with the main
+    // camera's INFINITE-far projection (`perspective_infinite_reverse_rh`) that
+    // unprojects to w == 0 EXACTLY, so a raw divide yields ±Inf. Feeding Inf
+    // into the relative EDGE_DEPTH_THRESHOLD comparisons below poisons them
+    // (the ratio goes Inf or NaN, and NaN compares false), so every
+    // geometry↔sky silhouette — precisely the edges MSAA exists to smooth —
+    // was classified wrongly.
+    //
+    // Clamping yields a large FINITE depth, which is also the semantically
+    // right reading: sky really is at infinity, so a sky/geometry neighbour
+    // pair produces a large relative difference and registers as an edge,
+    // while sky/sky pairs still difference to ~0 and do not. Mirrors the
+    // existing guards in material_prep/compute.wgsl and helpers/standard.wgsl.
+    let view_pos = view_pos_h.xyz / max(view_pos_h.w, 1e-8);
     return view_pos.z;
 }
 

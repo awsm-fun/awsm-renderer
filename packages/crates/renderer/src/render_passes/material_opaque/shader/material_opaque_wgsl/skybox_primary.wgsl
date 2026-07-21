@@ -175,18 +175,36 @@ fn cs_shade(
         return;
     }
 
-    // 8 words per slot (see ACCUMULATOR_SLOT_BYTES): sky samples carry ZERO
-    // SSR reflectivity — write the descriptor words fresh so final_blend
-    // never reads a stale prior-frame sum from this slot.
-    let accum_word_index = edge_layout.accumulator_base + (edge_pixel_id * 4u + slot_index) * 8u;
+    // Accumulator slot stride: SSR on = 8 words per slot (0..4 Karis color +
+    // weight, 4..8 SSR descriptor sums); SSR off = 4 words, descriptor half NOT
+    // ALLOCATED. See ACCUMULATOR_SLOT_BYTES in edge_buffers.rs.
+    //
+    // This MUST stay keyed on the same template axis as the other two shaders
+    // that index this region — `material_opaque_wgsl/compute.wgsl` (material
+    // arm accumulate) and `final_blend.wgsl` (resolve). It previously hardcoded
+    // `8u` and unconditionally wrote words 4..8. With SSR OFF (the default) the
+    // buffer is narrow, so this writer indexed at DOUBLE stride and ran 4 words
+    // past the end of its slot — landing inside a DIFFERENT edge pixel's slot
+    // region. Which pixel got corrupted depended on `edge_pixel_id`, handed out
+    // by `atomicAdd` in classify and therefore permuted every frame, so
+    // geometry↔sky silhouettes flickered frame to frame with a static camera
+    // (~500-700 px on the env-bc6h-spheres probe; MSAA off was clean because
+    // this whole arm only exists under MSAA). It was invisible with SSR ON,
+    // where the hardcoded 8 happens to be the correct stride.
+    let accum_word_index = edge_layout.accumulator_base
+        + (edge_pixel_id * 4u + slot_index) * {% if write_ssr_descriptor %}8u{% else %}4u{% endif %};
     edge_data[accum_word_index + 0u] = bitcast<u32>(color_sum.x);
     edge_data[accum_word_index + 1u] = bitcast<u32>(color_sum.y);
     edge_data[accum_word_index + 2u] = bitcast<u32>(color_sum.z);
     // Plain SAMPLE COUNT (matches the material arm — tonemapped-space resolve).
     edge_data[accum_word_index + 3u] = bitcast<u32>(weight_sum);
+    {% if write_ssr_descriptor %}
+    // Sky samples carry ZERO SSR reflectivity — write the descriptor words
+    // fresh so final_blend never reads a stale prior-frame sum from this slot.
     edge_data[accum_word_index + 4u] = 0u;
     edge_data[accum_word_index + 5u] = 0u;
     edge_data[accum_word_index + 6u] = 0u;
     edge_data[accum_word_index + 7u] = 0u;
+    {% endif %}
 }
 {% endif %}

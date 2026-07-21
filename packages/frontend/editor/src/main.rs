@@ -342,17 +342,39 @@ pub async fn editor_query_json(query_json: String) -> String {
     controller::controller().query_json(&query_json).await
 }
 
+/// Write seam: decode a JSON `EditorCommand`, RUN it, and report the outcome —
+/// `"ok"`, `"decode error: …"` (malformed JSON / unknown command), or
+/// `"error: …"` (the command ran and failed).
+///
+/// This AWAITS the dispatch. It used to `spawn_local` and return `"ok"`
+/// unconditionally, so a command that failed still reported success and the
+/// error only ever reached `tracing::error!`. Every scene authoring script
+/// under `examples/test-scenes` guards with `if (v !== 'ok') throw`, which
+/// could therefore never fire — a scene could author itself against
+/// half-applied state and still be captured as a golden.
+///
+/// (Keep `*` followed by `/` out of this doc comment: wasm-bindgen copies it
+/// verbatim into a JSDoc block in the generated glue, where that sequence
+/// closes the comment early and turns the rest of the prose into JS.)
+///
+/// Caught with `import_ktx_env_from_url` against a 404: the eager KTX
+/// validation rejected the HTML error page exactly as designed ("is not a
+/// loadable KTX2 cubemap: unexpected magic numbers") and the caller still got
+/// `"ok"`.
+///
+/// Every caller already `await`s this, so returning a Promise is source
+/// compatible. Note it settles the COMMAND, not the frame — still
+/// `wait_render_settled` before capturing.
 #[wasm_bindgen]
-pub fn editor_dispatch_json(cmd_json: &str) -> String {
-    match serde_json::from_str::<controller::EditorCommand>(cmd_json) {
-        Ok(cmd) => {
-            spawn_local(async move {
-                if let Err(err) = controller::controller().dispatch(cmd).await {
-                    tracing::error!("dispatch failed: {err}");
-                }
-            });
-            "ok".to_string()
-        }
+pub async fn editor_dispatch_json(cmd_json: String) -> String {
+    match serde_json::from_str::<controller::EditorCommand>(&cmd_json) {
+        Ok(cmd) => match controller::controller().dispatch(cmd).await {
+            Ok(_) => "ok".to_string(),
+            Err(err) => {
+                tracing::error!("dispatch failed: {err}");
+                format!("error: {err}")
+            }
+        },
         Err(err) => format!("decode error: {err}"),
     }
 }

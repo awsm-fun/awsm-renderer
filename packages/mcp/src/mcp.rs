@@ -1401,6 +1401,9 @@ pub struct ViewOptionsParams {
     /// Pickable light-icon HUD markers. Omit to leave unchanged.
     #[serde(default)]
     pub light_gizmos: Option<bool>,
+    /// Camera frustum gizmo (wireframe frustum per camera node).
+    #[serde(default)]
+    pub camera_gizmos: Option<bool>,
     /// Skeleton bone-line overlay on skinned rigs. Omit to leave unchanged.
     #[serde(default)]
     pub skeleton_viz: Option<bool>,
@@ -1495,6 +1498,14 @@ pub struct CameraClipParams {
     /// Far clip plane in metres (applied when manual). Omit to leave unchanged.
     #[serde(default)]
     pub far: Option<f64>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ActiveCameraParams {
+    /// Camera-node UUID to render the viewport through; omit (or null) to
+    /// return to the built-in free camera.
+    #[serde(default)]
+    pub camera: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -4586,7 +4597,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Set editor viewport view options (partial update — only the fields you pass change; transient view state, never persisted): grid, gizmos, light_gizmos, skeleton_viz, follow_agent, activity_overlay, mcp_notifications, msaa, smaa (all bool; msaa is STRUCTURAL — wait_render_settled after flipping), render_scale (float 1.0–2.0 supersampling; targets rebuild next frame — wait_render_settled after), and anisotropy (bool, default on — runtime sampler swap). FOR CLEAN VERIFICATION SCREENSHOTS: set {grid:false, gizmos:false, light_gizmos:false, skeleton_viz:false} before screenshot_scene so viewport chrome does not contaminate the pixels, and restore afterwards. follow_agent / activity_overlay / mcp_notifications default OFF and are human-courtesy toggles — leave them off during automated work. Read the current values back with get_view_options."
+        description = "Set editor viewport view options (partial update — only the fields you pass change; transient view state, never persisted): grid, gizmos, light_gizmos, camera_gizmos (wireframe frustum per camera node), skeleton_viz, follow_agent, activity_overlay, mcp_notifications, msaa, smaa (all bool; msaa is STRUCTURAL — wait_render_settled after flipping), render_scale (float 1.0–2.0 supersampling; targets rebuild next frame — wait_render_settled after), and anisotropy (bool, default on — runtime sampler swap). FOR CLEAN VERIFICATION SCREENSHOTS: set {grid:false, gizmos:false, light_gizmos:false, skeleton_viz:false} before screenshot_scene so viewport chrome does not contaminate the pixels, and restore afterwards. follow_agent / activity_overlay / mcp_notifications default OFF and are human-courtesy toggles — leave them off during automated work. Read the current values back with get_view_options."
     )]
     async fn set_view_options(
         &self,
@@ -4596,6 +4607,7 @@ impl EditorMcp {
             grid: p.grid,
             gizmos: p.gizmos,
             light_gizmos: p.light_gizmos,
+            camera_gizmos: p.camera_gizmos,
             skeleton_viz: p.skeleton_viz,
             follow_agent: p.follow_agent,
             activity_overlay: p.activity_overlay,
@@ -4610,7 +4622,7 @@ impl EditorMcp {
 
     #[tool(
         annotations(read_only_hint = true),
-        description = "Current editor viewport view options as JSON (grid, gizmos, light_gizmos, skeleton_viz, follow_agent, activity_overlay, mcp_notifications, msaa, smaa, anisotropy booleans + render_scale float) — the read half of set_view_options. Pure read."
+        description = "Current editor viewport view options as JSON (grid, gizmos, light_gizmos, camera_gizmos, skeleton_viz, follow_agent, activity_overlay, mcp_notifications, msaa, smaa, anisotropy booleans + render_scale float) — the read half of set_view_options. Pure read."
     )]
     async fn get_view_options(&self) -> Result<CallToolResult, McpError> {
         self.query(EditorQuery::ViewOptions).await
@@ -4696,6 +4708,21 @@ impl EditorMcp {
             far: p.far,
         })
         .await
+    }
+
+    #[tool(
+        description = "Which camera the viewport renders through: pass a scene Camera node's UUID to lock the view to that node's transform + config (orbit/pan/zoom become inert), or omit `camera` to return to the built-in free camera. Errors if the node isn't a Camera. Transient view state — the camera NODE is what a project persists, so this makes an authored framing reproducible: load project, set_active_camera, screenshot_scene."
+    )]
+    async fn set_active_camera(
+        &self,
+        Parameters(p): Parameters<ActiveCameraParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let camera = match &p.camera {
+            Some(id) => Some(parse_node(id)?),
+            None => None,
+        };
+        self.dispatch(EditorCommand::SetActiveCamera { camera })
+            .await
     }
 
     #[tool(
@@ -6113,9 +6140,16 @@ A) Quick two-color sky (no hosting):
 
 B) Baked HDRI / studio KTX2 cubemaps by URL (read awsm://docs/asset-workflows for full flags):
    1. Make an .hdr/.exr (a real HDRI, or generate an equirect panorama procedurally — numpy → flat-RGBE .hdr).
+      Check the source actually HAS HDR range: a .hdr extension only means the container is float, and \
+many 'HDRIs' are tonemapped LDR re-saved as RGBE (max channel ~1.0), which bakes to flat IBL.
    2. cmgen → skybox faces (-x skybox), prefiltered spec (--ibl-ld), irradiance (--ibl-irradiance).
       The equirect→cubemap projection happens HERE, offline (there is no runtime equirect).
-   3. ktx create --cubemap --format B10G11R11_UFLOAT_PACK32 … → skybox.ktx2, env.ktx2, irradiance.ktx2.
+   3. awsm-renderer-env-bake --skybox-faces … --specular-faces … --irradiance-faces … --out … --format bc6h \
+→ skybox.ktx2, env.ktx2, irradiance.ktx2. BC6H stays block-compressed in VRAM (1 B/texel vs \
+B10G11R11's 4). --format rg11b10 gives the uncompressed fallback; ktx create --cubemap --format \
+B10G11R11_UFLOAT_PACK32 … also produces that variant but cannot encode BC6H. NEVER --encode \
+uastc/basis-lz here: both write supercompressed KTX2 (which the cubemap loader rejects) and are LDR \
+codecs that clip everything above 1.0.
    4. Serve them (a local CORS static server is fine), then:
       set_environment { skybox: \"<url>/skybox.ktx2\", specular: \"<url>/env.ktx2\", irradiance: \"<url>/irradiance.ktx2\" }.
       (Slots are independent — set only the ones you want. Mix freely: e.g. skybox: \"builtin\" for a \

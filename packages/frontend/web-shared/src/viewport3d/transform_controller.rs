@@ -125,8 +125,31 @@ struct Placement {
     /// Cached camera unprojection + viewport so analytic picking (grab + hover)
     /// can build a camera ray WITHOUT touching the renderer — hover can then run
     /// on every pointer-move with no renderer lock.
-    inv_view_proj: Mat4,
+    ray: RayBasis,
     viewport: (f32, f32),
+}
+
+/// Everything a screen ray needs, in the form that keeps the maths numerically
+/// well-behaved: the projection and view inverses kept SPLIT (not fused into
+/// `inv_view_proj`) so the direction can be built in VIEW space and rotated
+/// out. See `ray_from_screen`.
+#[derive(Clone, Copy, Debug)]
+struct RayBasis {
+    inv_proj: Mat4,
+    inv_view: Mat4,
+    camera_pos: Vec3,
+    is_ortho: bool,
+}
+
+impl RayBasis {
+    fn from_camera(camera_matrices: &CameraMatrices) -> Self {
+        Self {
+            inv_proj: camera_matrices.projection.inverse(),
+            inv_view: camera_matrices.view.inverse(),
+            camera_pos: camera_matrices.position_world,
+            is_ortho: camera_matrices.is_orthographic(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -307,7 +330,7 @@ impl TransformController {
             orientation,
             scale,
             world_per_px,
-            inv_view_proj: camera_matrices.inv_view_projection(),
+            ray: RayBasis::from_camera(camera_matrices),
             viewport: (viewport_x as f32, viewport_y as f32),
         });
 
@@ -393,7 +416,7 @@ impl TransformController {
     fn pick(&self, x: i32, y: i32) -> Option<GizmoKind> {
         let p = self.placement?;
         let (w, h) = p.viewport;
-        let (ro, rd) = ray_from_screen(x as f32, y as f32, w, h, p.inv_view_proj);
+        let (ro, rd) = ray_from_screen(x as f32, y as f32, w, h, p.ray);
         let tol = (p.world_per_px * TOLERANCE_PX).max(1e-5);
 
         let mut best: Option<(f32, GizmoKind)> = None;
@@ -790,14 +813,74 @@ fn is_rotation(kind: GizmoKind) -> bool {
 
 /// Build a world-space camera ray (origin, normalized direction) for a screen
 /// point, given the camera's inverse view-projection matrix.
-fn ray_from_screen(sx: f32, sy: f32, vw: f32, vh: f32, inv_view_proj: Mat4) -> (Vec3, Vec3) {
+fn ray_from_screen(sx: f32, sy: f32, vw: f32, vh: f32, basis: RayBasis) -> (Vec3, Vec3) {
+    let RayBasis {
+        inv_proj,
+        inv_view,
+        camera_pos,
+        is_ortho,
+    } = basis;
     let ndc_x = (2.0 * sx / vw) - 1.0;
     let ndc_y = 1.0 - (2.0 * sy / vh);
-    let near = inv_view_proj * Vec4::new(ndc_x, ndc_y, 0.0, 1.0);
-    let far = inv_view_proj * Vec4::new(ndc_x, ndc_y, 1.0, 1.0);
-    let near = near.truncate() / near.w;
-    let far = far.truncate() / far.w;
-    (near, (far - near).normalize())
+
+    if is_ortho {
+        // Orthographic rays are PARALLEL: one shared direction (the camera
+        // forward axis rotated out — cancellation-free, no unprojection), and a
+        // per-pixel origin on the near clip plane.
+        let dir = (inv_view * Vec4::new(0.0, 0.0, -1.0, 0.0))
+            .truncate()
+            .normalize();
+
+        // The origin MUST be the near-plane sample. It is not enough to be on
+        // the ray: `pick` and `ray_plane_intersection` both require t > 0, so an
+        // origin at the FAR plane puts the whole scene behind the ray and
+        // nothing is ever hit. Which NDC z is "near" is convention-dependent
+        // (reverse-Z: 1; forward-Z: 0), so unproject BOTH ends and keep the one
+        // nearer the camera rather than assuming either. Safe to divide here:
+        // an ortho `inv_proj` has w row (0,0,0,1), so w == 1 at both ends —
+        // there is no infinite-far plane to hit, unlike the perspective case.
+        let unproject = |z: f32| {
+            let p = inv_proj * Vec4::new(ndc_x, ndc_y, z, 1.0);
+            (inv_view * (p.truncate() / p.w).extend(1.0)).truncate()
+        };
+        let a = unproject(0.0);
+        let b = unproject(1.0);
+        let origin = if (a - camera_pos).length_squared() <= (b - camera_pos).length_squared() {
+            a
+        } else {
+            b
+        };
+        return (origin, dir);
+    }
+
+    // PERSPECTIVE. Build the direction in VIEW space and rotate it out; never
+    // unproject to a world point and subtract.
+    //
+    // For every perspective matrix this renderer builds, `inv_proj` applied to
+    // (ndc_x, ndc_y, z, 1) has the form
+    //     (ndc_x * a/f,  ndc_y / f,  -1,  z / near)
+    // — the xyz part carries NO z term, so it is already the view-space ray
+    // direction (unnormalized) and the choice of z is irrelevant. Dropping the
+    // perspective divide is therefore exact, not an approximation.
+    //
+    // Two failure modes this avoids:
+    //
+    // 1. w == 0. The previous version unprojected NDC z=0 as "near" and z=1 as
+    //    "far" — a forward-Z assumption. Under this renderer's REVERSE-Z with
+    //    the INFINITE-far projection, z=0 IS the far plane, at infinity, where
+    //    w is exactly 0: the divide gave ro=(-inf,-inf,-inf), rd=(NaN,NaN,NaN)
+    //    and no gizmo handle could ever be hit-tested.
+    // 2. Catastrophic cancellation. Differencing two unprojected WORLD points
+    //    loses precision once the camera sits far from the origin — under
+    //    reverse-Z both samples hug the near plane, so the difference is tiny
+    //    against large coordinates. Working in view space keeps the numbers
+    //    small and independent of where the camera is in the world.
+    //
+    // It is also depth-convention agnostic: no NDC z value is ever assumed to
+    // mean "near" or "far".
+    let view_dir = (inv_proj * Vec4::new(ndc_x, ndc_y, 0.0, 1.0)).truncate();
+    let dir = (inv_view * view_dir.extend(0.0)).truncate().normalize();
+    (camera_pos, dir)
 }
 
 /// Closest approach between a ray and a segment. Returns the ray parameter `t`
@@ -946,7 +1029,7 @@ pub fn ray_plane_intersection(
         screen_y,
         viewport_width,
         viewport_height,
-        camera_matrices.inv_view_projection(),
+        RayBasis::from_camera(camera_matrices),
     );
     let denom = ray_direction.dot(plane_normal);
     if denom.abs() < 1e-6 {
@@ -1027,4 +1110,292 @@ fn set_local_transform(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_ray_ok(
+        label: &str,
+        ro: Vec3,
+        rd: Vec3,
+        camera_pos: Vec3,
+        expect_origin_at_camera: bool,
+    ) {
+        assert!(ro.is_finite(), "{label}: origin must be finite, got {ro:?}");
+        assert!(
+            rd.is_finite(),
+            "{label}: direction must be finite, got {rd:?}"
+        );
+        assert!(
+            (rd.length() - 1.0).abs() < 1e-3,
+            "{label}: direction must be normalized, got len {}",
+            rd.length()
+        );
+        if expect_origin_at_camera {
+            assert!(
+                (ro - camera_pos).length() < 1e-3,
+                "{label}: perspective ray must originate at the camera"
+            );
+        }
+    }
+
+    /// The pick ray must be finite under BOTH depth conventions.
+    ///
+    /// REGRESSION: `ray_from_screen` unprojected NDC z=0 as "near" and z=1 as
+    /// "far" — a forward-Z assumption. This renderer runs REVERSE-Z with the
+    /// INFINITE-far projection, where z=0 is the far plane at infinity and
+    /// unprojects to w == 0 EXACTLY. The divide produced ro=(-inf,-inf,-inf)
+    /// and rd=(NaN,NaN,NaN), so every analytic hit test failed and no gizmo
+    /// handle could be hovered or grabbed — while the handles still DREW,
+    /// because drawing never ray-casts.
+    #[test]
+    fn pick_ray_is_finite_under_both_depth_conventions() {
+        let camera_pos = Vec3::new(4.0, 3.0, 5.0);
+        let view = Mat4::look_at_rh(camera_pos, Vec3::ZERO, Vec3::Y);
+        let (w, h) = (837.0_f32, 712.0_f32);
+        let aspect = w / h;
+
+        for (label, proj) in [
+            (
+                "reverse-z infinite",
+                Mat4::perspective_infinite_reverse_rh(1.0, aspect, 0.1),
+            ),
+            (
+                "forward-z finite",
+                Mat4::perspective_rh(1.0, aspect, 0.1, 1000.0),
+            ),
+        ] {
+            let (inv_proj, inv_view) = (proj.inverse(), view.inverse());
+            for (sx, sy) in [
+                (w * 0.5, h * 0.5),
+                (1.0, 1.0),
+                (w - 1.0, h - 1.0),
+                (419.0, 356.0),
+            ] {
+                let basis = RayBasis {
+                    inv_proj,
+                    inv_view,
+                    camera_pos,
+                    is_ortho: false,
+                };
+                let (ro, rd) = ray_from_screen(sx, sy, w, h, basis);
+                assert_ray_ok(label, ro, rd, camera_pos, true);
+                assert!(
+                    rd.dot((Vec3::ZERO - camera_pos).normalize()) > 0.0,
+                    "{label}: ray at ({sx},{sy}) must point into the scene"
+                );
+            }
+        }
+    }
+
+    /// The centre pixel must aim exactly at what the camera looks at, and the
+    /// ray must stay accurate with the camera FAR from the world origin.
+    ///
+    /// This is what the view-space formulation buys: the earlier fix differenced
+    /// two unprojected WORLD points, and under reverse-Z both samples hug the
+    /// near plane — so at large coordinates the subtraction cancels away most of
+    /// the mantissa and the direction degrades. Building the direction in view
+    /// space and rotating it out keeps the arithmetic small and camera-relative.
+    #[test]
+    fn pick_ray_stays_accurate_far_from_the_origin() {
+        let (w, h) = (837.0_f32, 712.0_f32);
+        let aspect = w / h;
+        let proj = Mat4::perspective_infinite_reverse_rh(1.0, aspect, 0.1);
+
+        for offset in [0.0_f32, 1_000.0, 50_000.0, 250_000.0] {
+            let target = Vec3::new(offset, 0.0, 0.0);
+            let camera_pos = target + Vec3::new(4.0, 3.0, 5.0);
+            let view = Mat4::look_at_rh(camera_pos, target, Vec3::Y);
+            let (inv_proj, inv_view) = (proj.inverse(), view.inverse());
+
+            let basis = RayBasis {
+                inv_proj,
+                inv_view,
+                camera_pos,
+                is_ortho: false,
+            };
+            let (ro, rd) = ray_from_screen(w * 0.5, h * 0.5, w, h, basis);
+            assert_ray_ok(&format!("offset {offset}"), ro, rd, camera_pos, true);
+
+            // Centre pixel → straight at the look-at target.
+            let expected = (target - camera_pos).normalize();
+            let cos = rd.dot(expected).clamp(-1.0, 1.0);
+            assert!(
+                cos > 0.9999,
+                "offset {offset}: centre ray drifted from the view axis (cos {cos}, dir {rd:?})"
+            );
+        }
+    }
+
+    /// Sweep the ACTUAL production projection builders across the parameter
+    /// space the editor can produce, and assert the ray invariants everywhere.
+    ///
+    /// This is the robustness net. It deliberately uses
+    /// `DepthConvention::perspective` / `::orthographic` rather than
+    /// hand-rolled glam matrices, because those two functions are the ONLY way
+    /// a projection reaches a camera in this codebase: scene cameras build
+    /// theirs in `render_loop`, the editor free camera in `free_camera`, and
+    /// `CameraProjectionParams` is an enum (Perspective { fov } / Orthographic
+    /// { .. }) — there is no path that hands us an arbitrary matrix. So proving
+    /// the invariants over this sweep proves them for every camera the editor
+    /// can actually have.
+    ///
+    /// Invariants, for each (convention x kind x params x pixel):
+    ///   - origin + direction finite, direction normalized
+    ///   - perspective: origin AT the camera; ortho: origin on the NEAR side
+    ///   - the scene lies AHEAD of the origin (every hit test needs t > 0)
+    ///   - the centre pixel aims at what the camera looks at
+    #[test]
+    fn ray_invariants_hold_across_every_projection_the_editor_builds() {
+        use awsm_renderer::depth_convention::DepthConvention;
+
+        let target = Vec3::new(2.0, 1.0, -3.0);
+        let camera_pos = target + Vec3::new(6.0, 4.0, 8.0);
+        let view = Mat4::look_at_rh(camera_pos, target, Vec3::Y);
+        let inv_view = view.inverse();
+
+        // Viewports: square, ultrawide, tall/portrait, and a 1px sliver.
+        let viewports = [
+            (837.0_f32, 712.0_f32),
+            (2560.0, 720.0),
+            (600.0, 1400.0),
+            (64.0, 1024.0),
+        ];
+        // fov: very narrow telephoto .. very wide. near/far: tight .. huge range.
+        let fovs = [0.05_f32, 0.5, 1.0, 2.8];
+        let clips = [(0.001_f32, 10.0_f32), (0.1, 1000.0), (1.0, 100_000.0)];
+
+        for reverse_z in [false, true] {
+            let convention = DepthConvention { reverse_z };
+
+            for &(w, h) in &viewports {
+                let aspect = w / h;
+                let pixels = [
+                    (w * 0.5, h * 0.5),
+                    (0.0, 0.0),
+                    (w, h),
+                    (w * 0.5, 0.0),
+                    (0.0, h * 0.5),
+                ];
+
+                for &fov in &fovs {
+                    for &(near, far) in &clips {
+                        let proj = convention.perspective(fov, aspect, near, far);
+                        let basis = RayBasis {
+                            inv_proj: proj.inverse(),
+                            inv_view,
+                            camera_pos,
+                            is_ortho: false,
+                        };
+                        let label =
+                            format!("persp rz={reverse_z} {w}x{h} fov={fov} near={near} far={far}");
+                        for &(sx, sy) in &pixels {
+                            let (ro, rd) = ray_from_screen(sx, sy, w, h, basis);
+                            assert_ray_ok(&label, ro, rd, camera_pos, true);
+                            assert!(
+                                (target - ro).dot(rd) > 0.0,
+                                "{label} @({sx},{sy}): scene must lie ahead of the ray"
+                            );
+                        }
+                        // Centre pixel aims down the view axis.
+                        let (_, rd) = ray_from_screen(w * 0.5, h * 0.5, w, h, basis);
+                        let cos = rd.dot((target - camera_pos).normalize()).clamp(-1.0, 1.0);
+                        assert!(cos > 0.9999, "{label}: centre ray drifted (cos {cos})");
+                    }
+                }
+
+                for &(near, far) in &clips {
+                    let (hw, hh) = (4.0_f32 * aspect, 4.0_f32);
+                    let proj = convention.orthographic(-hw, hw, -hh, hh, near, far);
+                    let basis = RayBasis {
+                        inv_proj: proj.inverse(),
+                        inv_view,
+                        camera_pos,
+                        is_ortho: true,
+                    };
+                    let label = format!("ortho rz={reverse_z} {w}x{h} near={near} far={far}");
+                    let mut dirs = Vec::new();
+                    for &(sx, sy) in &pixels {
+                        let (ro, rd) = ray_from_screen(sx, sy, w, h, basis);
+                        assert_ray_ok(&label, ro, rd, camera_pos, false);
+                        assert!(
+                            (target - ro).dot(rd) > 0.0,
+                            "{label} @({sx},{sy}): scene must lie ahead of the ray \
+                             (origin {ro:?} — far-plane origins break every t > 0 test)"
+                        );
+                        dirs.push(rd);
+                    }
+                    for d in &dirs {
+                        assert!(
+                            d.dot(dirs[0]) > 0.9999,
+                            "{label}: ortho rays must all be parallel"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Orthographic cameras: rays are parallel, each pixel carries its own
+    /// origin, and that origin must be on the NEAR plane.
+    ///
+    /// Parameterised over BOTH ortho conventions on purpose. `DepthConvention`
+    /// builds reverse-Z ortho by SWAPPING near/far, so NDC z=0 is the near plane
+    /// under forward-Z and the FAR plane under reverse-Z. A first version of
+    /// this test only covered forward-Z and therefore passed while the ortho
+    /// origin was hardcoded to z=0 — which put the whole scene behind the ray
+    /// under reverse-Z, so every `t > 0` hit test failed and ortho picking was
+    /// dead. Same class of blind spot as the bug it is guarding.
+    #[test]
+    fn ortho_pick_rays_are_parallel_with_near_plane_origins() {
+        let camera_pos = Vec3::new(0.0, 0.0, 10.0);
+        let view = Mat4::look_at_rh(camera_pos, Vec3::ZERO, Vec3::Y);
+        let (w, h) = (800.0_f32, 600.0_f32);
+        let (near, far) = (0.1_f32, 100.0_f32);
+
+        for (label, proj) in [
+            (
+                "forward-z ortho",
+                Mat4::orthographic_rh(-4.0, 4.0, -3.0, 3.0, near, far),
+            ),
+            // Reverse-Z ortho is the near/far swap — see DepthConvention::orthographic.
+            (
+                "reverse-z ortho",
+                Mat4::orthographic_rh(-4.0, 4.0, -3.0, 3.0, far, near),
+            ),
+        ] {
+            let basis = RayBasis {
+                inv_proj: proj.inverse(),
+                inv_view: view.inverse(),
+                camera_pos,
+                is_ortho: true,
+            };
+            let (ro_a, rd_a) = ray_from_screen(10.0, 10.0, w, h, basis);
+            let (ro_b, rd_b) = ray_from_screen(w - 10.0, h - 10.0, w, h, basis);
+            assert_ray_ok(label, ro_a, rd_a, camera_pos, false);
+            assert_ray_ok(label, ro_b, rd_b, camera_pos, false);
+            assert!(
+                rd_a.dot(rd_b) > 0.9999,
+                "{label}: ortho rays must be parallel, got {rd_a:?} vs {rd_b:?}"
+            );
+            assert!(
+                (ro_a - ro_b).length() > 1.0,
+                "{label}: ortho origins must differ per pixel, got {ro_a:?} and {ro_b:?}"
+            );
+            for (which, ro) in [("a", ro_a), ("b", ro_b)] {
+                // Every hit test requires t > 0, so the scene must lie AHEAD.
+                assert!(
+                    (Vec3::ZERO - ro).dot(rd_a) > 0.0,
+                    "{label}: origin {which} ({ro:?}) is past the scene — the world \
+                     origin sits behind the ray, so every t > 0 hit test fails"
+                );
+                assert!(
+                    (ro - camera_pos).length() < (Vec3::ZERO - camera_pos).length() + 1.0,
+                    "{label}: origin {which} ({ro:?}) should be near-plane, not far-plane"
+                );
+            }
+        }
+    }
 }

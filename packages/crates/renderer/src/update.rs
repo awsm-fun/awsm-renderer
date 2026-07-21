@@ -1,4 +1,6 @@
-use crate::{camera::CameraMatrices, AwsmRenderer};
+use glam::Mat4;
+
+use crate::{camera::CameraParams, AwsmRenderer};
 
 impl AwsmRenderer {
     /// Convenience helper to update non-GPU properties once per frame.
@@ -6,11 +8,13 @@ impl AwsmRenderer {
     /// Pair this with `render()` for a simple frame loop; for physics-heavy scenes,
     /// you may want to update transforms more frequently. `global_time_delta_ms`
     /// is the frame delta in **milliseconds** (a rAF timestamp difference);
-    /// `update_animations` converts it to seconds internally.
+    /// `update_animations` converts it to seconds internally. The camera
+    /// arguments are exactly [`Self::set_camera`]'s.
     pub fn update_all(
         &mut self,
         global_time_delta_ms: f64,
-        camera_matrices: CameraMatrices,
+        view: Mat4,
+        camera_params: CameraParams,
     ) -> crate::error::Result<()> {
         self.update_animations(global_time_delta_ms)?;
         // `update_transforms` owns all per-frame renderer-side
@@ -20,7 +24,7 @@ impl AwsmRenderer {
         // through `update_all`; keeping the work centralised in
         // `update_transforms` keeps both paths in lockstep.
         self.update_transforms();
-        self.update_camera(camera_matrices)?;
+        self.set_camera(view, camera_params)?;
 
         Ok(())
     }

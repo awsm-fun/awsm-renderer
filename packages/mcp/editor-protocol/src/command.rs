@@ -694,6 +694,9 @@ pub enum EditorCommand {
         /// Pickable light-icon HUD markers.
         #[serde(default)]
         light_gizmos: Option<bool>,
+        /// Camera frustum gizmo (wireframe frustum per camera node).
+        #[serde(default)]
+        camera_gizmos: Option<bool>,
         /// Skeleton bone-line overlay on skinned rigs.
         #[serde(default)]
         skeleton_viz: Option<bool>,
@@ -765,6 +768,15 @@ pub enum EditorCommand {
     /// Frame a node in the viewport — fit its world-space bounds with `padding`
     /// (0 = tight, 0.2 = 20% margin). **Transient** (view state).
     FrameNode { node: NodeId, padding: f32 },
+    /// Which camera the viewport renders through: `None` = the built-in free
+    /// camera (orbit/pan/zoom), `Some(node)` = a scene `Camera` node — the view
+    /// locks to that node's transform + config and orbit/pan/zoom are inert.
+    /// Errors if the node isn't a `Camera`. **Transient** (view state; not
+    /// persisted — the camera NODE is what a project saves).
+    SetActiveCamera {
+        #[serde(default)]
+        camera: Option<NodeId>,
+    },
 
     /// Restore a node + all its descendants to their scene-stored base
     /// transforms in the renderer mirror — reverts a clip's last-previewed pose
@@ -1484,6 +1496,7 @@ impl EditorCommand {
                 | EditorCommand::SetCameraProjection { .. }
                 | EditorCommand::SetCameraClip { .. }
                 | EditorCommand::FrameNode { .. }
+                | EditorCommand::SetActiveCamera { .. }
                 | EditorCommand::ResetPose { .. }
                 | EditorCommand::SetFrameTime { .. }
                 | EditorCommand::ClearFrameTime
@@ -1699,6 +1712,7 @@ impl EditorCommand {
             EditorCommand::SetCameraProjection { .. } => "Set projection",
             EditorCommand::SetCameraClip { .. } => "Set clip planes",
             EditorCommand::FrameNode { .. } => "Frame node",
+            EditorCommand::SetActiveCamera { .. } => "Set active camera",
             EditorCommand::ResetPose { .. } => "Reset pose",
             EditorCommand::SetFrameTime { .. } => "Pin frame time",
             EditorCommand::ClearFrameTime => "Clear frame time",
