@@ -824,15 +824,32 @@ fn ray_from_screen(sx: f32, sy: f32, vw: f32, vh: f32, basis: RayBasis) -> (Vec3
     let ndc_y = 1.0 - (2.0 * sy / vh);
 
     if is_ortho {
-        // Orthographic rays are PARALLEL, so each pixel keeps its own origin on
-        // the sampled plane and shares one direction (view -Z rotated out).
-        // `inv_proj`'s w row is (0,0,0,1) for an ortho matrix, so w == 1 here —
-        // the divide can never blow up.
-        let p = inv_proj * Vec4::new(ndc_x, ndc_y, 0.0, 1.0);
-        let origin = (inv_view * (p.truncate() / p.w).extend(1.0)).truncate();
+        // Orthographic rays are PARALLEL: one shared direction (the camera
+        // forward axis rotated out — cancellation-free, no unprojection), and a
+        // per-pixel origin on the near clip plane.
         let dir = (inv_view * Vec4::new(0.0, 0.0, -1.0, 0.0))
             .truncate()
             .normalize();
+
+        // The origin MUST be the near-plane sample. It is not enough to be on
+        // the ray: `pick` and `ray_plane_intersection` both require t > 0, so an
+        // origin at the FAR plane puts the whole scene behind the ray and
+        // nothing is ever hit. Which NDC z is "near" is convention-dependent
+        // (reverse-Z: 1; forward-Z: 0), so unproject BOTH ends and keep the one
+        // nearer the camera rather than assuming either. Safe to divide here:
+        // an ortho `inv_proj` has w row (0,0,0,1), so w == 1 at both ends —
+        // there is no infinite-far plane to hit, unlike the perspective case.
+        let unproject = |z: f32| {
+            let p = inv_proj * Vec4::new(ndc_x, ndc_y, z, 1.0);
+            (inv_view * (p.truncate() / p.w).extend(1.0)).truncate()
+        };
+        let a = unproject(0.0);
+        let b = unproject(1.0);
+        let origin = if (a - camera_pos).length_squared() <= (b - camera_pos).length_squared() {
+            a
+        } else {
+            b
+        };
         return (origin, dir);
     }
 
@@ -1212,33 +1229,64 @@ mod tests {
         }
     }
 
-    /// Orthographic cameras: rays are parallel, so every pixel shares one
-    /// direction and carries its own origin on the sampled plane.
+    /// Orthographic cameras: rays are parallel, each pixel carries its own
+    /// origin, and that origin must be on the NEAR plane.
+    ///
+    /// Parameterised over BOTH ortho conventions on purpose. `DepthConvention`
+    /// builds reverse-Z ortho by SWAPPING near/far, so NDC z=0 is the near plane
+    /// under forward-Z and the FAR plane under reverse-Z. A first version of
+    /// this test only covered forward-Z and therefore passed while the ortho
+    /// origin was hardcoded to z=0 — which put the whole scene behind the ray
+    /// under reverse-Z, so every `t > 0` hit test failed and ortho picking was
+    /// dead. Same class of blind spot as the bug it is guarding.
     #[test]
-    fn ortho_pick_rays_are_parallel_with_per_pixel_origins() {
+    fn ortho_pick_rays_are_parallel_with_near_plane_origins() {
         let camera_pos = Vec3::new(0.0, 0.0, 10.0);
         let view = Mat4::look_at_rh(camera_pos, Vec3::ZERO, Vec3::Y);
-        let proj = Mat4::orthographic_rh(-4.0, 4.0, -3.0, 3.0, 0.1, 100.0);
-        let (inv_proj, inv_view) = (proj.inverse(), view.inverse());
         let (w, h) = (800.0_f32, 600.0_f32);
+        let (near, far) = (0.1_f32, 100.0_f32);
 
-        let basis = RayBasis {
-            inv_proj,
-            inv_view,
-            camera_pos,
-            is_ortho: true,
-        };
-        let (ro_a, rd_a) = ray_from_screen(10.0, 10.0, w, h, basis);
-        let (ro_b, rd_b) = ray_from_screen(w - 10.0, h - 10.0, w, h, basis);
-        assert_ray_ok("ortho a", ro_a, rd_a, camera_pos, false);
-        assert_ray_ok("ortho b", ro_b, rd_b, camera_pos, false);
-        assert!(
-            rd_a.dot(rd_b) > 0.9999,
-            "ortho rays must be parallel, got {rd_a:?} vs {rd_b:?}"
-        );
-        assert!(
-            (ro_a - ro_b).length() > 1.0,
-            "ortho origins must differ per pixel, got {ro_a:?} and {ro_b:?}"
-        );
+        for (label, proj) in [
+            (
+                "forward-z ortho",
+                Mat4::orthographic_rh(-4.0, 4.0, -3.0, 3.0, near, far),
+            ),
+            // Reverse-Z ortho is the near/far swap — see DepthConvention::orthographic.
+            (
+                "reverse-z ortho",
+                Mat4::orthographic_rh(-4.0, 4.0, -3.0, 3.0, far, near),
+            ),
+        ] {
+            let basis = RayBasis {
+                inv_proj: proj.inverse(),
+                inv_view: view.inverse(),
+                camera_pos,
+                is_ortho: true,
+            };
+            let (ro_a, rd_a) = ray_from_screen(10.0, 10.0, w, h, basis);
+            let (ro_b, rd_b) = ray_from_screen(w - 10.0, h - 10.0, w, h, basis);
+            assert_ray_ok(label, ro_a, rd_a, camera_pos, false);
+            assert_ray_ok(label, ro_b, rd_b, camera_pos, false);
+            assert!(
+                rd_a.dot(rd_b) > 0.9999,
+                "{label}: ortho rays must be parallel, got {rd_a:?} vs {rd_b:?}"
+            );
+            assert!(
+                (ro_a - ro_b).length() > 1.0,
+                "{label}: ortho origins must differ per pixel, got {ro_a:?} and {ro_b:?}"
+            );
+            for (which, ro) in [("a", ro_a), ("b", ro_b)] {
+                // Every hit test requires t > 0, so the scene must lie AHEAD.
+                assert!(
+                    (Vec3::ZERO - ro).dot(rd_a) > 0.0,
+                    "{label}: origin {which} ({ro:?}) is past the scene — the world \
+                     origin sits behind the ray, so every t > 0 hit test fails"
+                );
+                assert!(
+                    (ro - camera_pos).length() < (Vec3::ZERO - camera_pos).length() + 1.0,
+                    "{label}: origin {which} ({ro:?}) should be near-plane, not far-plane"
+                );
+            }
+        }
     }
 }
