@@ -40,6 +40,9 @@ pub struct CameraBuffer {
     pub last_matrices: Option<CameraMatrices>,
     camera_moved: bool,
     gpu_dirty: bool,
+    /// One-shot latch for the depth-convention mismatch error — a static
+    /// misconfiguration, so it must not spam once per frame.
+    warned_convention: bool,
     uploader: crate::buffer::mapped_uploader::MappedUploader,
 }
 
@@ -165,6 +168,7 @@ impl CameraBuffer {
             gpu_dirty: true,
             last_matrices: None,
             camera_moved: false,
+            warned_convention: false,
             gpu_buffer,
             uploader: crate::buffer::mapped_uploader::MappedUploader::new("Camera"),
         })
@@ -185,6 +189,24 @@ impl CameraBuffer {
         screen_height: f32,
         convention: crate::depth_convention::DepthConvention,
     ) -> Result<()> {
+        // The caller builds the PROJECTION; the renderer owns the CONVENTION.
+        // If they disagree every depth test is inverted — geometry still draws,
+        // just occluded backwards, which is miserable to diagnose from the
+        // symptom. Both values are right here, so say so instead of rendering
+        // garbage silently. Logged once per renderer: it is a static
+        // misconfiguration, not a per-frame event.
+        if camera_matrices_orig.reverse_z != convention.reverse_z && !self.warned_convention {
+            self.warned_convention = true;
+            tracing::error!(
+                "camera/renderer depth-convention MISMATCH: the projection was built with \
+                 reverse_z={}, the renderer runs reverse_z={}. Every depth test is inverted. \
+                 Build the camera with `CameraMatrices::perspective(renderer.features.depth(), ..)` \
+                 (or pass `features.depth()` to `DepthConvention::perspective/orthographic`) so the \
+                 two cannot drift.",
+                camera_matrices_orig.reverse_z,
+                convention.reverse_z
+            );
+        }
         let mut camera_matrices = camera_matrices_orig.clone();
 
         self.camera_moved = match &self.last_matrices {
