@@ -23,12 +23,6 @@
 // set_active_camera {camera: <golden-camera id>} →
 // set_view_options {grid:false, gizmos:false, light_gizmos:false} →
 // wait_render_settled → screenshot_scene at a 672x1028 canvas.
-//
-// KNOWN ISSUE (Jul 2026): capture with the editor's `?nopaging` URL flag —
-// same caveat as lod-nanite-open (the default cluster paging drops resident
-// pages under pool pressure; at this framing the contamination is subtle
-// (~1.5% of pixels), at back/grazing angles the helmets visibly shred).
-// Players default paging off, so bundles are unaffected.
 async () => {
   return 'see recipe comment — authoring requires a prior export bake URL';
 }

@@ -389,6 +389,14 @@ impl AwsmRenderer {
         // against the load's final content, so `render_all` never compiles and
         // the resolved-variant ids it stamps into the material payload are
         // already settled by the time this draws.)
+        // Gap-B dynamic paging: run the per-frame residency update BEFORE the
+        // mesh-pool GPU write below — its slot streams go through the pool's
+        // CPU MIRROR (dirty ranges), so running here lands them in THIS
+        // frame's upload (the direct-writeBuffer path they replaced was
+        // reverted wholesale by any pool resize — the nanite-paging holes bug).
+        #[cfg(feature = "lod")]
+        self.update_cluster_paging();
+
         self.transforms
             .write_gpu(&self.logging, &self.gpu, &mut self.bind_groups)?;
         self.materials
@@ -882,16 +890,6 @@ impl AwsmRenderer {
         // clear-and-extend the pool's Vecs in place, while ctx holds
         // immutable references into `self`.
         self.collect_renderables()?;
-
-        // Gap-B dynamic paging (CPU-driven): run the per-frame residency update
-        // here — `self` is still fully mutable (before `ctx` pins `&self.render_passes`).
-        // No-op unless `cluster_paging` armed the manager at load; step 20a only
-        // computes + logs the desired cut against the live camera (no geometry
-        // streaming yet), so the cut dispatch later still draws the unchanged
-        // frontier ⇒ byte-identical render. `queue.writeBuffer`-based streaming in
-        // later slices is also valid here (ordered before the submitted pass).
-        #[cfg(feature = "lod")]
-        self.update_cluster_paging();
 
         // Take the reused per-frame cull-path scratch out of `self` BEFORE the
         // `renderables`/`ctx` borrows below pin `&self` — it's restored at the end
@@ -2630,10 +2628,10 @@ impl AwsmRenderer {
             Ok((_, h)) => h as f32,
             Err(_) => return,
         };
-        // Disjoint inline field borrows: gpu + meshes (shared) vs render_passes (mut).
+        // Disjoint inline field borrows: gpu (shared) vs meshes + render_passes (mut).
         let error_threshold_px = self.lod_error_threshold_px;
         let gpu = &self.gpu;
-        let meshes = &self.meshes;
+        let meshes = &mut self.meshes;
         if let Some(pass) = self.render_passes.cluster_lod.as_mut() {
             if let Err(e) = pass.stream_paging(
                 gpu,

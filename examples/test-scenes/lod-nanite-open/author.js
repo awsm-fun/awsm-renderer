@@ -44,14 +44,6 @@
 // set_active_camera {camera: <golden-camera id>} →
 // set_view_options {grid:false, gizmos:false, light_gizmos:false} →
 // wait_render_settled → screenshot_scene at a 672x1028 canvas.
-//
-// KNOWN ISSUE (Jul 2026): capture with the editor's `?nopaging` URL flag.
-// The editor-default cluster PAGING (LRU/coarsen under pool pressure,
-// da3faaae) drops resident pages on this ~69k-tri sheet and TEARS the
-// surface — under `?nopaging` (and in players, where
-// RendererFeatures::default() leaves paging off) the cut is clean. The
-// golden shows the intended crack-free cut; fixing the paging eviction is
-// the open Step-2 dynamic-paging follow-up.
 async () => {
   return 'see recipe comment — authoring requires a prior export bake URL';
 }

@@ -316,7 +316,7 @@ impl ClusterLodRenderPass {
     pub fn stream_paging(
         &mut self,
         gpu: &AwsmRendererWebGpu,
-        meshes: &crate::meshes::Meshes,
+        meshes: &mut crate::meshes::Meshes,
         cam_pos: Vec3,
         tan_half_fov_y: f32,
         viewport_h: f32,
@@ -356,8 +356,15 @@ impl ClusterLodRenderPass {
             // Apply the ops via the slot-write paths. All of a frame's writes land
             // before the next submit, so the batch is atomic to the draw — the
             // planner's cover invariant holds at every drawn frame.
-            let data_buf = meshes.visibility_geometry_data_gpu_buffer();
-            let data_off = meshes.visibility_geometry_data_buffer_offset(render_mesh)?;
+            //
+            // The slot GEOMETRY goes through the mesh geometry POOL MIRROR
+            // (`write_visibility_geometry_bytes`), NOT a direct `writeBuffer`:
+            // the pool re-uploads its CPU mirror wholesale on any resize (any
+            // later mesh insert), which silently reverted direct writes and
+            // snapped every streamed slot back to its empty spare state — the
+            // nanite-paging holes bug. The cluster-owned buffers (pages /
+            // source-indices / resident) have no mirrored re-upload, so their
+            // direct writes below are safe.
             let pv = p.page_verts;
             const STRIDE: usize = 56; // visibility vertex bytes
             for op in &p.ops {
@@ -389,16 +396,10 @@ impl ClusterLodRenderPass {
                             awsm_renderer_core::pipeline::primitive::FrontFace::Ccw,
                             &mut p.slot_bytes_scratch,
                         );
-                        gpu.write_buffer(
-                            data_buf,
-                            Some(crate::renderer::cluster_slot_data_offset(
-                                data_off,
-                                slot,
-                                pv * STRIDE,
-                            )),
+                        meshes.write_visibility_geometry_bytes(
+                            render_mesh,
+                            crate::renderer::cluster_slot_data_offset(0, slot, pv * STRIDE),
                             p.slot_bytes_scratch.as_slice(),
-                            None,
-                            None,
                         )?;
                         // The slot's GPU page: clamp always-draw, slot-aligned source span.
                         let mut gp = page;
@@ -435,15 +436,32 @@ impl ClusterLodRenderPass {
                 || desired != p.last_desired_logged
             {
                 p.last_desired_logged = desired;
+                // CPU-side ground truth for the GPU compaction readback: every
+                // occupied slot is clamp-always-drawn, so the GPU's drawn tris
+                // must equal this sum — a mismatch localizes a paging bug to
+                // the GPU application (page/resident writes) vs the planner.
+                let (resident_slots, resident_tris) = {
+                    let mut slots = 0usize;
+                    let mut tris = 0usize;
+                    for &c in p.slot_cluster.iter() {
+                        if c >= 0 {
+                            slots += 1;
+                            tris += p.pages[c as usize].index_count as usize / 3;
+                        }
+                    }
+                    (slots, tris)
+                };
                 tracing::info!(
                     "cluster paging (Gap B, frame {}): desired={desired} (full DAG={}, pool={}), \
-                 streamed {}, evicted {}, coarsened={} groups [20b-iv-b-2c]",
+                 streamed {}, evicted {}, coarsened={} groups; resident {} slots = {} tris [20b-iv-b-2c]",
                     p.frame,
                     p.pages.len(),
                     p.pool_slots,
                     stats.streamed,
                     stats.evicted,
                     stats.coarsened,
+                    resident_slots,
+                    resident_tris,
                 );
             }
         }

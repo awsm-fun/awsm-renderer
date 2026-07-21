@@ -8,6 +8,8 @@ use thiserror::Error;
 pub enum DynamicStorageBufferError {
     #[error("buffer capacity overflow (requested size exceeds platform limit)")]
     CapacityOverflow,
+    #[error("subrange write outside an entry's allocation (or unknown key)")]
+    SubrangeOutOfBounds,
 }
 
 /// Dynamic buffer for variable-size allocations using buddy memory allocation.
@@ -128,6 +130,38 @@ impl<K: Key, const ZERO: u8> DynamicStorageBuffer<K, ZERO> {
             self.remove(key);
         }
         self.insert(key, bytes)
+    }
+
+    /// Overwrites a SUB-RANGE of an existing entry's bytes IN the CPU mirror,
+    /// marking exactly that range dirty (not the whole entry).
+    ///
+    /// This is the write path for callers that patch a small window of a large
+    /// allocation every frame (the cluster-paging slot streamer): going through
+    /// the mirror is what makes the write survive a pool RESIZE — a resize
+    /// re-uploads `raw_slice()` wholesale, so anything written straight to the
+    /// GPU buffer behind the mirror's back is silently reverted (the
+    /// nanite-paging holes bug).
+    ///
+    /// Errors if the key is absent or the range exceeds the entry's allocation.
+    pub fn update_subrange(
+        &mut self,
+        key: K,
+        offset_in_entry: usize,
+        bytes: &[u8],
+    ) -> Result<(), DynamicStorageBufferError> {
+        let Some(&(entry_off, entry_size)) = self.slot_indices.get(key) else {
+            return Err(DynamicStorageBufferError::SubrangeOutOfBounds);
+        };
+        let end = offset_in_entry
+            .checked_add(bytes.len())
+            .ok_or(DynamicStorageBufferError::SubrangeOutOfBounds)?;
+        if end > entry_size {
+            return Err(DynamicStorageBufferError::SubrangeOutOfBounds);
+        }
+        let abs = entry_off + offset_in_entry;
+        self.raw_data[abs..abs + bytes.len()].copy_from_slice(bytes);
+        self.mark_dirty_range(abs, bytes.len());
+        Ok(())
     }
 
     /// Updates existing data using a callback, without reallocation.
@@ -1446,5 +1480,68 @@ mod test {
         // Verify the error message remains meaningful.
         assert!(format!("{}", DynamicStorageBufferError::CapacityOverflow)
             .contains("capacity overflow"));
+    }
+
+    /// The cluster-paging streamer's contract: a subrange write lands in the
+    /// CPU MIRROR (`raw_slice()` — what a pool RESIZE re-uploads wholesale),
+    /// marks a precise dirty range, and never disturbs neighbouring bytes.
+    /// The nanite-paging holes bug was exactly this write bypassing the
+    /// mirror: the next resize re-uploaded stale mirror bytes over it.
+    #[test]
+    fn update_subrange_lands_in_the_mirror_and_survives_a_regrow() {
+        let mut buffer: DynamicStorageBuffer<TestKey> =
+            DynamicStorageBuffer::new(MIN_BLOCK, Some("subrange".to_string()));
+        let mut sm = slotmap::SlotMap::<TestKey, ()>::with_key();
+        let key = sm.insert(());
+        let other = sm.insert(());
+
+        buffer.update(key, &[0xAAu8; 512]).unwrap();
+        buffer.take_dirty_ranges();
+
+        // Patch a 64-byte window at offset 128 (a "slot" write).
+        buffer.update_subrange(key, 128, &[0x5Au8; 64]).unwrap();
+
+        let off = buffer.offset(key).unwrap();
+        let mirror = buffer.raw_slice();
+        assert!(mirror[off + 128..off + 192].iter().all(|&b| b == 0x5A));
+        assert!(mirror[off..off + 128].iter().all(|&b| b == 0xAA));
+        assert!(mirror[off + 192..off + 512].iter().all(|&b| b == 0xAA));
+
+        // Dirty range covers exactly the patched window (4-byte aligned).
+        let ranges = buffer.take_dirty_ranges();
+        assert_eq!(ranges, vec![(off + 128, 64)]);
+
+        // A GROW (what a later mesh insert triggers → full mirror re-upload)
+        // must still see the patched bytes in the re-upload source.
+        buffer.update(other, &vec![0x11u8; 8192]).unwrap();
+        let off = buffer.offset(key).unwrap();
+        assert!(
+            buffer.raw_slice()[off + 128..off + 192]
+                .iter()
+                .all(|&b| b == 0x5A),
+            "the resize re-upload source must carry the subrange write"
+        );
+    }
+
+    #[test]
+    fn update_subrange_rejects_out_of_bounds_and_unknown_keys() {
+        let mut buffer: DynamicStorageBuffer<TestKey> = DynamicStorageBuffer::new(MIN_BLOCK, None);
+        let mut sm = slotmap::SlotMap::<TestKey, ()>::with_key();
+        let key = sm.insert(());
+        let stranger = sm.insert(());
+        buffer.update(key, &[0u8; 256]).unwrap();
+
+        assert_eq!(
+            buffer.update_subrange(key, 200, &[0u8; 100]),
+            Err(DynamicStorageBufferError::SubrangeOutOfBounds),
+            "past the entry's allocation"
+        );
+        assert_eq!(
+            buffer.update_subrange(stranger, 0, &[0u8; 4]),
+            Err(DynamicStorageBufferError::SubrangeOutOfBounds),
+            "unknown key"
+        );
+        // In-bounds is fine right up to the allocation end.
+        buffer.update_subrange(key, 192, &[7u8; 64]).unwrap();
     }
 }
