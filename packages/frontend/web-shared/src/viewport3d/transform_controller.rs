@@ -1229,6 +1229,115 @@ mod tests {
         }
     }
 
+    /// Sweep the ACTUAL production projection builders across the parameter
+    /// space the editor can produce, and assert the ray invariants everywhere.
+    ///
+    /// This is the robustness net. It deliberately uses
+    /// `DepthConvention::perspective` / `::orthographic` rather than
+    /// hand-rolled glam matrices, because those two functions are the ONLY way
+    /// a projection reaches a camera in this codebase: scene cameras build
+    /// theirs in `render_loop`, the editor free camera in `free_camera`, and
+    /// `CameraProjectionParams` is an enum (Perspective { fov } / Orthographic
+    /// { .. }) — there is no path that hands us an arbitrary matrix. So proving
+    /// the invariants over this sweep proves them for every camera the editor
+    /// can actually have.
+    ///
+    /// Invariants, for each (convention x kind x params x pixel):
+    ///   - origin + direction finite, direction normalized
+    ///   - perspective: origin AT the camera; ortho: origin on the NEAR side
+    ///   - the scene lies AHEAD of the origin (every hit test needs t > 0)
+    ///   - the centre pixel aims at what the camera looks at
+    #[test]
+    fn ray_invariants_hold_across_every_projection_the_editor_builds() {
+        use awsm_renderer::depth_convention::DepthConvention;
+
+        let target = Vec3::new(2.0, 1.0, -3.0);
+        let camera_pos = target + Vec3::new(6.0, 4.0, 8.0);
+        let view = Mat4::look_at_rh(camera_pos, target, Vec3::Y);
+        let inv_view = view.inverse();
+
+        // Viewports: square, ultrawide, tall/portrait, and a 1px sliver.
+        let viewports = [
+            (837.0_f32, 712.0_f32),
+            (2560.0, 720.0),
+            (600.0, 1400.0),
+            (64.0, 1024.0),
+        ];
+        // fov: very narrow telephoto .. very wide. near/far: tight .. huge range.
+        let fovs = [0.05_f32, 0.5, 1.0, 2.8];
+        let clips = [(0.001_f32, 10.0_f32), (0.1, 1000.0), (1.0, 100_000.0)];
+
+        for reverse_z in [false, true] {
+            let convention = DepthConvention { reverse_z };
+
+            for &(w, h) in &viewports {
+                let aspect = w / h;
+                let pixels = [
+                    (w * 0.5, h * 0.5),
+                    (0.0, 0.0),
+                    (w, h),
+                    (w * 0.5, 0.0),
+                    (0.0, h * 0.5),
+                ];
+
+                for &fov in &fovs {
+                    for &(near, far) in &clips {
+                        let proj = convention.perspective(fov, aspect, near, far);
+                        let basis = RayBasis {
+                            inv_proj: proj.inverse(),
+                            inv_view,
+                            camera_pos,
+                            is_ortho: false,
+                        };
+                        let label =
+                            format!("persp rz={reverse_z} {w}x{h} fov={fov} near={near} far={far}");
+                        for &(sx, sy) in &pixels {
+                            let (ro, rd) = ray_from_screen(sx, sy, w, h, basis);
+                            assert_ray_ok(&label, ro, rd, camera_pos, true);
+                            assert!(
+                                (target - ro).dot(rd) > 0.0,
+                                "{label} @({sx},{sy}): scene must lie ahead of the ray"
+                            );
+                        }
+                        // Centre pixel aims down the view axis.
+                        let (_, rd) = ray_from_screen(w * 0.5, h * 0.5, w, h, basis);
+                        let cos = rd.dot((target - camera_pos).normalize()).clamp(-1.0, 1.0);
+                        assert!(cos > 0.9999, "{label}: centre ray drifted (cos {cos})");
+                    }
+                }
+
+                for &(near, far) in &clips {
+                    let (hw, hh) = (4.0_f32 * aspect, 4.0_f32);
+                    let proj = convention.orthographic(-hw, hw, -hh, hh, near, far);
+                    let basis = RayBasis {
+                        inv_proj: proj.inverse(),
+                        inv_view,
+                        camera_pos,
+                        is_ortho: true,
+                    };
+                    let label = format!("ortho rz={reverse_z} {w}x{h} near={near} far={far}");
+                    let mut dirs = Vec::new();
+                    for &(sx, sy) in &pixels {
+                        let (ro, rd) = ray_from_screen(sx, sy, w, h, basis);
+                        assert_ray_ok(&label, ro, rd, camera_pos, false);
+                        assert!(
+                            (target - ro).dot(rd) > 0.0,
+                            "{label} @({sx},{sy}): scene must lie ahead of the ray \
+                             (origin {ro:?} — far-plane origins break every t > 0 test)"
+                        );
+                        dirs.push(rd);
+                    }
+                    for d in &dirs {
+                        assert!(
+                            d.dot(dirs[0]) > 0.9999,
+                            "{label}: ortho rays must all be parallel"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     /// Orthographic cameras: rays are parallel, each pixel carries its own
     /// origin, and that origin must be on the NEAR plane.
     ///
