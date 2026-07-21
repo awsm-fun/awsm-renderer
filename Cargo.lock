@@ -229,6 +229,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "awsm-renderer-bundle-player-example"
+version = "0.24.0"
+dependencies = [
+ "anyhow",
+ "awsm-renderer",
+ "awsm-renderer-codec-basis",
+ "awsm-renderer-core",
+ "awsm-renderer-scene",
+ "awsm-renderer-scene-loader",
+ "glam 0.32.1",
+ "gloo-net",
+ "js-sys",
+ "tracing",
+ "tracing-subscriber",
+ "tracing-web",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
 name = "awsm-renderer-codec-basis"
 version = "0.24.0"
 dependencies = [

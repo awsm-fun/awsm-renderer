@@ -5,7 +5,8 @@ description: >-
   three-layer suite (docs/plans/browser-test-suite.md): Layer A visual scenes
   (agent-as-oracle, one verify.md recipe per test-scene), Layer B the plan-007
   player-tests harness (machine-readable PASS/FAIL over the baked bundles on a
-  live WebGPU device), and Layer C native editor/MCP audits (cargo test). Use
+  live WebGPU device) plus the bundle-player PLAYER goldens (B-vis), and
+  Layer C native editor/MCP audits (cargo test). Use
   whenever asked to "run the browser tests", "run the on-device / player tests",
   "run all our renderer tests", or to verify rendering that `cargo test` / CI
   structurally cannot cover.
@@ -31,6 +32,16 @@ native audits that keep the authoring/MCP surface honest.
   every baked bundle through the *real* player loader on a live GPU and prints
   machine-readable `PLAYER-TEST <name>: PASS/FAIL — <detail>` lines. Locks the
   load-path / counts / texture-binding / compression behaviour.
+- **Layer B-vis · Player goldens (`examples/bundle-player`).** The PIXEL half
+  of the player story: `task bundle-player` (:9092) loads one committed bundle
+  through the same player path and renders it through an AUTHORED Camera node
+  exported in the bundle (`?scene=<name>&camera=<node-name>`, player
+  `RendererFeatures::default()`, fixed 800×600 canvas). Scenes with
+  `golden-<camera>.png` files are in this tier — drive per the scene's
+  `verify.md`: emulate an 800×600 viewport, wait for `#hud` `READY`,
+  screenshot, judge against the golden (agent-as-oracle, same as Layer A).
+  Reference scene: `player-cameras` (one perspective + one orthographic
+  authored camera).
 - **Layer C · Editor/MCP audits (native `cargo test`, also runs in CI).** Not
   browser tests: "all mutations route through EditorCommand" + "MCP tools/docs
   stay in sync". Cheap; run first as a fail-fast.
@@ -52,12 +63,15 @@ Enumerate what's available before prompting so "Pick features…" has a real lis
 - Layer A = `ls examples/test-scenes/*/verify.md` (one per visual scene).
 - Layer B = the `SCENES` list in `examples/player-tests/src/checks.rs` plus the
   prefab-churn / startup-census checks.
+- Layer B-vis = `ls examples/test-scenes/*/golden-*.png` (one per authored
+  camera; the owning scene's `verify.md` is the drive).
 - Layer C = `cargo test -p awsm-renderer-scene-mcp` + the no-bypass lint test.
 
 ## Ports (from `taskfiles/config.yml` — do not guess, they have changed)
 
 - editor = **9085**, MCP dev server = **9186** (Layer A authoring + capture)
 - test-scenes bundles = **9084**, player-tests harness = **9091** (Layer B)
+- bundle-player = **9092** (Layer B-vis player goldens)
 - media-local = **9082**, media-additional-assets = **9083** (imports)
 
 ---
@@ -116,6 +130,23 @@ drifted (a command with no MCP tool/doc row, or a UI mutation bypassing
      console pattern filter — do not reach for claude-in-chrome to read logs.
 6. **Report** `<pass>/<total>` + every `FAIL — <detail>` verbatim. PASS only
    when `<pass> == <total>` and no `FAIL`/`aborted` line appears.
+
+## Layer B-vis — bundle-player goldens (player pixels)
+
+1. Servers: `task test-scenes` (:9084) + `task bundle-player` (:9092, trunk —
+   wait for `✅ success` before opening).
+2. For each scene with `golden-<camera>.png` files (today: `player-cameras`):
+   set the viewport to exactly 800×600 (chrome-devtools
+   `emulate {viewport: "800x600x1"}` — the canvas sits at the page top-left and
+   the `#hud` sits below y=600, so a viewport screenshot is exactly the
+   render), open
+   `http://localhost:9092/?scene=<scene>&camera=<camera-node-name>`, poll
+   `#hud` textContent until `READY` (a `FAIL —` line is a hard failure —
+   report it verbatim), screenshot, and judge against the committed golden per
+   the scene's `verify.md`.
+3. Regenerate a golden the same way (screenshot straight to
+   `examples/test-scenes/<scene>/golden-<camera>.png`) — only with an
+   explanation in the commit message, like every golden.
 
 ## Layer A — visual scenes (agent-as-oracle)
 
