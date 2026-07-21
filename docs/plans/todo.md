@@ -192,6 +192,29 @@ Follow the existing pattern end to end — `SetViewOptions.light_gizmos` →
 
 ---
 
+## Dev environment (needed for Task C, and for browser-verifying A/D)
+
+All paths in this file are repo-relative; run from the repo root.
+
+- `task mcp-dev` brings up everything: editor on **:9085**, MCP server on
+  **:9186**, media on **:9082**, and the sibling `../test-assets` repo on
+  **:9083**. It is the ONLY dev task — never run `editor:dev` alongside it.
+- `task test-scenes` serves `examples/test-scenes` on **:9084**, which is how a
+  scene's `author.js` is fetched for replay.
+- Long-running dev servers get killed periodically in agent sessions; just
+  restart. Probe ports before assuming a failure is real, and watch for a STALE
+  process still holding :9085 and serving an old bundle — that cost an hour on
+  this branch.
+- Golden regeneration flow that worked for 27 scenes: fetch
+  `http://localhost:9084/<scene>/author.js`, `eval` it in the editor page via
+  Chrome DevTools MCP `evaluate_script`, `wait_render_settled`, capture with
+  `editor_query_scene_png`, POST the bytes to `http://127.0.0.1:9186/png/<id>`,
+  then `curl` them down to `examples/test-scenes/<scene>/golden.png`. Only
+  `golden.png` changes for a render-only fix — `project/` and `bundle/` are
+  scene DATA and stay untouched.
+- The environment assets the `env-bc6h-spheres` scene loads live in the sibling
+  `test-assets` repo under `cyber_bc6h/` (already committed and CDN-synced).
+
 ## Working rules
 
 - `task lint` (fmt + clippy `-D warnings`) and
