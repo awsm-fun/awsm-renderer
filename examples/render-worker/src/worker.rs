@@ -349,16 +349,18 @@ fn start_worker_renderer(canvas: web_sys::OffscreenCanvas) -> Result<(), JsValue
                     Mat4::look_at_rh(Vec3::new(0.0, 1.5, 3.0), Vec3::new(0.0, 0.0, -3.0), Vec3::Y);
                 // Aspect = canvas width / height; the OffscreenCanvas
                 // is fixed at 800x600 in index.html.
+                // One source for the projection AND the reverse_z flag below, so
+                // the two cannot drift — the renderer owns the convention.
+                let convention = r.features.depth();
                 let projection =
-                    Mat4::perspective_rh(60.0_f32.to_radians(), 800.0 / 600.0, 0.1, 100.0);
+                    convention.perspective(60.0_f32.to_radians(), 800.0 / 600.0, 0.1, 100.0);
                 let _ = r.update_camera(CameraMatrices {
                     view,
                     projection,
                     position_world: Vec3::new(0.0, 1.5, 3.0),
                     focus_distance: 10.0,
                     aperture: 5.6,
-                    // Examples/model-tests stay forward-Z (features default; 003)
-                    reverse_z: false,
+                    reverse_z: convention.reverse_z,
                     near: 0.1,
                     far: 100.0,
                 });

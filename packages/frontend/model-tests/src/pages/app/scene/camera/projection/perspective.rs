@@ -60,9 +60,15 @@ impl PerspectiveCamera {
         self.far = far;
     }
 
-    /// Standard right‑handed perspective projection
-    pub fn projection_matrix(&self) -> Mat4 {
-        Mat4::perspective_rh(self.fov_y, self.aspect, self.near, self.far)
+    /// Right-handed perspective projection under the renderer's depth
+    /// convention. Takes the convention rather than hardcoding forward-Z so it
+    /// cannot drift from `RendererFeatures::reverse_z` — a mismatch inverts
+    /// every depth test.
+    pub fn projection_matrix(
+        &self,
+        convention: awsm_renderer::depth_convention::DepthConvention,
+    ) -> Mat4 {
+        convention.perspective(self.fov_y, self.aspect, self.near, self.far)
     }
 
     pub fn setup_from_gltf(&mut self, _doc: &gltf::Document) {}

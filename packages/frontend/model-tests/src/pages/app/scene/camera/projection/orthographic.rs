@@ -82,8 +82,14 @@ impl OrthographicCamera {
         self.update_near_far(view, aabb, margin);
     }
 
-    pub fn projection_matrix(&self) -> Mat4 {
-        Mat4::orthographic_rh(
+    /// Orthographic projection under the renderer's depth convention. Reverse-Z
+    /// ortho is the near/far SWAP, which is exactly what a hand-rolled
+    /// `Mat4::orthographic_rh` gets wrong.
+    pub fn projection_matrix(
+        &self,
+        convention: awsm_renderer::depth_convention::DepthConvention,
+    ) -> Mat4 {
+        convention.orthographic(
             self.left,
             self.right,
             self.bottom,

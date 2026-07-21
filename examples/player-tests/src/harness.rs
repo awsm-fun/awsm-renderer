@@ -112,7 +112,10 @@ pub fn set_camera(renderer: &mut AwsmRenderer, eye: Vec3, center: Vec3, radius: 
     let near = (radius * 0.001).max(0.01);
     let far = (radius * 200.0).max(100.0);
     let view = Mat4::look_at_rh(eye, center, Vec3::Y);
-    let projection = Mat4::perspective_rh(45.0_f32.to_radians(), aspect, near, far);
+    // One source for the projection AND the reverse_z flag below, so
+    // the two cannot drift — the renderer owns the convention.
+    let convention = renderer.features.depth();
+    let projection = convention.perspective(45.0_f32.to_radians(), aspect, near, far);
     renderer
         .update_camera(CameraMatrices {
             view,
@@ -120,7 +123,7 @@ pub fn set_camera(renderer: &mut AwsmRenderer, eye: Vec3, center: Vec3, radius: 
             position_world: eye,
             focus_distance: (eye - center).length().max(0.1),
             aperture: 5.6,
-            reverse_z: false,
+            reverse_z: convention.reverse_z,
             near,
             far,
         })

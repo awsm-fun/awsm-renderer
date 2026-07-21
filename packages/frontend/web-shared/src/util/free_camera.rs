@@ -102,7 +102,10 @@ impl FreeCamera {
             aperture: 5.6,
             focus_distance: 10.0,
             clip_override: None,
-            reverse_z: false,
+            // Matches `RendererFeatures::default()`. Consumers running a
+            // forward-Z renderer override via `set_reverse_z` (the editor does,
+            // off its `?noreversez` flag).
+            reverse_z: true,
         }
     }
 

@@ -34,10 +34,13 @@ impl Camera {
     pub fn is_perspective(&self) -> bool {
         matches!(self.projection, CameraProjection::Perspective(_))
     }
-    pub fn projection_matrix(&self) -> Mat4 {
+    pub fn projection_matrix(
+        &self,
+        convention: awsm_renderer::depth_convention::DepthConvention,
+    ) -> Mat4 {
         match &self.projection {
-            CameraProjection::Orthographic(camera) => camera.projection_matrix(),
-            CameraProjection::Perspective(camera) => camera.projection_matrix(),
+            CameraProjection::Orthographic(camera) => camera.projection_matrix(convention),
+            CameraProjection::Perspective(camera) => camera.projection_matrix(convention),
         }
     }
 
@@ -64,14 +67,17 @@ impl Camera {
 
     pub fn matrices(&self) -> CameraMatrices {
         let (near, far) = self.clip_planes();
+        // ONE source for the projection and the flag, taken from the renderer
+        // default so this viewer follows it automatically instead of pinning a
+        // convention that then silently disagrees.
+        let convention = awsm_renderer::features::RendererFeatures::default().depth();
         CameraMatrices {
             view: self.view_matrix(),
-            projection: self.projection_matrix(),
+            projection: self.projection_matrix(convention),
             position_world: self.position_world(),
             focus_distance: self.focus_distance,
             aperture: self.aperture,
-            // Model-tests stay forward-Z (features default; 003)
-            reverse_z: false,
+            reverse_z: convention.reverse_z,
             near,
             far,
         }

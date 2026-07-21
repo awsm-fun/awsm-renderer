@@ -208,7 +208,10 @@ async fn run_render(
         };
         let eye = Vec3::new(0.0, 9.0, 10.0);
         let view = Mat4::look_at_rh(eye, Vec3::new(0.0, -2.0, 0.0), Vec3::Y);
-        let projection = Mat4::perspective_rh(
+        // One source for the projection AND the reverse_z flag below, so
+        // the two cannot drift — the renderer owns the convention.
+        let convention = r.features.depth();
+        let projection = convention.perspective(
             55.0_f32.to_radians(),
             crate::viewport::aspect(&canvas),
             0.1,
@@ -220,8 +223,7 @@ async fn run_render(
             position_world: eye,
             focus_distance: 12.0,
             aperture: 5.6,
-            // Examples/model-tests stay forward-Z (features default; 003)
-            reverse_z: false,
+            reverse_z: convention.reverse_z,
             near: 0.1,
             far: 100.0,
         });

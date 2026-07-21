@@ -101,6 +101,43 @@ impl CameraMatrices {
         }
     }
 
+    /// Right-handed ORTHOGRAPHIC camera from eye/target/up + box extents — the
+    /// counterpart to [`Self::perspective`], so an ortho consumer never has to
+    /// hand-roll a glam matrix and remember to set `reverse_z` to match.
+    ///
+    /// `convention` MUST match the renderer's `features.depth()`; it is the
+    /// single source for both the projection and the `reverse_z` flag here, so
+    /// they cannot drift. (`DepthConvention::orthographic` builds reverse-Z by
+    /// SWAPPING near/far, which is exactly the kind of detail a hand-rolled
+    /// literal gets wrong — a mismatch inverts every depth test.)
+    ///
+    /// Depth-of-field fields are carried for uniformity; ortho has no
+    /// perspective divide, so they only matter if a DoF pass reads them.
+    #[allow(clippy::too_many_arguments)]
+    pub fn orthographic(
+        convention: crate::depth_convention::DepthConvention,
+        eye: Vec3,
+        target: Vec3,
+        up: Vec3,
+        left: f32,
+        right: f32,
+        bottom: f32,
+        top: f32,
+        near: f32,
+        far: f32,
+    ) -> Self {
+        Self {
+            view: Mat4::look_at_rh(eye, target, up),
+            projection: convention.orthographic(left, right, bottom, top, near, far),
+            reverse_z: convention.reverse_z,
+            near,
+            far,
+            position_world: eye,
+            focus_distance: (target - eye).length().max(0.001),
+            aperture: 16.0,
+        }
+    }
+
     /// Returns the combined view-projection matrix.
     pub fn view_projection(&self) -> Mat4 {
         self.projection * self.view
