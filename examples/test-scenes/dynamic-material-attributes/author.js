@@ -58,9 +58,9 @@ return OpaqueShadingOutput(vc.rgb * diff, 1.0);`;
   await d({ cmd: 'set_visible', id: ID(0x10), visible: false });
   // Instancer carrying the custom material.
   await d({ cmd: 'insert', id: ID(0x20), spec: 'instancer', parent: null });
-  await d({ cmd: 'patch_kind', id: ID(0x20), patch: { instancer: { mesh: meshAsset } } });
-  await d({ cmd: 'add_material_variant', node: ID(0x20), material: cmat, id: ID(0x30), name: 'attr' });
-  await d({ cmd: 'select_material_variant', node: ID(0x20), variant: ID(0x30) });
+  // An instancer has ONE material (no variant palette — add_material_variant
+  // rejects it); `patch_kind {instancer: {material: ..}}` is the setter.
+  await d({ cmd: 'patch_kind', id: ID(0x20), patch: { instancer: { mesh: meshAsset, material: { asset: cmat } } } });
   // 12 instances in a 3×4 grid, each with a DISTINCT per-instance color
   // (rainbow by index) — the grid fills the native portrait canvas aspect.
   const transforms = [], colors = [];

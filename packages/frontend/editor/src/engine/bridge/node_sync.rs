@@ -2402,13 +2402,17 @@ async fn materialize_instancer(
         Vec::new()
     };
 
-    let mesh_key = upload_simple_mesh(
-        entry,
-        raw,
-        MeshMaterial::Flat(awsm_renderer_editor_protocol::MaterialDef::default()),
-        declare_only,
-    )
-    .await;
+    // The def's single authored material when set (built-in or custom WGSL —
+    // a custom shader reads the per-instance colours via
+    // `material_vertex_color(input, 0u)`); the flat default otherwise. NOT
+    // `Assigned(None)` for the unset case — that renders the magenta
+    // "unassigned" placeholder, but an unset instancer material means "flat
+    // default".
+    let material = match def.material.clone() {
+        Some(inst) => MeshMaterial::Assigned(Some(inst)),
+        None => MeshMaterial::Flat(awsm_renderer_editor_protocol::MaterialDef::default()),
+    };
+    let mesh_key = upload_simple_mesh(entry, raw, material, declare_only).await;
     if let Some(mk) = mesh_key {
         with_renderer_mut(move |r| {
             if let Err(err) = r.enable_mesh_instancing_opaque(mk, &transforms) {

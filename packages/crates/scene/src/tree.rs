@@ -676,6 +676,7 @@ mod tests {
             transform: Trs::default(),
             kind: NodeKind::Instancer(InstancerDef {
                 mesh: MeshRef(AssetId::new()),
+                material: None,
                 transforms: vec![
                     Trs {
                         translation: [1.0, 0.0, 2.0],

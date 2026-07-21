@@ -2595,6 +2595,18 @@ impl EditorController {
                     )));
                 };
                 let mut next = n.kind.get_cloned();
+                // An Instancer deliberately has no variant palette (one shared
+                // mesh = one material) — point at the API that DOES set its
+                // material instead of the generic no-palette error. This used
+                // to fail silently and leave the instancer on the flat default
+                // (the dynamic-material-attributes false-positive).
+                if matches!(next, awsm_renderer_editor_protocol::NodeKind::Instancer(_)) {
+                    return Err(crate::error::EditorError::msg(
+                        "add_material_variant: an Instancer has a single `material` field, not a \
+                         variant palette — set it with patch_kind {instancer: {material: \
+                         {asset: <material-id>}}}",
+                    ));
+                }
                 let Some(variants) = next.material_variants_mut() else {
                     return Err(crate::error::EditorError::msg(
                         "add_material_variant: node has no material palette",

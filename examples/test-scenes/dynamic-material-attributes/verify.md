@@ -7,8 +7,11 @@ drive:
      `set_custom_material_fragment_inputs {inputs:['normals','vertex_color']}` →
      shade WGSL reading `material_vertex_color(input, 0u)` → `register_material`;
      assert `material_diagnostics {ok:true, registered:true}`. Then ONE instancer
-     over the box mesh, custom material assigned, `set_instancer_transforms`
-     with a rainbow `per_instance_colors` array of 12).
+     over the box mesh, the custom material set as the instancer's single
+     `material` via `patch_kind {instancer: {material: {asset: ..}}}` (an
+     instancer has no variant palette — `add_material_variant` on it errors),
+     and `set_instancer_transforms` with a rainbow `per_instance_colors`
+     array of 12).
      (Or `load_project_from_url {base_url: http://localhost:9084/dynamic-material-attributes/project}`
      — note the bundle carries no per-instance colors table unless re-driven; prefer replay.)
   2. `set_view_options {grid:false, gizmos:false, light_gizmos:false}`;

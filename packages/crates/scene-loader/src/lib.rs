@@ -1912,13 +1912,14 @@ async fn capture_prefab(
         // the same flat-default material the live `materialize_instancer` uses
         // instead of falling through to the magenta placeholder.
         let mat = match &n.kind {
-            NodeKind::Instancer(_) => {
-                instancer_default_material(
+            NodeKind::Instancer(def) => {
+                instancer_material(
                     renderer,
                     cache,
                     assets,
                     placeholder,
                     &maps.custom_shaders,
+                    def.material.as_ref(),
                 )
                 .await
             }
@@ -2552,8 +2553,8 @@ fn materialize_instances_along_curve(
 /// by [`collect_prefetch_paths`]). Unlike [`materialize_instances_along_curve`]
 /// (which reuses a *source node's* already-materialized mesh), the instancer is
 /// self-contained: it references the asset directly, so it needs no other node
-/// in the scene. Instances render with a default material (matching the
-/// editor's bridge, which uploads the instancer flat-default); per-instance
+/// in the scene. Instances render with the def's authored `material` (or the
+/// flat default when unset — see [`instancer_material`]); per-instance
 /// **colors** apply via [`AwsmRenderer::set_mesh_instance_attrs`], expanded to
 /// the instance count with the last value repeated (the def's documented
 /// semantics). A nil mesh ref or an empty transform list renders nothing (a
@@ -2581,9 +2582,15 @@ async fn materialize_instancer(
         );
         return Ok(());
     };
-    let mat =
-        instancer_default_material(renderer, cache, assets, placeholder, &maps.custom_shaders)
-            .await;
+    let mat = instancer_material(
+        renderer,
+        cache,
+        assets,
+        placeholder,
+        &maps.custom_shaders,
+        def.material.as_ref(),
+    )
+    .await;
 
     // Same geometry acquisition as the `Mesh` arm (minus the LOD/cluster
     // chains — the instanced draw is one mesh by design).
@@ -2655,30 +2662,41 @@ fn instancer_prefab_replay(def: &InstancerDef) -> PrefabReplay {
     }
 }
 
-/// The flat-default material an explicit `Instancer` renders with (the editor's
-/// instancer bridge renders flat-default too; the kind carries no material
-/// palette). Built through the same resolve path as node materials so its
-/// pipeline compiles in the Phase-4 batch. Shared by [`materialize_instancer`]
-/// (the live load) and [`capture_prefab`] (prefab templates) so an instancer
-/// inside a prefab renders identically to a top-level one.
-async fn instancer_default_material(
+/// The material an explicit `Instancer` renders with: the def's authored
+/// [`InstancerDef::material`] when set (built-in OR custom WGSL — resolved
+/// through the same path as node materials, so a custom shader reading
+/// `material_vertex_color(input, 0u)` sees the per-instance colours), else the
+/// flat default (a nil-asset instance, matching the editor's bridge). Built
+/// through `resolve_material` either way so its pipeline compiles in the
+/// Phase-4 batch. Shared by [`materialize_instancer`] (the live load) and
+/// [`capture_prefab`] (prefab templates) so an instancer inside a prefab
+/// renders identically to a top-level one.
+async fn instancer_material(
     renderer: &mut AwsmRenderer,
     cache: &mut texture::TextureCache,
     assets: &impl SceneAssets,
     placeholder: MaterialKey,
     custom_shaders: &HashMap<AssetId, awsm_renderer_materials::MaterialShaderId>,
+    authored: Option<&MaterialInstance>,
 ) -> MaterialKey {
-    let default_inst = MaterialInstance {
-        asset: AssetId::new(),
-        inline: Default::default(),
-        uniform_overrides: Default::default(),
-        texture_overrides: Default::default(),
-        buffer_overrides: Default::default(),
+    let default_inst;
+    let inst = match authored {
+        Some(inst) => inst,
+        None => {
+            default_inst = MaterialInstance {
+                asset: AssetId::new(),
+                inline: Default::default(),
+                uniform_overrides: Default::default(),
+                texture_overrides: Default::default(),
+                buffer_overrides: Default::default(),
+            };
+            &default_inst
+        }
     };
     resolve_material(
         renderer,
         cache,
-        Some(&default_inst),
+        Some(inst),
         placeholder,
         assets,
         custom_shaders,
