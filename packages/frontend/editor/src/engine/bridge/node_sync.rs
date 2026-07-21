@@ -210,7 +210,7 @@ fn parent_of(id: NodeId) -> Option<NodeId> {
 /// fans a toggle out to the whole subtree — without it, hiding a GROUP left
 /// every descendant mesh/light rendering (the eye only worked on the node
 /// carrying the geometry itself).
-fn effective_visible(id: NodeId) -> bool {
+pub(crate) fn effective_visible(id: NodeId) -> bool {
     let mut cur = Some(id);
     while let Some(c) = cur {
         let own = {

@@ -197,6 +197,8 @@ pub struct Settings {
     pub gizmo: Mutable<bool>,
     /// Show the pickable light-icon HUD markers (one per light node).
     pub light_gizmos: Mutable<bool>,
+    /// Show the camera frustum gizmo (wireframe frustum per camera node).
+    pub camera_gizmos: Mutable<bool>,
     /// Show the skeleton bone-line overlay on skinned rigs.
     pub skeleton_viz: Mutable<bool>,
     /// Auto-key: in ANIMATION mode, a gizmo edit on a node that the current
@@ -255,6 +257,7 @@ impl Default for Settings {
             grid: Mutable::new(false),
             gizmo: Mutable::new(true),
             light_gizmos: Mutable::new(false),
+            camera_gizmos: Mutable::new(false),
             skeleton_viz: Mutable::new(true),
             auto_key: Mutable::new(true),
             msaa: Mutable::new(true),
@@ -3532,6 +3535,7 @@ impl EditorController {
                 grid,
                 gizmos,
                 light_gizmos,
+                camera_gizmos,
                 skeleton_viz,
                 follow_agent,
                 activity_overlay,
@@ -3550,6 +3554,9 @@ impl EditorController {
                 }
                 if let Some(v) = light_gizmos {
                     s.light_gizmos.set_neq(v);
+                }
+                if let Some(v) = camera_gizmos {
+                    s.camera_gizmos.set_neq(v);
                 }
                 if let Some(v) = skeleton_viz {
                     s.skeleton_viz.set_neq(v);
@@ -6374,6 +6381,7 @@ impl EditorController {
                         "grid": self.settings.grid.get(),
                         "gizmos": self.settings.gizmo.get(),
                         "light_gizmos": self.settings.light_gizmos.get(),
+                        "camera_gizmos": self.settings.camera_gizmos.get(),
                         "skeleton_viz": self.settings.skeleton_viz.get(),
                         "follow_agent": crate::engine::activity_feed::follow_enabled().get(),
                         "activity_overlay": crate::engine::activity_feed::enabled().get(),

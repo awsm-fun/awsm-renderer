@@ -307,6 +307,8 @@ fn render_one_frame(dt_ms: f64) {
         super::gizmo::per_frame_update(renderer);
         // Re-anchor + zoom the pickable light icons (one per light node).
         super::light_icons::per_frame_update(renderer, &matrices);
+        // Wireframe frustum per camera node (Settings toggle).
+        super::camera_gizmos::per_frame_update(renderer);
         // Bone-line skeleton overlay for skinned rigs (Settings toggle).
         super::skeleton_viz::per_frame_update(renderer);
         // Keep curve control-point handles screen-constant + anchored.

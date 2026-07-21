@@ -6,6 +6,7 @@
 pub mod activity;
 pub mod activity_feed;
 pub mod bridge;
+pub mod camera_gizmos;
 pub mod canvas;
 pub mod canvas_host;
 pub mod config;

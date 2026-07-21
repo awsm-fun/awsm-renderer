@@ -1401,6 +1401,9 @@ pub struct ViewOptionsParams {
     /// Pickable light-icon HUD markers. Omit to leave unchanged.
     #[serde(default)]
     pub light_gizmos: Option<bool>,
+    /// Camera frustum gizmo (wireframe frustum per camera node).
+    #[serde(default)]
+    pub camera_gizmos: Option<bool>,
     /// Skeleton bone-line overlay on skinned rigs. Omit to leave unchanged.
     #[serde(default)]
     pub skeleton_viz: Option<bool>,
@@ -4594,7 +4597,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Set editor viewport view options (partial update — only the fields you pass change; transient view state, never persisted): grid, gizmos, light_gizmos, skeleton_viz, follow_agent, activity_overlay, mcp_notifications, msaa, smaa (all bool; msaa is STRUCTURAL — wait_render_settled after flipping), render_scale (float 1.0–2.0 supersampling; targets rebuild next frame — wait_render_settled after), and anisotropy (bool, default on — runtime sampler swap). FOR CLEAN VERIFICATION SCREENSHOTS: set {grid:false, gizmos:false, light_gizmos:false, skeleton_viz:false} before screenshot_scene so viewport chrome does not contaminate the pixels, and restore afterwards. follow_agent / activity_overlay / mcp_notifications default OFF and are human-courtesy toggles — leave them off during automated work. Read the current values back with get_view_options."
+        description = "Set editor viewport view options (partial update — only the fields you pass change; transient view state, never persisted): grid, gizmos, light_gizmos, camera_gizmos (wireframe frustum per camera node), skeleton_viz, follow_agent, activity_overlay, mcp_notifications, msaa, smaa (all bool; msaa is STRUCTURAL — wait_render_settled after flipping), render_scale (float 1.0–2.0 supersampling; targets rebuild next frame — wait_render_settled after), and anisotropy (bool, default on — runtime sampler swap). FOR CLEAN VERIFICATION SCREENSHOTS: set {grid:false, gizmos:false, light_gizmos:false, skeleton_viz:false} before screenshot_scene so viewport chrome does not contaminate the pixels, and restore afterwards. follow_agent / activity_overlay / mcp_notifications default OFF and are human-courtesy toggles — leave them off during automated work. Read the current values back with get_view_options."
     )]
     async fn set_view_options(
         &self,
@@ -4604,6 +4607,7 @@ impl EditorMcp {
             grid: p.grid,
             gizmos: p.gizmos,
             light_gizmos: p.light_gizmos,
+            camera_gizmos: p.camera_gizmos,
             skeleton_viz: p.skeleton_viz,
             follow_agent: p.follow_agent,
             activity_overlay: p.activity_overlay,
@@ -4618,7 +4622,7 @@ impl EditorMcp {
 
     #[tool(
         annotations(read_only_hint = true),
-        description = "Current editor viewport view options as JSON (grid, gizmos, light_gizmos, skeleton_viz, follow_agent, activity_overlay, mcp_notifications, msaa, smaa, anisotropy booleans + render_scale float) — the read half of set_view_options. Pure read."
+        description = "Current editor viewport view options as JSON (grid, gizmos, light_gizmos, camera_gizmos, skeleton_viz, follow_agent, activity_overlay, mcp_notifications, msaa, smaa, anisotropy booleans + render_scale float) — the read half of set_view_options. Pure read."
     )]
     async fn get_view_options(&self) -> Result<CallToolResult, McpError> {
         self.query(EditorQuery::ViewOptions).await

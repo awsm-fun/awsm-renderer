@@ -694,6 +694,9 @@ pub enum EditorCommand {
         /// Pickable light-icon HUD markers.
         #[serde(default)]
         light_gizmos: Option<bool>,
+        /// Camera frustum gizmo (wireframe frustum per camera node).
+        #[serde(default)]
+        camera_gizmos: Option<bool>,
         /// Skeleton bone-line overlay on skinned rigs.
         #[serde(default)]
         skeleton_viz: Option<bool>,
