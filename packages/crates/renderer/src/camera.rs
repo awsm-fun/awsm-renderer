@@ -13,6 +13,96 @@ use crate::{AwsmRenderer, AwsmRendererLogging};
 const APPLY_JITTER: bool = false;
 
 impl AwsmRenderer {
+    /// Point the camera at `target` with a PERSPECTIVE projection — the
+    /// one-call path, and the one to reach for by default.
+    ///
+    /// The renderer supplies the two things a caller most easily gets wrong:
+    ///
+    /// - the DEPTH CONVENTION, taken from its own `features.depth()`, so the
+    ///   projection and the `reverse_z` flag cannot disagree. A mismatch
+    ///   inverts every depth test and the symptom (geometry occluded
+    ///   backwards) points nowhere near the camera.
+    /// - the ASPECT RATIO, taken from the live surface, so it is correct after
+    ///   a resize instead of pinned to whatever the canvas was at startup.
+    ///
+    /// Depth-of-field defaults to focusing on `target`. To tune it, or to drive
+    /// the view matrix yourself, build the matrices and adjust before handing
+    /// them over — still taking the convention from the renderer:
+    ///
+    /// ```ignore
+    /// let mut cam = CameraMatrices::perspective(
+    ///     r.features.depth(), eye, target, Vec3::Y, fov_y, aspect, near, far,
+    /// );
+    /// cam.aperture = 5.6;
+    /// r.update_camera(cam)?;
+    /// ```
+    pub fn set_perspective_camera(
+        &mut self,
+        eye: Vec3,
+        target: Vec3,
+        up: Vec3,
+        fov_y: f32,
+        near: f32,
+        far: f32,
+    ) -> Result<()> {
+        let aspect = self.surface_aspect()?;
+        let matrices = CameraMatrices::perspective(
+            self.features.depth(),
+            eye,
+            target,
+            up,
+            fov_y,
+            aspect,
+            near,
+            far,
+        );
+        self.update_camera(matrices)
+    }
+
+    /// Point the camera at `target` with an ORTHOGRAPHIC projection, sized by
+    /// `half_height` in world units — the horizontal extent follows from the
+    /// live aspect ratio.
+    ///
+    /// Same guarantees as [`Self::set_perspective_camera`]: the convention and
+    /// the aspect come from the renderer. Taking a single `half_height` also
+    /// removes the left/right/bottom/top transposition footgun, and reverse-Z
+    /// ortho (which is the near/far SWAP) is handled for you.
+    pub fn set_orthographic_camera(
+        &mut self,
+        eye: Vec3,
+        target: Vec3,
+        up: Vec3,
+        half_height: f32,
+        near: f32,
+        far: f32,
+    ) -> Result<()> {
+        let aspect = self.surface_aspect()?;
+        let half_width = half_height * aspect;
+        let matrices = CameraMatrices::orthographic(
+            self.features.depth(),
+            eye,
+            target,
+            up,
+            -half_width,
+            half_width,
+            -half_height,
+            half_height,
+            near,
+            far,
+        );
+        self.update_camera(matrices)
+    }
+
+    /// Live surface aspect (width / height) at RENDER resolution. Guards a
+    /// zero-height surface so a hidden/collapsed canvas cannot produce NaN
+    /// matrices.
+    fn surface_aspect(&self) -> Result<f32> {
+        let (w, h) = self.gpu.current_context_texture_size()?;
+        let w = crate::size::scale_extent(w, self.render_scale).max(1);
+        let h = crate::size::scale_extent(h, self.render_scale).max(1);
+        Ok(w as f32 / h as f32)
+    }
+
     /// Updates the camera buffer with new matrices.
     pub fn update_camera(&mut self, camera_matrices: CameraMatrices) -> Result<()> {
         // Render resolution (scaled), not swap-chain: the camera uniform's

@@ -2,11 +2,10 @@
 //! framing, and the requestAnimationFrame drive loop.
 
 use anyhow::{anyhow, Context, Result};
-use awsm_renderer::camera::CameraMatrices;
 use awsm_renderer::features::RendererFeatures;
 use awsm_renderer::AwsmRenderer;
 use awsm_renderer_core::renderer::{AwsmRendererWebGpuBuilder, DeviceRequestLimits};
-use glam::{Mat4, Vec3};
+use glam::Vec3;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
@@ -108,26 +107,13 @@ pub fn scene_bounds(renderer: &AwsmRenderer) -> (Vec3, f32) {
 /// renderer features default; docs/plans/003) so `reverse_z` is `false` here
 /// and in the features structs.
 pub fn set_camera(renderer: &mut AwsmRenderer, eye: Vec3, center: Vec3, radius: f32) -> Result<()> {
-    let aspect = CANVAS_WIDTH as f32 / CANVAS_HEIGHT as f32;
     let near = (radius * 0.001).max(0.01);
     let far = (radius * 200.0).max(100.0);
-    let view = Mat4::look_at_rh(eye, center, Vec3::Y);
-    // One source for the projection AND the reverse_z flag below, so
-    // the two cannot drift — the renderer owns the convention.
-    let convention = renderer.features.depth();
-    let projection = convention.perspective(45.0_f32.to_radians(), aspect, near, far);
+    // The renderer supplies its own depth convention AND the live aspect, so
+    // neither can drift from what it actually renders with.
     renderer
-        .update_camera(CameraMatrices {
-            view,
-            projection,
-            position_world: eye,
-            focus_distance: (eye - center).length().max(0.1),
-            aperture: 5.6,
-            reverse_z: convention.reverse_z,
-            near,
-            far,
-        })
-        .map_err(|e| anyhow!("update_camera: {e}"))
+        .set_perspective_camera(eye, center, Vec3::Y, 45.0_f32.to_radians(), near, far)
+        .map_err(|e| anyhow!("set_perspective_camera: {e}"))
 }
 
 /// Await the next `requestAnimationFrame`, returning its DOMHighResTimeStamp.
