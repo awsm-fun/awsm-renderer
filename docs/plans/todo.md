@@ -1,13 +1,14 @@
 # todo — camera API consolidation + outstanding branch work
 
-**Branch:** `more-textures` (15 commits ahead of `main`, PR #197 open, v0.24.0).
+**Branch:** `more-textures` (~17 commits ahead of `main`, PR #197 open, v0.24.0).
 **State:** `task lint` clean, `cargo test --workspace --all-features` green (61
 test binaries). Nothing here is blocking a red build — this is design debt and
 unfinished features.
 
 Read this whole file before starting. Task A is a **redesign**, not a patch: it
-exists because the camera API was grown one question at a time and now has ~7
-overlapping ways to do the same thing. Do not add an eighth.
+exists because the camera API was grown one question at a time and now has
+ELEVEN overlapping ways to do the same thing (inventoried below). Do not add a
+twelfth.
 
 ---
 
