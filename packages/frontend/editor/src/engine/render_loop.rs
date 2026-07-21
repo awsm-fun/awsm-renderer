@@ -409,39 +409,25 @@ fn scene_camera_matrices(renderer: &AwsmRenderer, node_id: NodeId) -> Option<Cam
             }
         };
 
-    // Scene cameras follow the renderer's depth convention (003) exactly like
-    // the free camera — a forward-Z projection on a reverse-Z renderer would
-    // invert every depth test.
-    let convention = awsm_renderer::depth_convention::DepthConvention {
-        reverse_z: crate::engine::context::reverse_z_flag(),
-    };
-    let projection = match projection_params {
-        CameraProjectionParams::Perspective { fov_y_rad } => {
-            convention.perspective(fov_y_rad, aspect, near, far)
-        }
-        CameraProjectionParams::Orthographic { half_height } => {
-            let half_width = half_height * aspect;
-            convention.orthographic(
-                -half_width,
-                half_width,
-                -half_height,
-                half_height,
-                near,
-                far,
-            )
-        }
-    };
-
-    Some(CameraMatrices {
+    // Projection + `reverse_z` both come from the renderer's own convention via
+    // `from_view`, so a scene camera cannot disagree with what the renderer
+    // actually renders with (a forward-Z projection on a reverse-Z renderer
+    // inverts every depth test). It also owns the ortho half-width derivation,
+    // which this used to repeat by hand.
+    let mut matrices = CameraMatrices::from_view(
+        renderer.features.depth(),
         view,
-        projection,
-        position_world: pos,
-        focus_distance,
-        aperture,
-        reverse_z: convention.reverse_z,
+        pos,
+        projection_params,
+        aspect,
         near,
         far,
-    })
+    );
+    // DoF is authored per-camera, so keep the config's values over the neutral
+    // defaults `from_view` supplies.
+    matrices.focus_distance = focus_distance;
+    matrices.aperture = aperture;
+    Some(matrices)
 }
 
 #[cfg(test)]

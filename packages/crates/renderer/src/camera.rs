@@ -13,29 +13,50 @@ use crate::{AwsmRenderer, AwsmRendererLogging};
 const APPLY_JITTER: bool = false;
 
 impl AwsmRenderer {
-    /// Point the camera at `target` with a PERSPECTIVE projection — the
-    /// one-call path, and the one to reach for by default.
+    /// Install camera matrices from a VIEW MATRIX + projection params — the
+    /// primary entry point, and the one a scene camera wants: its view comes
+    /// from a node transform, not an eye/target/up triple.
     ///
     /// The renderer supplies the two things a caller most easily gets wrong:
     ///
-    /// - the DEPTH CONVENTION, taken from its own `features.depth()`, so the
-    ///   projection and the `reverse_z` flag cannot disagree. A mismatch
-    ///   inverts every depth test and the symptom (geometry occluded
-    ///   backwards) points nowhere near the camera.
-    /// - the ASPECT RATIO, taken from the live surface, so it is correct after
-    ///   a resize instead of pinned to whatever the canvas was at startup.
+    /// - the DEPTH CONVENTION, from its own `features.depth()`, so the
+    ///   projection and the `reverse_z` flag are structurally incapable of
+    ///   disagreeing. A mismatch inverts every depth test, and the symptom
+    ///   (geometry occluded backwards) points nowhere near the camera.
+    /// - the ASPECT RATIO, from the live surface at render resolution, so it is
+    ///   right after a resize instead of pinned to startup dimensions.
     ///
-    /// Depth-of-field defaults to focusing on `target`. To tune it, or to drive
-    /// the view matrix yourself, build the matrices and adjust before handing
-    /// them over — still taking the convention from the renderer:
+    /// Depth-of-field defaults are neutral; build with
+    /// [`CameraMatrices::from_view`] and pass to [`Self::update_camera`]
+    /// yourself if you need to tune them.
+    pub fn set_camera(
+        &mut self,
+        view: Mat4,
+        position_world: Vec3,
+        projection: crate::cameras::CameraProjectionParams,
+        near: f32,
+        far: f32,
+    ) -> Result<()> {
+        let aspect = self.surface_aspect()?;
+        let matrices = CameraMatrices::from_view(
+            self.features.depth(),
+            view,
+            position_world,
+            projection,
+            aspect,
+            near,
+            far,
+        );
+        self.update_camera(matrices)
+    }
+
+    /// Look-at convenience over [`Self::set_camera`] for a PERSPECTIVE camera:
+    /// `eye` looks at `target` with `up` (glam calls that middle argument
+    /// `center`; it is the point being looked AT, not a viewport centre).
     ///
-    /// ```ignore
-    /// let mut cam = CameraMatrices::perspective(
-    ///     r.features.depth(), eye, target, Vec3::Y, fov_y, aspect, near, far,
-    /// );
-    /// cam.aperture = 5.6;
-    /// r.update_camera(cam)?;
-    /// ```
+    /// Use this for demos, tools and fly-cameras. A camera that lives in the
+    /// scene graph should go through [`Self::set_camera`] with the view matrix
+    /// derived from its node transform.
     pub fn set_perspective_camera(
         &mut self,
         eye: Vec3,
@@ -45,28 +66,20 @@ impl AwsmRenderer {
         near: f32,
         far: f32,
     ) -> Result<()> {
-        let aspect = self.surface_aspect()?;
-        let matrices = CameraMatrices::perspective(
-            self.features.depth(),
+        self.set_camera(
+            Mat4::look_at_rh(eye, target, up),
             eye,
-            target,
-            up,
-            fov_y,
-            aspect,
+            crate::cameras::CameraProjectionParams::Perspective { fov_y_rad: fov_y },
             near,
             far,
-        );
-        self.update_camera(matrices)
+        )
     }
 
-    /// Point the camera at `target` with an ORTHOGRAPHIC projection, sized by
-    /// `half_height` in world units — the horizontal extent follows from the
-    /// live aspect ratio.
-    ///
-    /// Same guarantees as [`Self::set_perspective_camera`]: the convention and
-    /// the aspect come from the renderer. Taking a single `half_height` also
-    /// removes the left/right/bottom/top transposition footgun, and reverse-Z
-    /// ortho (which is the near/far SWAP) is handled for you.
+    /// Look-at convenience over [`Self::set_camera`] for an ORTHOGRAPHIC
+    /// camera, sized by `half_height` in world units — the horizontal extent
+    /// follows from the live aspect ratio, so there are no left/right/bottom/top
+    /// arguments to transpose (and reverse-Z ortho, which is the near/far SWAP,
+    /// is handled for you).
     pub fn set_orthographic_camera(
         &mut self,
         eye: Vec3,
@@ -76,21 +89,13 @@ impl AwsmRenderer {
         near: f32,
         far: f32,
     ) -> Result<()> {
-        let aspect = self.surface_aspect()?;
-        let half_width = half_height * aspect;
-        let matrices = CameraMatrices::orthographic(
-            self.features.depth(),
+        self.set_camera(
+            Mat4::look_at_rh(eye, target, up),
             eye,
-            target,
-            up,
-            -half_width,
-            half_width,
-            -half_height,
-            half_height,
+            crate::cameras::CameraProjectionParams::Orthographic { half_height },
             near,
             far,
-        );
-        self.update_camera(matrices)
+        )
     }
 
     /// Live surface aspect (width / height) at RENDER resolution. Guards a
@@ -187,6 +192,59 @@ impl CameraMatrices {
             far,
             position_world: eye,
             focus_distance: (target - eye).length().max(0.001),
+            aperture: 16.0,
+        }
+    }
+
+    /// Camera matrices from a VIEW MATRIX plus the renderer's own
+    /// [`CameraProjectionParams`] — the shape a camera in a scene actually has,
+    /// where the view comes from a node transform rather than an eye/target/up
+    /// triple.
+    ///
+    /// This is the primitive; [`Self::perspective`] / [`Self::orthographic`]
+    /// are look-at conveniences over it. It is also the ONE place that maps
+    /// `CameraProjectionParams` to a matrix — the orthographic arm derives its
+    /// half-width from `aspect`, which every caller previously re-derived by
+    /// hand.
+    ///
+    /// `convention` MUST match the renderer's `features.depth()`; prefer
+    /// [`crate::AwsmRenderer::set_camera`], which supplies it (and `aspect`)
+    /// for you. Depth-of-field fields get neutral defaults — set them on the
+    /// returned value if a DoF pass reads them.
+    pub fn from_view(
+        convention: crate::depth_convention::DepthConvention,
+        view: Mat4,
+        position_world: Vec3,
+        projection: crate::cameras::CameraProjectionParams,
+        aspect: f32,
+        near: f32,
+        far: f32,
+    ) -> Self {
+        use crate::cameras::CameraProjectionParams;
+        let projection = match projection {
+            CameraProjectionParams::Perspective { fov_y_rad } => {
+                convention.perspective(fov_y_rad, aspect, near, far)
+            }
+            CameraProjectionParams::Orthographic { half_height } => {
+                let half_width = half_height * aspect;
+                convention.orthographic(
+                    -half_width,
+                    half_width,
+                    -half_height,
+                    half_height,
+                    near,
+                    far,
+                )
+            }
+        };
+        Self {
+            view,
+            projection,
+            reverse_z: convention.reverse_z,
+            near,
+            far,
+            position_world,
+            focus_distance: 10.0,
             aperture: 16.0,
         }
     }
