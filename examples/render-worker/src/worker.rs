@@ -214,7 +214,7 @@ pub fn render_worker_start(canvas: web_sys::OffscreenCanvas) -> Result<(), JsVal
 /// a procedural box, and start the rAF loop. Returns `Ok` once the
 /// loop is armed; the closure keeps itself alive via `forget`.
 fn start_worker_renderer(canvas: web_sys::OffscreenCanvas) -> Result<(), JsValue> {
-    use awsm_renderer::camera::CameraMatrices;
+    use awsm_renderer::camera::CameraParams;
     use awsm_renderer::materials::Material;
     use awsm_renderer::raw_mesh::RawMeshData;
     use awsm_renderer::transforms::Transform;
@@ -347,23 +347,13 @@ fn start_worker_renderer(canvas: web_sys::OffscreenCanvas) -> Result<(), JsValue
                 // initial frames.
                 let view =
                     Mat4::look_at_rh(Vec3::new(0.0, 1.5, 3.0), Vec3::new(0.0, 0.0, -3.0), Vec3::Y);
-                // Aspect = canvas width / height; the OffscreenCanvas
-                // is fixed at 800x600 in index.html.
-                // One source for the projection AND the reverse_z flag below, so
-                // the two cannot drift — the renderer owns the convention.
-                let convention = r.features.depth();
-                let projection =
-                    convention.perspective(60.0_f32.to_radians(), 800.0 / 600.0, 0.1, 100.0);
-                let _ = r.update_camera(CameraMatrices {
+                // The renderer supplies the depth convention AND the live
+                // surface aspect, so neither can drift from what it actually
+                // renders with.
+                let _ = r.set_camera(
                     view,
-                    projection,
-                    position_world: Vec3::new(0.0, 1.5, 3.0),
-                    focus_distance: 10.0,
-                    aperture: 5.6,
-                    reverse_z: convention.reverse_z,
-                    near: 0.1,
-                    far: 100.0,
-                });
+                    CameraParams::perspective(60.0_f32.to_radians(), 0.1, 100.0),
+                );
                 r.update_transforms();
                 if let Err(err) = r.render(None) {
                     tracing::warn!("worker: render error: {err}");

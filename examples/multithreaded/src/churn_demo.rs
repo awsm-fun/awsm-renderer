@@ -87,13 +87,12 @@ fn render_main(payload: JsValue) -> Result<(), JsValue> {
     use awsm_renderer_core::renderer::{AwsmRendererWebGpuBuilder, DeviceRequestLimits};
 
     let canvas: web_sys::OffscreenCanvas = payload.unchecked_into();
-    let canvas_handle = canvas.clone();
     let gpu = navigator_gpu().ok_or_else(|| JsValue::from_str("worker: no navigator.gpu"))?;
     let gpu_builder = AwsmRendererWebGpuBuilder::new_with_offscreen_canvas(gpu, canvas)
         .with_device_request_limits(DeviceRequestLimits::max_all());
 
     wasm_bindgen_futures::spawn_local(async move {
-        if let Err(err) = run_render(gpu_builder, canvas_handle).await {
+        if let Err(err) = run_render(gpu_builder).await {
             tracing::error!("churn demo render: {err:?}");
         }
     });
@@ -102,9 +101,8 @@ fn render_main(payload: JsValue) -> Result<(), JsValue> {
 
 async fn run_render(
     gpu_builder: awsm_renderer_core::renderer::AwsmRendererWebGpuBuilder,
-    canvas: web_sys::OffscreenCanvas,
 ) -> Result<(), JsValue> {
-    use awsm_renderer::camera::CameraMatrices;
+    use awsm_renderer::camera::CameraParams;
     use awsm_renderer::materials::Material;
     use awsm_renderer::AwsmRendererBuilder;
     use awsm_renderer_materials::pbr::PbrMaterial;
@@ -215,25 +213,12 @@ async fn run_render(
         // Camera + render.
         let eye = Vec3::new(0.0, 0.0, 12.0);
         let view = Mat4::look_at_rh(eye, Vec3::ZERO, Vec3::Y);
-        // One source for the projection AND the reverse_z flag below, so
-        // the two cannot drift — the renderer owns the convention.
-        let convention = s.renderer.features.depth();
-        let projection = convention.perspective(
-            60.0_f32.to_radians(),
-            crate::viewport::aspect(&canvas),
-            0.1,
-            100.0,
-        );
-        let _ = s.renderer.update_camera(CameraMatrices {
+        // The renderer supplies the depth convention AND the live aspect,
+        // so neither can drift from what it actually renders with.
+        let _ = s.renderer.set_camera(
             view,
-            projection,
-            position_world: eye,
-            focus_distance: 10.0,
-            aperture: 5.6,
-            reverse_z: convention.reverse_z,
-            near: 0.1,
-            far: 100.0,
-        });
+            CameraParams::perspective(60.0_f32.to_radians(), 0.1, 100.0),
+        );
         s.renderer.update_transforms();
         let torn = s.renderer.transforms.last_descend_stats().torn;
         if torn > s.max_torn_accepted {

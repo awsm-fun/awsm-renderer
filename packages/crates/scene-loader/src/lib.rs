@@ -118,7 +118,7 @@ use std::collections::HashMap;
 use animation::AnimResolveMaps;
 use anyhow::{anyhow, Result};
 use awsm_renderer::animation::AnimationClipKey;
-use awsm_renderer::cameras::CameraKey;
+use awsm_renderer::camera::CameraKey;
 use awsm_renderer::decals::DecalKey;
 use awsm_renderer::lights::LightKey;
 #[cfg(feature = "lod")]

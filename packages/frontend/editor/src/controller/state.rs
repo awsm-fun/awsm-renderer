@@ -8029,7 +8029,7 @@ fn read_readback_target(
             // Null if the camera slot isn't materialized yet, or FovY on an
             // orthographic camera.
             use animation::CameraParamKind as P;
-            use awsm_renderer::cameras::CameraProjectionParams;
+            use awsm_renderer::camera::CameraProjectionParams;
             let camera_key = crate::engine::bridge::bridge()
                 .nodes
                 .lock()

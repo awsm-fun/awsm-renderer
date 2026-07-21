@@ -804,7 +804,7 @@ impl AwsmRenderer {
                 }
             }
             AnimationTarget::Camera { camera, param } => {
-                use crate::cameras::CameraProjectionParams;
+                use crate::camera::CameraProjectionParams;
                 let p = self.cameras.get(camera)?;
                 match param {
                     CameraParam::FovY => match p.projection {
@@ -1237,12 +1237,12 @@ fn apply_light_param(
 /// perspective camera (no-op on orthographic). Wrong `AnimationData` kind is
 /// an error.
 fn apply_camera_param(
-    cameras: &mut crate::cameras::Cameras,
-    camera: crate::cameras::CameraKey,
+    cameras: &mut crate::camera::Cameras,
+    camera: crate::camera::CameraKey,
     param: CameraParam,
     value: &AnimationData,
 ) -> Result<()> {
-    use crate::cameras::CameraProjectionParams;
+    use crate::camera::CameraProjectionParams;
 
     let scalar = data_to_f32(value)?;
     cameras.update(camera, |p| match param {
@@ -1364,7 +1364,7 @@ mod tests {
 
     #[test]
     fn apply_camera_param_drives_each_field() {
-        use crate::cameras::{CameraParams, CameraProjectionParams, Cameras};
+        use crate::camera::{CameraParams, CameraProjectionParams, Cameras};
         let mut cams = Cameras::new();
         let key = cams.insert(CameraParams {
             projection: CameraProjectionParams::Perspective { fov_y_rad: 1.0 },
@@ -1402,7 +1402,7 @@ mod tests {
 
     #[test]
     fn apply_camera_param_fovy_noop_on_orthographic() {
-        use crate::cameras::{CameraParams, CameraProjectionParams, Cameras};
+        use crate::camera::{CameraParams, CameraProjectionParams, Cameras};
         let mut cams = Cameras::new();
         let key = cams.insert(CameraParams {
             projection: CameraProjectionParams::Orthographic { half_height: 3.0 },
@@ -1424,7 +1424,7 @@ mod tests {
 
     #[test]
     fn apply_camera_param_rejects_wrong_data_kind() {
-        use crate::cameras::{CameraParams, CameraProjectionParams, Cameras};
+        use crate::camera::{CameraParams, CameraProjectionParams, Cameras};
         let mut cams = Cameras::new();
         let key = cams.insert(CameraParams {
             projection: CameraProjectionParams::Perspective { fov_y_rad: 1.0 },

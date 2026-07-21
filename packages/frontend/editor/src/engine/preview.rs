@@ -85,11 +85,17 @@ async fn build(canvas: web_sys::HtmlCanvasElement) -> Result<(), String> {
     let h = canvas.client_height().max(1) as u32;
     canvas.set_width(w);
     canvas.set_height(h);
-    let aspect = w as f32 / h as f32;
 
     let renderer = build_renderer(canvas.clone()).await?;
     let renderer = Arc::new(xutex::AsyncMutex::new(renderer));
-    let camera = Arc::new(Mutex::new(Camera::new_default_cube(aspect)));
+    // Same depth-convention source as the preview renderer's features — the
+    // camera only uses it for its clip-plane policy (matrices come from the
+    // renderer, aspect included).
+    let camera = Arc::new(Mutex::new(Camera::new_default_cube(
+        awsm_renderer::depth_convention::DepthConvention {
+            reverse_z: crate::engine::context::reverse_z_flag(),
+        },
+    )));
 
     let mesh = {
         let mut r = renderer.lock().await;
@@ -188,13 +194,12 @@ fn render_frame(ctx: &Arc<PreviewCtx>) {
             ctx.canvas.set_width(cw as u32);
             ctx.canvas.set_height(ch as u32);
             r.gpu.sync_canvas_buffer_with_css();
-            ctx.camera.lock().unwrap().set_aspect(cw as f32 / ch as f32);
         }
-        let matrices = {
+        let (view, params) = {
             let c = ctx.camera.lock().unwrap();
-            c.matrices()
+            (c.view(), c.params())
         };
-        let _ = r.update_camera(matrices);
+        let _ = r.set_camera(view, params);
         r.update_transforms();
         let _ = r.render(None);
     }

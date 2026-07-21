@@ -73,7 +73,6 @@ fn render_main(payload: JsValue) -> Result<(), JsValue> {
 
     let canvas: web_sys::OffscreenCanvas =
         js_sys::Reflect::get(&payload, &JsValue::from_str("canvas"))?.unchecked_into();
-    let canvas_handle = canvas.clone();
     let url = js_sys::Reflect::get(&payload, &JsValue::from_str("url"))?
         .as_string()
         .unwrap_or_default();
@@ -82,7 +81,7 @@ fn render_main(payload: JsValue) -> Result<(), JsValue> {
         .with_device_request_limits(DeviceRequestLimits::max_all());
 
     wasm_bindgen_futures::spawn_local(async move {
-        if let Err(err) = run_render(gpu_builder, canvas_handle, url).await {
+        if let Err(err) = run_render(gpu_builder, url).await {
             tracing::error!("skin demo render: {err:?}");
             let scope = js_sys::global().unchecked_into::<web_sys::DedicatedWorkerGlobalScope>();
             let msg = js_sys::Object::new();
@@ -95,10 +94,9 @@ fn render_main(payload: JsValue) -> Result<(), JsValue> {
 
 async fn run_render(
     gpu_builder: awsm_renderer_core::renderer::AwsmRendererWebGpuBuilder,
-    canvas: web_sys::OffscreenCanvas,
     url: String,
 ) -> Result<(), JsValue> {
-    use awsm_renderer::camera::CameraMatrices;
+    use awsm_renderer::camera::CameraParams;
     use awsm_renderer::AwsmRendererBuilder;
     use awsm_renderer_gltf::{AwsmRendererGltfExt, GltfLoader};
     use glam::{Mat4, Vec3};
@@ -198,25 +196,11 @@ async fn run_render(
         let yaw = f as f32 * 0.004;
         let eye = Vec3::new(yaw.sin() * 3.5, 1.0, yaw.cos() * 3.5);
         let view = Mat4::look_at_rh(eye, Vec3::new(0.0, 0.8, 0.0), Vec3::Y);
-        // One source for the projection AND the reverse_z flag below, so
-        // the two cannot drift — the renderer owns the convention.
-        let convention = r.features.depth();
-        let projection = convention.perspective(
-            55.0_f32.to_radians(),
-            crate::viewport::aspect(&canvas),
-            0.05,
-            100.0,
-        );
-        let _ = r.update_camera(CameraMatrices {
-            view,
-            projection,
-            position_world: eye,
-            focus_distance: 4.0,
-            aperture: 5.6,
-            reverse_z: convention.reverse_z,
-            near: 0.05,
-            far: 100.0,
-        });
+        // The renderer supplies the depth convention AND the live aspect,
+        // so neither can drift from what it actually renders with.
+        let mut camera_params = CameraParams::perspective(55.0_f32.to_radians(), 0.05, 100.0);
+        camera_params.focus_distance = 4.0;
+        let _ = r.set_camera(view, camera_params);
         r.update_transforms();
         if let Err(err) = r.render(None) {
             tracing::warn!("skin demo: render error: {err}");

@@ -137,12 +137,15 @@ async fn build(canvas: web_sys::HtmlCanvasElement) -> Result<Arc<Gen>, String> {
     let renderer = preview::build_renderer(canvas.clone()).await?;
     let renderer = Arc::new(xutex::AsyncMutex::new(renderer));
     // Frame tightly on the 0.85-radius preview sphere (not the 80 m default cube).
-    let camera = Arc::new(Mutex::new({
-        let mut cam = Camera::new_aabb(Aabb::new_cube(1.8, 1.8), 1.0, 1.4);
-        // Depth convention (003): thumbnails render through the main renderer.
-        cam.set_reverse_z(crate::engine::context::reverse_z_flag());
-        cam
-    }));
+    // Depth convention (003): thumbnails follow the main renderer's flag —
+    // the camera only uses it for its clip-plane policy.
+    let camera = Arc::new(Mutex::new(Camera::new_aabb(
+        Aabb::new_cube(1.8, 1.8),
+        1.4,
+        awsm_renderer::depth_convention::DepthConvention {
+            reverse_z: crate::engine::context::reverse_z_flag(),
+        },
+    )));
 
     let mesh = {
         let mut r = renderer.lock().await;
@@ -197,8 +200,11 @@ fn start_raf(gen: Arc<Gen>) {
 fn tick(gen: &Arc<Gen>) {
     // Keep the canvas presenting a fresh frame every tick (so `toDataURL` reads back).
     if let Some(mut r) = gen.renderer.try_lock() {
-        let matrices = gen.camera.lock().unwrap().matrices();
-        let _ = r.update_camera(matrices);
+        let (view, params) = {
+            let c = gen.camera.lock().unwrap();
+            (c.view(), c.params())
+        };
+        let _ = r.set_camera(view, params);
         r.update_transforms();
         let _ = r.render(None);
     }

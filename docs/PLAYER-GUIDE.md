@@ -140,10 +140,10 @@ Wire up `console_error_panic_hook::set_once()` and a tracing subscriber
 The renderer does not own a loop — you drive it. Each frame, in order:
 
 ```rust
-renderer.update_animations(dt_ms)?;      // advance animation clips (ms delta)
-renderer.update_camera(camera_matrices)?; // your camera (see §4)
-renderer.update_transforms();             // flush the transform graph
-renderer.render(None)?;                    // draw (Some(&RenderHooks) to customize)
+renderer.update_animations(dt_ms)?;       // advance animation clips (ms delta)
+renderer.set_camera(view, camera_params)?; // your camera (see §4)
+renderer.update_transforms();              // flush the transform graph
+renderer.render(None)?;                     // draw (Some(&RenderHooks) to customize)
 ```
 
 Drive it from `requestAnimationFrame`. With `gloo-render`, **keep the returned
@@ -155,7 +155,7 @@ fn schedule_frame(/* renderer, last_ts, cam, cell: Rc<RefCell<Option<AnimationFr
         let dt = /* ts - last_ts, clamped >= 0 */;
         let mut r = renderer.borrow_mut();
         r.update_animations(dt).ok();
-        r.update_camera(cam.clone()).ok();
+        r.set_camera(cam_view, cam_params).ok();
         r.update_transforms();
         r.render(None).ok();
         schedule_frame(/* re-arm with cloned handles */);
@@ -171,30 +171,43 @@ your setup code and the RAF closure.
 
 ## 4. Camera
 
-The renderer is **matrices-only**: it has no built-in camera or controller. You
-supply a `CameraMatrices` every frame. For the common right-handed perspective
-case, use the constructor (no need to hand-roll glam):
+The renderer has no built-in camera controller — a camera is two halves you
+supply each frame to the ONE entry point, `set_camera`:
+
+- a **view matrix** (`glam::Mat4`) — yours to build however you like: a
+  `Mat4::look_at_rh`, your own controller, physics, a replay, VR. Owning your
+  view matrix is first-class, not a fallback.
+- **`CameraParams`** — projection kind + clip planes (+ optional depth of
+  field): `CameraParams::perspective(fov_y_rad, near, far)` or
+  `CameraParams::orthographic(half_height, near, far)`.
 
 ```rust
-use awsm_renderer::camera::CameraMatrices;
-use glam::Vec3;
+use awsm_renderer::camera::CameraParams;
+use glam::{Mat4, Vec3};
 
-let cam = CameraMatrices::perspective(
-    Vec3::new(2.0, 3.0, 12.0), // eye
-    Vec3::ZERO,                // target
-    Vec3::Y,                   // up
-    45f32.to_radians(),        // fov_y
-    width as f32 / height as f32,
-    0.1, 100.0,                // near, far
-);
-renderer.update_camera(cam)?;
+renderer.set_camera(
+    Mat4::look_at_rh(
+        Vec3::new(2.0, 3.0, 12.0), // eye
+        Vec3::ZERO,                // target (the point being looked AT)
+        Vec3::Y,                   // up
+    ),
+    CameraParams::perspective(45f32.to_radians(), 0.1, 100.0),
+)?;
 ```
 
-`CameraMatrices` is `{ view, projection, position_world, focus_distance,
-aperture }`. `focus_distance`/`aperture` drive depth-of-field; the `perspective`
-helper defaults focus to `target` at f/16 — set the fields directly if you want
-manual control. Build your own `view`/`projection` (orthographic, custom rigs)
-and fill the struct yourself when the helper doesn't fit.
+The renderer supplies everything a caller could get wrong: the **depth
+convention** from its own features (reverse-Z by default — the projection and
+the depth tests can never disagree), the **aspect ratio** from the live surface
+(correct across resizes with no plumbing), and the camera **position**, derived
+from the view matrix. Note there is no aspect argument anywhere — that is by
+design.
+
+`params.aperture` / `params.focus_distance` drive depth-of-field (defaults
+f/5.6, 10 m). For a camera driven by a scene node's transform, build the view
+with `camera::view_from_world(world)` (glTF convention: -Z forward, +Y up).
+Read back what the renderer is using via `renderer.camera_matrices()` — the
+`CameraMatrices` snapshot (view/projection/derived data) for pick rays and
+screen-space math.
 
 ---
 
@@ -380,9 +393,9 @@ clean:
 - `06d0f64e` — `awsm-renderer-gltf` now re-exports `GltfLoader`, `GltfData`, and
   `populate_gltf` at the crate root (they previously lived only in submodules, so
   a consumer's imports didn't resolve).
-- `c98eb8d4` — `CameraMatrices::perspective(eye, target, up, fov_y, aspect,
-  near, far)` constructor, removing the glam boilerplate every consumer was
-  hand-rolling.
+- `c98eb8d4` — a `CameraMatrices::perspective(..)` constructor (since
+  superseded by the consolidated `set_camera(view, CameraParams)` API shown in
+  §4).
 
 ---
 

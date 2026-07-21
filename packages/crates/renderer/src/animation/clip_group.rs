@@ -6,7 +6,7 @@
 
 use slotmap::new_key_type;
 
-use crate::cameras::CameraKey;
+use crate::camera::CameraKey;
 use crate::lights::LightKey;
 use crate::materials::MaterialKey;
 use crate::transforms::TransformKey;
@@ -164,7 +164,7 @@ pub enum BuiltinMaterialParam {
     SecondaryEmissiveStrength,
 }
 
-/// Which parameter of a [`crate::cameras::CameraParams`] an animation channel
+/// Which parameter of a [`crate::camera::CameraParams`] an animation channel
 /// drives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CameraParam {

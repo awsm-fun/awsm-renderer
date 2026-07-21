@@ -407,7 +407,7 @@ async fn run_worker(
     gpu_builder: awsm_renderer_core::renderer::AwsmRendererWebGpuBuilder,
     canvas: web_sys::OffscreenCanvas,
 ) -> Result<(), JsValue> {
-    use awsm_renderer::camera::CameraMatrices;
+    use awsm_renderer::camera::CameraParams;
     use awsm_renderer::features::RendererFeatures;
     use awsm_renderer::AwsmRendererBuilder;
     use glam::{Mat4, Vec3};
@@ -447,7 +447,6 @@ async fn run_worker(
         let raf_run = raf.clone();
         let cell_loop = cell.clone();
         let loading_loop = loading.clone();
-        let canvas_loop = canvas.clone();
         let orbit_loop = orbit.clone();
         let screenshot_loop = screenshot.clone();
         *raf_init.borrow_mut() = Some(Closure::new(move || {
@@ -465,25 +464,12 @@ async fn run_worker(
                     };
                     let target = orbit_loop.borrow().target;
                     let view = Mat4::look_at_rh(eye, target, Vec3::Y);
-                    // One source for the projection AND the reverse_z flag below, so
-                    // the two cannot drift — the renderer owns the convention.
-                    let convention = r.features.depth();
-                    let projection = convention.perspective(
-                        60.0_f32.to_radians(),
-                        crate::viewport::aspect(&canvas_loop),
-                        0.05,
-                        100.0,
-                    );
-                    let _ = r.update_camera(CameraMatrices {
+                    // The renderer supplies the depth convention AND the live aspect,
+                    // so neither can drift from what it actually renders with.
+                    let _ = r.set_camera(
                         view,
-                        projection,
-                        position_world: eye,
-                        focus_distance: 10.0,
-                        aperture: 5.6,
-                        reverse_z: convention.reverse_z,
-                        near: 0.05,
-                        far: 100.0,
-                    });
+                        CameraParams::perspective(60.0_f32.to_radians(), 0.05, 100.0),
+                    );
                     r.update_transforms();
                     let _ = r.render(None);
                     if screenshot_loop.replace(false) {

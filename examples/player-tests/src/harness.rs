@@ -2,10 +2,11 @@
 //! framing, and the requestAnimationFrame drive loop.
 
 use anyhow::{anyhow, Context, Result};
+use awsm_renderer::camera::CameraParams;
 use awsm_renderer::features::RendererFeatures;
 use awsm_renderer::AwsmRenderer;
 use awsm_renderer_core::renderer::{AwsmRendererWebGpuBuilder, DeviceRequestLimits};
-use glam::Vec3;
+use glam::{Mat4, Vec3};
 use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 
@@ -103,17 +104,18 @@ pub fn scene_bounds(renderer: &AwsmRenderer) -> (Vec3, f32) {
     (center, radius)
 }
 
-/// Point the camera at `center` from `eye`. Examples stay forward-Z (the
-/// renderer features default; docs/plans/003) so `reverse_z` is `false` here
-/// and in the features structs.
+/// Point the camera at `center` from `eye`. The renderer supplies its own
+/// depth convention (reverse-Z by default since 003 completed) AND the live
+/// surface aspect, so neither can drift from what it actually renders with.
 pub fn set_camera(renderer: &mut AwsmRenderer, eye: Vec3, center: Vec3, radius: f32) -> Result<()> {
     let near = (radius * 0.001).max(0.01);
     let far = (radius * 200.0).max(100.0);
-    // The renderer supplies its own depth convention AND the live aspect, so
-    // neither can drift from what it actually renders with.
     renderer
-        .set_perspective_camera(eye, center, Vec3::Y, 45.0_f32.to_radians(), near, far)
-        .map_err(|e| anyhow!("set_perspective_camera: {e}"))
+        .set_camera(
+            Mat4::look_at_rh(eye, center, Vec3::Y),
+            CameraParams::perspective(45.0_f32.to_radians(), near, far),
+        )
+        .map_err(|e| anyhow!("set_camera: {e}"))
 }
 
 /// Await the next `requestAnimationFrame`, returning its DOMHighResTimeStamp.

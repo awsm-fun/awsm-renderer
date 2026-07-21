@@ -5,11 +5,12 @@ use awsm_renderer::{
 
 use crate::prelude::*;
 
-use super::scene::{camera::CameraId, AppScene};
+use super::scene::AppScene;
+use awsm_renderer_web_shared::util::free_camera::ProjectionMode;
 
 #[derive(Clone)]
 pub struct AppContext {
-    pub camera_id: Mutable<CameraId>,
+    pub camera_id: Mutable<ProjectionMode>,
     pub scene: Mutable<Option<Arc<AppScene>>>,
     pub material_debug: Mutable<PbrMaterialDebug>,
     pub anti_alias: Mutable<AntiAliasing>,
@@ -267,7 +268,7 @@ pub enum PunctualLightsMode {
 impl Default for AppContext {
     fn default() -> Self {
         Self {
-            camera_id: Mutable::new(CameraId::default()),
+            camera_id: Mutable::new(ProjectionMode::Orthographic),
             scene: Mutable::new(None),
             material_debug: Mutable::new(CONFIG.initial_material_debug),
             ibl_id: Mutable::new(CONFIG.initial_ibl),
