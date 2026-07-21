@@ -39,16 +39,48 @@ enum MoveAction {
     CurveHandle,
 }
 
-/// Canvas-local coordinates for a client point — the space the GPU picker +
-/// gizmo ray expect. The renderer configures its WebGPU surface in CSS pixels,
-/// so this is a plain rect-relative offset (matching the selection pick path);
-/// no device-pixel scaling.
+/// Canvas-local coordinates for a client point, in **CSS pixels** — a plain
+/// rect-relative offset.
+///
+/// This is the GPU picker's input space: `AwsmRenderer::pick` scales it to the
+/// render target itself (`picker.rs`, `scale_extent(x, render_scale)`).
+/// Consumers that do NOT scale internally must convert with
+/// [`to_render_px`] first — see its docs for why the gizmo needs that.
 fn canvas_coords(canvas: &web_sys::HtmlCanvasElement, client_x: f64, client_y: f64) -> (i32, i32) {
     let rect = canvas.get_bounding_client_rect();
     (
         (client_x - rect.left()) as i32,
         (client_y - rect.top()) as i32,
     )
+}
+
+/// CSS pixels → render-target pixels, via the canvas's own backing-store ratio.
+///
+/// The gizmo picks ANALYTICALLY: `TransformController::pick` builds its ray with
+/// `ray_from_screen(x, y, w, h, ..)` where `w`/`h` come from
+/// `canvas_size(false)` — the BACKING BUFFER. Feeding it raw CSS coordinates
+/// divides a CSS position by render-target dimensions, so as soon as those two
+/// spaces differ the ray lands somewhere the handles aren't and no handle is
+/// ever grabbable (selection still works, because the GPU picker compensates
+/// internally — hence "I can select objects but not the gizmo").
+///
+/// They differ whenever `render_scale != 1.0`, and on any canvas whose backing
+/// store is device-pixel scaled (`devicePixelRatio > 1`). Taking the ratio from
+/// the element covers both causes at once and is a no-op when they agree.
+fn to_render_px_delta(canvas: &web_sys::HtmlCanvasElement, dx: i32, dy: i32) -> (i32, i32) {
+    // Same ratio as `to_render_px`, without the origin (deltas are relative).
+    to_render_px(canvas, dx, dy)
+}
+
+fn to_render_px(canvas: &web_sys::HtmlCanvasElement, x: i32, y: i32) -> (i32, i32) {
+    let rect = canvas.get_bounding_client_rect();
+    let (cw, ch) = (rect.width(), rect.height());
+    if cw <= 0.0 || ch <= 0.0 {
+        return (x, y);
+    }
+    let sx = canvas.width() as f64 / cw;
+    let sy = canvas.height() as f64 / ch;
+    ((x as f64 * sx) as i32, (y as f64 * sy) as i32)
 }
 
 pub fn render_canvas(on_ready: impl FnOnce(web_sys::HtmlCanvasElement) + 'static) -> Dom {
@@ -98,6 +130,10 @@ pub fn render_canvas(on_ready: impl FnOnce(web_sys::HtmlCanvasElement) + 'static
 
                 action.set(None);
                 let (px, py) = canvas_coords(&canvas, event.x(), event.y());
+                // Analytic pickers (gizmo, curve handles) ray-cast against the
+                // RENDER-target viewport, so they need render pixels; the GPU
+                // picker takes CSS and scales internally. See `to_render_px`.
+                let (gx, gy) = to_render_px(&canvas, px, py);
                 spawn_local(clone!(action => async move {
                     let handle = renderer_handle();
                     // 1) The gizmo is picked ANALYTICALLY (a CPU ray-cast with a
@@ -107,7 +143,7 @@ pub fn render_canvas(on_ready: impl FnOnce(web_sys::HtmlCanvasElement) + 'static
                     if gizmo_on {
                         let grabbed = {
                             let mut r = handle.lock().await;
-                            gizmo::try_start_pick(&mut r, px, py)
+                            gizmo::try_start_pick(&mut r, gx, gy)
                         };
                         if grabbed {
                             action.set(Some(MoveAction::Gizmo));
@@ -126,7 +162,7 @@ pub fn render_canvas(on_ready: impl FnOnce(web_sys::HtmlCanvasElement) + 'static
                             let mut r = handle.lock().await;
                             match r.pick(px, py).await {
                                 Ok(PickResult::Hit(mesh_key)) => {
-                                    if curve_handles::try_start_pick(&mut r, Some(mesh_key), px, py) {
+                                    if curve_handles::try_start_pick(&mut r, Some(mesh_key), gx, gy) {
                                         Some(Some(MoveAction::CurveHandle))
                                     } else {
                                         Some(None)
@@ -135,7 +171,7 @@ pub fn render_canvas(on_ready: impl FnOnce(web_sys::HtmlCanvasElement) + 'static
                                 // Empty-space hit: still allow a near-miss grab of
                                 // a small control-point handle (CPU tolerance).
                                 Ok(PickResult::Miss) => {
-                                    if curve_handles::try_start_pick(&mut r, None, px, py) {
+                                    if curve_handles::try_start_pick(&mut r, None, gx, gy) {
                                         Some(Some(MoveAction::CurveHandle))
                                     } else {
                                         Some(None)
@@ -172,7 +208,8 @@ pub fn render_canvas(on_ready: impl FnOnce(web_sys::HtmlCanvasElement) + 'static
                 // moves and some real ones report movementX/Y == 0). Renderer-free.
                 if action.get().is_none() && drag.get().is_none() {
                     let (px, py) = canvas_coords(&canvas, event.x(), event.y());
-                    gizmo::update_hover(px, py);
+                    let (gx, gy) = to_render_px(&canvas, px, py);
+                    gizmo::update_hover(gx, gy);
                     return;
                 }
                 let dx = event.movement_x();
@@ -180,6 +217,11 @@ pub fn render_canvas(on_ready: impl FnOnce(web_sys::HtmlCanvasElement) + 'static
                 if dx == 0 && dy == 0 {
                     return;
                 }
+                // Gizmo/curve drags are applied in the same space they were
+                // picked in (render px), so scale the CSS movement deltas too —
+                // otherwise a grab that now lands correctly would still track
+                // the cursor at the wrong rate whenever the spaces differ.
+                let (dx, dy) = to_render_px_delta(&canvas, dx, dy);
                 match action.get() {
                     Some(MoveAction::Gizmo) => {
                         spawn_local(async move {
