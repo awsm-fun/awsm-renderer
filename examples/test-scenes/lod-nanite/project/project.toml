@@ -8,6 +8,19 @@ skybox = "built_in_default"
 specular = "built_in_default"
 irradiance = "built_in_default"
 
+[environment.probe]
+enabled = false
+center = [
+    0.0,
+    0.0,
+    0.0,
+]
+half_extents = [
+    10.0,
+    10.0,
+    10.0,
+]
+
 [shadows]
 sscs_enabled = false
 sscs_step_count = 16
@@ -44,6 +57,15 @@ edge_fade = 0.10000000149011612
 resolution_scale = 0.5
 temporal = false
 temporal_weight = 0.8999999761581421
+bvh_reflections = false
+
+[assets.afefd7d4-b9ee-434a-b4ec-ca829918ec98]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+
+[assets.afefd7d4-b9ee-434a-b4ec-ca829918ec98.source]
+url = "http://127.0.0.1:9186/bundle/300df97f-099a-48da-9670-c3b2c2a9c8dc/assets/abc84ccb-e716-4ed4-881a-41d23f534c68.clusters.bin"
 
 [assets.00000000-0000-4000-8000-000000000001]
 gltf_material_asset_ids = []
@@ -76,14 +98,6 @@ segments_z = 1
 [assets.00000000-0000-4000-8000-000000000001.source.mesh.overrides.normals]
 
 [assets.00000000-0000-4000-8000-000000000001.source.mesh.overrides.uvs]
-
-[assets.afefd7d4-b9ee-434a-b4ec-ca829918ec98]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-
-[assets.afefd7d4-b9ee-434a-b4ec-ca829918ec98.source]
-url = "http://127.0.0.1:9186/bundle/300df97f-099a-48da-9670-c3b2c2a9c8dc/assets/abc84ccb-e716-4ed4-881a-41d23f534c68.clusters.bin"
 
 [assets.fd29a033-4eef-4f0c-a55a-54bc0ac9a36d]
 gltf_material_asset_ids = []
@@ -142,6 +156,7 @@ emissive = [
 ]
 normal_scale = 1.0
 occlusion_strength = 1.0
+ssr_mask = 1.0
 double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
@@ -151,6 +166,12 @@ shading = "pbr"
 
 [anim_mixer]
 layers = []
+
+[bundle_options]
+mesh_compression = "meshopt"
+mesh_quantization = "smart"
+smart_threshold_mm = 0.10000000149011612
+texture_compression = "ktx2"
 
 [[nodes]]
 id = "dc5706fc-9bf7-4579-8eed-1b50089ab2c7"
@@ -256,6 +277,7 @@ emissive = [
 ]
 normal_scale = 1.0
 occlusion_strength = 1.0
+ssr_mask = 1.0
 double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
@@ -274,7 +296,7 @@ cast = true
 receive = true
 
 [nodes.kind.mesh.lod]
-enabled = true
+kind = "none"
 
 [[nodes]]
 id = "637a7dee-764a-4ced-b822-eefb5efd1642"
@@ -332,6 +354,7 @@ emissive = [
 ]
 normal_scale = 1.0
 occlusion_strength = 1.0
+ssr_mask = 1.0
 double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
@@ -405,6 +428,7 @@ emissive = [
 ]
 normal_scale = 1.0
 occlusion_strength = 1.0
+ssr_mask = 1.0
 double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
@@ -421,3 +445,37 @@ shading = "pbr"
 [nodes.kind.cluster_mesh.shadow]
 cast = true
 receive = true
+
+[[nodes]]
+id = "00000000-0000-4000-8000-0000000000ca"
+name = "golden-camera"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    0.5563111305236816,
+    3.6253786087036133,
+    8.518616676330566,
+]
+rotation = [
+    -0.1394995152950287,
+    0.024752821773290634,
+    0.0034882144536823034,
+    0.9899065494537354,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.camera]
+near = 0.05000000074505806
+far = 300.0
+behavior = "static"
+
+[nodes.kind.camera.projection.perspective]
+fov_y_rad = 0.7853981852531433

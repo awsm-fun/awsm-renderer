@@ -1498,6 +1498,14 @@ pub struct CameraClipParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ActiveCameraParams {
+    /// Camera-node UUID to render the viewport through; omit (or null) to
+    /// return to the built-in free camera.
+    #[serde(default)]
+    pub camera: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct FrameNodeParams {
     /// Node UUID to frame.
     pub node: String,
@@ -4696,6 +4704,21 @@ impl EditorMcp {
             far: p.far,
         })
         .await
+    }
+
+    #[tool(
+        description = "Which camera the viewport renders through: pass a scene Camera node's UUID to lock the view to that node's transform + config (orbit/pan/zoom become inert), or omit `camera` to return to the built-in free camera. Errors if the node isn't a Camera. Transient view state — the camera NODE is what a project persists, so this makes an authored framing reproducible: load project, set_active_camera, screenshot_scene."
+    )]
+    async fn set_active_camera(
+        &self,
+        Parameters(p): Parameters<ActiveCameraParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let camera = match &p.camera {
+            Some(id) => Some(parse_node(id)?),
+            None => None,
+        };
+        self.dispatch(EditorCommand::SetActiveCamera { camera })
+            .await
     }
 
     #[tool(

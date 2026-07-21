@@ -146,6 +146,7 @@ dedicated tool reaches it indirectly · **dispatch** = escape hatch only ·
 | `set_camera_projection` | `set_camera_projection` | tool | |
 | `set_camera_clip` | `set_camera_clip` | tool | |
 | `frame_node` | `frame_node` | tool | |
+| `set_active_camera` | `set_active_camera` | tool | |
 | `reset_pose` | `reset_pose` | tool | |
 | `reset_to_bind_pose` | `reset_to_bind_pose` | tool | |
 | `set_frame_time` | `set_frame_time` | tool | Raw dispatch field is `seconds` (tool param is `t`). |

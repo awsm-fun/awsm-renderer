@@ -3693,6 +3693,30 @@ impl EditorController {
                 .await;
                 Ok(None)
             }
+            EditorCommand::SetActiveCamera { camera } => {
+                // Validate loudly: a stale/wrong id silently falling back to the
+                // free camera would make a headless capture LOOK framed while
+                // rendering the wrong view.
+                if let Some(id) = camera {
+                    let Some(n) = mutate::find_by_id(&self.scene, id) else {
+                        return Err(crate::error::EditorError::msg(format!(
+                            "set_active_camera: no node with id {id}"
+                        )));
+                    };
+                    if !matches!(
+                        n.kind.get_cloned(),
+                        awsm_renderer_editor_protocol::NodeKind::Camera(_)
+                    ) {
+                        return Err(crate::error::EditorError::msg(format!(
+                            "set_active_camera: node {id} is not a Camera node"
+                        )));
+                    }
+                }
+                // Same reactive field the viewport dropdown writes — the render
+                // loop reads it each frame (None = built-in free camera).
+                self.active_camera.set_neq(camera);
+                Ok(None)
+            }
             EditorCommand::ResetPose { node } => {
                 // Collect (node + descendants) scene transforms, then re-push them
                 // onto the renderer mirror locals — reverting a clip's last
