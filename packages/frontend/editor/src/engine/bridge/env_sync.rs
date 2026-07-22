@@ -147,7 +147,7 @@ async fn sync_env(env: &EnvironmentConfig) {
     });
     if sky_changed {
         match apply_skybox(&env.skybox).await {
-            Ok(()) => LIVE.with(|l| l.borrow_mut().skybox = Some(env.skybox.clone())),
+            Ok(()) => LIVE.with(|l| l.borrow_mut().skybox = Some(env.skybox)),
             Err(err) => {
                 tracing::error!("skybox apply failed: {err}");
                 Toast::error(format!("Skybox failed: {err}"));
@@ -158,8 +158,8 @@ async fn sync_env(env: &EnvironmentConfig) {
         match apply_ibl(&env.specular, &env.irradiance).await {
             Ok(()) => LIVE.with(|l| {
                 let mut l = l.borrow_mut();
-                l.specular = Some(env.specular.clone());
-                l.irradiance = Some(env.irradiance.clone());
+                l.specular = Some(env.specular);
+                l.irradiance = Some(env.irradiance);
             }),
             Err(err) => {
                 tracing::error!("ibl apply failed: {err}");
@@ -169,7 +169,7 @@ async fn sync_env(env: &EnvironmentConfig) {
     }
     if probe_changed {
         apply_probe(&env.probe).await;
-        LIVE.with(|l| l.borrow_mut().probe = Some(env.probe.clone()));
+        LIVE.with(|l| l.borrow_mut().probe = Some(env.probe));
     }
 }
 
