@@ -113,6 +113,16 @@ pub struct Bridge {
     /// `remove_node` consumes the mark and downgrades to the keep-textures /
     /// keep-template teardown that re-materialize paths use.
     pub moving: Mutex<HashSet<NodeId>>,
+    /// Mid-reparent nodes whose RE-INSERT was processed BEFORE the matching
+    /// remove. The two reparent diffs live on DIFFERENT parents' child
+    /// observers, so their processing order is scheduling-dependent. When the
+    /// `InsertAt` wins the race, `add_node` finds the node's entry still in
+    /// [`Self::nodes`], re-claims it (marking it here), and the LATE
+    /// `RemoveAt` must then tear down NOTHING — without this mark it destroys
+    /// the live re-claimed entry (and frees its `TransformKey`, orphaning
+    /// child transforms), leaving the node present in the scene but absent
+    /// from the GPU: the whole moved subtree silently stops rendering.
+    pub readded: Mutex<HashSet<NodeId>>,
 }
 
 impl Bridge {
@@ -128,6 +138,7 @@ impl Bridge {
             skin_joint_baked: Mutex::new(HashMap::new()),
             joint_rest: Mutex::new(HashMap::new()),
             moving: Mutex::new(HashSet::new()),
+            readded: Mutex::new(HashSet::new()),
         }
     }
 
@@ -145,6 +156,25 @@ impl Bridge {
     /// outlives the removal it was minted for.
     pub fn take_moving(&self, id: NodeId) -> bool {
         self.moving.lock().unwrap().remove(&id)
+    }
+
+    /// Whether `id` is currently marked mid-reparent (peek — does NOT consume;
+    /// the matching `remove_node` still needs to `take_moving` it).
+    pub fn is_moving(&self, id: NodeId) -> bool {
+        self.moving.lock().unwrap().contains(&id)
+    }
+
+    /// Mark a mid-reparent node whose re-insert already processed (see
+    /// [`Self::readded`]). Set by `add_node` when it re-claims a live entry.
+    pub fn mark_readded(&self, id: NodeId) {
+        self.readded.lock().unwrap().insert(id);
+    }
+
+    /// Consume a node's re-added mark, returning whether it was set. The stale
+    /// `RemoveAt`-driven `remove_node` calls this first and, when set, leaves
+    /// the live entry alone.
+    pub fn take_readded(&self, id: NodeId) -> bool {
+        self.readded.lock().unwrap().remove(&id)
     }
 
     /// Cache a glTF node template under its source file's `AssetId` (skinned

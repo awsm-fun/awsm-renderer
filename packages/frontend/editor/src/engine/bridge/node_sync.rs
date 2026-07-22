@@ -412,7 +412,28 @@ async fn add_node(
     let entry = {
         let existing = bridge().nodes.lock().unwrap().get(&node_id).cloned();
         match existing {
-            Some(e) => e,
+            Some(e) => {
+                // Mid-reparent insert-before-remove INVERSION: the reparent's
+                // two diffs live on different parents' child observers, and
+                // this `InsertAt` processed before the old parent's `RemoveAt`.
+                // Re-claim the live entry: mark it so the stale remove tears
+                // down nothing (`take_readded` in `remove_node`), cancel the
+                // old location's observers (kept, they'd double-handle every
+                // future diff — and the fresh set registers below), and move
+                // the renderer transform under the NEW parent (the fresh-create
+                // path passes `parent_tk` at insert; plain reuse would leave it
+                // parented to the old location).
+                if bridge().is_moving(node_id) {
+                    bridge().mark_readded(node_id);
+                    e.loaders.lock().unwrap().clear();
+                    let tk = e.transform_key;
+                    with_renderer_mut(move |r| {
+                        r.transforms.set_parent(tk, parent_tk);
+                    })
+                    .await;
+                }
+                e
+            }
             None => {
                 let trs = node.transform.get();
                 let tk = with_renderer_mut(move |r| {
@@ -570,6 +591,15 @@ async fn remove_node(node_id: NodeId) {
     // untextured / white-emissive) and the import template + its instance
     // registration (the node id is unchanged, so the refcount must survive).
     let moving = bridge().take_moving(node_id);
+    // Insert-before-remove inversion (see `Bridge::readded`): the reparent's
+    // re-insert already processed and re-claimed this entry — this remove is
+    // the STALE half. Everything (entry, transform, children, observers) is
+    // owned by the new location now; tear down nothing. The `RemoveAt` arm
+    // still drops the id from the OLD parent's `child_order` (outside this fn),
+    // which is exactly the bookkeeping the stale half should do.
+    if bridge().take_readded(node_id) {
+        return;
+    }
     // Remove any descendants first.
     for child in order_snapshot(Some(node_id)) {
         Box::pin(remove_node(child)).await;
