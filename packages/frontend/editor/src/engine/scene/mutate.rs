@@ -238,6 +238,25 @@ pub fn reparent(
         return false;
     };
 
+    // Tell the bridge this subtree is MOVING, not being deleted: the remove +
+    // insert below reach it as two independent async diffs, and an unmarked
+    // remove runs the full delete teardown — reclaiming the subtree's pooled
+    // GPU textures + import template out from under the immediate re-add (the
+    // re-materialize then cache-hits dead TextureKeys and every textured mesh
+    // in the subtree renders untextured). Mark the WHOLE subtree: the bridge's
+    // remove recurses per node and consumes one mark each.
+    {
+        fn collect(node: &Arc<Node>, out: &mut Vec<NodeId>) {
+            out.push(node.id);
+            for child in node.children.lock_ref().iter() {
+                collect(child, out);
+            }
+        }
+        let mut ids = Vec::new();
+        collect(&node, &mut ids);
+        crate::engine::bridge::bridge().mark_moving(ids);
+    }
+
     match new_parent_id {
         None => {
             let mut nodes = scene.nodes.lock_mut();

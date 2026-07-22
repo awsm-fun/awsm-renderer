@@ -99,6 +99,20 @@ pub struct Bridge {
     /// (handoff #8: `reset_pose` re-syncs FROM scene base, so it can't undo
     /// them).
     pub joint_rest: Mutex<HashMap<NodeId, crate::engine::scene::Trs>>,
+    /// Nodes mid-REPARENT. A cross-parent reparent reaches the bridge as a
+    /// `RemoveAt` on the old parent followed by an `InsertAt` on the new one —
+    /// two independent diffs. Without this hint the `RemoveAt` runs the full
+    /// DELETE teardown: `remove_material` reclaims the subtree's pooled GPU
+    /// textures (nothing else references them mid-move) and the import-template
+    /// refcount hits zero → populate resources freed. The following `InsertAt`
+    /// then re-materializes through the session texture cache, whose entries
+    /// now point at DEAD `TextureKey`s — every textured mesh in the moved
+    /// subtree silently renders untextured (white emissive for an
+    /// emissive-textured model). `mutate::reparent` marks the whole moved
+    /// subtree here (before the diffs are processed — they're handled async);
+    /// `remove_node` consumes the mark and downgrades to the keep-textures /
+    /// keep-template teardown that re-materialize paths use.
+    pub moving: Mutex<HashSet<NodeId>>,
 }
 
 impl Bridge {
@@ -113,7 +127,24 @@ impl Bridge {
             node_to_template: Mutex::new(HashMap::new()),
             skin_joint_baked: Mutex::new(HashMap::new()),
             joint_rest: Mutex::new(HashMap::new()),
+            moving: Mutex::new(HashSet::new()),
         }
+    }
+
+    /// Mark a subtree as mid-reparent (see [`Self::moving`]). Call BEFORE the
+    /// scene mutation whose diffs the bridge will process asynchronously.
+    pub fn mark_moving(&self, ids: impl IntoIterator<Item = NodeId>) {
+        let mut m = self.moving.lock().unwrap();
+        for id in ids {
+            m.insert(id);
+        }
+    }
+
+    /// Consume a node's mid-reparent mark, returning whether it was set.
+    /// `remove_node` calls this exactly once per removed node, so a mark never
+    /// outlives the removal it was minted for.
+    pub fn take_moving(&self, id: NodeId) -> bool {
+        self.moving.lock().unwrap().remove(&id)
     }
 
     /// Cache a glTF node template under its source file's `AssetId` (skinned

@@ -568,13 +568,32 @@ fn resolve_texture(
     // actually USED — not the import-time default (URL imports start `None`,
     // which restores via name inference).
     record_asset_color_kind(asset_id, kind);
+    // Cache hits must VALIDATE the key against the live pool: a teardown path
+    // that reclaims pooled textures (a delete of an import's last instance, a
+    // missed move-hint, …) leaves these session-cache entries dangling, and
+    // binding a dead key silently renders the slot untextured (pure-white for
+    // a `[1,1,1]`-factor emissive). A stale entry is dropped so the byte /
+    // procedural re-upload paths below heal the binding instead.
+    let live = |key: TextureKey, r: &AwsmRenderer| r.textures.get_entry(key).is_ok();
     // Exact-semantics upload for this (asset, color space, mipmap kind)?
     if let Some(key) = TEXTURE_KEYS.with(|c| c.borrow().get(&(asset_id, srgb, kind)).copied()) {
-        return Some(mk(key));
+        if live(key, r) {
+            return Some(mk(key));
+        }
+        TEXTURE_KEYS.with(|c| c.borrow_mut().remove(&(asset_id, srgb, kind)));
+        tracing::warn!(
+            "texture {asset_id}: cached TextureKey {key:?} was pool-reclaimed — re-uploading"
+        );
     }
     // Legacy unknown-semantics upload (glTF populate pre-registration).
     if let Some(key) = TEXTURE_KEYS_ANY.with(|c| c.borrow().get(&asset_id).copied()) {
-        return Some(mk(key));
+        if live(key, r) {
+            return Some(mk(key));
+        }
+        TEXTURE_KEYS_ANY.with(|c| c.borrow_mut().remove(&asset_id));
+        tracing::warn!(
+            "texture {asset_id}: pre-registered TextureKey {key:?} was pool-reclaimed — re-uploading"
+        );
     }
     let color = TextureColorInfo {
         mipmap_kind: kind,
