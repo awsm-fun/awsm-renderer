@@ -203,6 +203,19 @@ impl MeshMeta {
             .offset(key)
             .ok_or(AwsmMeshError::MetaNotFound(key))
     }
+    /// Total geometry-meta SLOT capacity — the exclusive upper bound of every
+    /// `mesh_meta_idx` (`geometry_buffer_offset / GEOMETRY_MESH_META_BYTE_ALIGNMENT`)
+    /// this buffer can currently hand out. Per-mesh-slot GPU buffers that are
+    /// INDEXED by `mesh_meta_idx` (compaction indirect args, coverage counts)
+    /// must size themselves from THIS, not from the live mesh count: the slot
+    /// allocator recycles freed slots but its indices are sparse, so under
+    /// insert/remove churn the highest live index legitimately exceeds
+    /// `meshes.len()` — sizing by count made `DrawIndexedIndirect` read past
+    /// the args buffer (GPUValidationError → invalid command buffer → a
+    /// permanently white viewport) once enough churn had raised the watermark.
+    pub fn geometry_slot_capacity(&self) -> usize {
+        self.geometry_buffers.size() / GEOMETRY_MESH_META_BYTE_ALIGNMENT
+    }
 
     /// Returns the GPU buffer for material metadata.
     pub fn material_gpu_buffer(&self) -> &web_sys::GpuBuffer {

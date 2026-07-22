@@ -770,10 +770,17 @@ impl AwsmRenderer {
             // (~17 MB at 4K, scaled with viewport).
         }
 
-        // Ensure the compaction args buffer covers every mesh slot.
+        // Ensure the compaction args buffer covers every mesh SLOT. Sized by
+        // the geometry-meta slot CAPACITY, not the live mesh count: the draws
+        // index this buffer by `mesh_meta_idx`, and the slot allocator's
+        // sparse recycled indices legitimately exceed `meshes.len()` under
+        // insert/remove churn — count-based sizing let `DrawIndexedIndirect`
+        // run off the end of the buffer (GPUValidationError → invalid submit
+        // → a permanently white viewport once churn raised the watermark).
         // Skipped when `features.gpu_culling == false`.
         if let Some(compaction_buffers) = self.compaction_buffers.as_mut() {
-            if compaction_buffers.ensure_capacity(&self.gpu, self.meshes.len() as u32)? {
+            let slot_capacity = self.meshes.meta.geometry_slot_capacity() as u32;
+            if compaction_buffers.ensure_capacity(&self.gpu, slot_capacity)? {
                 self.bind_groups
                     .mark_create(BindGroupCreate::CompactionBuffersResize);
             }
@@ -782,13 +789,15 @@ impl AwsmRenderer {
         // GPU coverage producer: ensure the per-mesh counts buffer
         // covers every slot, then zero it for this frame so the
         // compute pass's atomicAdd starts clean. Sizing follows
-        // the same `meshes.len()` upper bound as the compaction
-        // args buffer; sparse meta-slot indices leave gaps that
-        // stay at zero across frames (harmless — consumers treat
-        // zero counts as "not visible last frame"). Skipped
-        // entirely when `features.coverage_lod == false`.
+        // the same meta-slot-capacity bound as the compaction
+        // args buffer (it is indexed by the same sparse
+        // `mesh_meta_idx`); gaps stay at zero across frames
+        // (harmless — consumers treat zero counts as "not visible
+        // last frame"). Skipped entirely when
+        // `features.coverage_lod == false`.
         if let Some(coverage_buffers) = self.coverage_buffers.as_mut() {
-            if coverage_buffers.ensure_capacity(&self.gpu, self.meshes.len() as u32)? {
+            let slot_capacity = self.meshes.meta.geometry_slot_capacity() as u32;
+            if coverage_buffers.ensure_capacity(&self.gpu, slot_capacity)? {
                 self.bind_groups
                     .mark_create(BindGroupCreate::CoverageBuffersResize);
             }
