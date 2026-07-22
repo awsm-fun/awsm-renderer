@@ -29,7 +29,12 @@ impl AwsmRenderer {
             self.scene_spatial.remove(mesh_key);
             return;
         };
-        let flags = SceneNodeFlags::from_mesh(mesh);
+        // Blend classification lives in the material table, keyed off the
+        // mesh's material. Material *edits* in the editor re-resolve to a new
+        // key + `set_mesh_material` (which re-syncs here), so the mirror stays
+        // current without a per-frame sweep.
+        let blend_material = self.materials.is_transparency_pass(mesh.material_key);
+        let flags = SceneNodeFlags::from_mesh(mesh, blend_material);
 
         // If the node already exists, do a lightweight envelope update +
         // flag refresh. Otherwise, insert from scratch.

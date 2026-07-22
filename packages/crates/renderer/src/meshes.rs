@@ -212,9 +212,22 @@ impl AwsmRenderer {
         new_material_key: crate::materials::MaterialKey,
     ) -> crate::error::Result<()> {
         let mesh = self.meshes.get_mut(mesh_key)?;
+        let old_material_key = mesh.material_key;
         mesh.material_key = new_material_key;
         self.meshes
             .refresh_meta_for_mesh_public(mesh_key, &self.materials, &self.transforms)?;
+        // The spatial index mirrors the material's blend classification
+        // (`SceneNodeFlags::blend_material` — blend meshes are excluded from
+        // the shadow-caster set). Re-sync it, and when the classification
+        // actually flipped, bump the caster-set revision so cached per-view
+        // shadow caster lists rebuild (same contract as a cast-flag flip in
+        // `set_mesh_shadow_flags`).
+        let blend_changed = self.materials.is_transparency_pass(old_material_key)
+            != self.materials.is_transparency_pass(new_material_key);
+        self.sync_spatial_for_mesh(mesh_key);
+        if blend_changed {
+            self.shadows.bump_shadow_caster_revision();
+        }
         Ok(())
     }
 

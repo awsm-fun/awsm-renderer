@@ -22,16 +22,27 @@ pub struct SceneNodeFlags {
     pub receive_shadows: bool,
     pub hidden: bool,
     pub hud: bool,
+    /// Whether the mesh's material renders in the TRANSPARENCY pass
+    /// (alpha-BLEND — Mask is alpha-tested opaque and stays `false`).
+    /// Mirrored from `Materials::is_transparency_pass(mesh.material_key)`
+    /// by `sync_spatial_for_mesh`. The shadow-caster filter excludes these
+    /// by default: the shadow pass has no blend representation, so a glass
+    /// pane would otherwise cast a fully OPAQUE shadow — a light outside a
+    /// glazed wall blacks out everything behind the glass (where Blender's
+    /// transmissive glass lets the light through).
+    pub blend_material: bool,
 }
 
 impl SceneNodeFlags {
-    /// Builds flags from a `Mesh`.
-    pub fn from_mesh(mesh: &crate::meshes::mesh::Mesh) -> Self {
+    /// Builds flags from a `Mesh`. `blend_material` comes from the material
+    /// table (the mesh only stores the key), so the caller resolves it.
+    pub fn from_mesh(mesh: &crate::meshes::mesh::Mesh, blend_material: bool) -> Self {
         Self {
             cast_shadows: mesh.cast_shadows,
             receive_shadows: mesh.receive_shadows,
             hidden: mesh.hidden,
             hud: mesh.hud,
+            blend_material,
         }
     }
 }

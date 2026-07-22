@@ -104,7 +104,18 @@ pub fn record(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
     let conservative_extra: Vec<_> = ctx
         .meshes
         .iter()
-        .filter(|(_, m)| m.cast_shadows && !m.hidden && !m.hud && m.world_aabb.is_none())
+        .filter(|(_, m)| {
+            m.cast_shadows
+                && !m.hidden
+                && !m.hud
+                && m.world_aabb.is_none()
+                // Blend materials have no blend representation in the shadow
+                // pass — drawing them would stamp fully opaque shadows (glass
+                // panes blacking out everything behind them). Mirrors the
+                // spatial index's `exclude_blend_casters` predicate for these
+                // index-less (procedural / mid-load) meshes.
+                && !ctx.materials.is_transparency_pass(m.material_key)
+        })
         .map(|(k, _)| k)
         .collect();
 
