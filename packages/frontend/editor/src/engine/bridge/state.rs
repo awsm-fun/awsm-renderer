@@ -99,6 +99,30 @@ pub struct Bridge {
     /// (handoff #8: `reset_pose` re-syncs FROM scene base, so it can't undo
     /// them).
     pub joint_rest: Mutex<HashMap<NodeId, crate::engine::scene::Trs>>,
+    /// Nodes mid-REPARENT. A cross-parent reparent reaches the bridge as a
+    /// `RemoveAt` on the old parent followed by an `InsertAt` on the new one —
+    /// two independent diffs. Without this hint the `RemoveAt` runs the full
+    /// DELETE teardown: `remove_material` reclaims the subtree's pooled GPU
+    /// textures (nothing else references them mid-move) and the import-template
+    /// refcount hits zero → populate resources freed. The following `InsertAt`
+    /// then re-materializes through the session texture cache, whose entries
+    /// now point at DEAD `TextureKey`s — every textured mesh in the moved
+    /// subtree silently renders untextured (white emissive for an
+    /// emissive-textured model). `mutate::reparent` marks the whole moved
+    /// subtree here (before the diffs are processed — they're handled async);
+    /// `remove_node` consumes the mark and downgrades to the keep-textures /
+    /// keep-template teardown that re-materialize paths use.
+    pub moving: Mutex<HashSet<NodeId>>,
+    /// Mid-reparent nodes whose RE-INSERT was processed BEFORE the matching
+    /// remove. The two reparent diffs live on DIFFERENT parents' child
+    /// observers, so their processing order is scheduling-dependent. When the
+    /// `InsertAt` wins the race, `add_node` finds the node's entry still in
+    /// [`Self::nodes`], re-claims it (marking it here), and the LATE
+    /// `RemoveAt` must then tear down NOTHING — without this mark it destroys
+    /// the live re-claimed entry (and frees its `TransformKey`, orphaning
+    /// child transforms), leaving the node present in the scene but absent
+    /// from the GPU: the whole moved subtree silently stops rendering.
+    pub readded: Mutex<HashSet<NodeId>>,
 }
 
 impl Bridge {
@@ -113,7 +137,44 @@ impl Bridge {
             node_to_template: Mutex::new(HashMap::new()),
             skin_joint_baked: Mutex::new(HashMap::new()),
             joint_rest: Mutex::new(HashMap::new()),
+            moving: Mutex::new(HashSet::new()),
+            readded: Mutex::new(HashSet::new()),
         }
+    }
+
+    /// Mark a subtree as mid-reparent (see [`Self::moving`]). Call BEFORE the
+    /// scene mutation whose diffs the bridge will process asynchronously.
+    pub fn mark_moving(&self, ids: impl IntoIterator<Item = NodeId>) {
+        let mut m = self.moving.lock().unwrap();
+        for id in ids {
+            m.insert(id);
+        }
+    }
+
+    /// Consume a node's mid-reparent mark, returning whether it was set.
+    /// `remove_node` calls this exactly once per removed node, so a mark never
+    /// outlives the removal it was minted for.
+    pub fn take_moving(&self, id: NodeId) -> bool {
+        self.moving.lock().unwrap().remove(&id)
+    }
+
+    /// Whether `id` is currently marked mid-reparent (peek — does NOT consume;
+    /// the matching `remove_node` still needs to `take_moving` it).
+    pub fn is_moving(&self, id: NodeId) -> bool {
+        self.moving.lock().unwrap().contains(&id)
+    }
+
+    /// Mark a mid-reparent node whose re-insert already processed (see
+    /// [`Self::readded`]). Set by `add_node` when it re-claims a live entry.
+    pub fn mark_readded(&self, id: NodeId) {
+        self.readded.lock().unwrap().insert(id);
+    }
+
+    /// Consume a node's re-added mark, returning whether it was set. The stale
+    /// `RemoveAt`-driven `remove_node` calls this first and, when set, leaves
+    /// the live entry alone.
+    pub fn take_readded(&self, id: NodeId) -> bool {
+        self.readded.lock().unwrap().remove(&id)
     }
 
     /// Cache a glTF node template under its source file's `AssetId` (skinned

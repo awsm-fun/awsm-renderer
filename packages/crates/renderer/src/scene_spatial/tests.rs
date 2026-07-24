@@ -34,6 +34,7 @@ fn node(mesh_key: MeshKey, min: Vec3, max: Vec3) -> SceneNode {
             receive_shadows: true,
             hidden: false,
             hud: false,
+            blend_material: false,
         },
     }
 }

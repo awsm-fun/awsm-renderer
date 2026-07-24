@@ -41,6 +41,28 @@ thread_local! {
     /// (which ids) round-trips through TOML; writing the *bytes* to the project
     /// directory on save (so HDR survives reload) is the follow-on.
     static KTX_BYTES: RefCell<HashMap<AssetId, Vec<u8>>> = RefCell::new(HashMap::new());
+
+    /// What the RENDERER actually has, per slot — each updated only when its
+    /// apply SUCCEEDS (`None` = never applied → always dirty). This is the
+    /// change-detection baseline for [`sync_env`], replacing the old
+    /// observer-local `previous` seed, which had two silent-drop failure modes:
+    /// (1) `start` seeded it from a FRESH read of `scene.environment`, so a
+    /// `SetEnvironment` landing while `apply_initial` was still in flight
+    /// (fetching a 100+ MB skybox) was recorded as "already applied" and the
+    /// observer's first emission no-op'd — the env never reached the GPU, and
+    /// because the baseline matched, even an identical re-dispatch stayed a
+    /// no-op; (2) a FAILED apply still advanced `previous`, permanently
+    /// swallowing retries of the same config.
+    static LIVE: RefCell<LiveEnv> = RefCell::new(LiveEnv::default());
+}
+
+/// Per-slot record of the environment state the renderer last ACCEPTED.
+#[derive(Default)]
+struct LiveEnv {
+    skybox: Option<EnvSlot>,
+    specular: Option<EnvSlot>,
+    irradiance: Option<EnvSlot>,
+    probe: Option<crate::engine::scene::ReflectionProbe>,
 }
 
 /// Stash raw KTX bytes for a freshly-picked HDR asset so `env_sync` can resolve
@@ -88,62 +110,67 @@ pub fn clear_ktx_stash() {
 /// redundantly re-apply on its first (replayed) emission.
 pub async fn apply_initial() {
     let env = controller().scene.environment.get_cloned();
-    if let Err(err) = apply_skybox(&env.skybox).await {
-        tracing::error!("initial skybox apply failed: {err}");
-    }
-    if let Err(err) = apply_ibl(&env.specular, &env.irradiance).await {
-        tracing::error!("initial ibl apply failed: {err}");
-    }
-    apply_probe(&env.probe).await;
+    sync_env(&env).await;
 }
 
 /// Begin mirroring `scene.environment` onto the renderer. Call once at boot
-/// (after the renderer is ready, and after [`apply_initial`]). `previous` is
-/// seeded with the current environment so the first (replayed) emission is a
-/// no-op — the initial skybox/IBL was already applied by [`apply_initial`];
-/// only genuine subsequent changes re-apply.
+/// (after the renderer is ready). Every emission (including the first,
+/// replayed one) diffs against [`LIVE`] — the per-slot record of what the
+/// renderer actually accepted — so nothing is ever recorded as applied
+/// before it succeeds, and [`apply_initial`]'s work is not redone.
 pub fn start() {
     let signal = controller().scene.environment.signal_cloned();
-    let initial = controller().scene.environment.get_cloned();
     spawn_local(async move {
-        let mut previous: Option<EnvironmentConfig> = Some(initial);
         signal
-            .for_each(move |env| {
-                let sky_changed = previous
-                    .as_ref()
-                    .map(|p| p.skybox != env.skybox)
-                    .unwrap_or(true);
-                // IBL re-applies if EITHER the specular (prefiltered) or the
-                // irradiance slot changed — both feed a single `set_ibl`.
-                let ibl_changed = previous
-                    .as_ref()
-                    .map(|p| p.specular != env.specular || p.irradiance != env.irradiance)
-                    .unwrap_or(true);
-                let probe_changed = previous
-                    .as_ref()
-                    .map(|p| p.probe != env.probe)
-                    .unwrap_or(true);
-                previous = Some(env.clone());
-                async move {
-                    if sky_changed {
-                        if let Err(err) = apply_skybox(&env.skybox).await {
-                            tracing::error!("skybox apply failed: {err}");
-                            Toast::error(format!("Skybox failed: {err}"));
-                        }
-                    }
-                    if ibl_changed {
-                        if let Err(err) = apply_ibl(&env.specular, &env.irradiance).await {
-                            tracing::error!("ibl apply failed: {err}");
-                            Toast::error(format!("IBL failed: {err}"));
-                        }
-                    }
-                    if probe_changed {
-                        apply_probe(&env.probe).await;
-                    }
-                }
+            .for_each(|env| async move {
+                sync_env(&env).await;
             })
             .await;
     });
+}
+
+/// Diff `env` against what the renderer actually has ([`LIVE`]) and push every
+/// out-of-date slot. Each `LIVE` slot advances only on a SUCCESSFUL apply, so
+/// a failed fetch/upload stays dirty and the next emission — even of the
+/// identical config — retries instead of silently no-op'ing.
+async fn sync_env(env: &EnvironmentConfig) {
+    let (sky_changed, ibl_changed, probe_changed) = LIVE.with(|l| {
+        let l = l.borrow();
+        (
+            l.skybox.as_ref() != Some(&env.skybox),
+            // IBL re-applies if EITHER the specular (prefiltered) or the
+            // irradiance slot changed — both feed a single `set_ibl`.
+            l.specular.as_ref() != Some(&env.specular)
+                || l.irradiance.as_ref() != Some(&env.irradiance),
+            l.probe.as_ref() != Some(&env.probe),
+        )
+    });
+    if sky_changed {
+        match apply_skybox(&env.skybox).await {
+            Ok(()) => LIVE.with(|l| l.borrow_mut().skybox = Some(env.skybox)),
+            Err(err) => {
+                tracing::error!("skybox apply failed: {err}");
+                Toast::error(format!("Skybox failed: {err}"));
+            }
+        }
+    }
+    if ibl_changed {
+        match apply_ibl(&env.specular, &env.irradiance).await {
+            Ok(()) => LIVE.with(|l| {
+                let mut l = l.borrow_mut();
+                l.specular = Some(env.specular);
+                l.irradiance = Some(env.irradiance);
+            }),
+            Err(err) => {
+                tracing::error!("ibl apply failed: {err}");
+                Toast::error(format!("IBL failed: {err}"));
+            }
+        }
+    }
+    if probe_changed {
+        apply_probe(&env.probe).await;
+        LIVE.with(|l| l.borrow_mut().probe = Some(env.probe));
+    }
 }
 
 /// Build a `CubemapSkyGradient` from agent-supplied linear-RGB zenith/nadir (§18).

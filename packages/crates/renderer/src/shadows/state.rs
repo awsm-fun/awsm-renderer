@@ -2394,6 +2394,27 @@ impl Shadows {
                         cube_overflow = true;
                         continue;
                     };
+                    // A slot this light did NOT already own holds another
+                    // light's (or a recreated pool's uninitialized) depth in
+                    // all 6 faces. Force this light's views past the throttle:
+                    // the periodic component is suppressed indefinitely on a
+                    // provably-static frame (`shadow_static`), so without this
+                    // the stale faces are served FOREVER — seen as a giant
+                    // frustum-shaped phantom shadow wedge on the floor after
+                    // cube-pool churn (many lights cast on import → slots
+                    // recycled → most casters toggled off → static scene).
+                    // The cascade equivalent is covered by the throttle's
+                    // `last_cascade_layer` check; cube faces had no analogue.
+                    if owned.is_none() {
+                        if let Some(entry) = self.throttle.get_mut(light_key) {
+                            for t in entry.iter_mut() {
+                                t.last_rendered_frame = u64::MAX;
+                            }
+                        }
+                        // No throttle row yet → the reconcile loop's resize
+                        // default (`last_rendered_frame: u64::MAX`) already
+                        // forces the first render.
+                    }
                     self.cube_slots[slot_index] = Some(light_key);
                     self.cube_slot_for_light
                         .insert(light_key, slot_index as u32);
@@ -2596,6 +2617,24 @@ impl Shadows {
         // record this frame. `retain` is allocation-free; the
         // earlier `Vec<LightKey>` sweep + `contains()` was O(n²).
         self.throttle.retain(|k, _| self.records.contains_key(k));
+        // Free cube slots whose owner stopped casting (no record this
+        // frame). Slots were NEVER reclaimed before: a burst of casting
+        // point lights (e.g. a light-rig import before its cast flags are
+        // authored) permanently exhausted the pool — later lights logged
+        // "cube pool exhausted" forever even after every other light's
+        // shadow was disabled. A freed slot's next acquisition goes
+        // through the `owned.is_none()` force-render path above, so the
+        // new owner never samples the previous owner's stale depth.
+        {
+            let records = &self.records;
+            for slot in self.cube_slots.iter_mut() {
+                if let Some(k) = *slot {
+                    if !records.contains_key(k) {
+                        *slot = None;
+                    }
+                }
+            }
+        }
         let frame = self.frame_count;
         for (light_key, record) in self.records.iter_mut() {
             if !self.throttle.contains_key(light_key) {

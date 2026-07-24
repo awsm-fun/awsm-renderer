@@ -10,6 +10,11 @@ pub struct NodeFilter {
     pub exclude_hud: bool,
     pub require_cast_shadows: bool,
     pub require_receive_shadows: bool,
+    /// Skip meshes whose material renders in the transparency pass (see
+    /// `SceneNodeFlags::blend_material`). Only the shadow-caster filter
+    /// sets this: blend surfaces have no blend representation in the
+    /// shadow pass, so keeping them would stamp fully opaque shadows.
+    pub exclude_blend_casters: bool,
 }
 
 impl NodeFilter {
@@ -20,16 +25,19 @@ impl NodeFilter {
             exclude_hud: false,
             require_cast_shadows: false,
             require_receive_shadows: false,
+            exclude_blend_casters: false,
         }
     }
 
-    /// Filter for the shadow-caster pass: cast_shadows && !hidden && !hud.
+    /// Filter for the shadow-caster pass:
+    /// `cast_shadows && !hidden && !hud && !blend_material`.
     pub fn shadow_caster() -> Self {
         Self {
             exclude_hidden: true,
             exclude_hud: true,
             require_cast_shadows: true,
             require_receive_shadows: false,
+            exclude_blend_casters: true,
         }
     }
 
@@ -40,6 +48,7 @@ impl NodeFilter {
             exclude_hud: false,
             require_cast_shadows: false,
             require_receive_shadows: false,
+            exclude_blend_casters: false,
         }
     }
 
@@ -55,6 +64,9 @@ impl NodeFilter {
             return false;
         }
         if self.require_receive_shadows && !node.flags.receive_shadows {
+            return false;
+        }
+        if self.exclude_blend_casters && node.flags.blend_material {
             return false;
         }
         true

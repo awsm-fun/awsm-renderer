@@ -412,7 +412,28 @@ async fn add_node(
     let entry = {
         let existing = bridge().nodes.lock().unwrap().get(&node_id).cloned();
         match existing {
-            Some(e) => e,
+            Some(e) => {
+                // Mid-reparent insert-before-remove INVERSION: the reparent's
+                // two diffs live on different parents' child observers, and
+                // this `InsertAt` processed before the old parent's `RemoveAt`.
+                // Re-claim the live entry: mark it so the stale remove tears
+                // down nothing (`take_readded` in `remove_node`), cancel the
+                // old location's observers (kept, they'd double-handle every
+                // future diff — and the fresh set registers below), and move
+                // the renderer transform under the NEW parent (the fresh-create
+                // path passes `parent_tk` at insert; plain reuse would leave it
+                // parented to the old location).
+                if bridge().is_moving(node_id) {
+                    bridge().mark_readded(node_id);
+                    e.loaders.lock().unwrap().clear();
+                    let tk = e.transform_key;
+                    with_renderer_mut(move |r| {
+                        r.transforms.set_parent(tk, parent_tk);
+                    })
+                    .await;
+                }
+                e
+            }
             None => {
                 let trs = node.transform.get();
                 let tk = with_renderer_mut(move |r| {
@@ -562,6 +583,23 @@ async fn add_node(
 }
 
 async fn remove_node(node_id: NodeId) {
+    // A REPARENT reaches this observer as a remove + re-insert of the same
+    // node (two diffs). `mutate::reparent` marks the moved subtree; consume
+    // the mark and keep everything the immediate re-materialize will resolve
+    // by key from the session caches — the pooled textures (else the rebuilt
+    // materials cache-hit DEAD TextureKeys and the whole moved model renders
+    // untextured / white-emissive) and the import template + its instance
+    // registration (the node id is unchanged, so the refcount must survive).
+    let moving = bridge().take_moving(node_id);
+    // Insert-before-remove inversion (see `Bridge::readded`): the reparent's
+    // re-insert already processed and re-claimed this entry — this remove is
+    // the STALE half. Everything (entry, transform, children, observers) is
+    // owned by the new location now; tear down nothing. The `RemoveAt` arm
+    // still drops the id from the OLD parent's `child_order` (outside this fn),
+    // which is exactly the bookkeeping the stale half should do.
+    if bridge().take_readded(node_id) {
+        return;
+    }
     // Remove any descendants first.
     for child in order_snapshot(Some(node_id)) {
         Box::pin(remove_node(child)).await;
@@ -577,8 +615,9 @@ async fn remove_node(node_id: NodeId) {
         e
     };
     if let Some(entry) = entry {
-        // Real deletion: reclaim the node's textures too (glTF leak fix).
-        teardown(&entry, true).await;
+        // Real deletion reclaims the node's textures too (glTF leak fix);
+        // a mid-reparent removal keeps them for the re-add.
+        teardown(&entry, !moving).await;
         // Free the node's OWN transform. `teardown` only frees sub-transforms
         // (`model_transforms`); the node's `transform_key` is a SlotMap key into
         // `r.transforms`, and dropping the `Arc<RendererNode>` below does NOT free
@@ -599,12 +638,18 @@ async fn remove_node(node_id: NodeId) {
         // captured siblings). Reclaim them — meshes, their materials → pooled
         // textures, baked transforms — once the LAST instance of an import is
         // gone. Candidate templates: this node's tracked import id, and (for a
-        // skinned node) the template it renders from.
-        reclaim_templates_for_removed(&entry, node_id).await;
-        // Free the view-only cluster DAG cache for a deleted ClusterMesh node (last
-        // reference only) — closes the editor-side session leak that otherwise grows
-        // the wasm heap toward an OOM abort on re-import-heavy sessions.
-        reclaim_cluster_cache_for_removed(&entry);
+        // skinned node) the template it renders from. SKIPPED mid-reparent:
+        // the same node re-adds immediately, and reclaiming here would both
+        // free resources it needs AND untrack its instance registration
+        // (which nothing re-registers after import).
+        if !moving {
+            reclaim_templates_for_removed(&entry, node_id).await;
+            // Free the view-only cluster DAG cache for a deleted ClusterMesh node
+            // (last reference only) — closes the editor-side session leak that
+            // otherwise grows the wasm heap toward an OOM abort on
+            // re-import-heavy sessions.
+            reclaim_cluster_cache_for_removed(&entry);
+        }
         // Dropping the entry (and its loaders) cancels the observers.
     }
 }
