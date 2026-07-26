@@ -946,6 +946,13 @@ pub fn post_process_to_renderer(
             debug: pp.ssr.debug,
             bvh_reflections: pp.ssr.bvh_reflections,
         },
+        atmosphere: awsm_renderer::post_process::Atmosphere {
+            enabled: pp.atmosphere.enabled,
+            color: pp.atmosphere.color,
+            density: pp.atmosphere.density,
+            base_height: pp.atmosphere.base_height,
+            height_falloff: pp.atmosphere.height_falloff,
+        },
     }
 }
 

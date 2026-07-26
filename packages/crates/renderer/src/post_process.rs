@@ -31,6 +31,9 @@ pub struct PostProcessing {
     /// Screen-space reflections. See [`Ssr`]. `enabled = false` (default)
     /// records no pass + allocates no targets.
     pub ssr: Ssr,
+    /// Atmospheric haze. See [`Atmosphere`]. `enabled = false` (default)
+    /// doesn't compile the fog term into the effects shader.
+    pub atmosphere: Atmosphere,
 }
 
 impl Eq for PostProcessing {}
@@ -89,6 +92,40 @@ impl Default for Ssr {
     }
 }
 
+/// Runtime atmospheric-haze settings (mirrors
+/// `awsm_renderer_scene::post_process::AtmosphereConfig`).
+///
+/// A stylized exponential medium applied in the EFFECTS pass: a pixel's colour
+/// is lerped toward `color` by `1 - exp(-density · distance)`, with an optional
+/// closed-form height integral so haze can pool below `base_height` and thin
+/// out above it. `enabled` is the only **structural** field — off means the fog
+/// term isn't compiled into the effects shader at all; everything else is a
+/// LIVE uniform.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Atmosphere {
+    pub enabled: bool,
+    /// Linear radiance an infinitely distant surface fades to.
+    pub color: [f32; 3],
+    /// Extinction per meter (1/e distance = `1 / density`).
+    pub density: f32,
+    /// World Y where density is full.
+    pub base_height: f32,
+    /// Exponential thinning per meter above `base_height`; `0` = uniform.
+    pub height_falloff: f32,
+}
+
+impl Default for Atmosphere {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            color: [0.5, 0.6, 0.7],
+            density: 0.02,
+            base_height: 0.0,
+            height_falloff: 0.0,
+        }
+    }
+}
+
 /// Tonemapping operator selection.
 #[derive(Clone, Debug, PartialEq, Eq, Copy, Hash)]
 pub enum ToneMapping {
@@ -109,6 +146,7 @@ impl Default for PostProcessing {
             bloom_intensity: 1.0,
             bloom_scatter: 1.0,
             ssr: Ssr::default(),
+            atmosphere: Atmosphere::default(),
         }
     }
 }
@@ -155,7 +193,11 @@ impl AwsmRenderer {
             || self.post_processing.ssr.temporal != pp.ssr.temporal
             || self.post_processing.ssr.resolution_scale != pp.ssr.resolution_scale
             || self.post_processing.ssr.debug != pp.ssr.debug
-            || self.post_processing.ssr.bvh_reflections != pp.ssr.bvh_reflections;
+            || self.post_processing.ssr.bvh_reflections != pp.ssr.bvh_reflections
+            // Atmosphere's ONLY structural axis: `enabled` compiles the fog
+            // term into the effects shader. Colour/density/heights are live
+            // uniforms and must not recompile (the tuning case).
+            || self.post_processing.atmosphere.enabled != pp.atmosphere.enabled;
         // Toggling SSR flips the `write_ssr_descriptor` axis on the
         // material_opaque cache key, so the live material modules must recompile
         // to add/drop the descriptor store (lazy — only the variants the scene

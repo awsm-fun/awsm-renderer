@@ -52,6 +52,10 @@ pub struct PostProcessConfig {
     /// project.toml ⇄ scene.toml automatically; off by default (zero cost).
     #[serde(default)]
     pub ssr: SsrConfig,
+    /// Atmospheric haze. Nested like [`SsrConfig`]; off by default (the fog
+    /// term isn't even compiled into the effects shader).
+    #[serde(default)]
+    pub atmosphere: AtmosphereConfig,
 }
 
 fn default_bloom_threshold() -> f32 {
@@ -79,6 +83,62 @@ impl Default for PostProcessConfig {
             bloom_intensity: default_bloom_intensity(),
             bloom_scatter: default_bloom_scatter(),
             ssr: SsrConfig::default(),
+            atmosphere: AtmosphereConfig::default(),
+        }
+    }
+}
+
+/// Atmospheric haze configuration. Nested in [`PostProcessConfig`].
+///
+/// A stylized exponential medium — not a physically-derived Rayleigh/Mie sky.
+/// Distant geometry fades toward [`color`](Self::color) at a rate set by
+/// [`density`](Self::density), optionally thinning with height so a scene can
+/// have haze pooling low and clear air above it.
+///
+/// `enabled = false` (the default) is the **structural** axis: the fog term is
+/// not compiled into the effects shader at all, so pre-atmosphere projects
+/// round-trip and cost nothing. Every other field is a live uniform.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub struct AtmosphereConfig {
+    /// Master toggle. `false` ⇒ the fog term is not compiled in. Structural.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Linear radiance of fully-saturated haze — what an infinitely distant
+    /// surface fades to. Live uniform.
+    #[serde(default = "default_atmosphere_color")]
+    pub color: [f32; 3],
+    /// Extinction per meter; the 1/e distance is `1 / density`. Live uniform.
+    #[serde(default = "default_atmosphere_density")]
+    pub density: f32,
+    /// World Y at which density is full. Live uniform.
+    #[serde(default)]
+    pub base_height: f32,
+    /// Exponential thinning per meter above `base_height`. `0` = uniform
+    /// medium (no height falloff at all). Live uniform.
+    #[serde(default = "default_atmosphere_height_falloff")]
+    pub height_falloff: f32,
+}
+
+fn default_atmosphere_color() -> [f32; 3] {
+    [0.5, 0.6, 0.7]
+}
+fn default_atmosphere_density() -> f32 {
+    0.02
+}
+fn default_atmosphere_height_falloff() -> f32 {
+    0.0
+}
+
+impl Default for AtmosphereConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            color: default_atmosphere_color(),
+            density: default_atmosphere_density(),
+            base_height: 0.0,
+            height_falloff: default_atmosphere_height_falloff(),
         }
     }
 }
@@ -203,4 +263,46 @@ pub enum ToneMappingConfig {
     KhronosNeutralPbr,
     /// ACES filmic.
     Aces,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A `[post_process]` block authored before atmosphere existed must parse
+    /// with haze OFF and the renderer defaults on every other field — the
+    /// "pre-atmosphere projects round-trip and cost nothing" claim in
+    /// [`AtmosphereConfig`]'s docs, held to by a test rather than by hope.
+    #[test]
+    fn pre_atmosphere_post_process_parses_with_haze_off() {
+        let toml_src = r#"
+bloom = true
+exposure = 1.5
+"#;
+        let parsed: PostProcessConfig = toml::from_str(toml_src).unwrap();
+        assert!(parsed.bloom);
+        assert_eq!(parsed.atmosphere, AtmosphereConfig::default());
+        assert!(!parsed.atmosphere.enabled);
+    }
+
+    /// An authored haze block survives a project.toml round-trip field for
+    /// field. `density`/`height_falloff` in particular are the ones a
+    /// serialize-then-reparse gap would silently reset to the defaults,
+    /// turning a tuned scene back into clear air.
+    #[test]
+    fn authored_atmosphere_roundtrips_through_toml() {
+        let authored = PostProcessConfig {
+            atmosphere: AtmosphereConfig {
+                enabled: true,
+                color: [0.016, 0.019, 0.028],
+                density: 0.008,
+                base_height: -1.25,
+                height_falloff: 0.05,
+            },
+            ..PostProcessConfig::default()
+        };
+        let round_tripped: PostProcessConfig =
+            toml::from_str(&toml::to_string(&authored).unwrap()).unwrap();
+        assert_eq!(round_tripped.atmosphere, authored.atmosphere);
+    }
 }

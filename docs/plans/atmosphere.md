@@ -85,14 +85,17 @@ same look, but it applies to any scene and both light paths.
 Read the relevant files before writing this up; the notes below are what the
 code actually looks like today, not what the design assumed.
 
-1. **Config types.** `AtmosphereConfig { enabled, color, density, base_height,
+1. ✅ **Config types.** `AtmosphereConfig { enabled, color, density, base_height,
    height_falloff }` in `packages/crates/scene/src/post_process.rs` (serde with
    `#[serde(default)]` initialisers matching the renderer defaults, exactly like
    `SsrConfig`), mirrored as `Atmosphere` in
    `packages/crates/renderer/src/post_process.rs`. The two are **mirrored, not
    shared** — that is the established house convention here (`SsrConfig` ↔
    `Ssr`); don't "improve" it as a side effect.
-2. **scene-loader** maps scene → renderer in the same place it maps `ssr`.
+2. ✅ **scene-loader** maps scene → renderer in the same place it maps `ssr`.
+   (Also: both `RendererProfile` defaults bundles enumerate `PostProcessing`
+   field-by-field, so they need the new field — haze stays OFF even in
+   `Cinema`, since it's scene-authored art direction, not a quality tier.)
 3. **Cache key.** Add `atmosphere: bool` to `ShaderCacheKeyEffects`
    (`render_passes/effects/shader/cache_key.rs`) and an `{% if atmosphere %}`
    arm in `effects_wgsl/compute.wgsl` + `template.rs`. **`enabled` is the

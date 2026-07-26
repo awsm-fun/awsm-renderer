@@ -119,6 +119,7 @@ impl RendererProfile {
                     bloom_intensity: 1.0,
                     bloom_scatter: 1.0,
                     ssr: Default::default(),
+                    atmosphere: Default::default(),
                 },
                 features: RendererFeatures::default(),
                 optimization_policy: RendererOptimizationPolicy {
@@ -184,6 +185,7 @@ impl RendererProfile {
                     bloom_intensity: 1.0,
                     bloom_scatter: 1.0,
                     ssr: Default::default(),
+                    atmosphere: Default::default(),
                 },
                 features: RendererFeatures::default(),
                 optimization_policy: RendererOptimizationPolicy::default(),
