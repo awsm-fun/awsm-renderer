@@ -266,33 +266,72 @@ metres.
 
 Still to do, and the two are entangled — see below.
 
-### The far plane must stop being an art knob
+### The far plane stopped being an art knob — FIXED
 
-`volumetric_distance` is documented as a cost/quality budget, but it is welded
-to the amount of medium: beyond it the composite clamps, so the air simply ends.
-That was demonstrated above — dropping it 25 → 8 to buy z-resolution visibly
-*removed haze*. You cannot currently spend the slice budget where the beams are
-without changing the look.
+`volumetric_distance` is documented as a cost/quality budget, but it was welded
+to the amount of medium: beyond it the composite clamped, so the air simply
+ended. Demonstrated above — dropping it 25 → 8 to buy z-resolution visibly
+*removed haze*. You could not spend the slice budget where the beams are without
+changing the look.
 
-The fix is the Frostbite split: froxel volume near, **analytic continuation
-far**. The composite already has everything it needs — `apply_atmosphere`'s
-closed-form height integral describes the same medium, and beyond the volume
-there is no beam detail left to preserve anyway. Order matters (light crosses
-the far segment first, then the near one):
+Fixed with the Frostbite split: froxel volume near, **analytic continuation
+far**. The composite had everything it needed already — the closed-form height
+integral describes the same medium, and past the volume there is no beam detail
+left to preserve. Order follows the light (it crosses the far segment first):
 
     (rgb * T_analytic + color * (1 - T_analytic)) * T_volume + inscatter_volume
 
-with the analytic term evaluated over `[z_far_volume, depth]` only. Sky pixels
-stop being pinned to "exactly `volumetric_distance` away" and get the saturating
-distance the analytic path already uses.
+with the analytic term over `[volume_far, surface]` **only**. This is not
+double-fogging and the code says so at length: the two terms cover disjoint
+segments of the ray, and running both over the same one is the
+extinguish-the-air-twice bug the mode switch exists to prevent.
 
-With that landed, `volumetric_distance` becomes a real quality knob and can drop
-to roughly the subject's depth extent — which is also most of the fix for (b),
-since the slices then land on the stage. Whether 32 slices is enough should be
-re-judged *after* that, not before: Frostbite and UE both ship 64, and doubling
-is 2x the froxels (~16 MB of rgba16float at 1080p) for 2x the z-resolution, but
-it is the expensive lever and it should be spent only if a correctly-ranged
-volume still bands.
+Sky pixels stop being pinned to "exactly `volumetric_distance` away" and get
+the saturating distance the analytic path already uses.
+
+Shape of the change: the medium math (density profile, its closed-form
+integral, the view-ray reconstruction) moved out of `atmosphere.wgsl` into a
+shared `helpers/atmosphere_medium.wgsl`, included for **either** haze phase.
+`atmosphere.wgsl` keeps only `apply_atmosphere`, so the existing pin that the
+analytic term compiles for exactly the analytic phase still holds. Exactly the
+precedent `depth.wgsl` set when `load_depth` had two consumers.
+
+Browser-verified as the decoupling it claims to be. Mean luma over the stage,
+close framing, sweeping the knob across a 7.5x range:
+
+| `volumetric_distance` | 8 | 25 | 60 |
+|---|---|---|---|
+| mean luma | 70.3 | 71.6 | 68.4 |
+
+A 4.6% spread, where the same sweep used to change the image obviously. The
+residual is honest and expected: the volume contributes *beam* in-scatter that
+the analytic tail cannot (the tail has no lights), so moving the boundary moves
+a little energy across it.
+
+### (b) is now the visible defect
+
+With the medium in-scattering everywhere rather than only inside beams, the
+froxel grid shows up across the whole frame instead of hiding in the dark — the
+16 px x 32 slice blocks are plainly visible at a close framing. Worth stating
+because it looks like a regression and isn't: the structure was always there,
+the old medium was just too dark to show it.
+
+Order of attack, now that the far plane is a free knob:
+
+1. **Range** — `volumetric_distance` can drop to roughly the subject's depth
+   extent at no cost to the look, which puts slices on the stage instead of in
+   the empty air in front of the lens.
+2. **Distribution** — the volume still borrows the *camera's* 0.1 m near plane
+   for its exponential anchor. Even at a short range that wastes the near half
+   of the budget. The volume wants its own near plane, or a distribution whose
+   error metric is world-space rather than screen-space.
+3. **Count** — 32 → 64 last, not first. Frostbite and UE both ship 64, and it is
+   2x the froxels (~16 MB of rgba16float at 1080p) for 2x the z-resolution, but
+   it is the expensive lever and should be spent only if a correctly-ranged,
+   correctly-anchored volume still bands.
+4. **`volumetric_temporal`** — still unimplemented, and now clearly the finisher
+   rather than a nicety: jitter plus a history blend is what turns a
+   one-sample-per-froxel volume into smooth air.
 
 ## Per-light `volumetric_intensity`
 

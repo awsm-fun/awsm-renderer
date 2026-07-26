@@ -2299,6 +2299,37 @@ fn atmosphere_term_is_present_only_when_enabled() {
                 "{label}: linearize_depth must be defined exactly once when \
                  either DoF or atmosphere needs it, and not at all otherwise"
             );
+
+            // Same shape, one layer up: the MEDIUM math is shared by both haze
+            // paths (the analytic one integrates the whole ray, the volumetric
+            // one integrates past its froxel volume), so it must land exactly
+            // once for either and never for neither.
+            assert_eq!(
+                src.matches("fn atmosphere_optical_depth(").count(),
+                usize::from(atmosphere != AtmospherePhase::None),
+                "{label}: the shared medium math must be defined exactly once \
+                 for either haze path — two copies is a WGSL redefinition, \
+                 zero is an undefined call"
+            );
+
+            // The volumetric path must actually CONTINUE the medium past its
+            // far plane. Without this call the composite clamps to the last
+            // slice, the air ends at `volumetric_distance`, and a knob
+            // documented as a cost/quality budget silently becomes an art
+            // knob — shrinking it to buy z-resolution removes haze.
+            //
+            // Note this is not double-fogging: the analytic tail covers
+            // [volume_far, surface], a segment the volume does not.
+            // `dist - dist_in_volume` IS the disjoint tail: total ray length
+            // minus the part the volume covered. Pinning that expression pins
+            // the semantics rather than the formatting.
+            assert_eq!(
+                strip_wgsl_comments(&src).contains("dist - dist_in_volume"),
+                atmosphere == AtmospherePhase::Volumetric,
+                "{label}: the volumetric composite must integrate the medium \
+                 BEYOND the froxel volume analytically, over exactly the \
+                 segment the volume did not cover"
+            );
         }
     }
 }

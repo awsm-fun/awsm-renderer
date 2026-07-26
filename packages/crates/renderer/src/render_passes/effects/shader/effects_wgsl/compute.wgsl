@@ -40,6 +40,16 @@
     /*************** END dof.wgsl ******************/
 {% endif %}
 
+{# The MEDIUM math is shared: the analytic path integrates the whole view ray
+   with it, the volumetric path integrates only the segment BEYOND its froxel
+   volume. Exactly one copy, for either consumer — same shape as depth.wgsl
+   above, and for the same reason. #}
+{% if atmosphere || atmosphere_volumetric %}
+    /*************** START atmosphere_medium.wgsl ******************/
+    {% include "effects_wgsl/helpers/atmosphere_medium.wgsl" %}
+    /*************** END atmosphere_medium.wgsl ******************/
+{% endif %}
+
 {% if atmosphere %}
     /*************** START atmosphere.wgsl ******************/
     {% include "effects_wgsl/helpers/atmosphere.wgsl" %}
