@@ -241,6 +241,12 @@ pub struct RenderPassesDescriptors {
     /// handle to assemble the typed `HzbRenderPass`. Per-frame
     /// resize in `render.rs` reallocates against the live viewport.
     hzb_texture: Option<hzb::texture::HzbTexture>,
+    /// The effects pass's live haze uniform. Allocated in
+    /// `describe_pipelines` for the same reason `hzb_texture` is — the buffer
+    /// needs a gpu handle and `from_resolved` is sync. Unconditional: unlike
+    /// bloom/SSR the effects pass is never lazy, and its bind-group layout
+    /// carries the binding whether or not haze is on.
+    atmosphere_params: effects::render_pass::AtmosphereParams,
     /// Fully-constructed bloom pass. Built in `describe_pipelines` (which has
     /// the gpu handle + async ctx) ONLY when the boot config enables bloom,
     /// and moved straight into `from_resolved`'s output — bloom self-contains
@@ -779,6 +785,10 @@ impl RenderPasses {
             None
         };
 
+        // Effects-pass haze uniform — same "sync from_resolved has no gpu
+        // handle" reason as the HZB texture above.
+        let atmosphere_params = effects::render_pass::AtmosphereParams::new(ctx.gpu)?;
+
         // Bloom — self-contained (own bind groups + pipelines + params + tiny
         // initial texture). LAZY: built only when the boot config enables
         // bloom; otherwise `set_post_processing` compiles it on the first
@@ -840,6 +850,7 @@ impl RenderPasses {
                 hzb_slot,
             },
             hzb_texture,
+            atmosphere_params,
             bloom,
             ssr,
             smaa,
@@ -872,6 +883,7 @@ impl RenderPasses {
             ranges,
             per_pass_descs,
             hzb_texture,
+            atmosphere_params,
             bloom,
             ssr,
             smaa,
@@ -1051,6 +1063,7 @@ impl RenderPasses {
         let effects = EffectsRenderPass {
             bind_groups: effects_bg,
             pipelines: effects_pipelines,
+            atmosphere_params,
         };
 
         let display = DisplayRenderPass {

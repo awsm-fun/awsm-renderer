@@ -15,3 +15,16 @@
 // zero dummy when SMAA is off (the smaa-off shader variant never reads it,
 // but the layout keeps a stable shape across the toggle).
 @group(0) @binding(6) var smaa_weights_tex: texture_2d<f32>;
+
+{% if atmosphere %}
+// Live atmospheric-haze knobs. The LAYOUT always carries this entry (so the
+// haze toggle doesn't move the bind-group shape) but the haze-off shader
+// variant doesn't declare it — a WGSL module may bind a subset of its layout.
+struct AtmosphereParamsRaw {
+    color: vec3<f32>,
+    density: f32,
+    base_height: f32,
+    height_falloff: f32,
+};
+@group(0) @binding(7) var<uniform> atmosphere_params: AtmosphereParamsRaw;
+{% endif %}

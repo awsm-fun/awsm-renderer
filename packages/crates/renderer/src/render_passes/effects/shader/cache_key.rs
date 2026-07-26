@@ -22,6 +22,10 @@ pub struct ShaderCacheKeyEffects {
     pub multisampled_geometry: bool,
     pub bloom_phase: BloomPhase,
     pub dof: bool,
+    /// Atmospheric haze. Structural: off ⇒ the fog term isn't compiled in,
+    /// which is what "zero cost when off" has to mean. Colour/density/heights
+    /// ride the `AtmosphereParams` uniform and never touch this key.
+    pub atmosphere: bool,
     /// Depth convention (003).
     pub reverse_z: bool,
 }

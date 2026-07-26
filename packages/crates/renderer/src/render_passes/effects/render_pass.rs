@@ -1,8 +1,13 @@
 //! Effects render pass execution.
 
-use awsm_renderer_core::command::compute_pass::ComputePassDescriptor;
+use awsm_renderer_core::{
+    buffers::{BufferDescriptor, BufferUsage},
+    command::compute_pass::ComputePassDescriptor,
+    renderer::AwsmRendererWebGpu,
+};
 
 use crate::{
+    buffer::mapped_uploader::MappedUploader,
     error::Result,
     render::RenderContext,
     render_passes::{
@@ -14,10 +19,94 @@ use crate::{
     },
 };
 
+/// `AtmosphereParams` — 32-byte uniform: `color` (vec3), `density`,
+/// `base_height`, `height_falloff`, 8 bytes of tail padding to the vec4
+/// alignment WGSL gives the struct.
+///
+/// Unlike `BloomParams` (which lives on the lazily-built `BloomRenderPass`)
+/// this buffer is owned by the effects pass and therefore ALWAYS exists — the
+/// bind-group layout carries the binding whether or not haze is on, keeping
+/// one layout shape across the toggle exactly like the 1×1 SMAA dummy. Only
+/// the compiled shader varies; the haze-off variant simply never reads it.
+pub struct AtmosphereParams {
+    pub gpu_buffer: web_sys::GpuBuffer,
+    raw_data: [u8; Self::BYTE_SIZE],
+    uploader: MappedUploader,
+}
+
+impl AtmosphereParams {
+    pub const BYTE_SIZE: usize = 32;
+
+    pub fn new(gpu: &AwsmRendererWebGpu) -> Result<Self> {
+        let gpu_buffer = gpu.create_buffer(
+            &BufferDescriptor::new(
+                Some("AtmosphereParams"),
+                Self::BYTE_SIZE,
+                BufferUsage::new().with_uniform().with_copy_dst(),
+            )
+            .into(),
+        )?;
+
+        let mut params = Self {
+            gpu_buffer,
+            raw_data: [0; Self::BYTE_SIZE],
+            uploader: MappedUploader::new("AtmosphereParams"),
+        };
+        // Seed from the config defaults so the first frame after an enable
+        // renders the authored haze even if the per-frame write is skipped.
+        let defaults = crate::post_process::Atmosphere::default();
+        params.pack(
+            defaults.color,
+            defaults.density,
+            defaults.base_height,
+            defaults.height_falloff,
+        );
+        Ok(params)
+    }
+
+    fn pack(&mut self, color: [f32; 3], density: f32, base_height: f32, height_falloff: f32) {
+        self.raw_data[0..4].copy_from_slice(&color[0].to_ne_bytes());
+        self.raw_data[4..8].copy_from_slice(&color[1].to_ne_bytes());
+        self.raw_data[8..12].copy_from_slice(&color[2].to_ne_bytes());
+        self.raw_data[12..16].copy_from_slice(&density.to_ne_bytes());
+        self.raw_data[16..20].copy_from_slice(&base_height.to_ne_bytes());
+        self.raw_data[20..24].copy_from_slice(&height_falloff.to_ne_bytes());
+    }
+
+    /// Packs + uploads via the mapped-ring path, skipping the GPU write when
+    /// the bytes are unchanged — same house standard as `BloomParams`: these
+    /// only move on user edits, so an every-frame upload while haze is merely
+    /// ENABLED is pure idle work.
+    pub fn write(
+        &mut self,
+        gpu: &AwsmRendererWebGpu,
+        color: [f32; 3],
+        density: f32,
+        base_height: f32,
+        height_falloff: f32,
+    ) -> Result<()> {
+        let prev = self.raw_data;
+        self.pack(color, density, base_height, height_falloff);
+        if self.raw_data == prev {
+            return Ok(());
+        }
+        self.uploader.write_dirty_ranges(
+            gpu,
+            &self.gpu_buffer,
+            Self::BYTE_SIZE,
+            self.raw_data.as_slice(),
+            &[(0, Self::BYTE_SIZE)],
+        )?;
+        Ok(())
+    }
+}
+
 /// Effects pass bind groups and pipelines.
 pub struct EffectsRenderPass {
     pub bind_groups: EffectsBindGroups,
     pub pipelines: EffectsPipelines,
+    /// Live atmospheric-haze uniform (colour / density / heights).
+    pub atmosphere_params: AtmosphereParams,
 }
 
 impl EffectsRenderPass {
@@ -25,10 +114,12 @@ impl EffectsRenderPass {
     pub async fn new(ctx: &mut RenderPassInitContext<'_>) -> Result<Self> {
         let bind_groups = EffectsBindGroups::new(ctx).await?;
         let pipelines = EffectsPipelines::new(ctx, &bind_groups).await?;
+        let atmosphere_params = AtmosphereParams::new(ctx.gpu)?;
 
         Ok(Self {
             bind_groups,
             pipelines,
+            atmosphere_params,
         })
     }
 

@@ -655,6 +655,22 @@ impl AwsmRenderer {
             }
         }
 
+        // Atmospheric-haze live-tuning uniforms. Unlike bloom's, this buffer
+        // lives on the always-present effects pass (no lazy Option), so the
+        // only guard is the enable — `write` itself no-ops when the bytes
+        // haven't moved, so a haze-on scene that never touches the sliders
+        // uploads exactly once.
+        if self.post_processing.atmosphere.enabled {
+            let atmosphere = &self.post_processing.atmosphere;
+            self.render_passes.effects.atmosphere_params.write(
+                &self.gpu,
+                atmosphere.color,
+                atmosphere.density,
+                atmosphere.base_height,
+                atmosphere.height_falloff,
+            )?;
+        }
+
         // SSR live-tuning uniforms (no ensure_size — the ssr target lives in
         // RenderTextures and resizes with the rest). Only written when enabled.
         if self.post_processing.ssr.enabled {

@@ -21,6 +21,7 @@ pub struct ShaderTemplateEffectsBindGroups {
     pub smaa_anti_alias: bool,
     pub multisampled_geometry: bool,
     pub dof: bool,
+    pub atmosphere: bool,
     pub debug: ShaderTemplateEffectsDebug,
 }
 
@@ -31,6 +32,7 @@ impl ShaderTemplateEffectsBindGroups {
             smaa_anti_alias: cache_key.smaa_anti_alias,
             multisampled_geometry: cache_key.multisampled_geometry,
             dof: cache_key.dof,
+            atmosphere: cache_key.atmosphere,
             debug: ShaderTemplateEffectsDebug::new(),
         }
     }
@@ -46,6 +48,8 @@ pub struct ShaderTemplateEffectsCompute {
     /// glow is added over the composite)
     pub bloom: bool,
     pub dof: bool,
+    /// Atmospheric haze term (`helpers/atmosphere.wgsl`).
+    pub atmosphere: bool,
     /// Depth convention (003) — read by the DoF include (`helpers/dof.wgsl`).
     pub reverse_z: bool,
     pub debug: ShaderTemplateEffectsDebug,
@@ -61,6 +65,7 @@ impl ShaderTemplateEffectsCompute {
             multisampled_geometry: cache_key.multisampled_geometry,
             bloom,
             dof: cache_key.dof,
+            atmosphere: cache_key.atmosphere,
             reverse_z: cache_key.reverse_z,
             debug: ShaderTemplateEffectsDebug::new(),
         }

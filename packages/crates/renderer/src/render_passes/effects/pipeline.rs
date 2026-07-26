@@ -122,6 +122,7 @@ impl EffectsPipelines {
                     smaa_anti_alias: anti_aliasing.smaa,
                     bloom_phase,
                     dof: post_processing.dof,
+                    atmosphere: post_processing.atmosphere.enabled,
                     multisampled_geometry,
                     reverse_z,
                 })

@@ -83,10 +83,13 @@ impl EffectsBindGroups {
     /// Recreates bind groups for the current render textures.
     /// `smaa_weights_view` is the SMAA pre-pass's weights texture when SMAA is
     /// enabled; `None` binds the internal 1×1 zero dummy.
+    /// `atmosphere_params` is the pass's own haze uniform — always bound (the
+    /// layout shape doesn't move with the haze toggle).
     pub fn recreate(
         &mut self,
         ctx: &BindGroupRecreateContext<'_>,
         smaa_weights_view: Option<&web_sys::GpuTextureView>,
+        atmosphere_params: &web_sys::GpuBuffer,
     ) -> Result<()> {
         let mut entries = Vec::new();
 
@@ -120,6 +123,10 @@ impl EffectsBindGroups {
         entries.push(BindGroupEntry::new(
             entries.len() as u32,
             BindGroupResource::TextureView(Cow::Borrowed(weights_view)),
+        ));
+        entries.push(BindGroupEntry::new(
+            entries.len() as u32,
+            BindGroupResource::Buffer(BufferBinding::new(atmosphere_params)),
         ));
 
         let descriptor = BindGroupDescriptor::new(
@@ -214,6 +221,17 @@ fn bind_group_layout_cache_key(
                     TextureBindingLayout::new()
                         .with_view_dimension(TextureViewDimension::N2d)
                         .with_sample_type(TextureSampleType::UnfilterableFloat),
+                ),
+                visibility_vertex: false,
+                visibility_fragment: false,
+                visibility_compute: true,
+            },
+            // AtmosphereParams uniform. Present regardless of the haze toggle
+            // (same reasoning as the SMAA dummy above): one layout shape, and
+            // only the compiled shader varies.
+            BindGroupLayoutCacheKeyEntry {
+                resource: BindGroupLayoutResource::Buffer(
+                    BufferBindingLayout::new().with_binding_type(BufferBindingType::Uniform),
                 ),
                 visibility_vertex: false,
                 visibility_fragment: false,

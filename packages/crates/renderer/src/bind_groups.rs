@@ -880,10 +880,18 @@ impl BindGroups {
                         .smaa
                         .as_ref()
                         .map(|s| s.textures.weights_view.clone());
-                    render_passes
-                        .effects
-                        .bind_groups
-                        .recreate(&ctx, weights_view.as_ref())?;
+                    // Destructure so the atmosphere uniform and the bind groups
+                    // borrow disjointly (same shape as the SSR arm above).
+                    let crate::render_passes::effects::render_pass::EffectsRenderPass {
+                        bind_groups,
+                        atmosphere_params,
+                        ..
+                    } = &mut render_passes.effects;
+                    bind_groups.recreate(
+                        &ctx,
+                        weights_view.as_ref(),
+                        &atmosphere_params.gpu_buffer,
+                    )?;
                 }
                 FunctionToCall::Display => {
                     render_passes.display.bind_groups.recreate(&ctx)?;

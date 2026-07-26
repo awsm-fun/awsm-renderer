@@ -19,6 +19,8 @@
 use awsm_renderer_materials::MaterialShaderId;
 
 use crate::dynamic_materials::{BucketEntry, ShadingBase};
+use crate::render_passes::effects::shader::cache_key::{BloomPhase, ShaderCacheKeyEffects};
+use crate::render_passes::effects::shader::template::ShaderTemplateEffects;
 use crate::render_passes::material_decal::shader::cache_key::ShaderCacheKeyMaterialDecal;
 use crate::render_passes::material_decal::shader::template::ShaderTemplateMaterialDecal;
 use crate::render_passes::material_opaque::shader::cache_key::{
@@ -2123,5 +2125,106 @@ fn skybox_edge_accumulator_stride_tracks_the_ssr_axis() {
             "{label}: sky writer must zero the SSR descriptor words IFF the \
              wide layout allocated them"
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Effects pass — atmosphere
+// ---------------------------------------------------------------------------
+
+/// Renders the effects compute shader for a cache key. Panics with the
+/// template error on failure, like `render` does for materials.
+fn render_effects(key: &ShaderCacheKeyEffects, label: &str) -> String {
+    ShaderTemplateEffects::try_from(key)
+        .unwrap_or_else(|e| panic!("{label}: effects template build failed: {e:?}"))
+        .into_source()
+        .unwrap_or_else(|e| panic!("{label}: effects template render failed: {e:?}"))
+}
+
+fn effects_key(
+    atmosphere: bool,
+    dof: bool,
+    bloom_phase: BloomPhase,
+    msaa: bool,
+    reverse_z: bool,
+) -> ShaderCacheKeyEffects {
+    ShaderCacheKeyEffects {
+        smaa_anti_alias: false,
+        multisampled_geometry: msaa,
+        bloom_phase,
+        dof,
+        atmosphere,
+        reverse_z,
+    }
+}
+
+/// Every effects variant across the atmosphere × dof × bloom × msaa ×
+/// reverse-z matrix must be valid WGSL.
+///
+/// The atmosphere include is what makes this matrix worth walking: it needs
+/// `load_depth` / `linearize_depth`, which used to live inside `dof.wgsl` and
+/// are now in `depth.wgsl` gated on `dof || atmosphere`. Get that condition
+/// wrong in either direction and you get an undefined function (haze without
+/// DoF) or a duplicate definition (both on) — neither of which shows up until
+/// a real pipeline compile in a browser.
+#[test]
+fn effects_variants_are_valid_wgsl() {
+    for atmosphere in [false, true] {
+        for dof in [false, true] {
+            for bloom_phase in [BloomPhase::None, BloomPhase::Blend] {
+                for msaa in [false, true] {
+                    for reverse_z in [false, true] {
+                        let label = format!(
+                            "effects atmosphere={atmosphere} dof={dof} \
+                             bloom={bloom_phase:?} msaa={msaa} reverse_z={reverse_z}"
+                        );
+                        let src = render_effects(
+                            &effects_key(atmosphere, dof, bloom_phase, msaa, reverse_z),
+                            &label,
+                        );
+                        naga_validate(&src, &label);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// `enabled` is the STRUCTURAL axis: haze off must compile to a shader with no
+/// fog term and no haze uniform at all. "Zero cost when off" is a claim about
+/// the emitted code, so assert on the emitted code — a live-uniform
+/// implementation that multiplied by a zero density would pass a screenshot
+/// test and fail this one.
+#[test]
+fn atmosphere_term_is_present_only_when_enabled() {
+    for dof in [false, true] {
+        for atmosphere in [false, true] {
+            let label = format!("effects atmosphere={atmosphere} dof={dof}");
+            let src = render_effects(
+                &effects_key(atmosphere, dof, BloomPhase::None, false, false),
+                &label,
+            );
+
+            assert_eq!(
+                src.contains("apply_atmosphere("),
+                atmosphere,
+                "{label}: the fog term must be compiled in IFF haze is enabled"
+            );
+            assert_eq!(
+                src.contains("atmosphere_params"),
+                atmosphere,
+                "{label}: the haze uniform must be declared IFF haze is enabled"
+            );
+
+            // The shared depth helpers come in for EITHER consumer, exactly
+            // once. Two copies is a WGSL redefinition error; zero is an
+            // undefined call from whichever consumer is on.
+            assert_eq!(
+                src.matches("fn linearize_depth(").count(),
+                usize::from(dof || atmosphere),
+                "{label}: linearize_depth must be defined exactly once when \
+                 either DoF or atmosphere needs it, and not at all otherwise"
+            );
+        }
     }
 }

@@ -26,10 +26,22 @@
     /*************** END bloom.wgsl ******************/
 {% endif %}
 
+{% if dof || atmosphere %}
+    /*************** START depth.wgsl ******************/
+    {% include "effects_wgsl/helpers/depth.wgsl" %}
+    /*************** END depth.wgsl ******************/
+{% endif %}
+
 {% if dof %}
     /*************** START dof.wgsl ******************/
     {% include "effects_wgsl/helpers/dof.wgsl" %}
     /*************** END dof.wgsl ******************/
+{% endif %}
+
+{% if atmosphere %}
+    /*************** START atmosphere.wgsl ******************/
+    {% include "effects_wgsl/helpers/atmosphere.wgsl" %}
+    /*************** END atmosphere.wgsl ******************/
 {% endif %}
 
 
@@ -58,6 +70,13 @@ fn main(
         var rgb = apply_smaa(composite_color, coords).rgb;
     {% else %}
         var rgb = composite_color.rgb;
+    {% endif %}
+
+    // Haze goes in BEFORE bloom, so the glow blooms the hazed image. Applied
+    // after, it would wash flatly over the lights instead of reading as air
+    // between them.
+    {% if atmosphere %}
+        rgb = apply_atmosphere(rgb, coords, pixel_center, screen_dims_f32, camera);
     {% endif %}
 
     {% if bloom %}
