@@ -27,6 +27,7 @@ use crate::render_passes::{
     },
     smaa::shader::cache_key::ShaderCacheKeySmaa,
     ssr::shader::cache_key::ShaderCacheKeySsr,
+    volumetrics::shader::cache_key::ShaderCacheKeyVolumetrics,
 };
 
 /// Cache key variants for render-pass shader templates.
@@ -78,4 +79,6 @@ pub enum ShaderCacheKeyRenderPass {
     /// Screen-space reflections trace (linear-DDA march). Permutes on mode
     /// (mirror/glossy) × temporal × half-res.
     Ssr(ShaderCacheKeySsr),
+    /// Froxel volumetric scattering (inject / integrate).
+    Volumetrics(ShaderCacheKeyVolumetrics),
 }

@@ -24,6 +24,7 @@ pub mod shadow_masked_custom_vertex;
 pub mod shared;
 pub mod smaa;
 pub mod ssr;
+pub mod volumetrics;
 
 use std::ops::Range;
 

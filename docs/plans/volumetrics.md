@@ -113,6 +113,16 @@ it.
 
 ## Stages
 
+**Status: the pass itself is written and validates; it is NOT yet dispatched.**
+`render_passes/volumetrics/` has the volume textures, the params uniform, the
+three bind groups, both compute pipelines and both shaders, with naga pins on
+each. Still to wire: the lazy `Option<VolumetricsRenderPass>` on `RenderPasses`,
+`set_post_processing`'s build-on-enable, the per-frame `ensure_size` + params
+write + dispatch in `render.rs`, the bind-group recreate arm, and the effects
+pass sampling the integrated volume — after which `atmosphere_phase()` flips
+from its Analytic fallback.
+
+
 A froxel volume (`rgba16float`, RGB = in-scattered radiance, A = extinction),
 sized ~(viewport/8) × 64 slices over the same exponential depth mapping the
 light culling uses.

@@ -2241,3 +2241,69 @@ fn atmosphere_term_is_present_only_when_enabled() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Volumetrics
+// ---------------------------------------------------------------------------
+
+/// Both volumetrics stages must be valid WGSL under both depth conventions.
+///
+/// This is the pass's main non-browser safety net, and it earns its keep: the
+/// stage bodies call into THREE shared includes they don't own (`light_access`,
+/// `froxel_walk`, the shadow bind-group + sampling machinery). A signature
+/// drift in any of them is an undefined-function error that would otherwise
+/// surface only as a pipeline-compile failure in a browser.
+#[test]
+fn volumetrics_shaders_validate() {
+    use crate::render_passes::volumetrics::shader::cache_key::{
+        ShaderCacheKeyVolumetrics, VolumetricsStage,
+    };
+    use crate::render_passes::volumetrics::shader::template::ShaderTemplateVolumetrics;
+
+    for stage in [VolumetricsStage::Inject, VolumetricsStage::Integrate] {
+        for reverse_z in [false, true] {
+            let label = format!("volumetrics stage={stage:?} reverse_z={reverse_z}");
+            let key = ShaderCacheKeyVolumetrics { stage, reverse_z };
+            let src = ShaderTemplateVolumetrics::try_from(&key)
+                .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
+                .into_source()
+                .unwrap_or_else(|e| panic!("{label}: template render failed: {e:?}"));
+            naga_validate(&src, &label);
+        }
+    }
+}
+
+/// The volume must walk lights through the SHARED froxel enumeration, not a
+/// private copy. If someone reimplements the walk here, the medium and the
+/// surfaces can disagree about which lights are in a column — the exact
+/// failure `froxel_walk.wgsl`'s "SINGLE SOURCE OF TRUTH" header exists to
+/// prevent, and one that looks like plausible art rather than a bug.
+#[test]
+fn volumetrics_inject_uses_the_shared_froxel_walk() {
+    use crate::render_passes::volumetrics::shader::cache_key::{
+        ShaderCacheKeyVolumetrics, VolumetricsStage,
+    };
+    use crate::render_passes::volumetrics::shader::template::ShaderTemplateVolumetrics;
+
+    let key = ShaderCacheKeyVolumetrics {
+        stage: VolumetricsStage::Inject,
+        reverse_z: true,
+    };
+    let src = ShaderTemplateVolumetrics::try_from(&key)
+        .unwrap()
+        .into_source()
+        .unwrap();
+
+    for needle in [
+        "froxel_base_for_pixel(",
+        "froxel_light_count(",
+        "get_directional_light_index(",
+        "sample_shadow_descriptor(",
+    ] {
+        assert!(
+            src.contains(needle),
+            "volumetrics inject must call the shared `{needle}` — a private \
+             reimplementation lets the medium and the surfaces disagree"
+        );
+    }
+}
