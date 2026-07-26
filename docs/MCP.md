@@ -324,7 +324,9 @@ heightmaps (`displace_from_texture { node, url, strength }`). See the
   / `get_view_options` — viewport toggles (turn grid/gizmos off for clean
   verification screenshots). `set_post_process { … }` / `get_post_process` —
   tonemapping / bloom / dof / exposure + the flat `ssr_*` and `atmosphere_*`
-  blocks (patch semantics).
+  blocks (patch semantics). `atmosphere_mode` is three-way — `off` / `fog`
+  (analytic) / `volumetric` (froxel, light shafts) — not an enable plus a
+  style flag: volumetric REPLACES fog, since both describe the same air.
 - `reset_pose { node }` — restore a node + all descendants to their scene base
   transforms; reverts a clip's last-previewed pose left baked after clearing the
   current clip (pass a rig root to reset a skeleton). Transient, not undoable.

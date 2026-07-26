@@ -918,7 +918,7 @@ fn shadows_section() -> Dom {
 /// bundled) and syncs live to the renderer via `settings_sync`. Seeded from the
 /// current `scene.post_process` when the drawer opens.
 fn post_processing_section() -> Dom {
-    use awsm_renderer_editor_protocol::ToneMappingConfig;
+    use awsm_renderer_editor_protocol::{AtmosphereMode, ToneMappingConfig};
     let pp = controller().scene.post_process.get_cloned();
 
     // Toggles + select ride Mutables so the standard widgets drive the
@@ -1020,17 +1020,44 @@ fn post_processing_section() -> Dom {
         }).await;
     }));
 
-    // Haze on/off is structural (recompiles the effects shader), so it rides a
-    // Mutable like the SSR toggles rather than a blur-commit NumField.
-    let atmosphere_enabled = Mutable::new(pp.atmosphere.enabled);
-    spawn_local(clone!(atmosphere_enabled => async move {
+    // Haze is ONE control, not an enable plus a style flag — the volumetric
+    // path replaces the analytic one rather than adding to it, so a pair of
+    // checkboxes would offer a fourth state that means nothing. Structural
+    // (recompiles), so it rides a Mutable like the SSR toggles.
+    let haze_mode = Mutable::new(
+        match pp.atmosphere.mode {
+            AtmosphereMode::Off => "off",
+            AtmosphereMode::Fog => "fog",
+            AtmosphereMode::Volumetric => "volumetric",
+        }
+        .to_string(),
+    );
+    spawn_local(clone!(haze_mode => async move {
         let mut first = true;
-        atmosphere_enabled.signal().for_each(move |on| {
+        haze_mode.signal_cloned().for_each(move |v| {
             let fire = !first;
             first = false;
             async move {
                 if fire {
-                    dispatch_atmosphere(Some(on), None, None, None);
+                    let mode = match v.as_str() {
+                        "fog" => AtmosphereMode::Fog,
+                        "volumetric" => AtmosphereMode::Volumetric,
+                        _ => AtmosphereMode::Off,
+                    };
+                    dispatch_atmosphere(Some(mode), None, None, None, None, None);
+                }
+            }
+        }).await;
+    }));
+    let haze_temporal = Mutable::new(pp.atmosphere.volumetric_temporal);
+    spawn_local(clone!(haze_temporal => async move {
+        let mut first = true;
+        haze_temporal.signal().for_each(move |on| {
+            let fire = !first;
+            first = false;
+            async move {
+                if fire {
+                    dispatch_atmosphere(None, None, None, None, None, Some(on));
                 }
             }
         }).await;
@@ -1280,28 +1307,65 @@ fn post_processing_section() -> Dom {
                 .render(),
         ))
         // ── Atmospheric haze ──
-        .child(row("Haze", toggle(atmosphere_enabled)))
+        .child(row(
+            "Haze",
+            select(
+                haze_mode,
+                vec![
+                    ("off".to_string(), "Off".to_string()),
+                    ("fog".to_string(), "Fog".to_string()),
+                    ("volumetric".to_string(), "Volumetric (beams)".to_string()),
+                ],
+            ),
+        ))
         .child(row(
             "Haze density",
             NumField::new(pp.atmosphere.density as f64)
                 .step(0.005)
-                .on_change(|v| dispatch_atmosphere(None, Some((v as f32).max(0.0)), None, None))
+                .on_change(|v| {
+                    dispatch_atmosphere(None, Some((v as f32).max(0.0)), None, None, None, None)
+                })
                 .render(),
         ))
         .child(row(
             "Haze base height",
             NumField::new(pp.atmosphere.base_height as f64)
                 .step(0.25)
-                .on_change(|v| dispatch_atmosphere(None, None, Some(v as f32), None))
+                .on_change(|v| dispatch_atmosphere(None, None, Some(v as f32), None, None, None))
                 .render(),
         ))
         .child(row(
             "Haze falloff",
             NumField::new(pp.atmosphere.height_falloff as f64)
                 .step(0.01)
-                .on_change(|v| dispatch_atmosphere(None, None, None, Some((v as f32).max(0.0))))
+                .on_change(|v| {
+                    dispatch_atmosphere(None, None, None, Some((v as f32).max(0.0)), None, None)
+                })
                 .render(),
         ))
+        // Volumetric-only. Left visible in every mode rather than hidden: the
+        // rest of this drawer shows inapplicable rows too (SSR's knobs don't
+        // vanish when SSR is off), and a control that appears and disappears
+        // reads as a bug.
+        .child(row(
+            "Haze scatter (g)",
+            NumField::new(pp.atmosphere.scattering_anisotropy as f64)
+                .min(-0.95)
+                .max(0.95)
+                .step(0.05)
+                .on_change(|v| {
+                    dispatch_atmosphere(
+                        None,
+                        None,
+                        None,
+                        None,
+                        Some((v as f32).clamp(-0.95, 0.95)),
+                        None,
+                    )
+                })
+                .render(),
+        ))
+        .child(row("Haze temporal", toggle(haze_temporal)))
         .render()
 }
 
@@ -1345,11 +1409,13 @@ fn dispatch_post(
                 ssr_bvh_reflections: None,
                 // Haze rides `dispatch_atmosphere` for the same reason SSR
                 // rides its own path.
-                atmosphere_enabled: None,
+                atmosphere_mode: None,
                 atmosphere_color: None,
                 atmosphere_density: None,
                 atmosphere_base_height: None,
                 atmosphere_height_falloff: None,
+                atmosphere_scattering_anisotropy: None,
+                atmosphere_volumetric_temporal: None,
             })
             .await
         {
@@ -1401,11 +1467,13 @@ fn dispatch_ssr(
                 ssr_temporal_weight,
                 ssr_debug,
                 ssr_bvh_reflections,
-                atmosphere_enabled: None,
+                atmosphere_mode: None,
                 atmosphere_color: None,
                 atmosphere_density: None,
                 atmosphere_base_height: None,
                 atmosphere_height_falloff: None,
+                atmosphere_scattering_anisotropy: None,
+                atmosphere_volumetric_temporal: None,
             })
             .await
         {
@@ -1417,16 +1485,19 @@ fn dispatch_ssr(
 /// Dispatch an atmospheric-haze patch — sibling of [`dispatch_ssr`], same
 /// "only the `Some` fields change" contract.
 ///
-/// The drawer surfaces the toggle and the three scalars; haze COLOUR is set
-/// through MCP `set_post_process` / the project file, matching how the sky
-/// gradient's colours are authored (there is no colour widget in the drawer).
-/// `enabled` is structural — it recompiles the effects shader; the rest are
-/// live uniforms.
+/// The drawer surfaces the mode + every scalar; haze COLOUR is set through MCP
+/// `set_post_process` / the project file, matching how the sky gradient's
+/// colours are authored (there is no colour widget in the drawer). `mode` and
+/// `volumetric_temporal` are structural — they recompile; the rest are live
+/// uniforms.
+#[allow(clippy::too_many_arguments)]
 fn dispatch_atmosphere(
-    atmosphere_enabled: Option<bool>,
+    atmosphere_mode: Option<awsm_renderer_editor_protocol::AtmosphereMode>,
     atmosphere_density: Option<f32>,
     atmosphere_base_height: Option<f32>,
     atmosphere_height_falloff: Option<f32>,
+    atmosphere_scattering_anisotropy: Option<f32>,
+    atmosphere_volumetric_temporal: Option<bool>,
 ) {
     spawn_local(async move {
         if let Err(e) = controller()
@@ -1451,11 +1522,13 @@ fn dispatch_atmosphere(
                 ssr_temporal_weight: None,
                 ssr_debug: None,
                 ssr_bvh_reflections: None,
-                atmosphere_enabled,
+                atmosphere_mode,
                 atmosphere_color: None,
                 atmosphere_density,
                 atmosphere_base_height,
                 atmosphere_height_falloff,
+                atmosphere_scattering_anisotropy,
+                atmosphere_volumetric_temporal,
             })
             .await
         {

@@ -100,14 +100,14 @@ impl Default for Ssr {
 /// closed-form height integral so haze can pool below `base_height` and thin
 /// out above it.
 ///
-/// `enabled`, `volumetric` and `volumetric_temporal` are the **structural**
-/// fields. The first two are a three-way choice rather than two independent
-/// booleans: off / analytic / froxel-volumetric, where the volumetric path
-/// REPLACES the analytic term (same medium — running both double-counts the
-/// air). Everything else is a LIVE uniform.
+/// `mode` and `volumetric_temporal` are the **structural** fields. `mode` is a
+/// three-way choice rather than an enable plus a style flag: the volumetric
+/// path REPLACES the analytic term (same medium — running both double-counts
+/// the air). Everything else is a LIVE uniform.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Atmosphere {
-    pub enabled: bool,
+    /// Off / analytic fog / froxel volumetrics. Structural.
+    pub mode: AtmosphereMode,
     /// Linear radiance an infinitely distant surface fades to.
     pub color: [f32; 3],
     /// Extinction per meter (1/e distance = `1 / density`).
@@ -116,9 +116,6 @@ pub struct Atmosphere {
     pub base_height: f32,
     /// Exponential thinning per meter above `base_height`; `0` = uniform.
     pub height_falloff: f32,
-    /// Froxel volumetric scattering INSTEAD of the analytic fog (same medium,
-    /// so it replaces rather than stacks). Structural; requires `enabled`.
-    pub volumetric: bool,
     /// Henyey-Greenstein phase anisotropy (0 iso, >0 forward). Live uniform,
     /// volumetric path only.
     pub scattering_anisotropy: f32,
@@ -126,15 +123,26 @@ pub struct Atmosphere {
     pub volumetric_temporal: bool,
 }
 
+/// Runtime mirror of `awsm_renderer_scene::post_process::AtmosphereMode`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum AtmosphereMode {
+    #[default]
+    Off,
+    /// Closed-form fog along the view ray. Cheap; no light shafts.
+    Fog,
+    /// Froxel scattering volume with per-light in-scatter. Beams and shafts,
+    /// substantially more expensive.
+    Volumetric,
+}
+
 impl Default for Atmosphere {
     fn default() -> Self {
         Self {
-            enabled: false,
+            mode: AtmosphereMode::Off,
             color: [0.5, 0.6, 0.7],
             density: 0.02,
             base_height: 0.0,
             height_falloff: 0.0,
-            volumetric: false,
             scattering_anisotropy: 0.3,
             volumetric_temporal: false,
         }
@@ -209,11 +217,11 @@ impl AwsmRenderer {
             || self.post_processing.ssr.resolution_scale != pp.ssr.resolution_scale
             || self.post_processing.ssr.debug != pp.ssr.debug
             || self.post_processing.ssr.bvh_reflections != pp.ssr.bvh_reflections
-            // Atmosphere's ONLY structural axis: `enabled` compiles the fog
-            // term into the effects shader. Colour/density/heights are live
-            // uniforms and must not recompile (the tuning case).
-            || self.post_processing.atmosphere.enabled != pp.atmosphere.enabled
-            || self.post_processing.atmosphere.volumetric != pp.atmosphere.volumetric
+            // Atmosphere's structural axes: `mode` selects which haze term (if
+            // any) is compiled into the effects shader, `volumetric_temporal`
+            // selects the froxel variant. Colour/density/heights/anisotropy are
+            // live uniforms and must not recompile — that's the tuning case.
+            || self.post_processing.atmosphere.mode != pp.atmosphere.mode
             || self.post_processing.atmosphere.volumetric_temporal
                 != pp.atmosphere.volumetric_temporal;
         // Toggling SSR flips the `write_ssr_descriptor` axis on the

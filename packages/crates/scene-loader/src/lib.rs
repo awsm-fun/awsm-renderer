@@ -947,12 +947,21 @@ pub fn post_process_to_renderer(
             bvh_reflections: pp.ssr.bvh_reflections,
         },
         atmosphere: awsm_renderer::post_process::Atmosphere {
-            enabled: pp.atmosphere.enabled,
+            mode: match pp.atmosphere.mode {
+                awsm_renderer_scene::AtmosphereMode::Off => {
+                    awsm_renderer::post_process::AtmosphereMode::Off
+                }
+                awsm_renderer_scene::AtmosphereMode::Fog => {
+                    awsm_renderer::post_process::AtmosphereMode::Fog
+                }
+                awsm_renderer_scene::AtmosphereMode::Volumetric => {
+                    awsm_renderer::post_process::AtmosphereMode::Volumetric
+                }
+            },
             color: pp.atmosphere.color,
             density: pp.atmosphere.density,
             base_height: pp.atmosphere.base_height,
             height_falloff: pp.atmosphere.height_falloff,
-            volumetric: pp.atmosphere.volumetric,
             scattering_anisotropy: pp.atmosphere.scattering_anisotropy,
             volumetric_temporal: pp.atmosphere.volumetric_temporal,
         },

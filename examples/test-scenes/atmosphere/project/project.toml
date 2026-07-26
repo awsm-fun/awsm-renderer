@@ -91,7 +91,7 @@ temporal_weight = 0.8999999761581421
 bvh_reflections = false
 
 [post_process.atmosphere]
-enabled = true
+mode = "fog"
 color = [
     0.3499999940395355,
     0.41999998688697815,
@@ -100,6 +100,8 @@ color = [
 density = 0.04500000178813934
 base_height = 2.0
 height_falloff = 0.25
+scattering_anisotropy = 0.30000001192092896
+volumetric_temporal = false
 
 [assets.00000000-0000-4000-8000-000000000001]
 gltf_material_asset_ids = []

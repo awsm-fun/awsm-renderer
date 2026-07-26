@@ -3441,11 +3441,13 @@ impl EditorController {
                 ssr_temporal_weight,
                 ssr_debug,
                 ssr_bvh_reflections,
-                atmosphere_enabled,
+                atmosphere_mode,
                 atmosphere_color,
                 atmosphere_density,
                 atmosphere_base_height,
                 atmosphere_height_falloff,
+                atmosphere_scattering_anisotropy,
+                atmosphere_volumetric_temporal,
             } => {
                 let prev = self.scene.post_process.get_cloned();
                 let mut next = prev.clone();
@@ -3509,8 +3511,8 @@ impl EditorController {
                 if let Some(v) = ssr_debug {
                     next.ssr.debug = v;
                 }
-                if let Some(v) = atmosphere_enabled {
-                    next.atmosphere.enabled = v;
+                if let Some(v) = atmosphere_mode {
+                    next.atmosphere.mode = v;
                 }
                 if let Some(v) = atmosphere_color {
                     next.atmosphere.color = v;
@@ -3523,6 +3525,12 @@ impl EditorController {
                 }
                 if let Some(v) = atmosphere_height_falloff {
                     next.atmosphere.height_falloff = v;
+                }
+                if let Some(v) = atmosphere_scattering_anisotropy {
+                    next.atmosphere.scattering_anisotropy = v;
+                }
+                if let Some(v) = atmosphere_volumetric_temporal {
+                    next.atmosphere.volumetric_temporal = v;
                 }
                 self.scene.post_process.set(next);
                 self.scene.bump_revision();
@@ -3549,11 +3557,13 @@ impl EditorController {
                     ssr_temporal_weight: Some(prev.ssr.temporal_weight),
                     ssr_debug: Some(prev.ssr.debug),
                     ssr_bvh_reflections: Some(prev.ssr.bvh_reflections),
-                    atmosphere_enabled: Some(prev.atmosphere.enabled),
+                    atmosphere_mode: Some(prev.atmosphere.mode),
                     atmosphere_color: Some(prev.atmosphere.color),
                     atmosphere_density: Some(prev.atmosphere.density),
                     atmosphere_base_height: Some(prev.atmosphere.base_height),
                     atmosphere_height_falloff: Some(prev.atmosphere.height_falloff),
+                    atmosphere_scattering_anisotropy: Some(prev.atmosphere.scattering_anisotropy),
+                    atmosphere_volumetric_temporal: Some(prev.atmosphere.volumetric_temporal),
                 }))
             }
             EditorCommand::SetViewOptions {

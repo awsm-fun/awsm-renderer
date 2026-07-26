@@ -91,16 +91,29 @@ group 1 = lights (the 4-entry shape above), group 2 = shadows.
 The volumetric knobs live ON `AtmosphereConfig` rather than in a config of
 their own, because they describe **the same medium** — `color` is the
 scattering tint, `density` the extinction, `base_height`/`height_falloff` the
-profile. Only the integration changes.
+profile. Only the integration changes. So the switch is one three-way `mode`,
+not an enable plus a style flag:
 
-    volumetric: bool             // STRUCTURAL — froxel path INSTEAD of analytic
+    mode: AtmosphereMode         // STRUCTURAL — Off | Fog | Volumetric
     scattering_anisotropy: f32   // Henyey-Greenstein g, default 0.3 (forward)
     volumetric_temporal: bool    // STRUCTURAL — reproject + blend the volume
 
-That makes `(enabled, volumetric)` a THREE-way choice, not two booleans, so the
-effects cache key carries `AtmospherePhase::{None, Analytic, Volumetric}` — a
-type where the invalid fourth state can't be spelled. `atmosphere_phase()` in
-`effects/pipeline.rs` is the single place it's resolved.
+`AtmosphereMode` mirrors the renderer's `AtmospherePhase`, so the meaningless
+"volumetric but disabled" state can't be spelled at any layer — schema, wire,
+UI or shader key. `atmosphere_phase()` in `effects/pipeline.rs` is the single
+place mode → phase is resolved, and it's now near-identity.
+
+**Surfaced everywhere**: editor drawer (one `Haze` select + density / base
+height / falloff / scatter-g / temporal rows), `SetPostProcess`, MCP
+`set_post_process` + `get_post_process`, and persisted through project.toml ⇄
+scene.toml (so it rides the player bundle). Per-light participation is separate:
+`set_light_volumetric_intensity`, also animatable.
+
+**Zero cost when off** is a test, not a claim: with `mode: Off` the emitted
+effects shader contains no atmosphere identifier at all — no include, no
+uniform, no branch (`atmosphere_term_is_present_only_when_enabled`, which
+strips comments so it asserts on code rather than prose). The froxel pass is
+additionally lazy: nothing is allocated or compiled until `Volumetric`.
 
 `scattering_anisotropy` defaults to 0.3 rather than 0: real haze and smoke are
 strongly forward-scattering, and it's what makes a beam pointed toward the

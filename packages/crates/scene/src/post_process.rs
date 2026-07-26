@@ -95,18 +95,20 @@ impl Default for PostProcessConfig {
 /// [`density`](Self::density), optionally thinning with height so a scene can
 /// have haze pooling low and clear air above it.
 ///
-/// Two **structural** axes, and together they're a three-way choice rather than
-/// two independent booleans (see [`volumetric`](Self::volumetric)):
-/// `enabled = false` compiles no haze term at all; `enabled` alone compiles the
-/// analytic view-path fog; `enabled + volumetric` compiles the froxel path
-/// INSTEAD. Everything else is a live uniform.
+/// How the medium is integrated is [`mode`](Self::mode) — a three-way choice,
+/// **not** an on/off plus a style flag, because the volumetric path REPLACES
+/// the analytic one rather than adding to it (same air; running both would
+/// extinguish it twice). `mode` and
+/// [`volumetric_temporal`](Self::volumetric_temporal) are the **structural**
+/// fields; everything else is a live uniform.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct AtmosphereConfig {
-    /// Master toggle. `false` ⇒ the fog term is not compiled in. Structural.
+    /// Off / analytic fog / froxel volumetrics. STRUCTURAL — `Off` compiles no
+    /// haze term at all.
     #[serde(default)]
-    pub enabled: bool,
+    pub mode: AtmosphereMode,
     /// Linear radiance of fully-saturated haze — what an infinitely distant
     /// surface fades to. Live uniform.
     #[serde(default = "default_atmosphere_color")]
@@ -121,13 +123,6 @@ pub struct AtmosphereConfig {
     /// medium (no height falloff at all). Live uniform.
     #[serde(default = "default_atmosphere_height_falloff")]
     pub height_falloff: f32,
-    /// Integrate the medium through a froxel volume with per-light in-scatter
-    /// (light shafts, beams visible in the air) instead of the analytic
-    /// per-pixel fog. STRUCTURAL, and it **replaces** the analytic term rather
-    /// than adding to it — same medium, so running both would double-count the
-    /// air. Requires [`enabled`](Self::enabled); much more expensive.
-    #[serde(default)]
-    pub volumetric: bool,
     /// Henyey-Greenstein phase anisotropy: `0` isotropic, `> 0` forward
     /// scattering (bright halo around a light you look toward), `< 0` back
     /// scattering. Live uniform; only read on the volumetric path.
@@ -135,8 +130,8 @@ pub struct AtmosphereConfig {
     pub scattering_anisotropy: f32,
     /// Temporally reproject + blend the froxel volume across frames. The volume
     /// is heavily undersampled, so this is what turns banding into smooth haze
-    /// — at the cost of ghosting behind fast movers. STRUCTURAL; only meaningful
-    /// with [`volumetric`](Self::volumetric).
+    /// — at the cost of ghosting behind fast movers. STRUCTURAL; only
+    /// meaningful in [`AtmosphereMode::Volumetric`].
     #[serde(default)]
     pub volumetric_temporal: bool,
 }
@@ -157,15 +152,35 @@ fn default_scattering_anisotropy() -> f32 {
     0.3
 }
 
+/// How atmospheric haze is integrated. Mirrors the renderer's
+/// `AtmospherePhase`; a three-way type so the meaningless fourth state of
+/// "volumetric but disabled" can't be spelled.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub enum AtmosphereMode {
+    /// No haze. The term isn't compiled into the effects shader at all, so
+    /// pre-atmosphere projects round-trip and cost nothing.
+    #[default]
+    Off,
+    /// Closed-form fog along the view ray: cheap aerial perspective, and the
+    /// right choice for most scenes. No light shafts — it never asks which
+    /// lights reach a point in the air.
+    Fog,
+    /// Froxel scattering volume with per-light in-scatter: beams, shafts, a
+    /// pool of lit haze under a fixture. Substantially more expensive; wants
+    /// [`AtmosphereConfig::volumetric_temporal`] to look smooth.
+    Volumetric,
+}
+
 impl Default for AtmosphereConfig {
     fn default() -> Self {
         Self {
-            enabled: false,
+            mode: AtmosphereMode::Off,
             color: default_atmosphere_color(),
             density: default_atmosphere_density(),
             base_height: 0.0,
             height_falloff: default_atmosphere_height_falloff(),
-            volumetric: false,
             scattering_anisotropy: default_scattering_anisotropy(),
             volumetric_temporal: false,
         }
@@ -311,7 +326,27 @@ exposure = 1.5
         let parsed: PostProcessConfig = toml::from_str(toml_src).unwrap();
         assert!(parsed.bloom);
         assert_eq!(parsed.atmosphere, AtmosphereConfig::default());
-        assert!(!parsed.atmosphere.enabled);
+        assert_eq!(parsed.atmosphere.mode, AtmosphereMode::Off);
+    }
+
+    /// `mode` is the on-disk tag for the haze integration, so these names are a
+    /// persistence contract exactly like `LightParamKind`'s: rename a variant
+    /// and every scene that authored it silently reverts to clear air on the
+    /// next load rather than failing loudly.
+    #[test]
+    fn atmosphere_mode_wire_names_are_stable() {
+        for (mode, wire) in [
+            (AtmosphereMode::Off, "\"off\""),
+            (AtmosphereMode::Fog, "\"fog\""),
+            (AtmosphereMode::Volumetric, "\"volumetric\""),
+        ] {
+            assert_eq!(serde_json::to_string(&mode).unwrap(), wire);
+            assert_eq!(
+                serde_json::from_str::<AtmosphereMode>(wire).unwrap(),
+                mode,
+                "{wire} must parse back to the variant that wrote it"
+            );
+        }
     }
 
     /// An authored haze block survives a project.toml round-trip field for
@@ -322,12 +357,11 @@ exposure = 1.5
     fn authored_atmosphere_roundtrips_through_toml() {
         let authored = PostProcessConfig {
             atmosphere: AtmosphereConfig {
-                enabled: true,
+                mode: AtmosphereMode::Volumetric,
                 color: [0.016, 0.019, 0.028],
                 density: 0.008,
                 base_height: -1.25,
                 height_falloff: 0.05,
-                volumetric: true,
                 scattering_anisotropy: 0.65,
                 volumetric_temporal: true,
             },

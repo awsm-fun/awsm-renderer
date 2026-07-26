@@ -2134,6 +2134,33 @@ fn skybox_edge_accumulator_stride_tracks_the_ssr_axis() {
 // Effects pass — atmosphere
 // ---------------------------------------------------------------------------
 
+/// Strip `//` and `/* */` comments so a test can assert on emitted CODE rather
+/// than on prose. Shared includes legitimately *mention* features they're
+/// shared with — `depth.wgsl` explains that it serves DoF and atmosphere both —
+/// and a comment costs nothing to compile.
+fn strip_wgsl_comments(src: &str) -> String {
+    let mut out = String::with_capacity(src.len());
+    let bytes = src.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+        } else if bytes[i] == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'*' {
+            i += 2;
+            while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                i += 1;
+            }
+            i = (i + 2).min(bytes.len());
+        } else {
+            out.push(bytes[i] as char);
+            i += 1;
+        }
+    }
+    out
+}
+
 /// Renders the effects compute shader for a cache key. Panics with the
 /// template error on failure, like `render` does for materials.
 fn render_effects(key: &ShaderCacheKeyEffects, label: &str) -> String {
@@ -2228,6 +2255,21 @@ fn atmosphere_term_is_present_only_when_enabled() {
                 "{label}: the haze uniform must be declared on BOTH haze paths \
                  (they describe the same medium) and on neither when off"
             );
+
+            // "Zero cost when off" as a property of the emitted code, not a
+            // claim: with haze off the word doesn't appear in the shader AT
+            // ALL — no include, no uniform, no branch, nothing to fold away
+            // and nothing for a driver to get wrong. A live-uniform
+            // implementation multiplying by zero density would satisfy every
+            // screenshot and fail here.
+            if atmosphere == AtmospherePhase::None {
+                let code = strip_wgsl_comments(&src).to_lowercase();
+                assert!(
+                    !code.contains("atmosphere"),
+                    "{label}: haze off must emit CODE with no trace of \
+                     atmosphere in it"
+                );
+            }
 
             // The shared depth helpers come in for EITHER consumer, exactly
             // once. Two copies is a WGSL redefinition error; zero is an

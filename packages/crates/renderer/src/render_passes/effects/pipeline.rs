@@ -10,7 +10,7 @@ use crate::{
         compute_pipeline::{ComputePipelineCacheKey, ComputePipelineKey},
         Pipelines,
     },
-    post_process::PostProcessing,
+    post_process::{AtmosphereMode, PostProcessing},
     render_passes::{
         effects::{
             bind_group::EffectsBindGroups,
@@ -49,23 +49,22 @@ pub struct EffectsPipelinesDescriptors {
     pub pipeline_cache_keys: Vec<ComputePipelineCacheKey>,
 }
 
-/// The compiled haze variant for a post-processing config. `volumetric` only
-/// means anything under `enabled` — a config with `volumetric: true` and haze
-/// off is "off", not "volumetric", and resolving it here keeps that from being
-/// re-derived (differently) at each call site.
+/// The compiled haze variant for a post-processing config.
+///
+/// A near-identity map now that the config carries a three-way `mode` rather
+/// than an enable plus a style flag — which is the point: the meaningless
+/// "volumetric but disabled" state can no longer be constructed, so nothing
+/// here has to decide what it would mean.
 fn atmosphere_phase(post_processing: &PostProcessing) -> AtmospherePhase {
-    match (
-        post_processing.atmosphere.enabled,
-        post_processing.atmosphere.volumetric,
-    ) {
-        (false, _) => AtmospherePhase::None,
-        (true, false) => AtmospherePhase::Analytic,
-        // TODO(volumetrics): the froxel pass isn't built yet. Until it is,
-        // asking for it DEGRADES to the analytic term rather than silently
-        // rendering no haze at all — the medium is the same one either way, so
-        // the fallback is the same air integrated more cheaply. Flip this to
-        // `Volumetric` in the commit that lands the pass.
-        (true, true) => AtmospherePhase::Analytic,
+    match post_processing.atmosphere.mode {
+        AtmosphereMode::Off => AtmospherePhase::None,
+        AtmosphereMode::Fog => AtmospherePhase::Analytic,
+        // TODO(volumetrics): the froxel pass is written but not yet dispatched.
+        // Until it is, asking for it DEGRADES to the analytic term rather than
+        // silently rendering no haze — the medium is the same one either way,
+        // so the fallback is that air integrated more cheaply. Flip this in the
+        // commit that wires the pass into the frame.
+        AtmosphereMode::Volumetric => AtmospherePhase::Analytic,
     }
 }
 
@@ -256,38 +255,43 @@ mod tests {
     use super::*;
     use crate::post_process::Atmosphere;
 
-    fn pp(enabled: bool, volumetric: bool) -> PostProcessing {
+    fn pp(mode: AtmosphereMode) -> PostProcessing {
         PostProcessing {
             atmosphere: Atmosphere {
-                enabled,
-                volumetric,
+                mode,
                 ..Atmosphere::default()
             },
             ..PostProcessing::default()
         }
     }
 
-    /// `volumetric` is meaningless without `enabled` — asking for volumetric
-    /// haze in a scene with no haze is "off", not "volumetric". Resolving that
-    /// in one place is the point of `atmosphere_phase`; this pins it so a
-    /// second, differently-wrong derivation can't appear at a call site.
+    /// Haze off must resolve to the `None` phase. That's the whole basis of
+    /// "zero cost when off": the shader templates gate every haze include and
+    /// every haze uniform on this phase, so `None` here is what makes the
+    /// compiled effects shader identical to a build with no haze feature.
     #[test]
-    fn volumetric_without_enabled_is_off() {
-        assert_eq!(atmosphere_phase(&pp(false, false)), AtmospherePhase::None);
-        assert_eq!(atmosphere_phase(&pp(false, true)), AtmospherePhase::None);
+    fn off_compiles_no_haze_phase() {
         assert_eq!(
-            atmosphere_phase(&pp(true, false)),
+            atmosphere_phase(&pp(AtmosphereMode::Off)),
+            AtmospherePhase::None
+        );
+        assert_eq!(
+            atmosphere_phase(&pp(AtmosphereMode::Fog)),
             AtmospherePhase::Analytic
         );
     }
 
     /// TEMPORARY, and deliberately pinned so it can't drift silently: the
-    /// froxel pass doesn't exist yet, so asking for volumetric haze degrades to
-    /// the analytic term rather than rendering no haze at all. It's the same
-    /// medium, integrated more cheaply. The commit that lands the pass flips
-    /// this expectation to `Volumetric` — this test failing is the reminder.
+    /// froxel pass is written but not yet dispatched, so asking for volumetric
+    /// haze degrades to the analytic term rather than rendering no haze at all.
+    /// It's the same medium, integrated more cheaply. The commit that wires the
+    /// pass into the frame flips this expectation to `Volumetric` — this test
+    /// failing is the reminder.
     #[test]
     fn volumetric_currently_degrades_to_analytic() {
-        assert_eq!(atmosphere_phase(&pp(true, true)), AtmospherePhase::Analytic);
+        assert_eq!(
+            atmosphere_phase(&pp(AtmosphereMode::Volumetric)),
+            AtmospherePhase::Analytic
+        );
     }
 }

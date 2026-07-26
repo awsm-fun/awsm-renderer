@@ -660,7 +660,7 @@ impl AwsmRenderer {
         // only guard is the enable — `write` itself no-ops when the bytes
         // haven't moved, so a haze-on scene that never touches the sliders
         // uploads exactly once.
-        if self.post_processing.atmosphere.enabled {
+        if self.post_processing.atmosphere.mode != crate::post_process::AtmosphereMode::Off {
             let atmosphere = &self.post_processing.atmosphere;
             self.render_passes.effects.atmosphere_params.write(
                 &self.gpu,

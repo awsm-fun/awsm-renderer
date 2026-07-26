@@ -678,10 +678,11 @@ pub enum EditorCommand {
         ssr_bvh_reflections: Option<bool>,
         // Atmosphere fields carry the same `#[serde(default)]` discipline as
         // the SSR block above, for the same forward/backward-compat reason.
-        /// Atmospheric haze on/off (STRUCTURAL — the fog term is compiled in
-        /// or out of the effects shader).
+        /// How haze is integrated: `Off` / `Fog` (analytic) / `Volumetric`
+        /// (froxel, with light shafts). STRUCTURAL — selects which haze term,
+        /// if any, is compiled into the effects shader.
         #[serde(default)]
-        atmosphere_enabled: Option<bool>,
+        atmosphere_mode: Option<crate::AtmosphereMode>,
         /// Linear RGB an infinitely distant surface fades to (live uniform).
         #[serde(default)]
         atmosphere_color: Option<[f32; 3]>,
@@ -696,6 +697,14 @@ pub enum EditorCommand {
         /// 0 = uniform medium (live uniform).
         #[serde(default)]
         atmosphere_height_falloff: Option<f32>,
+        /// Henyey-Greenstein phase anisotropy (0 isotropic, >0 forward).
+        /// Live uniform; only read in `Volumetric` mode.
+        #[serde(default)]
+        atmosphere_scattering_anisotropy: Option<f32>,
+        /// Temporally reproject the froxel volume (STRUCTURAL). Only
+        /// meaningful in `Volumetric` mode.
+        #[serde(default)]
+        atmosphere_volumetric_temporal: Option<bool>,
     },
 
     /// Set editor viewport view options — partial update, every field

@@ -79,7 +79,7 @@ async () => {
     tonemapping: 'khronos_neutral_pbr',
     bloom: false,
     exposure: 0.0,
-    atmosphere_enabled: true,
+    atmosphere_mode: 'fog',
     atmosphere_color: [0.35, 0.42, 0.55],
     atmosphere_density: 0.06,
     atmosphere_base_height: 2.0,
