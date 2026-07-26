@@ -952,6 +952,9 @@ pub fn post_process_to_renderer(
             density: pp.atmosphere.density,
             base_height: pp.atmosphere.base_height,
             height_falloff: pp.atmosphere.height_falloff,
+            volumetric: pp.atmosphere.volumetric,
+            scattering_anisotropy: pp.atmosphere.scattering_anisotropy,
+            volumetric_temporal: pp.atmosphere.volumetric_temporal,
         },
     }
 }

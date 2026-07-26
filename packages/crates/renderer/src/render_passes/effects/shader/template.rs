@@ -3,7 +3,9 @@
 use askama::Template;
 
 use crate::{
-    render_passes::effects::shader::cache_key::{BloomPhase, ShaderCacheKeyEffects},
+    render_passes::effects::shader::cache_key::{
+        AtmospherePhase, BloomPhase, ShaderCacheKeyEffects,
+    },
     shaders::{AwsmShaderError, Result},
 };
 
@@ -21,6 +23,8 @@ pub struct ShaderTemplateEffectsBindGroups {
     pub smaa_anti_alias: bool,
     pub multisampled_geometry: bool,
     pub dof: bool,
+    /// Declare the `AtmosphereParams` uniform. True on BOTH haze paths — the
+    /// froxel path reads the same medium description the analytic one does.
     pub atmosphere: bool,
     pub debug: ShaderTemplateEffectsDebug,
 }
@@ -32,7 +36,7 @@ impl ShaderTemplateEffectsBindGroups {
             smaa_anti_alias: cache_key.smaa_anti_alias,
             multisampled_geometry: cache_key.multisampled_geometry,
             dof: cache_key.dof,
-            atmosphere: cache_key.atmosphere,
+            atmosphere: cache_key.atmosphere != AtmospherePhase::None,
             debug: ShaderTemplateEffectsDebug::new(),
         }
     }
@@ -48,8 +52,12 @@ pub struct ShaderTemplateEffectsCompute {
     /// glow is added over the composite)
     pub bloom: bool,
     pub dof: bool,
-    /// Atmospheric haze term (`helpers/atmosphere.wgsl`).
+    /// The analytic haze term (`helpers/atmosphere.wgsl`).
     pub atmosphere: bool,
+    /// The froxel-volume haze term. Mutually exclusive with `atmosphere` —
+    /// `AtmospherePhase` guarantees it, and the templates rely on it (applying
+    /// both would extinguish the air twice).
+    pub atmosphere_volumetric: bool,
     /// Depth convention (003) — read by the DoF include (`helpers/dof.wgsl`).
     pub reverse_z: bool,
     pub debug: ShaderTemplateEffectsDebug,
@@ -65,7 +73,8 @@ impl ShaderTemplateEffectsCompute {
             multisampled_geometry: cache_key.multisampled_geometry,
             bloom,
             dof: cache_key.dof,
-            atmosphere: cache_key.atmosphere,
+            atmosphere: cache_key.atmosphere == AtmospherePhase::Analytic,
+            atmosphere_volumetric: cache_key.atmosphere == AtmospherePhase::Volumetric,
             reverse_z: cache_key.reverse_z,
             debug: ShaderTemplateEffectsDebug::new(),
         }

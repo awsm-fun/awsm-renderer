@@ -26,7 +26,9 @@
     /*************** END bloom.wgsl ******************/
 {% endif %}
 
-{% if dof || atmosphere %}
+{# Both haze paths read depth, not just the analytic one: the froxel path needs
+   it to find which slice of the scattering volume a pixel sits in. #}
+{% if dof || atmosphere || atmosphere_volumetric %}
     /*************** START depth.wgsl ******************/
     {% include "effects_wgsl/helpers/depth.wgsl" %}
     /*************** END depth.wgsl ******************/

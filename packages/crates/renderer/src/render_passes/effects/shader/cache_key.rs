@@ -15,6 +15,21 @@ pub enum BloomPhase {
     Blend,
 }
 
+/// How the effects pass renders atmospheric haze. Not two booleans: the
+/// volumetric path REPLACES the analytic one (they describe the same medium,
+/// so compiling both would double-count the air), which makes this a
+/// three-way choice — and a three-way type is the way to make the invalid
+/// fourth state unrepresentable.
+#[derive(Hash, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AtmospherePhase {
+    /// No haze term compiled in at all.
+    None,
+    /// Closed-form per-pixel fog along the view ray. Cheap; no light shafts.
+    Analytic,
+    /// Sample the froxel scattering volume built by the volumetrics pass.
+    Volumetric,
+}
+
 /// Cache key for effects pass shaders.
 #[derive(Hash, Debug, Clone, PartialEq, Eq)]
 pub struct ShaderCacheKeyEffects {
@@ -22,10 +37,10 @@ pub struct ShaderCacheKeyEffects {
     pub multisampled_geometry: bool,
     pub bloom_phase: BloomPhase,
     pub dof: bool,
-    /// Atmospheric haze. Structural: off ⇒ the fog term isn't compiled in,
+    /// Atmospheric haze. Structural: `None` ⇒ no haze term compiled in at all,
     /// which is what "zero cost when off" has to mean. Colour/density/heights
     /// ride the `AtmosphereParams` uniform and never touch this key.
-    pub atmosphere: bool,
+    pub atmosphere: AtmospherePhase,
     /// Depth convention (003).
     pub reverse_z: bool,
 }

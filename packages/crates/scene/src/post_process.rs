@@ -95,9 +95,11 @@ impl Default for PostProcessConfig {
 /// [`density`](Self::density), optionally thinning with height so a scene can
 /// have haze pooling low and clear air above it.
 ///
-/// `enabled = false` (the default) is the **structural** axis: the fog term is
-/// not compiled into the effects shader at all, so pre-atmosphere projects
-/// round-trip and cost nothing. Every other field is a live uniform.
+/// Two **structural** axes, and together they're a three-way choice rather than
+/// two independent booleans (see [`volumetric`](Self::volumetric)):
+/// `enabled = false` compiles no haze term at all; `enabled` alone compiles the
+/// analytic view-path fog; `enabled + volumetric` compiles the froxel path
+/// INSTEAD. Everything else is a live uniform.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
@@ -119,6 +121,24 @@ pub struct AtmosphereConfig {
     /// medium (no height falloff at all). Live uniform.
     #[serde(default = "default_atmosphere_height_falloff")]
     pub height_falloff: f32,
+    /// Integrate the medium through a froxel volume with per-light in-scatter
+    /// (light shafts, beams visible in the air) instead of the analytic
+    /// per-pixel fog. STRUCTURAL, and it **replaces** the analytic term rather
+    /// than adding to it — same medium, so running both would double-count the
+    /// air. Requires [`enabled`](Self::enabled); much more expensive.
+    #[serde(default)]
+    pub volumetric: bool,
+    /// Henyey-Greenstein phase anisotropy: `0` isotropic, `> 0` forward
+    /// scattering (bright halo around a light you look toward), `< 0` back
+    /// scattering. Live uniform; only read on the volumetric path.
+    #[serde(default = "default_scattering_anisotropy")]
+    pub scattering_anisotropy: f32,
+    /// Temporally reproject + blend the froxel volume across frames. The volume
+    /// is heavily undersampled, so this is what turns banding into smooth haze
+    /// — at the cost of ghosting behind fast movers. STRUCTURAL; only meaningful
+    /// with [`volumetric`](Self::volumetric).
+    #[serde(default)]
+    pub volumetric_temporal: bool,
 }
 
 fn default_atmosphere_color() -> [f32; 3] {
@@ -130,6 +150,12 @@ fn default_atmosphere_density() -> f32 {
 fn default_atmosphere_height_falloff() -> f32 {
     0.0
 }
+fn default_scattering_anisotropy() -> f32 {
+    // Mild forward scatter. Real haze and smoke are strongly forward-scattering,
+    // and it's what makes a beam pointed toward the camera flare instead of
+    // reading as a flat grey cone.
+    0.3
+}
 
 impl Default for AtmosphereConfig {
     fn default() -> Self {
@@ -139,6 +165,9 @@ impl Default for AtmosphereConfig {
             density: default_atmosphere_density(),
             base_height: 0.0,
             height_falloff: default_atmosphere_height_falloff(),
+            volumetric: false,
+            scattering_anisotropy: default_scattering_anisotropy(),
+            volumetric_temporal: false,
         }
     }
 }
@@ -298,6 +327,9 @@ exposure = 1.5
                 density: 0.008,
                 base_height: -1.25,
                 height_falloff: 0.05,
+                volumetric: true,
+                scattering_anisotropy: 0.65,
+                volumetric_temporal: true,
             },
             ..PostProcessConfig::default()
         };

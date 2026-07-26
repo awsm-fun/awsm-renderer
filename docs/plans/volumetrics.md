@@ -59,6 +59,31 @@ assumed:
    lights in exactly the order the surfaces do — including the directional
    prefix, which is flat and not froxel-binned.
 
+## Config shape (landed)
+
+The volumetric knobs live ON `AtmosphereConfig` rather than in a config of
+their own, because they describe **the same medium** — `color` is the
+scattering tint, `density` the extinction, `base_height`/`height_falloff` the
+profile. Only the integration changes.
+
+    volumetric: bool             // STRUCTURAL — froxel path INSTEAD of analytic
+    scattering_anisotropy: f32   // Henyey-Greenstein g, default 0.3 (forward)
+    volumetric_temporal: bool    // STRUCTURAL — reproject + blend the volume
+
+That makes `(enabled, volumetric)` a THREE-way choice, not two booleans, so the
+effects cache key carries `AtmospherePhase::{None, Analytic, Volumetric}` — a
+type where the invalid fourth state can't be spelled. `atmosphere_phase()` in
+`effects/pipeline.rs` is the single place it's resolved.
+
+`scattering_anisotropy` defaults to 0.3 rather than 0: real haze and smoke are
+strongly forward-scattering, and it's what makes a beam pointed toward the
+camera flare instead of reading as a flat grey cone.
+
+**Until the froxel pass exists, `Volumetric` degrades to `Analytic`** — same
+medium, integrated more cheaply — rather than rendering no haze at all. Pinned
+by `volumetric_currently_degrades_to_analytic`, which is the reminder to flip
+it.
+
 ## Stages
 
 A froxel volume (`rgba16float`, RGB = in-scattered radiance, A = extinction),

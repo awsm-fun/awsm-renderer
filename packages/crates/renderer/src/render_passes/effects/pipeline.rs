@@ -14,7 +14,7 @@ use crate::{
     render_passes::{
         effects::{
             bind_group::EffectsBindGroups,
-            shader::cache_key::{BloomPhase, ShaderCacheKeyEffects},
+            shader::cache_key::{AtmospherePhase, BloomPhase, ShaderCacheKeyEffects},
         },
         RenderPassInitContext,
     },
@@ -47,6 +47,26 @@ pub struct EffectsPipelinesDescriptors {
     /// shader cache. To fold into the cross-tail
     /// `ComputePipelines::ensure_keys` batch.
     pub pipeline_cache_keys: Vec<ComputePipelineCacheKey>,
+}
+
+/// The compiled haze variant for a post-processing config. `volumetric` only
+/// means anything under `enabled` — a config with `volumetric: true` and haze
+/// off is "off", not "volumetric", and resolving it here keeps that from being
+/// re-derived (differently) at each call site.
+fn atmosphere_phase(post_processing: &PostProcessing) -> AtmospherePhase {
+    match (
+        post_processing.atmosphere.enabled,
+        post_processing.atmosphere.volumetric,
+    ) {
+        (false, _) => AtmospherePhase::None,
+        (true, false) => AtmospherePhase::Analytic,
+        // TODO(volumetrics): the froxel pass isn't built yet. Until it is,
+        // asking for it DEGRADES to the analytic term rather than silently
+        // rendering no haze at all — the medium is the same one either way, so
+        // the fallback is the same air integrated more cheaply. Flip this to
+        // `Volumetric` in the commit that lands the pass.
+        (true, true) => AtmospherePhase::Analytic,
+    }
 }
 
 impl EffectsPipelines {
@@ -122,7 +142,7 @@ impl EffectsPipelines {
                     smaa_anti_alias: anti_aliasing.smaa,
                     bloom_phase,
                     dof: post_processing.dof,
-                    atmosphere: post_processing.atmosphere.enabled,
+                    atmosphere: atmosphere_phase(post_processing),
                     multisampled_geometry,
                     reverse_z,
                 })
@@ -228,5 +248,46 @@ impl EffectsPipelines {
             .await?;
         self.install_resolved(post_processing, resolved);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::post_process::Atmosphere;
+
+    fn pp(enabled: bool, volumetric: bool) -> PostProcessing {
+        PostProcessing {
+            atmosphere: Atmosphere {
+                enabled,
+                volumetric,
+                ..Atmosphere::default()
+            },
+            ..PostProcessing::default()
+        }
+    }
+
+    /// `volumetric` is meaningless without `enabled` — asking for volumetric
+    /// haze in a scene with no haze is "off", not "volumetric". Resolving that
+    /// in one place is the point of `atmosphere_phase`; this pins it so a
+    /// second, differently-wrong derivation can't appear at a call site.
+    #[test]
+    fn volumetric_without_enabled_is_off() {
+        assert_eq!(atmosphere_phase(&pp(false, false)), AtmospherePhase::None);
+        assert_eq!(atmosphere_phase(&pp(false, true)), AtmospherePhase::None);
+        assert_eq!(
+            atmosphere_phase(&pp(true, false)),
+            AtmospherePhase::Analytic
+        );
+    }
+
+    /// TEMPORARY, and deliberately pinned so it can't drift silently: the
+    /// froxel pass doesn't exist yet, so asking for volumetric haze degrades to
+    /// the analytic term rather than rendering no haze at all. It's the same
+    /// medium, integrated more cheaply. The commit that lands the pass flips
+    /// this expectation to `Volumetric` — this test failing is the reminder.
+    #[test]
+    fn volumetric_currently_degrades_to_analytic() {
+        assert_eq!(atmosphere_phase(&pp(true, true)), AtmospherePhase::Analytic);
     }
 }

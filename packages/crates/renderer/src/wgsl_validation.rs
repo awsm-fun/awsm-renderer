@@ -19,7 +19,9 @@
 use awsm_renderer_materials::MaterialShaderId;
 
 use crate::dynamic_materials::{BucketEntry, ShadingBase};
-use crate::render_passes::effects::shader::cache_key::{BloomPhase, ShaderCacheKeyEffects};
+use crate::render_passes::effects::shader::cache_key::{
+    AtmospherePhase, BloomPhase, ShaderCacheKeyEffects,
+};
 use crate::render_passes::effects::shader::template::ShaderTemplateEffects;
 use crate::render_passes::material_decal::shader::cache_key::ShaderCacheKeyMaterialDecal;
 use crate::render_passes::material_decal::shader::template::ShaderTemplateMaterialDecal;
@@ -2142,7 +2144,7 @@ fn render_effects(key: &ShaderCacheKeyEffects, label: &str) -> String {
 }
 
 fn effects_key(
-    atmosphere: bool,
+    atmosphere: AtmospherePhase,
     dof: bool,
     bloom_phase: BloomPhase,
     msaa: bool,
@@ -2169,13 +2171,17 @@ fn effects_key(
 /// a real pipeline compile in a browser.
 #[test]
 fn effects_variants_are_valid_wgsl() {
-    for atmosphere in [false, true] {
+    for atmosphere in [
+        AtmospherePhase::None,
+        AtmospherePhase::Analytic,
+        AtmospherePhase::Volumetric,
+    ] {
         for dof in [false, true] {
             for bloom_phase in [BloomPhase::None, BloomPhase::Blend] {
                 for msaa in [false, true] {
                     for reverse_z in [false, true] {
                         let label = format!(
-                            "effects atmosphere={atmosphere} dof={dof} \
+                            "effects atmosphere={atmosphere:?} dof={dof} \
                              bloom={bloom_phase:?} msaa={msaa} reverse_z={reverse_z}"
                         );
                         let src = render_effects(
@@ -2198,8 +2204,12 @@ fn effects_variants_are_valid_wgsl() {
 #[test]
 fn atmosphere_term_is_present_only_when_enabled() {
     for dof in [false, true] {
-        for atmosphere in [false, true] {
-            let label = format!("effects atmosphere={atmosphere} dof={dof}");
+        for atmosphere in [
+            AtmospherePhase::None,
+            AtmospherePhase::Analytic,
+            AtmospherePhase::Volumetric,
+        ] {
+            let label = format!("effects atmosphere={atmosphere:?} dof={dof}");
             let src = render_effects(
                 &effects_key(atmosphere, dof, BloomPhase::None, false, false),
                 &label,
@@ -2207,13 +2217,16 @@ fn atmosphere_term_is_present_only_when_enabled() {
 
             assert_eq!(
                 src.contains("apply_atmosphere("),
-                atmosphere,
-                "{label}: the fog term must be compiled in IFF haze is enabled"
+                atmosphere == AtmospherePhase::Analytic,
+                "{label}: the ANALYTIC fog term must be compiled in for exactly \
+                 that phase — the volumetric path replaces it, so compiling both \
+                 would extinguish the air twice"
             );
             assert_eq!(
                 src.contains("atmosphere_params"),
-                atmosphere,
-                "{label}: the haze uniform must be declared IFF haze is enabled"
+                atmosphere != AtmospherePhase::None,
+                "{label}: the haze uniform must be declared on BOTH haze paths \
+                 (they describe the same medium) and on neither when off"
             );
 
             // The shared depth helpers come in for EITHER consumer, exactly
@@ -2221,7 +2234,7 @@ fn atmosphere_term_is_present_only_when_enabled() {
             // undefined call from whichever consumer is on.
             assert_eq!(
                 src.matches("fn linearize_depth(").count(),
-                usize::from(dof || atmosphere),
+                usize::from(dof || atmosphere != AtmospherePhase::None),
                 "{label}: linearize_depth must be defined exactly once when \
                  either DoF or atmosphere needs it, and not at all otherwise"
             );

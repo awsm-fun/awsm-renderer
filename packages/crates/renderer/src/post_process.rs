@@ -98,9 +98,13 @@ impl Default for Ssr {
 /// A stylized exponential medium applied in the EFFECTS pass: a pixel's colour
 /// is lerped toward `color` by `1 - exp(-density · distance)`, with an optional
 /// closed-form height integral so haze can pool below `base_height` and thin
-/// out above it. `enabled` is the only **structural** field — off means the fog
-/// term isn't compiled into the effects shader at all; everything else is a
-/// LIVE uniform.
+/// out above it.
+///
+/// `enabled`, `volumetric` and `volumetric_temporal` are the **structural**
+/// fields. The first two are a three-way choice rather than two independent
+/// booleans: off / analytic / froxel-volumetric, where the volumetric path
+/// REPLACES the analytic term (same medium — running both double-counts the
+/// air). Everything else is a LIVE uniform.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Atmosphere {
     pub enabled: bool,
@@ -112,6 +116,14 @@ pub struct Atmosphere {
     pub base_height: f32,
     /// Exponential thinning per meter above `base_height`; `0` = uniform.
     pub height_falloff: f32,
+    /// Froxel volumetric scattering INSTEAD of the analytic fog (same medium,
+    /// so it replaces rather than stacks). Structural; requires `enabled`.
+    pub volumetric: bool,
+    /// Henyey-Greenstein phase anisotropy (0 iso, >0 forward). Live uniform,
+    /// volumetric path only.
+    pub scattering_anisotropy: f32,
+    /// Temporal reprojection of the froxel volume. Structural.
+    pub volumetric_temporal: bool,
 }
 
 impl Default for Atmosphere {
@@ -122,6 +134,9 @@ impl Default for Atmosphere {
             density: 0.02,
             base_height: 0.0,
             height_falloff: 0.0,
+            volumetric: false,
+            scattering_anisotropy: 0.3,
+            volumetric_temporal: false,
         }
     }
 }
@@ -197,7 +212,10 @@ impl AwsmRenderer {
             // Atmosphere's ONLY structural axis: `enabled` compiles the fog
             // term into the effects shader. Colour/density/heights are live
             // uniforms and must not recompile (the tuning case).
-            || self.post_processing.atmosphere.enabled != pp.atmosphere.enabled;
+            || self.post_processing.atmosphere.enabled != pp.atmosphere.enabled
+            || self.post_processing.atmosphere.volumetric != pp.atmosphere.volumetric
+            || self.post_processing.atmosphere.volumetric_temporal
+                != pp.atmosphere.volumetric_temporal;
         // Toggling SSR flips the `write_ssr_descriptor` axis on the
         // material_opaque cache key, so the live material modules must recompile
         // to add/drop the descriptor store (lazy — only the variants the scene
