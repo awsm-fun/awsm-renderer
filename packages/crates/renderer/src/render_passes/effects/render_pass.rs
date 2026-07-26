@@ -20,14 +20,16 @@ use crate::{
 };
 
 /// `AtmosphereParams` — 48-byte uniform: `color` (vec3), `density`,
-/// `base_height`, `height_falloff`, then the froxel grid's depth mapping
-/// (`slice_count`, `z_near`, `log_far_over_near`) used only by the volumetric
-/// composite, plus tail padding to the vec4 alignment WGSL gives the struct.
+/// `base_height`, `height_falloff`, then the froxel VOLUME's depth range
+/// (`slice_count`, `z_near`, `z_far`) used only by the volumetric composite,
+/// plus tail padding to the vec4 alignment WGSL gives the struct.
 ///
-/// The froxel numbers are COPIED from `LightCullingBuffers::froxel_depth`
-/// rather than re-derived: the effects pass has to map a pixel's depth back to
-/// the same slice the volumetrics pass wrote, and two derivations of an
-/// exponential mapping that disagree by a hair misregister the whole volume.
+/// `z_near` is COPIED from `LightCullingBuffers::froxel_depth` rather than
+/// re-derived, and `z_far` is derived by the same expression the volumetrics
+/// pass uses: the effects pass has to map a pixel's depth back to the same
+/// slice the volume was written with, and two derivations that disagree by a
+/// hair misregister the whole volume. The mapping itself is UNIFORM across
+/// the range — the light grid's exponential slicing stops here.
 ///
 /// Unlike `BloomParams` (which lives on the lazily-built `BloomRenderPass`)
 /// this buffer is owned by the effects pass and therefore ALWAYS exists — the
@@ -85,10 +87,13 @@ impl AtmosphereParams {
         );
         // The VOLUME's range, not the light grid's — the composite maps a
         // pixel's depth back to the slice the volumetrics pass wrote, so it
-        // has to use that pass's mapping.
+        // has to use that pass's mapping, which is uniform across this range.
+        // Both `max(z_near * 2.0)` clamps must stay identical to the one in
+        // `VolumetricParams::pack`, or the composite reads a slice the volume
+        // never wrote.
         let z_far = atmosphere.volumetric_distance.max(froxel.z_near * 2.0);
         d[28..32].copy_from_slice(&froxel.z_near.to_ne_bytes());
-        d[32..36].copy_from_slice(&(z_far / froxel.z_near.max(f32::EPSILON)).ln().to_ne_bytes());
+        d[32..36].copy_from_slice(&z_far.to_ne_bytes());
     }
 
     /// Packs + uploads via the mapped-ring path, skipping the GPU write when

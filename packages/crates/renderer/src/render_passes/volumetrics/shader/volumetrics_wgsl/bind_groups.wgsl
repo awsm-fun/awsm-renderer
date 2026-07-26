@@ -50,10 +50,13 @@ struct VolumetricParamsRaw {
     anisotropy: f32,
     slice_count: f32,
     grid_size: vec2<u32>,
-    // The volume's OWN depth range — the light grid's near plane, but a much
-    // nearer far plane (see `volumetric_distance`).
+    // The volume's OWN depth range, sliced UNIFORMLY across it — see
+    // `froxel_slice_view_z` for why this one is not the light grid's
+    // exponential mapping. Shares the light grid's near plane; the far plane
+    // is `volumetric_distance`, and past it the composite hands off to the
+    // analytic medium.
     z_near: f32,
-    log_far_over_near: f32,
+    z_far: f32,
 };
 
 // ── group(0) — volume + params ───────────────────────────────────────────────

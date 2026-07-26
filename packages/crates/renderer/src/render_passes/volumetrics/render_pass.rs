@@ -42,7 +42,7 @@ use crate::{
 ///   28 slice_count      : f32
 ///   32 grid_size        : vec2<u32>   (froxel columns in x, y)
 ///   40 z_near           : f32
-///   44 log_far_over_near: f32
+///   44 z_far            : f32         (uniform slicing across [z_near, z_far])
 ///
 /// The medium fields deliberately mirror `Atmosphere` one for one: the
 /// volumetric path renders the SAME air as the analytic path, only integrated
@@ -109,12 +109,14 @@ impl VolumetricParams {
         d[32..36].copy_from_slice(&grid_x.to_ne_bytes());
         d[36..40].copy_from_slice(&grid_y.to_ne_bytes());
         // The volume's OWN depth range. It shares the light grid's near plane
-        // and slicing SHAPE, but not its far plane — the culling grid runs to
-        // ~10 km to bin distant lights, and 32 slices over that make the far
-        // ones kilometres thick, saturating to solid haze.
+        // but neither its far plane nor its slicing shape: the culling grid
+        // runs to ~10 km to bin distant lights, and it slices exponentially to
+        // equalize screen-space error. The volume runs to `volumetric_distance`
+        // and slices UNIFORMLY, because the medium's error metric is
+        // world-space — see `froxel_slice_view_z`.
         let z_far = atmosphere.volumetric_distance.max(z_near * 2.0);
         d[40..44].copy_from_slice(&z_near.to_ne_bytes());
-        d[44..48].copy_from_slice(&(z_far / z_near.max(f32::EPSILON)).ln().to_ne_bytes());
+        d[44..48].copy_from_slice(&z_far.to_ne_bytes());
     }
 
     /// Packs + uploads, skipping the GPU write when nothing moved — same house
@@ -251,8 +253,9 @@ mod tests {
     /// analytic mode, so the constant is pinned here rather than in prose.
     #[test]
     fn ambient_inscatter_telescopes_to_the_analytic_haze_term() {
-        // Exponential slice thicknesses, as the froxel grid actually produces
-        // them — a uniform march would hide a thickness-weighting mistake.
+        // Deliberately NON-uniform thicknesses, even though the volume now
+        // slices uniformly: the identity has to hold for any partition of the
+        // ray, and a uniform march would hide a thickness-weighting mistake.
         let thicknesses: Vec<f32> = (0..32)
             .map(|s| 0.1f32 * (1.188f32.powi(s + 1) - 1.188f32.powi(s)))
             .collect();

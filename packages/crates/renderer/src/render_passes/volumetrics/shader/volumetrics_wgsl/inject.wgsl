@@ -44,10 +44,11 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             scattered += froxel_light_contribution(index, world_pos, to_eye, g);
         }
 
-        // 2. Per-froxel punctual list for THIS froxel's column + slice.
-        let view_z = sqrt(
-            froxel_slice_view_z(f32(gid.z)) * froxel_slice_view_z(f32(gid.z) + 1.0)
-        );
+        // 2. Per-froxel punctual list for THIS froxel's column + slice. The
+        //    lookup goes through a view DEPTH, so the volume's uniform slicing
+        //    and the culling grid's exponential slicing never have to agree on
+        //    an index — only on metres.
+        let view_z = froxel_slice_view_z(f32(gid.z) + 0.5);
         let base = froxel_base_for_pixel(froxel_center_pixel(gid.xy), view_z);
         let count = froxel_light_count(base);
         for (var i = 0u; i < count; i = i + 1u) {

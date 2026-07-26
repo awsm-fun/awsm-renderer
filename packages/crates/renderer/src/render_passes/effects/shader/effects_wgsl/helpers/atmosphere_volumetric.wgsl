@@ -28,25 +28,19 @@
 // path rather than a constant colour.
 
 // Continuous slice coordinate for a view depth — the inverse of the volume's
-// exponential slice mapping, left UNROUNDED so the fetch can interpolate
-// between slices instead of snapping to one.
+// UNIFORM slice mapping, left UNROUNDED so the fetch can interpolate between
+// slices instead of snapping to one.
 //
 // Must agree with `froxel_slice_view_z` in the volumetrics pass; the params it
-// reads are copied from that pass's own numbers rather than re-derived, because
-// two derivations of an exponential mapping that differ by a hair misregister
-// the whole volume.
+// reads are copied from that pass's own numbers rather than re-derived,
+// because two derivations of the mapping that differ by a hair misregister the
+// whole volume.
 fn volumetric_slice_coord(view_z: f32) -> f32 {
-    let z = max(view_z, atmosphere_params.froxel_z_near);
-    let t = log(z / atmosphere_params.froxel_z_near)
-        / max(atmosphere_params.froxel_log_far_over_near, 1e-6);
-    return clamp(t, 0.0, 1.0);
-}
-
-// View depth of the volume's far face, recovered from the same two numbers the
-// slice mapping uses so it cannot drift from them.
-fn volumetric_far_view_z() -> f32 {
-    return atmosphere_params.froxel_z_near
-        * exp(atmosphere_params.froxel_log_far_over_near);
+    let span = max(
+        atmosphere_params.froxel_z_far - atmosphere_params.froxel_z_near,
+        1e-6,
+    );
+    return clamp((view_z - atmosphere_params.froxel_z_near) / span, 0.0, 1.0);
 }
 
 fn apply_atmosphere_volumetric(
@@ -59,7 +53,7 @@ fn apply_atmosphere_volumetric(
     let depth = load_depth(coords);
     let dir = atmosphere_view_ray(pixel_center, screen_dims_f32, camera);
     let cos_theta = atmosphere_forward_cosine(dir, camera);
-    let volume_far_z = volumetric_far_view_z();
+    let volume_far_z = atmosphere_params.froxel_z_far;
 
     // Sky sits at the far end of everything: the volume is fully crossed, and
     // the analytic tail runs the saturating distance the analytic path uses.

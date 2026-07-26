@@ -244,7 +244,7 @@ Browser-verified: volumetric now measures **53.7** against analytic's 50.6 at
 the same framing. The residual 6% is the beams' in-scatter, which is exactly
 what the volumetric path is supposed to add on top.
 
-### (b) Froxel Z quantization — CONFIRMED, not yet fixed
+### (b) Froxel Z quantization — FIXED (slicing), temporal still outstanding
 
 Confirmed by changing *only* the slice distribution (`volumetric_distance`
 25 → 8, one live uniform, same camera, same everything else): the hard straight
@@ -316,22 +316,66 @@ froxel grid shows up across the whole frame instead of hiding in the dark — th
 because it looks like a regression and isn't: the structure was always there,
 the old medium was just too dark to show it.
 
-Order of attack, now that the far plane is a free knob:
+### The volume now slices UNIFORMLY — the distribution was the bug
 
-1. **Range** — `volumetric_distance` can drop to roughly the subject's depth
-   extent at no cost to the look, which puts slices on the stage instead of in
-   the empty air in front of the lens.
-2. **Distribution** — the volume still borrows the *camera's* 0.1 m near plane
-   for its exponential anchor. Even at a short range that wastes the near half
-   of the budget. The volume wants its own near plane, or a distribution whose
-   error metric is world-space rather than screen-space.
-3. **Count** — 32 → 64 last, not first. Frostbite and UE both ship 64, and it is
-   2x the froxels (~16 MB of rgba16float at 1080p) for 2x the z-resolution, but
-   it is the expensive lever and should be spent only if a correctly-ranged,
-   correctly-anchored volume still bands.
-4. **`volumetric_temporal`** — still unimplemented, and now clearly the finisher
-   rather than a nicety: jitter plus a history blend is what turns a
-   one-sample-per-froxel volume into smooth air.
+Copying the light-culling grid's exponential Z slicing was the original
+mistake, and it was a copy made for the wrong reason. Exponential slicing
+equalizes **screen-space** error over a 0.1 m → 10 km light-binning range. The
+medium's error metric is **world-space**: a beam is about a metre wide wherever
+it happens to be. Anchored at the camera's 0.1 m near plane, the mapping spent
+*half of 32 slices between 0.1 m and 1.6 m* — empty air in front of the lens.
+
+The usual defence of exponential — keep froxels cubic so the trilinear filter
+is isotropic — does not survive contact with this budget. At 16 px columns on a
+1080p-ish viewport a froxel is ~0.12 m across at 7 m and ~0.8 m deep. Z is
+already the starved axis by roughly **8x**, so it should not also be the axis
+being given away near the camera.
+
+`froxel_slice_view_z` is now `mix(z_near, z_far, s / slice_count)`. Slices
+across the dance-off stage (view_z 5–9 m):
+
+| mapping | slices on the subject |
+|---|---|
+| exponential [0.1, 25] (old) | **3.4** |
+| uniform [0.1, 25] | 5.1 |
+| uniform [0.1, 12] | **10.7** |
+
+3.1x at a sensible range, which is affordable precisely because the previous
+commit made `volumetric_distance` free.
+
+Two consequences that had to move with it: the slice MIDPOINT is now the
+arithmetic mean (under exponential slicing it had to be the geometric mean, or
+every froxel biased backwards), and the uniform's `z_far` replaces
+`log_far_over_near` in both params structs. The composite's inverse mapping was
+changed in the same commit — the two derivations must agree exactly or the
+whole volume misregisters.
+
+Nothing about the light lookup had to change, and it's worth recording why the
+old "the volume's slicing must match the culling grid's" comment was wrong:
+`froxel_base_for_pixel` takes a view DEPTH and does its own mapping, so the two
+grids only ever have to agree about metres, never about slice indices. They had
+in fact already disagreed since `volumetric_distance` was introduced.
+
+Browser-verified as a controlled A/B at *identical* settings (density 0.11,
+`volumetric_distance` 8, same camera): the hard straight-edged facets on the
+beam cones are gone, replaced by smooth shafts. The analytic handoff also stays
+seamless with the new mapping — at radius 25 with an 8 m volume the stage
+measures 51.5 against the analytic mode's 50.6 on the same medium.
+
+### What's left on (b)
+
+A soft mottled quality remains in the mid-tones — the 16 px XY grid plus
+one-sample-per-froxel noise. Two levers, in order:
+
+1. **`volumetric_temporal`** — still unimplemented, and now clearly the
+   finisher rather than a nicety: per-frame jitter in inject plus a history
+   volume reprojected through `camera.prev_view_proj` (which already exists for
+   SSR temporal) is what turns one sample per froxel into smooth air. This is
+   the next thing to do.
+2. **Count** — 32 → 64 last, not first. Frostbite and UE both ship 64, and it's
+   2x the froxels (~9 MB of rgba16float at 1080p) for 2x the z-resolution, but
+   it is the expensive lever and should be spent only if a jittered,
+   correctly-ranged volume still bands.
 
 ## Per-light `volumetric_intensity`
 

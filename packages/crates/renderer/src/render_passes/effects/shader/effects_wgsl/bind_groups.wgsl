@@ -25,12 +25,13 @@ struct AtmosphereParamsRaw {
     density: f32,
     base_height: f32,
     height_falloff: f32,
-    // Froxel grid depth mapping — volumetric composite only. Copied from the
-    // light-culling params so the pixel→slice map here is the same one the
-    // volume was written with.
+    // The froxel VOLUME's depth range — volumetric composite only. Copied
+    // from the volumetrics pass's own numbers so the pixel→slice map here is
+    // the one the volume was written with. Sliced UNIFORMLY across the range;
+    // this is deliberately NOT the light-culling grid's exponential mapping.
     slice_count: f32,
     froxel_z_near: f32,
-    froxel_log_far_over_near: f32,
+    froxel_z_far: f32,
 };
 @group(0) @binding(7) var<uniform> atmosphere_params: AtmosphereParamsRaw;
 {% endif %}
