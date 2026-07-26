@@ -1388,6 +1388,29 @@ pub struct PostProcessParams {
     /// rebuilds the SSR pass. Requires ssr_enabled.
     #[serde(default)]
     pub ssr_bvh_reflections: Option<bool>,
+    /// Atmospheric haze on/off (default off). STRUCTURAL — the fog term is
+    /// compiled into or out of the effects shader, so off costs nothing.
+    /// Omit to leave unchanged.
+    #[serde(default)]
+    pub atmosphere_enabled: Option<bool>,
+    /// Haze colour as linear RGB — what an infinitely distant surface fades
+    /// to (default [0.5, 0.6, 0.7]). Live uniform. Omit to leave unchanged.
+    #[serde(default)]
+    pub atmosphere_color: Option<[f32; 3]>,
+    /// Haze extinction per meter (default 0.02); a surface at `1 / density`
+    /// meters is 63% hazed. Live uniform. Omit to leave unchanged.
+    #[serde(default)]
+    pub atmosphere_density: Option<f32>,
+    /// World Y at which haze density is full (default 0). Below this the
+    /// medium is uniform; above it thins per `atmosphere_height_falloff`.
+    /// Live uniform. Omit to leave unchanged.
+    #[serde(default)]
+    pub atmosphere_base_height: Option<f32>,
+    /// Exponential haze thinning per meter above `atmosphere_base_height`
+    /// (default 0 = uniform medium, no height structure). Live uniform.
+    /// Omit to leave unchanged.
+    #[serde(default)]
+    pub atmosphere_height_falloff: Option<f32>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -4540,7 +4563,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Set the global post-processing settings: tonemapping ('none' | 'khronos_neutral_pbr' | 'aces'), bloom (bool), dof (bool — depth of field, uses the active camera's focus/aperture), exposure (f32, EV stops pre-tonemap: 0 unity, +1 twice as bright), and the bloom tuning knobs bloom_threshold / bloom_knee / bloom_intensity / bloom_scatter (all f32). Bloom is a COD/Jimenez-style mip-pyramid glow: bloom_threshold (default 1.0) is the HDR luminance above which pixels glow, bloom_knee (0.5) softens the fade-in, bloom_intensity (1.0) is the mix strength, bloom_scatter (1.0) widens the halo toward coarser mips. Also SCREEN-SPACE REFLECTIONS via the ssr_* fields: ssr_enabled (bool, default off — zero cost when off), ssr_intensity / ssr_max_distance / ssr_thickness / ssr_max_steps / ssr_spread_cutoff / ssr_edge_fade / ssr_temporal_weight (LIVE uniforms), ssr_temporal + ssr_resolution_scale (0.5 half-res default / 1.0 full — STRUCTURAL, recompile the SSR pass). Glossy/metallic PBR surfaces reflect on-screen content; roughness beyond ssr_spread_cutoff falls back to IBL. Persisted on scene.post_process + carried in the player bundle; applied to the live renderer immediately. Every field is optional (patch semantics — only the ones you pass change). tonemapping/bloom/dof/ssr_enabled/ssr_temporal/ssr_resolution_scale recompile pipelines (wait_render_settled after); everything else is a LIVE uniform (no recompile). Defaults: khronos_neutral_pbr, bloom off, dof off, exposure 0, threshold 1.0, knee 0.5, intensity 1.0, scatter 1.0. Also structural: ssr_debug (0-4 trace debug views: confidence/travel/source/steps — TRANSIENT, never persisted, absent from get_post_process) and ssr_bvh_reflections (software-BVH off-screen reflection hits for polished pixels, spread < 0.25; default off, high-end tier). GOTCHA: the ssr_* params are FLAT top-level fields — a nested {\"ssr\":{...}} object is SILENTLY IGNORED (unknown fields don't error); verify with get_post_process after setting (except ssr_debug, which is transient and unreported). Read the current values back with get_post_process."
+        description = "Set the global post-processing settings: tonemapping ('none' | 'khronos_neutral_pbr' | 'aces'), bloom (bool), dof (bool — depth of field, uses the active camera's focus/aperture), exposure (f32, EV stops pre-tonemap: 0 unity, +1 twice as bright), and the bloom tuning knobs bloom_threshold / bloom_knee / bloom_intensity / bloom_scatter (all f32). Bloom is a COD/Jimenez-style mip-pyramid glow: bloom_threshold (default 1.0) is the HDR luminance above which pixels glow, bloom_knee (0.5) softens the fade-in, bloom_intensity (1.0) is the mix strength, bloom_scatter (1.0) widens the halo toward coarser mips. Also SCREEN-SPACE REFLECTIONS via the ssr_* fields: ssr_enabled (bool, default off — zero cost when off), ssr_intensity / ssr_max_distance / ssr_thickness / ssr_max_steps / ssr_spread_cutoff / ssr_edge_fade / ssr_temporal_weight (LIVE uniforms), ssr_temporal + ssr_resolution_scale (0.5 half-res default / 1.0 full — STRUCTURAL, recompile the SSR pass). Glossy/metallic PBR surfaces reflect on-screen content; roughness beyond ssr_spread_cutoff falls back to IBL. Persisted on scene.post_process + carried in the player bundle; applied to the live renderer immediately. Every field is optional (patch semantics — only the ones you pass change). tonemapping/bloom/dof/ssr_enabled/ssr_temporal/ssr_resolution_scale recompile pipelines (wait_render_settled after); everything else is a LIVE uniform (no recompile). Defaults: khronos_neutral_pbr, bloom off, dof off, exposure 0, threshold 1.0, knee 0.5, intensity 1.0, scatter 1.0. Also structural: ssr_debug (0-4 trace debug views: confidence/travel/source/steps — TRANSIENT, never persisted, absent from get_post_process) and ssr_bvh_reflections (software-BVH off-screen reflection hits for polished pixels, spread < 0.25; default off, high-end tier). Also ATMOSPHERIC HAZE via the atmosphere_* fields: atmosphere_enabled (bool, default off — STRUCTURAL, the fog term is compiled in or out, so off costs nothing), atmosphere_color ([f32;3] linear RGB an infinitely distant surface fades to, default [0.5,0.6,0.7]), atmosphere_density (extinction per meter, default 0.02 — a surface at 1/density meters is 63% hazed), atmosphere_base_height (world Y where density is full, default 0) and atmosphere_height_falloff (exponential thinning per meter ABOVE base_height, default 0 = uniform medium) — the last four are LIVE uniforms. Haze is applied along the view ray in the effects pass before bloom; with a falloff > 0 it pools below base_height and thins above, so the sky keeps a finite haze while the horizon saturates. GOTCHA: the ssr_* and atmosphere_* params are FLAT top-level fields — a nested {\"ssr\":{...}} or {\"atmosphere\":{...}} object is SILENTLY IGNORED (unknown fields don't error); verify with get_post_process after setting (except ssr_debug, which is transient and unreported). Read the current values back with get_post_process."
     )]
     async fn set_post_process(
         &self,
@@ -4584,13 +4607,18 @@ impl EditorMcp {
             ssr_temporal_weight: p.ssr_temporal_weight,
             ssr_debug: p.ssr_debug,
             ssr_bvh_reflections: p.ssr_bvh_reflections,
+            atmosphere_enabled: p.atmosphere_enabled,
+            atmosphere_color: p.atmosphere_color,
+            atmosphere_density: p.atmosphere_density,
+            atmosphere_base_height: p.atmosphere_base_height,
+            atmosphere_height_falloff: p.atmosphere_height_falloff,
         })
         .await
     }
 
     #[tool(
         annotations(read_only_hint = true),
-        description = "Current global post-processing settings as JSON (the read half of set_post_process): tonemapping, bloom, dof, exposure, bloom_threshold/knee/intensity/scatter, and the full ssr block (enabled, intensity, max_distance, thickness, max_steps, spread_cutoff, edge_fade, resolution_scale, temporal, temporal_weight, bvh_reflections). ssr debug views are transient and NOT reported. Pure read."
+        description = "Current global post-processing settings as JSON (the read half of set_post_process): tonemapping, bloom, dof, exposure, bloom_threshold/knee/intensity/scatter, the full ssr block (enabled, intensity, max_distance, thickness, max_steps, spread_cutoff, edge_fade, resolution_scale, temporal, temporal_weight, bvh_reflections), and the atmosphere block (enabled, color, density, base_height, height_falloff). ssr debug views are transient and NOT reported. Pure read."
     )]
     async fn get_post_process(&self) -> Result<CallToolResult, McpError> {
         self.query(EditorQuery::PostProcess).await

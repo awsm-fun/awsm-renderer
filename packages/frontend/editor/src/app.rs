@@ -1020,6 +1020,22 @@ fn post_processing_section() -> Dom {
         }).await;
     }));
 
+    // Haze on/off is structural (recompiles the effects shader), so it rides a
+    // Mutable like the SSR toggles rather than a blur-commit NumField.
+    let atmosphere_enabled = Mutable::new(pp.atmosphere.enabled);
+    spawn_local(clone!(atmosphere_enabled => async move {
+        let mut first = true;
+        atmosphere_enabled.signal().for_each(move |on| {
+            let fire = !first;
+            first = false;
+            async move {
+                if fire {
+                    dispatch_atmosphere(Some(on), None, None, None);
+                }
+            }
+        }).await;
+    }));
+
     DrawerSection::new("Post-processing")
         .right(settings_help_button(
             "Post-processing",
@@ -1263,6 +1279,29 @@ fn post_processing_section() -> Dom {
                 })
                 .render(),
         ))
+        // ── Atmospheric haze ──
+        .child(row("Haze", toggle(atmosphere_enabled)))
+        .child(row(
+            "Haze density",
+            NumField::new(pp.atmosphere.density as f64)
+                .step(0.005)
+                .on_change(|v| dispatch_atmosphere(None, Some((v as f32).max(0.0)), None, None))
+                .render(),
+        ))
+        .child(row(
+            "Haze base height",
+            NumField::new(pp.atmosphere.base_height as f64)
+                .step(0.25)
+                .on_change(|v| dispatch_atmosphere(None, None, Some(v as f32), None))
+                .render(),
+        ))
+        .child(row(
+            "Haze falloff",
+            NumField::new(pp.atmosphere.height_falloff as f64)
+                .step(0.01)
+                .on_change(|v| dispatch_atmosphere(None, None, None, Some((v as f32).max(0.0))))
+                .render(),
+        ))
         .render()
 }
 
@@ -1304,6 +1343,13 @@ fn dispatch_post(
                 ssr_temporal_weight: None,
                 ssr_debug: None,
                 ssr_bvh_reflections: None,
+                // Haze rides `dispatch_atmosphere` for the same reason SSR
+                // rides its own path.
+                atmosphere_enabled: None,
+                atmosphere_color: None,
+                atmosphere_density: None,
+                atmosphere_base_height: None,
+                atmosphere_height_falloff: None,
             })
             .await
         {
@@ -1355,10 +1401,65 @@ fn dispatch_ssr(
                 ssr_temporal_weight,
                 ssr_debug,
                 ssr_bvh_reflections,
+                atmosphere_enabled: None,
+                atmosphere_color: None,
+                atmosphere_density: None,
+                atmosphere_base_height: None,
+                atmosphere_height_falloff: None,
             })
             .await
         {
             tracing::error!("SetPostProcess (SSR): {e}");
+        }
+    });
+}
+
+/// Dispatch an atmospheric-haze patch — sibling of [`dispatch_ssr`], same
+/// "only the `Some` fields change" contract.
+///
+/// The drawer surfaces the toggle and the three scalars; haze COLOUR is set
+/// through MCP `set_post_process` / the project file, matching how the sky
+/// gradient's colours are authored (there is no colour widget in the drawer).
+/// `enabled` is structural — it recompiles the effects shader; the rest are
+/// live uniforms.
+fn dispatch_atmosphere(
+    atmosphere_enabled: Option<bool>,
+    atmosphere_density: Option<f32>,
+    atmosphere_base_height: Option<f32>,
+    atmosphere_height_falloff: Option<f32>,
+) {
+    spawn_local(async move {
+        if let Err(e) = controller()
+            .dispatch(EditorCommand::SetPostProcess {
+                tonemapping: None,
+                bloom: None,
+                dof: None,
+                exposure: None,
+                bloom_threshold: None,
+                bloom_knee: None,
+                bloom_intensity: None,
+                bloom_scatter: None,
+                ssr_enabled: None,
+                ssr_intensity: None,
+                ssr_max_distance: None,
+                ssr_thickness: None,
+                ssr_max_steps: None,
+                ssr_spread_cutoff: None,
+                ssr_edge_fade: None,
+                ssr_temporal: None,
+                ssr_resolution_scale: None,
+                ssr_temporal_weight: None,
+                ssr_debug: None,
+                ssr_bvh_reflections: None,
+                atmosphere_enabled,
+                atmosphere_color: None,
+                atmosphere_density,
+                atmosphere_base_height,
+                atmosphere_height_falloff,
+            })
+            .await
+        {
+            tracing::error!("SetPostProcess (atmosphere): {e}");
         }
     });
 }

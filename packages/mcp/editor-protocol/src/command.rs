@@ -676,6 +676,26 @@ pub enum EditorCommand {
         /// pass). Persisted like `ssr_temporal`.
         #[serde(default)]
         ssr_bvh_reflections: Option<bool>,
+        // Atmosphere fields carry the same `#[serde(default)]` discipline as
+        // the SSR block above, for the same forward/backward-compat reason.
+        /// Atmospheric haze on/off (STRUCTURAL — the fog term is compiled in
+        /// or out of the effects shader).
+        #[serde(default)]
+        atmosphere_enabled: Option<bool>,
+        /// Linear RGB an infinitely distant surface fades to (live uniform).
+        #[serde(default)]
+        atmosphere_color: Option<[f32; 3]>,
+        /// Haze extinction per meter; the 1/e distance is `1 / density`
+        /// (live uniform).
+        #[serde(default)]
+        atmosphere_density: Option<f32>,
+        /// World Y at which haze density is full (live uniform).
+        #[serde(default)]
+        atmosphere_base_height: Option<f32>,
+        /// Exponential thinning per meter above `atmosphere_base_height`;
+        /// 0 = uniform medium (live uniform).
+        #[serde(default)]
+        atmosphere_height_falloff: Option<f32>,
     },
 
     /// Set editor viewport view options — partial update, every field

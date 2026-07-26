@@ -320,7 +320,8 @@ heightmaps (`displace_from_texture { node, url, strength }`). See the
 - `set_view_options { grid?, gizmos?, light_gizmos?, skeleton_viz?, msaa?, smaa?, … }`
   / `get_view_options` — viewport toggles (turn grid/gizmos off for clean
   verification screenshots). `set_post_process { … }` / `get_post_process` —
-  tonemapping / bloom / dof / exposure + the flat `ssr_*` block (patch semantics).
+  tonemapping / bloom / dof / exposure + the flat `ssr_*` and `atmosphere_*`
+  blocks (patch semantics).
 - `reset_pose { node }` — restore a node + all descendants to their scene base
   transforms; reverts a clip's last-previewed pose left baked after clearing the
   current clip (pass a rig root to reset a skeleton). Transient, not undoable.
