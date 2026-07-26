@@ -4444,6 +4444,10 @@ fn update_shadow(node: &Arc<Node>, f: impl FnOnce(&mut LightShadowConfig)) {
 }
 
 fn with_shadow(cfg: LightConfig, shadow: LightShadowConfig) -> LightConfig {
+    // Rebuilt field by field, so anything NOT carried through here is silently
+    // reset by every shadow edit. Read the volumetric intensity off the old
+    // config before the move rather than defaulting it.
+    let volumetric_intensity = cfg.volumetric_intensity();
     match cfg {
         LightConfig::Directional {
             color, intensity, ..
@@ -4451,6 +4455,7 @@ fn with_shadow(cfg: LightConfig, shadow: LightShadowConfig) -> LightConfig {
             color,
             intensity,
             shadow,
+            volumetric_intensity,
         },
         LightConfig::Point {
             color,
@@ -4462,6 +4467,7 @@ fn with_shadow(cfg: LightConfig, shadow: LightShadowConfig) -> LightConfig {
             intensity,
             range,
             shadow,
+            volumetric_intensity,
         },
         LightConfig::Spot {
             color,
@@ -4477,6 +4483,7 @@ fn with_shadow(cfg: LightConfig, shadow: LightShadowConfig) -> LightConfig {
             inner_angle,
             outer_angle,
             shadow,
+            volumetric_intensity,
         },
     }
 }
@@ -4578,6 +4585,9 @@ fn light_range(cfg: &LightConfig) -> Option<f32> {
     }
 }
 fn with_color(cfg: LightConfig, color: [f32; 3]) -> LightConfig {
+    // Rebuilt field by field — anything not carried through is silently
+    // reset by this edit. Read it off the old config before the move.
+    let volumetric_intensity = cfg.volumetric_intensity();
     match cfg {
         LightConfig::Directional {
             intensity, shadow, ..
@@ -4585,6 +4595,7 @@ fn with_color(cfg: LightConfig, color: [f32; 3]) -> LightConfig {
             color,
             intensity,
             shadow,
+            volumetric_intensity,
         },
         LightConfig::Point {
             intensity,
@@ -4596,6 +4607,7 @@ fn with_color(cfg: LightConfig, color: [f32; 3]) -> LightConfig {
             intensity,
             range,
             shadow,
+            volumetric_intensity,
         },
         LightConfig::Spot {
             intensity,
@@ -4611,15 +4623,20 @@ fn with_color(cfg: LightConfig, color: [f32; 3]) -> LightConfig {
             inner_angle,
             outer_angle,
             shadow,
+            volumetric_intensity,
         },
     }
 }
 fn with_intensity(cfg: LightConfig, intensity: f32) -> LightConfig {
+    // Rebuilt field by field — anything not carried through is silently
+    // reset by this edit. Read it off the old config before the move.
+    let volumetric_intensity = cfg.volumetric_intensity();
     match cfg {
         LightConfig::Directional { color, shadow, .. } => LightConfig::Directional {
             color,
             intensity,
             shadow,
+            volumetric_intensity,
         },
         LightConfig::Point {
             color,
@@ -4631,6 +4648,7 @@ fn with_intensity(cfg: LightConfig, intensity: f32) -> LightConfig {
             intensity,
             range,
             shadow,
+            volumetric_intensity,
         },
         LightConfig::Spot {
             color,
@@ -4646,10 +4664,14 @@ fn with_intensity(cfg: LightConfig, intensity: f32) -> LightConfig {
             inner_angle,
             outer_angle,
             shadow,
+            volumetric_intensity,
         },
     }
 }
 fn with_range(cfg: LightConfig, range: f32) -> LightConfig {
+    // Rebuilt field by field — anything not carried through is silently
+    // reset by this edit. Read it off the old config before the move.
+    let volumetric_intensity = cfg.volumetric_intensity();
     match cfg {
         LightConfig::Point {
             color,
@@ -4661,6 +4683,7 @@ fn with_range(cfg: LightConfig, range: f32) -> LightConfig {
             intensity,
             range,
             shadow,
+            volumetric_intensity,
         },
         LightConfig::Spot {
             color,
@@ -4676,6 +4699,7 @@ fn with_range(cfg: LightConfig, range: f32) -> LightConfig {
             inner_angle,
             outer_angle,
             shadow,
+            volumetric_intensity,
         },
         other => other,
     }

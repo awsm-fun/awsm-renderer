@@ -105,6 +105,22 @@ This is pure plumbing with no GPU passes, it's independently testable, and
 nothing else in the sequence depends on it landing first — a good standalone
 first commit.
 
+**Data model: DONE.** The field exists on `LightConfig` and `Light`, defaults to
+1.0 everywhere, maps through scene-loader, and packs into the word at offset 60
+that used to be pure padding — so the 64-byte stride and every bind group are
+unchanged. Tests pin the offset and the stride, not just the round-trip.
+
+**Setter surface: NOT DONE.** Deliberately split, because the obvious route
+turns out to be bigger than a setter. `LightParamKind` (the enum
+`SetLightParam` takes) is the ANIMATION track-param enum in the scene crate —
+adding `VolumetricIntensity` to it also makes the knob animatable, which means
+the renderer's `LightParam`, both 1:1 `light_param` lowerings
+(`animation_sync.rs` and `scene-loader/src/animation.rs`), the add-track UI
+rows in `add_track.rs`, and the `ReadbackTarget::LightParam` readback all move
+together. That is the RIGHT design — animating a beam's presence in the air is
+exactly what a light show wants — but it's its own commit, not a footnote on
+this one. Until it lands the field is settable only by editing the scene file.
+
 ## Gates
 
 Per the repo's working rules: `task lint` + `cargo test --all-features` green on

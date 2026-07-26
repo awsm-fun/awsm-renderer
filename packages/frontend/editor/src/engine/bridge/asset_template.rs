@@ -221,16 +221,20 @@ fn light_config_from_gltf(
     let range = light.range().unwrap_or(0.0);
     let shadow = LightShadowConfig::default();
     match light.kind() {
+        // glTF has no volumetric-participation concept, so an imported light
+        // takes the neutral default (fully present in the medium).
         gltf::khr_lights_punctual::Kind::Directional => LightConfig::Directional {
             color,
             intensity,
             shadow,
+            volumetric_intensity: 1.0,
         },
         gltf::khr_lights_punctual::Kind::Point => LightConfig::Point {
             color,
             intensity,
             range,
             shadow,
+            volumetric_intensity: 1.0,
         },
         gltf::khr_lights_punctual::Kind::Spot {
             inner_cone_angle,
@@ -242,6 +246,7 @@ fn light_config_from_gltf(
             inner_angle: inner_cone_angle,
             outer_angle: outer_cone_angle,
             shadow,
+            volumetric_intensity: 1.0,
         },
     }
 }

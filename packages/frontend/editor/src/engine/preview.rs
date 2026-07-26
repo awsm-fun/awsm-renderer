@@ -105,6 +105,7 @@ async fn build(canvas: web_sys::HtmlCanvasElement) -> Result<(), String> {
                 color: [1.0, 1.0, 1.0],
                 intensity: 3.0,
                 direction: [-0.4, -0.75, -0.55],
+                volumetric_intensity: 1.0,
             },
             None,
         );

@@ -143,6 +143,7 @@ async fn run_render(
                 intensity: 120.0,
                 position: [0.0, 3.0, 0.0],
                 range: 40.0,
+                volumetric_intensity: 1.0,
             },
             None,
         )

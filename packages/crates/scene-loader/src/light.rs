@@ -12,6 +12,9 @@ use glam::Vec3;
 /// `position` + forward `direction` (the node transform supplies both; a
 /// directional light uses only direction, a point light only position).
 pub fn light_from_config(cfg: &LightConfig, position: Vec3, direction: Vec3) -> Light {
+    // Read once through the accessor rather than destructured per arm — it's
+    // the same field on all three variants.
+    let volumetric_intensity = cfg.volumetric_intensity();
     match cfg {
         LightConfig::Directional {
             color, intensity, ..
@@ -19,6 +22,7 @@ pub fn light_from_config(cfg: &LightConfig, position: Vec3, direction: Vec3) -> 
             color: *color,
             intensity: *intensity,
             direction: direction.to_array(),
+            volumetric_intensity,
         },
         LightConfig::Point {
             color,
@@ -30,6 +34,7 @@ pub fn light_from_config(cfg: &LightConfig, position: Vec3, direction: Vec3) -> 
             intensity: *intensity,
             position: position.to_array(),
             range: *range,
+            volumetric_intensity,
         },
         LightConfig::Spot {
             color,
@@ -46,6 +51,7 @@ pub fn light_from_config(cfg: &LightConfig, position: Vec3, direction: Vec3) -> 
             range: *range,
             inner_angle: *inner_angle,
             outer_angle: *outer_angle,
+            volumetric_intensity,
         },
     }
 }

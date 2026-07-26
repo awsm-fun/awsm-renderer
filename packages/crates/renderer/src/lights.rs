@@ -569,12 +569,16 @@ pub enum Light {
         color: [f32; 3],
         intensity: f32,
         direction: [f32; 3],
+        /// See [`Light::volumetric_intensity`].
+        volumetric_intensity: f32,
     },
     Point {
         color: [f32; 3],
         intensity: f32,
         position: [f32; 3],
         range: f32,
+        /// See [`Light::volumetric_intensity`].
+        volumetric_intensity: f32,
     },
     Spot {
         color: [f32; 3],
@@ -584,12 +588,59 @@ pub enum Light {
         range: f32,
         inner_angle: f32,
         outer_angle: f32,
+        /// See [`Light::volumetric_intensity`].
+        volumetric_intensity: f32,
     },
 }
 
 impl Light {
     /// Packed byte size for a light in the storage buffer.
     pub const BYTE_SIZE: usize = 64;
+
+    /// How strongly this light scatters in participating media, independent of
+    /// how strongly it lights surfaces. `1.0` (the default) = fully present in
+    /// the medium; `0.0` = surfaces only, invisible in the air.
+    ///
+    /// This is an ARTISTIC knob, not a physical consequence: a key light
+    /// usually shouldn't fog the room, and a beam fixture should blaze in the
+    /// air even where it barely reaches the floor. Read by the volumetric
+    /// light-injection stage (docs/plans/volumetrics.md); the surface shading
+    /// path ignores it entirely.
+    pub fn volumetric_intensity(&self) -> f32 {
+        match self {
+            Light::Directional {
+                volumetric_intensity,
+                ..
+            }
+            | Light::Point {
+                volumetric_intensity,
+                ..
+            }
+            | Light::Spot {
+                volumetric_intensity,
+                ..
+            } => *volumetric_intensity,
+        }
+    }
+
+    /// Mutable access to [`Self::volumetric_intensity`], for the editor's live
+    /// light panel and the scene bridge.
+    pub fn volumetric_intensity_mut(&mut self) -> &mut f32 {
+        match self {
+            Light::Directional {
+                volumetric_intensity,
+                ..
+            }
+            | Light::Point {
+                volumetric_intensity,
+                ..
+            }
+            | Light::Spot {
+                volumetric_intensity,
+                ..
+            } => volumetric_intensity,
+        }
+    }
 
     /// Re-derives this light's world-space pose from a node world matrix
     /// (the glTF/transform convention: position is the translation column,
@@ -772,7 +823,10 @@ impl Light {
         //   dir_inner: vec4<f32>,
         //   // color.rgb + intensity
         //   color_intensity: vec4<f32>,
-        //   // kind (as uint) + outer_cone + 2 pads (or extra params)
+        //   // kind (as uint) + outer_cone + shadow_index (bitcast) +
+        //   // volumetric_intensity. The last word used to be pure padding;
+        //   // volumetrics claims it, so the 64-byte stride is unchanged and
+        //   // no buffer or bind group moves.
         //   kind_outer_pad: vec4<f32>,
         // };
 
@@ -786,6 +840,7 @@ impl Light {
                 color,
                 intensity,
                 direction,
+                volumetric_intensity,
             } => {
                 // row 1
                 write(Value::SkipVec3); // skip position
@@ -806,13 +861,14 @@ impl Light {
                 write((&self.enum_value()).into());
                 write(Value::SkipN32(1)); // skip outer_cone (unused for directional)
                 write((&shadow_index_f32).into());
-                write(Value::SkipN32(1)); // pad
+                write((volumetric_intensity).into());
             }
             Light::Point {
                 color,
                 intensity,
                 position,
                 range,
+                volumetric_intensity,
             } => {
                 // row 1. Pack the *effective* influence radius, not the raw
                 // glTF range: an unlimited-range light (`range <= 0`) would
@@ -834,7 +890,7 @@ impl Light {
                 write((&self.enum_value()).into());
                 write(Value::SkipN32(1)); // skip outer_cone (unused for point)
                 write((&shadow_index_f32).into());
-                write(Value::SkipN32(1)); // pad
+                write((volumetric_intensity).into());
             }
             Light::Spot {
                 color,
@@ -844,6 +900,7 @@ impl Light {
                 range,
                 inner_angle,
                 outer_angle,
+                volumetric_intensity,
             } => {
                 // The shader compares against cosines (`dot(light_dir, axis)`),
                 // so pre-compute cos(angle) here instead of storing raw radians.
@@ -866,7 +923,7 @@ impl Light {
                 write((&self.enum_value()).into());
                 write((&outer_cos).into());
                 write((&shadow_index_f32).into());
-                write(Value::SkipN32(1)); // pad
+                write((volumetric_intensity).into());
             }
         }
 
@@ -887,4 +944,72 @@ type Result<T> = std::result::Result<T, AwsmLightError>;
 pub enum AwsmLightError {
     #[error("[light] {0:?}")]
     Core(#[from] AwsmCoreError),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `volumetric_intensity` rides the word that used to be pure padding at
+    /// the end of `kind_outer_pad`, so the packed stride does NOT grow.
+    ///
+    /// That matters beyond tidiness: `Light::BYTE_SIZE` sets the light storage
+    /// buffer's stride and its `MAX_PUNCTUAL_LIGHTS` budget, and the WGSL
+    /// `LightPacked` struct mirrors it. A stride change that slipped through
+    /// would silently reinterpret every light after the first — so pin the
+    /// size AND the offset, not just the round-trip.
+    #[test]
+    fn volumetric_intensity_rides_the_free_pad_word() {
+        assert_eq!(
+            Light::BYTE_SIZE,
+            64,
+            "packing volumetric intensity must not grow the light stride"
+        );
+
+        let light = Light::Spot {
+            color: [1.0, 1.0, 1.0],
+            intensity: 80.0,
+            position: [0.0, 3.0, 0.0],
+            direction: [0.0, -1.0, 0.0],
+            range: 25.0,
+            inner_angle: 0.35,
+            outer_angle: 0.7,
+            volumetric_intensity: 0.25,
+        };
+        let shadow_index = 7u32;
+        let packed = light.storage_buffer_data(shadow_index);
+
+        // Row 4 is (kind, outer_cos, shadow_index, volumetric_intensity).
+        let read = |at: usize| f32::from_ne_bytes(packed[at..at + 4].try_into().unwrap());
+        assert_eq!(read(60), 0.25, "volumetric intensity lands at offset 60");
+        // The neighbour it shares a row with must be untouched — an off-by-one
+        // in the writer would corrupt the shadow index into a garbage
+        // descriptor lookup rather than fail loudly.
+        assert_eq!(
+            read(56).to_bits(),
+            shadow_index,
+            "the shadow index must still be recoverable from offset 56"
+        );
+    }
+
+    /// Every variant carries the field, and the accessor reads it off all
+    /// three — the injection stage asks for it without knowing the kind.
+    #[test]
+    fn volumetric_intensity_reads_from_every_light_kind() {
+        let directional = Light::Directional {
+            color: [1.0; 3],
+            intensity: 4.0,
+            direction: [0.0, -1.0, 0.0],
+            volumetric_intensity: 0.0,
+        };
+        let point = Light::Point {
+            color: [1.0; 3],
+            intensity: 60.0,
+            position: [0.0; 3],
+            range: 20.0,
+            volumetric_intensity: 2.5,
+        };
+        assert_eq!(directional.volumetric_intensity(), 0.0);
+        assert_eq!(point.volumetric_intensity(), 2.5);
+    }
 }

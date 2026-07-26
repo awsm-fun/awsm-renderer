@@ -162,17 +162,24 @@ fn to_renderer_light(gltf_light: &gltf::khr_lights_punctual::Light, world: &Mat4
     // glTF stores range as `Option<f32>`; 0 in our renderer means "unlimited".
     let range = gltf_light.range().unwrap_or(0.0);
 
+    // glTF has no concept of volumetric participation, so imported lights take
+    // the neutral default (fully present in the medium). Authoring it is a
+    // scene-side knob (docs/plans/volumetrics.md).
+    let volumetric_intensity = 1.0;
+
     Some(match gltf_light.kind() {
         gltf::khr_lights_punctual::Kind::Directional => Light::Directional {
             color,
             intensity,
             direction,
+            volumetric_intensity,
         },
         gltf::khr_lights_punctual::Kind::Point => Light::Point {
             color,
             intensity,
             position,
             range,
+            volumetric_intensity,
         },
         gltf::khr_lights_punctual::Kind::Spot {
             inner_cone_angle,
@@ -185,6 +192,7 @@ fn to_renderer_light(gltf_light: &gltf::khr_lights_punctual::Light, world: &Mat4
             range,
             inner_angle: inner_cone_angle,
             outer_angle: outer_cone_angle,
+            volumetric_intensity,
         },
     })
 }
