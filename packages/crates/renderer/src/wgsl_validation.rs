@@ -2271,6 +2271,25 @@ fn atmosphere_term_is_present_only_when_enabled() {
                 );
             }
 
+            // The volumetric arm is a DIFFERENT function and a different
+            // binding pair from the analytic one. Pinning both directions is
+            // what stops a regression that silently swaps the froxel composite
+            // for the per-pixel fog: same medium, same colour, plausible
+            // screenshot — and no beams.
+            assert_eq!(
+                src.contains("apply_atmosphere_volumetric("),
+                atmosphere == AtmospherePhase::Volumetric,
+                "{label}: the froxel composite must be compiled in for exactly \
+                 the volumetric phase"
+            );
+            assert_eq!(
+                src.contains("volumetric_sampler"),
+                atmosphere == AtmospherePhase::Volumetric,
+                "{label}: the volume's trilinear sampler must be declared IFF \
+                 the froxel composite is compiled in — a nearest fetch is what \
+                 makes the beams a staircase"
+            );
+
             // The shared depth helpers come in for EITHER consumer, exactly
             // once. Two copies is a WGSL redefinition error; zero is an
             // undefined call from whichever consumer is on.

@@ -231,10 +231,19 @@ browser-verified before the pass is called done; no player perf regression when
 volumetrics is off (it compiles to nothing — same standard `atmosphere` is held
 to).
 
-Test scene `examples/test-scenes/volumetrics/`: a spot fixture aimed through a
-slotted occluder into a hazy room, so the shafts have hard edges to be right or
-wrong about. Write `verify.md` against what the capture ACTUALLY shows — the
-`shadows-all` lesson (`shadows-all-verify-vs-golden.md`).
+Test scene `examples/test-scenes/volumetrics/` — DONE. `author.js` +
+`project/` + `bundle/` + `verify.md`, no `golden.png` (authored on a portrait
+window; goldens follow the viewport aspect).
+
+The occluder is THREE separated bars, not one slotted slab, because the gaps are
+the test: floor stripes only prove the shadow map works. What the scene is for is
+the beam being occluded IN THE MEDIUM — lit air above, dark shafts below the
+bars, lit air in the gaps.
+
+`verify.md` is an A/B/C over the haze mode, run before it was written: volumetric
+(cone present), fog (cone GONE, floor identical), off (no haze, crisp horizon).
+B is the load-bearing state — it isolates "the volume is lighting the air" from
+"the scene has haze in it", which a single screenshot cannot.
 
 ## Non-goals
 
