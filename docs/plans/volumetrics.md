@@ -250,3 +250,36 @@ B is the load-bearing state — it isolates "the volume is lighting the air" fro
 Multiple scattering; per-light phase `g`; volumetric shadows cast BY the medium
 onto surfaces; participating media with varying albedo per region (one global
 medium, as in Phase 1).
+
+
+## Publishing 0.27 — needs a human decision (2026-07-26)
+
+The dance-off light show is gated on publishing, but `task publish -- 0.27.0`
+does considerably more than publish, and all of it from the `volumetrics`
+branch, which is **21 commits ahead of `main` and unmerged**:
+
+1. bump + commit + annotated tag `v0.27.0`
+2. **publish 14 crates to crates.io** — irreversible; yank is the only undo
+3. **deploy BOTH frontends to Cloudflare Pages** — this replaces the live
+   `scene.awsm.fun` editor
+4. **push the branch and the tag** to origin, which fires the cargo-dist
+   MCP-binary release on CI
+
+Steps 2–4 are outward-facing and hard to reverse, and releasing off an unmerged
+feature branch is a call about the project's release process, not a mechanical
+step. Left for a human.
+
+**Verified so far:** `task bump -- 0.27.0` is clean and idempotent, and
+`crates-publish-dry-run` packages + verifies `awsm-renderer-core@0.27.0`
+successfully. It then stops at crate 2 — dependency-ordered publishing means
+`awsm-renderer-materials` needs `awsm-renderer-core = "^0.27.0"` to exist on the
+index, which a dry run never uploads. That is a limitation of dry-running a
+multi-crate workspace, not a packaging fault. The bump was reverted; the tree is
+back at 0.26.0.
+
+**Unblocking the light show without publishing:** an *uncommitted*
+`[patch.crates-io]` in LOCKSTEP-GAMES pointing at this checkout (the games plan
+already sanctions this for iteration). Note also that authoring the SCENE does
+NOT need the pin — `scene.toml` carries the settings regardless; the pin only
+decides whether the *game* renders them. So the art direction can be authored
+and exported now and will light up when 0.27 lands.
