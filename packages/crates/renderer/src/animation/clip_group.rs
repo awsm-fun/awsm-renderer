@@ -113,6 +113,9 @@ pub enum LightParam {
     InnerAngle,
     /// Spot outer cone angle (spot only).
     OuterAngle,
+    /// Participation in volumetric media (all variants). Independent of
+    /// `Intensity`: this drives only how much the light scatters in the air.
+    VolumetricIntensity,
 }
 
 /// Which built-in factor of a PBR-family material an animation channel drives.

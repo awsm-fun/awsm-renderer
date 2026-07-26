@@ -122,7 +122,7 @@ dedicated tool reaches it indirectly · **dispatch** = escape hatch only ·
 | `remove_material_variant` | `remove_material_variant` | tool | |
 | `rename_material_variant` | `rename_material_variant` | tool | |
 | `copy_material_instance` | `copy_material_instance` | tool | |
-| `set_light_param` | `set_light_color`, `set_light_intensity`, `set_light_range`, `set_light_angles` | tool | |
+| `set_light_param` | `set_light_color`, `set_light_intensity`, `set_light_range`, `set_light_angles`, `set_light_volumetric_intensity` | tool | |
 
 ### Environment / global settings
 

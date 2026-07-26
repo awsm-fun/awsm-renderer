@@ -110,16 +110,23 @@ first commit.
 that used to be pure padding — so the 64-byte stride and every bind group are
 unchanged. Tests pin the offset and the stride, not just the round-trip.
 
-**Setter surface: NOT DONE.** Deliberately split, because the obvious route
-turns out to be bigger than a setter. `LightParamKind` (the enum
-`SetLightParam` takes) is the ANIMATION track-param enum in the scene crate —
-adding `VolumetricIntensity` to it also makes the knob animatable, which means
-the renderer's `LightParam`, both 1:1 `light_param` lowerings
-(`animation_sync.rs` and `scene-loader/src/animation.rs`), the add-track UI
-rows in `add_track.rs`, and the `ReadbackTarget::LightParam` readback all move
-together. That is the RIGHT design — animating a beam's presence in the air is
-exactly what a light show wants — but it's its own commit, not a footnote on
-this one. Until it lands the field is settable only by editing the scene file.
+**Setter surface: DONE.** `LightParamKind::VolumetricIntensity` rides the
+existing `SetLightParam` command, so it inherits its undo, its coalescing and
+its readback for free — and, because that enum is the ANIMATION track-param
+enum, the knob is animatable as a side effect. That's the point rather than an
+accident: animating a beam's presence in the air is exactly what a light show
+wants, and it means a cue can bloom a beam into the haze without touching its
+surface lighting.
+
+The ripple landed together: renderer `LightParam` + its read/apply arms, both
+1:1 `light_param` lowerings, the `add_track.rs` "Volumetric" row, the
+`ReadbackTarget::LightParam` readback, the inspector row, and MCP
+`set_light_volumetric_intensity` with its description + parity matrix + MCP.md.
+
+Note the asymmetry with `Range`/`InnerAngle`/`OuterAngle`: those have
+"wrong light kind → no-op / Null" arms. This one has none, because every light
+kind participates in the medium. The readback never returns Null and the
+add-track row is unconditional.
 
 ## Gates
 

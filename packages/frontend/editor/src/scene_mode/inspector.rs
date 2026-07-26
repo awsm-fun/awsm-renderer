@@ -4180,8 +4180,27 @@ fn light_editor(node: &Arc<Node>, cfg: &LightConfig) -> Dom {
                 .render(),
         ));
     }
-    // Light params (Color/Intensity/Range) + the per-light Shadows section
-    // (cast / hardness-PCSS / cascades / biases / update rates).
+
+    // How much this light shows up IN the air, as opposed to on surfaces —
+    // 1.0 fully present, 0.0 surfaces only. Unconditional: unlike range and the
+    // cone angles there's no light kind for which it's undefined.
+    let n_vol = node.clone();
+    sec = sec.child(row(
+        "Volumetric",
+        NumField::new(cfg.volumetric_intensity() as f64)
+            .min(0.0)
+            .step(0.05)
+            .on_change(move |v| {
+                if let Some(mut cur) = current_light(&n_vol) {
+                    *cur.volumetric_intensity_mut() = (v as f32).max(0.0);
+                    dispatch_kind(n_vol.id, NodeKind::Light(cur));
+                }
+            })
+            .render(),
+    ));
+
+    // Light params (Color/Intensity/Range/Volumetric) + the per-light Shadows
+    // section (cast / hardness-PCSS / cascades / biases / update rates).
     html!("div", {
         .child(sec.render())
         .child(light_shadow_editor(node, cfg))

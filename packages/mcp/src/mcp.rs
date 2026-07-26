@@ -4196,6 +4196,21 @@ impl EditorMcp {
     }
 
     #[tool(
+        description = "Set how strongly a light scatters in VOLUMETRIC MEDIA — how much of it you see in the air — independently of how strongly it lights surfaces. Params: { node: <light node UUID>, value: <number> }, same {node, value} shape as set_light_intensity. 1.0 (default) = fully present in the medium; 0.0 = surfaces only, invisible in the air; > 1.0 over-drives the beam. This is an ARTISTIC knob, not a physical consequence: a key light usually should NOT fog the room (set it near 0), while a beam fixture should blaze in the air even where it barely reaches the floor (set intensity low, this high). Applies to every light kind (unlike set_light_range / set_light_angles, which are kind-specific). Only has a visible effect once atmospheric haze is on (set_post_process atmosphere_enabled) — with no medium there is nothing to scatter in. Persisted on the light node + carried in the player bundle; also animatable as the 'Volumetric' light track."
+    )]
+    async fn set_light_volumetric_intensity(
+        &self,
+        Parameters(p): Parameters<LightScalarParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::SetLightParam {
+            node: parse_node(&p.node)?,
+            param: LightParamKind::VolumetricIntensity,
+            value: vec![p.value],
+        })
+        .await
+    }
+
+    #[tool(
         description = "Set a point/spot light node's range. Params: { node: <light node UUID>, value: <number> }."
     )]
     async fn set_light_range(

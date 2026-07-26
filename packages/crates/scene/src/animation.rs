@@ -186,6 +186,10 @@ pub enum LightParamKind {
     Range,
     InnerAngle,
     OuterAngle,
+    /// How strongly this light scatters in participating media, independent of
+    /// how strongly it lights surfaces. Animatable so a beam can bloom into the
+    /// air on a cue without its surface lighting moving.
+    VolumetricIntensity,
 }
 
 /// Which camera parameter a `Camera` track drives. Lowered end-to-end: the
@@ -512,5 +516,37 @@ mod track_value_tests {
         // 90° about Y: y = sin(45°) ≈ 0.7071, w = cos(45°) ≈ 0.7071.
         assert!((q1[1] - 0.70710677).abs() < 1.0e-4, "{q1:?}");
         assert!((q1[3] - 0.70710677).abs() < 1.0e-4, "{q1:?}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `LightParamKind` is the on-disk tag for an animation track's target, so
+    /// these names are a persistence contract: renaming a variant silently
+    /// breaks every saved project that animates it (the track fails to
+    /// deserialize, and the animation just stops existing). Pin the wire names.
+    #[test]
+    fn light_param_kind_wire_names_are_stable() {
+        let cases = [
+            (LightParamKind::Intensity, "\"intensity\""),
+            (LightParamKind::Color, "\"color\""),
+            (LightParamKind::Range, "\"range\""),
+            (LightParamKind::InnerAngle, "\"inner_angle\""),
+            (LightParamKind::OuterAngle, "\"outer_angle\""),
+            (
+                LightParamKind::VolumetricIntensity,
+                "\"volumetric_intensity\"",
+            ),
+        ];
+        for (kind, wire) in cases {
+            assert_eq!(serde_json::to_string(&kind).unwrap(), wire);
+            assert_eq!(
+                serde_json::from_str::<LightParamKind>(wire).unwrap(),
+                kind,
+                "{wire} must parse back to the variant that wrote it"
+            );
+        }
     }
 }

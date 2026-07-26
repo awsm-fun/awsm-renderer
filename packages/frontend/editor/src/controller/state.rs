@@ -8076,6 +8076,8 @@ fn read_readback_target(
                     Light::Spot { outer_angle, .. } => json!(outer_angle),
                     _ => serde_json::Value::Null,
                 },
+                // Never Null: every light kind carries it.
+                P::VolumetricIntensity => json!(l.volumetric_intensity()),
             }
         }
         R::MorphWeight { node, index } => {
@@ -8804,6 +8806,14 @@ fn patch_light_param(
                 L::Spot { outer_angle, .. } => *outer_angle = v,
                 _ => return false,
             }
+        }
+        P::VolumetricIntensity => {
+            let Some(&v) = value.first() else {
+                return false;
+            };
+            // Applies to every kind — no `return false` arm, unlike range and
+            // the cone angles.
+            *cfg.volumetric_intensity_mut() = v;
         }
     }
     true
