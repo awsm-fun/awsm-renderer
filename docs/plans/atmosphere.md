@@ -166,6 +166,9 @@ code actually looks like today, not what the design assumed.
 
 ## Non-goals
 
-Volumetric light shafts / froxel scattering (different feature tier);
+Volumetric light shafts / froxel scattering — a different feature tier, now
+designed in [`volumetrics.md`](./volumetrics.md). Note that when it lands it
+**replaces** this analytic fog rather than stacking with it (same medium, so
+running both double-counts the air);
 per-light in-scattering; physically-derived Rayleigh/Mie (this is a stylized
 uniform medium — one color, one density).
