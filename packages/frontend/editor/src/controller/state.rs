@@ -3447,6 +3447,7 @@ impl EditorController {
                 atmosphere_base_height,
                 atmosphere_height_falloff,
                 atmosphere_scattering_anisotropy,
+                atmosphere_volumetric_distance,
                 atmosphere_volumetric_temporal,
             } => {
                 let prev = self.scene.post_process.get_cloned();
@@ -3529,6 +3530,9 @@ impl EditorController {
                 if let Some(v) = atmosphere_scattering_anisotropy {
                     next.atmosphere.scattering_anisotropy = v;
                 }
+                if let Some(v) = atmosphere_volumetric_distance {
+                    next.atmosphere.volumetric_distance = v;
+                }
                 if let Some(v) = atmosphere_volumetric_temporal {
                     next.atmosphere.volumetric_temporal = v;
                 }
@@ -3563,6 +3567,7 @@ impl EditorController {
                     atmosphere_base_height: Some(prev.atmosphere.base_height),
                     atmosphere_height_falloff: Some(prev.atmosphere.height_falloff),
                     atmosphere_scattering_anisotropy: Some(prev.atmosphere.scattering_anisotropy),
+                    atmosphere_volumetric_distance: Some(prev.atmosphere.volumetric_distance),
                     atmosphere_volumetric_temporal: Some(prev.atmosphere.volumetric_temporal),
                 }))
             }

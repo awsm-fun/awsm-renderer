@@ -124,8 +124,29 @@ static TILE_LIGHTS_USAGE: LazyLock<BufferUsage> =
     LazyLock::new(|| BufferUsage::new().with_storage());
 
 /// Storage backing for the light-culling pass.
+/// The exponential froxel depth mapping for a frame. `slice s` spans
+/// `z_near * exp(s/N * log_far_over_near)` to the same at `s+1`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FroxelDepthRange {
+    pub z_near: f32,
+    pub z_far: f32,
+    pub log_far_over_near: f32,
+}
+
+impl Default for FroxelDepthRange {
+    fn default() -> Self {
+        Self {
+            z_near: 0.1,
+            z_far: 1000.0,
+            log_far_over_near: (1000.0f32 / 0.1).ln(),
+        }
+    }
+}
+
 pub struct LightCullingBuffers {
     pub params_buffer: web_sys::GpuBuffer,
+    /// Depth mapping from the last `write_params` — see [`Self::froxel_depth`].
+    froxel_depth: FroxelDepthRange,
     /// Merged mesh + froxel storage (see module doc).
     pub storage_buffer: web_sys::GpuBuffer,
     /// Two-level cull Stage-A output: per-2D-screen-tile candidate light
@@ -265,6 +286,7 @@ impl LightCullingBuffers {
 
         Ok(Self {
             params_buffer,
+            froxel_depth: FroxelDepthRange::default(),
             storage_buffer,
             tile_lights_buffer,
             overflow_buffer,
@@ -399,6 +421,13 @@ impl LightCullingBuffers {
         self.viewport_h.div_ceil(TILE_PIXEL_SIZE)
     }
 
+    /// The froxel depth mapping written by the most recent
+    /// [`Self::write_params`]. Single source for every pass that addresses the
+    /// same grid.
+    pub fn froxel_depth(&self) -> FroxelDepthRange {
+        self.froxel_depth
+    }
+
     /// Writes the per-frame `CullParams` uniform. Cheap — skipped when
     /// the payload is unchanged.
     pub fn write_params(
@@ -413,6 +442,16 @@ impl LightCullingBuffers {
         let tiles_x = self.tiles_x();
         let tiles_y = self.tiles_y();
         let log_far_over_near = (z_far / z_near.max(f32::EPSILON)).ln();
+        // Remembered so downstream consumers of the SAME froxel grid (the
+        // volumetrics volume, and the effects pass that maps a pixel's depth
+        // back to a slice) read the numbers this pass actually wrote instead of
+        // re-deriving them. Two derivations of an exponential slice mapping
+        // that disagree by a hair misregister the whole volume.
+        self.froxel_depth = FroxelDepthRange {
+            z_near,
+            z_far,
+            log_far_over_near,
+        };
         let mut bytes = [0u8; CULL_PARAMS_BYTE_SIZE];
         bytes[0..4].copy_from_slice(&tiles_x.to_ne_bytes());
         bytes[4..8].copy_from_slice(&tiles_y.to_ne_bytes());

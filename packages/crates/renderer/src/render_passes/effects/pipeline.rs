@@ -59,12 +59,7 @@ fn atmosphere_phase(post_processing: &PostProcessing) -> AtmospherePhase {
     match post_processing.atmosphere.mode {
         AtmosphereMode::Off => AtmospherePhase::None,
         AtmosphereMode::Fog => AtmospherePhase::Analytic,
-        // TODO(volumetrics): the froxel pass is written but not yet dispatched.
-        // Until it is, asking for it DEGRADES to the analytic term rather than
-        // silently rendering no haze — the medium is the same one either way,
-        // so the fallback is that air integrated more cheaply. Flip this in the
-        // commit that wires the pass into the frame.
-        AtmosphereMode::Volumetric => AtmospherePhase::Analytic,
+        AtmosphereMode::Volumetric => AtmospherePhase::Volumetric,
     }
 }
 
@@ -281,17 +276,15 @@ mod tests {
         );
     }
 
-    /// TEMPORARY, and deliberately pinned so it can't drift silently: the
-    /// froxel pass is written but not yet dispatched, so asking for volumetric
-    /// haze degrades to the analytic term rather than rendering no haze at all.
-    /// It's the same medium, integrated more cheaply. The commit that wires the
-    /// pass into the frame flips this expectation to `Volumetric` — this test
-    /// failing is the reminder.
+    /// Volumetric mode must compile the volumetric phase, NOT the analytic
+    /// one. The two would look broadly similar in a screenshot — same medium,
+    /// same colour — so a regression to the fog term is the kind that hides:
+    /// you'd lose the beams and keep plausible haze.
     #[test]
-    fn volumetric_currently_degrades_to_analytic() {
+    fn volumetric_compiles_the_volumetric_phase() {
         assert_eq!(
             atmosphere_phase(&pp(AtmosphereMode::Volumetric)),
-            AtmospherePhase::Analytic
+            AtmospherePhase::Volumetric
         );
     }
 }

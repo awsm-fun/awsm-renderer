@@ -701,6 +701,9 @@ pub enum EditorCommand {
         /// Live uniform; only read in `Volumetric` mode.
         #[serde(default)]
         atmosphere_scattering_anisotropy: Option<f32>,
+        /// Far plane of the froxel volume in meters (live uniform).
+        #[serde(default)]
+        atmosphere_volumetric_distance: Option<f32>,
         /// Temporally reproject the froxel volume (STRUCTURAL). Only
         /// meaningful in `Volumetric` mode.
         #[serde(default)]

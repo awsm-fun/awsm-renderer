@@ -46,6 +46,12 @@
     /*************** END atmosphere.wgsl ******************/
 {% endif %}
 
+{% if atmosphere_volumetric %}
+    /*************** START atmosphere_volumetric.wgsl ******************/
+    {% include "effects_wgsl/helpers/atmosphere_volumetric.wgsl" %}
+    /*************** END atmosphere_volumetric.wgsl ******************/
+{% endif %}
+
 
 
 @compute @workgroup_size(8, 8)
@@ -79,6 +85,10 @@ fn main(
     // between them.
     {% if atmosphere %}
         rgb = apply_atmosphere(rgb, coords, pixel_center, screen_dims_f32, camera);
+    {% endif %}
+
+    {% if atmosphere_volumetric %}
+        rgb = apply_atmosphere_volumetric(rgb, coords, pixel_center, screen_dims_f32, camera);
     {% endif %}
 
     {% if bloom %}

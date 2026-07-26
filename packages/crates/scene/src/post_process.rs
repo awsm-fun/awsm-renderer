@@ -128,6 +128,15 @@ pub struct AtmosphereConfig {
     /// scattering. Live uniform; only read on the volumetric path.
     #[serde(default = "default_scattering_anisotropy")]
     pub scattering_anisotropy: f32,
+    /// How far the froxel volume extends, in meters. The light-culling grid
+    /// this volume borrows its slicing from runs to ~10 km so it can bin
+    /// distant lights — marching a 32-slice volume over THAT range gives
+    /// kilometre-thick far slices that saturate to solid haze and wash the
+    /// whole frame out. So the volume gets its own, much nearer far plane and
+    /// simply doesn't simulate the medium past it. Live uniform; volumetric
+    /// mode only.
+    #[serde(default = "default_volumetric_distance")]
+    pub volumetric_distance: f32,
     /// Temporally reproject + blend the froxel volume across frames. The volume
     /// is heavily undersampled, so this is what turns banding into smooth haze
     /// — at the cost of ghosting behind fast movers. STRUCTURAL; only
@@ -144,6 +153,11 @@ fn default_atmosphere_density() -> f32 {
 }
 fn default_atmosphere_height_falloff() -> f32 {
     0.0
+}
+fn default_volumetric_distance() -> f32 {
+    // ~80 m covers an arena or a club interior, which is what beams are for.
+    // Every engine ships a knob like this (Unreal's default is 60 m).
+    80.0
 }
 fn default_scattering_anisotropy() -> f32 {
     // Mild forward scatter. Real haze and smoke are strongly forward-scattering,
@@ -182,6 +196,7 @@ impl Default for AtmosphereConfig {
             base_height: 0.0,
             height_falloff: default_atmosphere_height_falloff(),
             scattering_anisotropy: default_scattering_anisotropy(),
+            volumetric_distance: default_volumetric_distance(),
             volumetric_temporal: false,
         }
     }
@@ -363,6 +378,7 @@ exposure = 1.5
                 base_height: -1.25,
                 height_falloff: 0.05,
                 scattering_anisotropy: 0.65,
+                volumetric_distance: 45.0,
                 volumetric_temporal: true,
             },
             ..PostProcessConfig::default()

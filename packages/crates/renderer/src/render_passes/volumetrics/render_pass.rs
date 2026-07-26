@@ -41,7 +41,8 @@ use crate::{
 ///   24 anisotropy       : f32         (Henyey-Greenstein g)
 ///   28 slice_count      : f32
 ///   32 grid_size        : vec2<u32>   (froxel columns in x, y)
-///   40 _pad             : vec2<u32>
+///   40 z_near           : f32
+///   44 log_far_over_near: f32
 ///
 /// The medium fields deliberately mirror `Atmosphere` one for one: the
 /// volumetric path renders the SAME air as the analytic path, only integrated
@@ -71,11 +72,22 @@ impl VolumetricParams {
             raw_data: [0; Self::BYTE_SIZE],
             uploader: MappedUploader::new("VolumetricParams"),
         };
-        params.pack(&defaults, 1, 1);
+        params.pack(
+            &defaults,
+            1,
+            1,
+            crate::render_passes::light_culling::buffers::FroxelDepthRange::default().z_near,
+        );
         Ok(params)
     }
 
-    fn pack(&mut self, atmosphere: &crate::post_process::Atmosphere, grid_x: u32, grid_y: u32) {
+    fn pack(
+        &mut self,
+        atmosphere: &crate::post_process::Atmosphere,
+        grid_x: u32,
+        grid_y: u32,
+        z_near: f32,
+    ) {
         let d = &mut self.raw_data;
         d[0..4].copy_from_slice(&atmosphere.color[0].to_ne_bytes());
         d[4..8].copy_from_slice(&atmosphere.color[1].to_ne_bytes());
@@ -96,6 +108,13 @@ impl VolumetricParams {
         d[28..32].copy_from_slice(&(FROXEL_SLICE_COUNT as f32).to_ne_bytes());
         d[32..36].copy_from_slice(&grid_x.to_ne_bytes());
         d[36..40].copy_from_slice(&grid_y.to_ne_bytes());
+        // The volume's OWN depth range. It shares the light grid's near plane
+        // and slicing SHAPE, but not its far plane — the culling grid runs to
+        // ~10 km to bin distant lights, and 32 slices over that make the far
+        // ones kilometres thick, saturating to solid haze.
+        let z_far = atmosphere.volumetric_distance.max(z_near * 2.0);
+        d[40..44].copy_from_slice(&z_near.to_ne_bytes());
+        d[44..48].copy_from_slice(&(z_far / z_near.max(f32::EPSILON)).ln().to_ne_bytes());
     }
 
     /// Packs + uploads, skipping the GPU write when nothing moved — same house
@@ -106,9 +125,10 @@ impl VolumetricParams {
         atmosphere: &crate::post_process::Atmosphere,
         grid_x: u32,
         grid_y: u32,
+        z_near: f32,
     ) -> Result<()> {
         let prev = self.raw_data;
-        self.pack(atmosphere, grid_x, grid_y);
+        self.pack(atmosphere, grid_x, grid_y, z_near);
         if self.raw_data == prev {
             return Ok(());
         }

@@ -50,6 +50,10 @@ struct VolumetricParamsRaw {
     anisotropy: f32,
     slice_count: f32,
     grid_size: vec2<u32>,
+    // The volume's OWN depth range — the light grid's near plane, but a much
+    // nearer far plane (see `volumetric_distance`).
+    z_near: f32,
+    log_far_over_near: f32,
 };
 
 // ── group(0) — volume + params ───────────────────────────────────────────────

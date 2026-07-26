@@ -306,6 +306,7 @@ impl BindGroups {
             TransparentShadows,
             LightCulling,
             Bloom,
+            Volumetrics,
             Smaa,
             Ssr,
             Effects,
@@ -391,6 +392,10 @@ impl BindGroups {
                     // bloom texture (write) + its per-mip pyramid views — all
                     // recreated on resize.
                     functions_to_call.insert(FunctionToCall::Bloom);
+                    // The froxel volume is sized from the viewport (tiles of
+                    // 16px), so a resize reallocates it and both stage bind
+                    // groups have to rebind.
+                    functions_to_call.insert(FunctionToCall::Volumetrics);
                     // SMAA pre-pass binds composite (read) + its edges/weights
                     // textures — all recreated on resize/toggle.
                     functions_to_call.insert(FunctionToCall::Smaa);
@@ -859,6 +864,19 @@ impl BindGroups {
                         bind_groups.recreate(&ctx, texture, &params.gpu_buffer)?;
                     }
                 }
+                FunctionToCall::Volumetrics => {
+                    // Lazy pass: `None` until haze mode is first set to
+                    // Volumetric (same flow as bloom above).
+                    if let Some(volumetrics) = render_passes.volumetrics.as_mut() {
+                        let crate::render_passes::volumetrics::render_pass::VolumetricsRenderPass {
+                            bind_groups,
+                            texture,
+                            params,
+                            ..
+                        } = volumetrics;
+                        bind_groups.recreate(&ctx, texture, &params.gpu_buffer)?;
+                    }
+                }
                 FunctionToCall::Ssr => {
                     // Lazy pass: `None` until SSR is first enabled (same flow
                     // as bloom above).
@@ -880,6 +898,12 @@ impl BindGroups {
                         .smaa
                         .as_ref()
                         .map(|s| s.textures.weights_view.clone());
+                    // Same trick for the volumetrics volume — `None` while the
+                    // lazy pass doesn't exist, which binds the 1×1×1 dummy.
+                    let volume_view = render_passes
+                        .volumetrics
+                        .as_ref()
+                        .map(|v| v.texture.integrated_sample_view.clone());
                     // Destructure so the atmosphere uniform and the bind groups
                     // borrow disjointly (same shape as the SSR arm above).
                     let crate::render_passes::effects::render_pass::EffectsRenderPass {
@@ -891,6 +915,7 @@ impl BindGroups {
                         &ctx,
                         weights_view.as_ref(),
                         &atmosphere_params.gpu_buffer,
+                        volume_view.as_ref(),
                     )?;
                 }
                 FunctionToCall::Display => {

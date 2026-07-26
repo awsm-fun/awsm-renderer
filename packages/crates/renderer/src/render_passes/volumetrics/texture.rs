@@ -26,8 +26,8 @@ use awsm_renderer_core::{
     error::{AwsmCoreError, Result},
     renderer::AwsmRendererWebGpu,
     texture::{
-        Extent3d, TextureDescriptor, TextureFormat, TextureUsage, TextureViewDescriptor,
-        TextureViewDimension,
+        Extent3d, TextureDescriptor, TextureDimension, TextureFormat, TextureUsage,
+        TextureViewDescriptor, TextureViewDimension,
     },
 };
 
@@ -134,6 +134,10 @@ fn create_volume(
                 .with_storage_binding()
                 .with_texture_binding(),
         )
+        // WITHOUT this the texture is 2D (the descriptor's default) and every
+        // 3D view of it is invalid — a mismatch nothing catches natively, since
+        // naga validates the shader and not the texture/view/layout agreement.
+        .with_dimension(TextureDimension::N3d)
         .with_label(label)
         .into(),
     )?;

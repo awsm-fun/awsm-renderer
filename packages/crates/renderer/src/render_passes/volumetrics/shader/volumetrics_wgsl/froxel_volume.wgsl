@@ -10,7 +10,7 @@
 //     s = log(z / z_near) / log(z_far / z_near) * slice_count
 fn froxel_slice_view_z(s: f32) -> f32 {
     let t = s / max(volumetric_params.slice_count, 1.0);
-    return cull_params.z_near * exp(t * cull_params.log_far_over_near);
+    return volumetric_params.z_near * exp(t * volumetric_params.log_far_over_near);
 }
 
 // The screen pixel at the centre of froxel column (x, y).

@@ -1044,7 +1044,7 @@ fn post_processing_section() -> Dom {
                         "volumetric" => AtmosphereMode::Volumetric,
                         _ => AtmosphereMode::Off,
                     };
-                    dispatch_atmosphere(Some(mode), None, None, None, None, None);
+                    dispatch_atmosphere(Some(mode), None, None, None, None, None, None);
                 }
             }
         }).await;
@@ -1057,7 +1057,7 @@ fn post_processing_section() -> Dom {
             first = false;
             async move {
                 if fire {
-                    dispatch_atmosphere(None, None, None, None, None, Some(on));
+                    dispatch_atmosphere(None, None, None, None, None, None, Some(on));
                 }
             }
         }).await;
@@ -1323,7 +1323,15 @@ fn post_processing_section() -> Dom {
             NumField::new(pp.atmosphere.density as f64)
                 .step(0.005)
                 .on_change(|v| {
-                    dispatch_atmosphere(None, Some((v as f32).max(0.0)), None, None, None, None)
+                    dispatch_atmosphere(
+                        None,
+                        Some((v as f32).max(0.0)),
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                    )
                 })
                 .render(),
         ))
@@ -1331,7 +1339,9 @@ fn post_processing_section() -> Dom {
             "Haze base height",
             NumField::new(pp.atmosphere.base_height as f64)
                 .step(0.25)
-                .on_change(|v| dispatch_atmosphere(None, None, Some(v as f32), None, None, None))
+                .on_change(|v| {
+                    dispatch_atmosphere(None, None, Some(v as f32), None, None, None, None)
+                })
                 .render(),
         ))
         .child(row(
@@ -1339,7 +1349,15 @@ fn post_processing_section() -> Dom {
             NumField::new(pp.atmosphere.height_falloff as f64)
                 .step(0.01)
                 .on_change(|v| {
-                    dispatch_atmosphere(None, None, None, Some((v as f32).max(0.0)), None, None)
+                    dispatch_atmosphere(
+                        None,
+                        None,
+                        None,
+                        Some((v as f32).max(0.0)),
+                        None,
+                        None,
+                        None,
+                    )
                 })
                 .render(),
         ))
@@ -1360,6 +1378,25 @@ fn post_processing_section() -> Dom {
                         None,
                         None,
                         Some((v as f32).clamp(-0.95, 0.95)),
+                        None,
+                        None,
+                    )
+                })
+                .render(),
+        ))
+        .child(row(
+            "Haze distance",
+            NumField::new(pp.atmosphere.volumetric_distance as f64)
+                .min(1.0)
+                .step(5.0)
+                .on_change(|v| {
+                    dispatch_atmosphere(
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        Some((v as f32).max(1.0)),
                         None,
                     )
                 })
@@ -1415,6 +1452,7 @@ fn dispatch_post(
                 atmosphere_base_height: None,
                 atmosphere_height_falloff: None,
                 atmosphere_scattering_anisotropy: None,
+                atmosphere_volumetric_distance: None,
                 atmosphere_volumetric_temporal: None,
             })
             .await
@@ -1473,6 +1511,7 @@ fn dispatch_ssr(
                 atmosphere_base_height: None,
                 atmosphere_height_falloff: None,
                 atmosphere_scattering_anisotropy: None,
+                atmosphere_volumetric_distance: None,
                 atmosphere_volumetric_temporal: None,
             })
             .await
@@ -1497,6 +1536,7 @@ fn dispatch_atmosphere(
     atmosphere_base_height: Option<f32>,
     atmosphere_height_falloff: Option<f32>,
     atmosphere_scattering_anisotropy: Option<f32>,
+    atmosphere_volumetric_distance: Option<f32>,
     atmosphere_volumetric_temporal: Option<bool>,
 ) {
     spawn_local(async move {
@@ -1528,6 +1568,7 @@ fn dispatch_atmosphere(
                 atmosphere_base_height,
                 atmosphere_height_falloff,
                 atmosphere_scattering_anisotropy,
+                atmosphere_volumetric_distance,
                 atmosphere_volumetric_temporal,
             })
             .await

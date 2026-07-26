@@ -61,6 +61,7 @@ use crate::{
         occlusion::compaction::CompactionRenderPass,
         occlusion::render_pass::OcclusionRenderPass,
         ssr::render_pass::SsrRenderPass,
+        volumetrics::render_pass::VolumetricsRenderPass,
     },
     render_textures::RenderTextureFormats,
     shaders::Shaders,
@@ -133,6 +134,10 @@ pub struct RenderPasses {
     /// dispatches without further compiles). The per-frame `render()` /
     /// `ensure_size` wiring lives in `render.rs` and skips when `None`.
     pub bloom: Option<BloomRenderPass>,
+    /// Froxel volumetric scattering. LAZY like bloom: `None` until the haze
+    /// mode is first set to `Volumetric` — a scene that never asks for beams
+    /// allocates no volume and compiles neither compute shader.
+    pub volumetrics: Option<VolumetricsRenderPass>,
     /// Lazy SMAA pre-pass (edges + blend weights): `None` until SMAA is first
     /// enabled and DROPPED again on disable, so SMAA off is zero-cost (no
     /// textures, no dispatches; the effects shader variant without the flag
@@ -254,6 +259,9 @@ pub struct RenderPassesDescriptors {
     /// its own bind groups + pipelines rather than joining the cross-renderer
     /// pool.
     bloom: Option<BloomRenderPass>,
+    /// Fully-constructed volumetrics pass — same lazy discipline as bloom,
+    /// keyed on the boot config's haze mode.
+    volumetrics: Option<VolumetricsRenderPass>,
     /// Fully-constructed SSR pass — self-contained like bloom, and lazy on
     /// `ssr.enabled` the same way.
     ssr: Option<SsrRenderPass>,
@@ -796,6 +804,17 @@ impl RenderPasses {
         // `bloom: true` flip. Built here (when needed) where the async ctx +
         // gpu handle are available; moved unchanged into `from_resolved`'s
         // output.
+        // Volumetrics — self-contained like bloom, and lazy for a much bigger
+        // reason: the volume is a pair of 3D textures and two compute
+        // pipelines that a scene without beams should never pay for.
+        let volumetrics = if ctx.post_processing.atmosphere.mode
+            == crate::post_process::AtmosphereMode::Volumetric
+        {
+            Some(VolumetricsRenderPass::new(ctx).await?)
+        } else {
+            None
+        };
+
         let bloom = if ctx.post_processing.bloom {
             Some(BloomRenderPass::new(ctx).await?)
         } else {
@@ -853,6 +872,7 @@ impl RenderPasses {
             hzb_texture,
             atmosphere_params,
             bloom,
+            volumetrics,
             ssr,
             smaa,
         })
@@ -886,6 +906,7 @@ impl RenderPasses {
             hzb_texture,
             atmosphere_params,
             bloom,
+            volumetrics,
             ssr,
             smaa,
             ..
@@ -1092,6 +1113,7 @@ impl RenderPasses {
             material_transparent,
             effects,
             bloom,
+            volumetrics,
             ssr,
             smaa,
             display,

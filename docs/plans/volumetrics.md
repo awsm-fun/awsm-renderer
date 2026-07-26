@@ -126,14 +126,44 @@ it.
 
 ## Stages
 
-**Status: the pass itself is written and validates; it is NOT yet dispatched.**
-`render_passes/volumetrics/` has the volume textures, the params uniform, the
-three bind groups, both compute pipelines and both shaders, with naga pins on
-each. Still to wire: the lazy `Option<VolumetricsRenderPass>` on `RenderPasses`,
-`set_post_processing`'s build-on-enable, the per-frame `ensure_size` + params
-write + dispatch in `render.rs`, the bind-group recreate arm, and the effects
-pass sampling the integrated volume — after which `atmosphere_phase()` flips
-from its Analytic fallback.
+**Status: fully wired, renders without error, but the volume reads back EMPTY.**
+Everything is in place — the lazy `Option<VolumetricsRenderPass>`, the
+build-on-enable, the per-frame resize + params write + dispatch, the bind-group
+recreate arm, the effects binding, the composite, and `atmosphere_phase()`
+flipped to `Volumetric`. Browser-verified to the extent that it *runs*: no GPU
+validation errors, shadows and lighting unaffected.
+
+But the composite has no effect. Raising `density` from 0.03 to 0.25 changes
+the frame not at all, which means the sampled volume is `(0,0,0,1)` — no
+extinction, no in-scatter — rather than "beams are too dim". Two bugs were
+already found and fixed on the way here, so this is the third in the same area:
+
+1. FIXED — a `TextureDescriptor` defaults to **2D**, so every 3D view of the
+   volume (and of the effects dummy) was invalid. Naga validates the *shader*;
+   nothing native validates texture/view/layout agreement, which is precisely
+   what the browser-verify rule is for.
+2. FIXED — the volume inherited the light-culling **far plane (~10 km)**. 32
+   exponential slices over that make the far ones kilometres thick, saturating
+   to solid haze and washing the whole frame flat. The volume now carries its
+   own `volumetric_distance` (default 80 m), which is why every engine ships
+   that knob.
+3. OPEN — the volume reads empty.
+
+**Debug order for the next session** (cheapest discriminating test first):
+
+- Make the composite output the raw fetch (`return integrated.rgb * 100`, or
+  visualise `1 - integrated.a`). That splits "volume is empty" from "composite
+  math is wrong" in one rebuild, and everything below is downstream of it.
+- If the volume is genuinely empty: is `inject` dispatching at all? Check the
+  `Volumetrics` GPU timestamp scope, then have `inject` write a constant
+  `vec4(1,0,0,1)` — if that shows, the bug is in the medium/light math; if not,
+  it's the dispatch or the bind group.
+- Suspect the **effects bind group is holding the 1×1×1 dummy**: it binds
+  whatever `render_passes.volumetrics` was at the last `TextureViewRecreate`,
+  and the lazy build marks that recreate itself — verify the ordering actually
+  produces a rebind AFTER the pass exists, rather than assuming it.
+- Suspect `UnfilterableFloat` on an `rgba16float` 3D texture, and the
+  `textureLoad` coordinate order.
 
 
 A froxel volume (`rgba16float`, RGB = in-scattered radiance, A = extinction),

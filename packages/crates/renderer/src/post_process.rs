@@ -119,6 +119,10 @@ pub struct Atmosphere {
     /// Henyey-Greenstein phase anisotropy (0 iso, >0 forward). Live uniform,
     /// volumetric path only.
     pub scattering_anisotropy: f32,
+    /// Far plane of the froxel volume in meters — the medium isn't simulated
+    /// past it. Deliberately much nearer than the light-culling far plane the
+    /// slicing is borrowed from (see the scene-side docs). Live uniform.
+    pub volumetric_distance: f32,
     /// Temporal reprojection of the froxel volume. Structural.
     pub volumetric_temporal: bool,
 }
@@ -144,6 +148,7 @@ impl Default for Atmosphere {
             base_height: 0.0,
             height_falloff: 0.0,
             scattering_anisotropy: 0.3,
+            volumetric_distance: 80.0,
             volumetric_temporal: false,
         }
     }
@@ -309,6 +314,40 @@ impl AwsmRenderer {
             let bloom =
                 crate::render_passes::bloom::render_pass::BloomRenderPass::new(&mut ctx).await?;
             self.render_passes.bloom = Some(bloom);
+            self.bind_groups
+                .mark_create(crate::bind_groups::BindGroupCreate::TextureViewRecreate);
+        }
+
+        // LAZY volumetrics: mirrors bloom/SSR. The froxel volume is a pair of
+        // 3D textures plus two compute pipelines, so a session that never asks
+        // for beams must never build it. Awaited here so the next frame
+        // dispatches without compiling; the `TextureViewRecreate` mark makes
+        // that frame's bind-group drain build the groups against live views
+        // (the per-frame `ensure_size` then grows the 1×1 volume, marking
+        // again — the same flow a boot-enabled volumetric config uses).
+        if self.post_processing.atmosphere.mode == AtmosphereMode::Volumetric
+            && self.render_passes.volumetrics.is_none()
+        {
+            let mut ctx = crate::render_passes::RenderPassInitContext {
+                gpu: &self.gpu,
+                bind_group_layouts: &mut self.bind_group_layouts,
+                pipeline_layouts: &mut self.pipeline_layouts,
+                pipelines: &mut self.pipelines,
+                shaders: &mut self.shaders,
+                render_texture_formats: &mut self.render_textures.formats,
+                textures: &mut self.textures,
+                features: &self.features,
+                anti_aliasing: &self.anti_aliasing,
+                post_processing: &self.post_processing,
+                prep_config: &self.prep_config,
+                max_edge_budget: self.material_edge_buffers.as_ref().map(|b| b.max_edge_budget).unwrap_or(crate::render_passes::material_opaque::edge_buffers::DEFAULT_MAX_EDGE_BUDGET_DESKTOP),
+            };
+            let volumetrics =
+                crate::render_passes::volumetrics::render_pass::VolumetricsRenderPass::new(
+                    &mut ctx,
+                )
+                .await?;
+            self.render_passes.volumetrics = Some(volumetrics);
             self.bind_groups
                 .mark_create(crate::bind_groups::BindGroupCreate::TextureViewRecreate);
         }

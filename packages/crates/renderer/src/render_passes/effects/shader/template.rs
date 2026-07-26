@@ -26,6 +26,10 @@ pub struct ShaderTemplateEffectsBindGroups {
     /// Declare the `AtmosphereParams` uniform. True on BOTH haze paths — the
     /// froxel path reads the same medium description the analytic one does.
     pub atmosphere: bool,
+    /// Declare the integrated-volume texture binding. Volumetric path only;
+    /// every other path leaves a 1×1×1 dummy in the LAYOUT so the layout shape
+    /// is the same across all three modes.
+    pub atmosphere_volumetric: bool,
     pub debug: ShaderTemplateEffectsDebug,
 }
 
@@ -37,6 +41,7 @@ impl ShaderTemplateEffectsBindGroups {
             multisampled_geometry: cache_key.multisampled_geometry,
             dof: cache_key.dof,
             atmosphere: cache_key.atmosphere != AtmospherePhase::None,
+            atmosphere_volumetric: cache_key.atmosphere == AtmospherePhase::Volumetric,
             debug: ShaderTemplateEffectsDebug::new(),
         }
     }

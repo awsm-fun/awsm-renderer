@@ -19,9 +19,15 @@ use crate::{
     },
 };
 
-/// `AtmosphereParams` — 32-byte uniform: `color` (vec3), `density`,
-/// `base_height`, `height_falloff`, 8 bytes of tail padding to the vec4
-/// alignment WGSL gives the struct.
+/// `AtmosphereParams` — 48-byte uniform: `color` (vec3), `density`,
+/// `base_height`, `height_falloff`, then the froxel grid's depth mapping
+/// (`slice_count`, `z_near`, `log_far_over_near`) used only by the volumetric
+/// composite, plus tail padding to the vec4 alignment WGSL gives the struct.
+///
+/// The froxel numbers are COPIED from `LightCullingBuffers::froxel_depth`
+/// rather than re-derived: the effects pass has to map a pixel's depth back to
+/// the same slice the volumetrics pass wrote, and two derivations of an
+/// exponential mapping that disagree by a hair misregister the whole volume.
 ///
 /// Unlike `BloomParams` (which lives on the lazily-built `BloomRenderPass`)
 /// this buffer is owned by the effects pass and therefore ALWAYS exists — the
@@ -35,7 +41,7 @@ pub struct AtmosphereParams {
 }
 
 impl AtmosphereParams {
-    pub const BYTE_SIZE: usize = 32;
+    pub const BYTE_SIZE: usize = 48;
 
     pub fn new(gpu: &AwsmRendererWebGpu) -> Result<Self> {
         let gpu_buffer = gpu.create_buffer(
@@ -56,21 +62,33 @@ impl AtmosphereParams {
         // renders the authored haze even if the per-frame write is skipped.
         let defaults = crate::post_process::Atmosphere::default();
         params.pack(
-            defaults.color,
-            defaults.density,
-            defaults.base_height,
-            defaults.height_falloff,
+            &defaults,
+            crate::render_passes::light_culling::buffers::FroxelDepthRange::default(),
         );
         Ok(params)
     }
 
-    fn pack(&mut self, color: [f32; 3], density: f32, base_height: f32, height_falloff: f32) {
-        self.raw_data[0..4].copy_from_slice(&color[0].to_ne_bytes());
-        self.raw_data[4..8].copy_from_slice(&color[1].to_ne_bytes());
-        self.raw_data[8..12].copy_from_slice(&color[2].to_ne_bytes());
-        self.raw_data[12..16].copy_from_slice(&density.to_ne_bytes());
-        self.raw_data[16..20].copy_from_slice(&base_height.to_ne_bytes());
-        self.raw_data[20..24].copy_from_slice(&height_falloff.to_ne_bytes());
+    fn pack(
+        &mut self,
+        atmosphere: &crate::post_process::Atmosphere,
+        froxel: crate::render_passes::light_culling::buffers::FroxelDepthRange,
+    ) {
+        let d = &mut self.raw_data;
+        d[0..4].copy_from_slice(&atmosphere.color[0].to_ne_bytes());
+        d[4..8].copy_from_slice(&atmosphere.color[1].to_ne_bytes());
+        d[8..12].copy_from_slice(&atmosphere.color[2].to_ne_bytes());
+        d[12..16].copy_from_slice(&atmosphere.density.to_ne_bytes());
+        d[16..20].copy_from_slice(&atmosphere.base_height.to_ne_bytes());
+        d[20..24].copy_from_slice(&atmosphere.height_falloff.to_ne_bytes());
+        d[24..28].copy_from_slice(
+            &(crate::render_passes::volumetrics::texture::FROXEL_SLICE_COUNT as f32).to_ne_bytes(),
+        );
+        // The VOLUME's range, not the light grid's — the composite maps a
+        // pixel's depth back to the slice the volumetrics pass wrote, so it
+        // has to use that pass's mapping.
+        let z_far = atmosphere.volumetric_distance.max(froxel.z_near * 2.0);
+        d[28..32].copy_from_slice(&froxel.z_near.to_ne_bytes());
+        d[32..36].copy_from_slice(&(z_far / froxel.z_near.max(f32::EPSILON)).ln().to_ne_bytes());
     }
 
     /// Packs + uploads via the mapped-ring path, skipping the GPU write when
@@ -80,13 +98,11 @@ impl AtmosphereParams {
     pub fn write(
         &mut self,
         gpu: &AwsmRendererWebGpu,
-        color: [f32; 3],
-        density: f32,
-        base_height: f32,
-        height_falloff: f32,
+        atmosphere: &crate::post_process::Atmosphere,
+        froxel: crate::render_passes::light_culling::buffers::FroxelDepthRange,
     ) -> Result<()> {
         let prev = self.raw_data;
-        self.pack(color, density, base_height, height_falloff);
+        self.pack(atmosphere, froxel);
         if self.raw_data == prev {
             return Ok(());
         }

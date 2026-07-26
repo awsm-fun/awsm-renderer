@@ -25,6 +25,24 @@ struct AtmosphereParamsRaw {
     density: f32,
     base_height: f32,
     height_falloff: f32,
+    // Froxel grid depth mapping — volumetric composite only. Copied from the
+    // light-culling params so the pixel→slice map here is the same one the
+    // volume was written with.
+    slice_count: f32,
+    froxel_z_near: f32,
+    froxel_log_far_over_near: f32,
 };
 @group(0) @binding(7) var<uniform> atmosphere_params: AtmosphereParamsRaw;
+{% endif %}
+
+{% if atmosphere_volumetric %}
+// The integrated froxel volume built by the volumetrics pass:
+//   rgb = in-scatter accumulated from the eye to this slice
+//   a   = transmittance to that slice
+// A 1×1×1 dummy sits here on every other path, so the LAYOUT never moves.
+// Must equal `FROXEL_TILE_PIXEL_SIZE` in volumetrics/texture.rs and
+// `shared_wgsl/lighting/froxel_walk.wgsl` — three declarations of one number
+// because they live in three shader modules with no shared include.
+const FROXEL_TILE_PIXEL_SIZE: f32 = 16.0;
+@group(0) @binding(8) var volumetric_tex: texture_3d<f32>;
 {% endif %}
