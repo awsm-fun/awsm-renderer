@@ -31,33 +31,60 @@ like `bloom` and `ssr` — self-contained `bind_group.rs` / `pipeline.rs` /
 
 ## What the code already gives us (verified 2026-07-26)
 
-Two facts do most of the work, and both were checked in the source rather than
-assumed:
+Three facts do most of the work, all checked in the source:
 
-1. **The shadow bind group is standalone and reusable.**
-   `shared_wgsl/shadow/bind_groups.wgsl` is a self-contained group (slot 3 in
-   the opaque pass; entries defined once in
-   `shared::material::bind_group::shadow_bind_group_layout_entries`) exposing
-   `sample_shadow_descriptor(desc, world_pos, world_normal)`. The light-injection
-   stage binds the SAME group and calls the SAME function — no new shadow
-   plumbing, and no risk of the volume disagreeing with the surfaces about where
-   the shadows are.
-   - **Use the HARD path per froxel.** `sample_shadow_descriptor` also carries
-     PCSS/Vogel soft filtering (`shadow_tap_count`, blocker search). At froxel
-     rates that is unaffordable and pointless — the volume integral blurs the
-     result anyway. Inject with a single tap.
-   - Note the existing caveat in that file: the transparent pass can't bind the
-     shadow group because `maxBindGroups=4` is already spent there. A compute
-     pass has its own budget, so this pass can afford group 0 = volume + params,
-     group 1 = lights/froxel storage, group 2 = shadows.
+1. **`material_prep` is the template, not `bloom`.** It is already a COMPUTE
+   pass that binds the lights group AND the shadow group with compute
+   visibility — exactly the volumetrics shape. Bloom is the template for the
+   *pass scaffolding* (lazy `Option<Pass>`, params uniform, `ensure_size`);
+   `material_prep/bind_group.rs` is the template for the *bind groups*.
 
-2. **The light-culling grid is already per-froxel.** `froxel_walk.wgsl` is
-   documented as "the SINGLE SOURCE OF TRUTH for how a pixel enumerates the
-   lights", with `froxel_base_for_pixel(pixel_xy, view_z)` over 16px tiles and
-   an exponential z-slice mapping. The injection stage calls it with the
-   *froxel centre* pixel and the slice's view depth, so the volume enumerates
-   lights in exactly the order the surfaces do — including the directional
-   prefix, which is flat and not froxel-binned.
+2. **The shadow bind group is standalone and reusable.**
+   `shared::material::bind_group::shadow_bind_group_layout_entries(compute_visibility: bool)`
+   builds it in one call — pass `true`, as `material_prep/bind_group.rs:93`
+   does. **It has TEN entries (0..=9), not eight**: bindings 8
+   (`shadow_cascade_array`) and 9 (`shadow_cube_2d_array`) were added after the
+   original set. The WGSL side is
+   `shared_wgsl/shadow/bind_groups.wgsl`, parameterised by a
+   `shadow_group_index` template var, exposing
+   `sample_shadow_descriptor(desc, world_pos, world_normal)` — the same
+   function the surfaces call, so the volume cannot disagree with the geometry
+   about where the shadows are.
+   - **Use the HARD path per froxel.** That function also carries PCSS/Vogel
+     soft filtering (`shadow_tap_count`, blocker search). At froxel rates it's
+     unaffordable and pointless — the volume integral blurs the result anyway.
+   - Bindings 10..12 in the opaque pass (`edge_data` etc.) are an *extended*
+     group that `shadow_bind_group_layout_entries` does NOT cover. Don't copy
+     opaque's group wholesale.
+
+3. **The lights group is a fixed 4-entry shape**, mirrored verbatim by opaque
+   and prep. Copy `create_lights_bind_group_layout_key`
+   (`material_prep/bind_group.rs:627`):
+
+       0 lights_info    Uniform            -> ctx.lights.gpu_info_buffer
+       1 lights         Uniform            -> ctx.lights.gpu_punctual_buffer
+       2 lights_storage ReadOnlyStorage    -> ctx.light_culling_buffers.storage_buffer
+       3 cull_params    Uniform            -> ctx.light_culling_buffers.params_buffer
+
+   WGSL side, copy `material_prep/.../bind_groups.wgsl:83-95` — it declares the
+   four globals, its own `CullParams` copy, then includes
+   `shared_wgsl/lighting/light_access.wgsl` and
+   `shared_wgsl/lighting/froxel_walk.wgsl` (which needs the
+   `froxel_slice_count` template var). Note the path: froxel_walk lives under
+   `shared_wgsl/**lighting**/`, and `LightsInfoPacked` for consumers is the
+   80-byte version in `light_access_types.wgsl` (the cull pass declares a
+   48-byte tail-truncated copy of the same buffer — use the consumer one).
+
+   `froxel_base_for_pixel(pixel_xy, view_z)` + `froxel_light_count(base)` are
+   the entry points; injection calls them with the froxel CENTRE pixel and the
+   slice's view depth, so the volume enumerates lights in the order the
+   surfaces do — directional prefix included.
+
+**Bind-group budget.** The adapter ceiling is `maxBindGroups = 4` and both
+material passes are already at it (which is why the transparent pass can't bind
+shadows at all). A compute pass has its own budget, so volumetrics spends
+three and keeps one spare: group 0 = volume textures + params + camera,
+group 1 = lights (the 4-entry shape above), group 2 = shadows.
 
 ## Config shape (landed)
 
