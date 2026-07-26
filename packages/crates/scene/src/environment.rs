@@ -110,6 +110,48 @@ pub enum EnvSlot {
 mod tests {
     use super::*;
 
+    /// A `project.toml`-shaped `[environment]` block with KTX **specular +
+    /// irradiance** and a gradient skybox must parse back as `Ktx` on both
+    /// slots. Guards the open→save round-trip: a silent fall back to the
+    /// default here loses a scene's whole HDR environment with no error
+    /// (docs/plans/env-ktx-lost-on-project-load.md).
+    #[test]
+    fn ktx_specular_and_irradiance_parse_from_project_toml_shape() {
+        let toml_src = r#"
+[skybox.sky_gradient]
+zenith = [0.015, 0.02, 0.05]
+nadir = [0.004, 0.004, 0.008]
+
+[specular.ktx]
+asset_id = "7ac215ae-1e66-4ad1-8bf7-f3b8d5566668"
+
+[irradiance.ktx]
+asset_id = "99e98c3a-fc34-42da-88bf-fc415cf61589"
+
+[probe]
+enabled = true
+center = [0.0, 1.6, 0.0]
+half_extents = [3.4, 2.0, 2.3]
+"#;
+        let cfg: EnvironmentConfig = toml::from_str(toml_src).expect("parse [environment] block");
+        assert!(
+            matches!(cfg.specular, EnvSlot::Ktx { .. }),
+            "specular parsed as {:?}, expected Ktx",
+            cfg.specular
+        );
+        assert!(
+            matches!(cfg.irradiance, EnvSlot::Ktx { .. }),
+            "irradiance parsed as {:?}, expected Ktx",
+            cfg.irradiance
+        );
+        assert_eq!(
+            cfg.ktx_asset_ids().len(),
+            2,
+            "both KTX slots must be reported"
+        );
+        assert!(cfg.probe.enabled);
+    }
+
     /// The three slots are fully independent: skybox / specular / irradiance can
     /// each be a different kind (built-in default, sky-gradient, or KTX) in the
     /// SAME config, and it round-trips through the scene.toml / project.toml serde
