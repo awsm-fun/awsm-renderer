@@ -118,21 +118,27 @@ code actually looks like today, not what the design assumed.
    couldn't otherwise see them. `AtmosphereParams` is carried through
    `RenderPassesDescriptors` (like `hzb_texture`) because `from_resolved` is
    sync and has no gpu handle. **Browser verification is pending step 7** —
-   there's no way to toggle haze on a live scene until the editor/MCP surface
-   lands.
+   Browser-verified (2026-07-26) as a three-state A/B/C in the `atmosphere`
+   test scene: haze off = no depth ramp at all; haze on with falloff 0.25 =
+   pillar ramp + mast height gradient + sky gradient; haze on with falloff 0 =
+   pillar ramp unchanged, mast and sky both flat. State B is what proves the
+   height integral is real rather than the distance term in disguise.
 6. **Phase 2** (separate commit): the same term on the SSR miss fallback
    (`ssr_wgsl/trace.wgsl`, reusing the `box_project` intersection distance),
    IBL specular in `brdf_pbr.wgsl`, and BVH hits (`bvh_trace.wgsl`, `best_t` is
    already there).
-7. **Editor surface**: `SetPostProcess` fields in editor-protocol → editor
+7. ✅ **Editor surface**: `SetPostProcess` fields in editor-protocol → editor
    `state.rs` apply + inverse → MCP `set_post_process` params **and its
    description** (there is a native test asserting MCP tools and docs stay in
    sync — it will fail if the description isn't updated).
 8. ✅ **`wgsl_validation` pins**: assert the fog term is present when on and
    absent when off.
-9. **Layer-A scene** `examples/test-scenes/atmosphere/` with `author.js` +
-   `verify.md`. Note the lesson from `shadows-all`: **write `verify.md` against
-   what the golden actually shows**, or it fails correct builds.
+9. ✅ **Test scene** `examples/test-scenes/atmosphere/` — `author.js` +
+   `project/` + `bundle/` + `verify.md`. NO `golden.png`: it was authored on a
+   portrait window and goldens follow the live viewport aspect, so committing
+   this capture would mislead anyone on a landscape window. `verify.md` is
+   written against what the three states actually showed, per the `shadows-all`
+   lesson.
 
 ## Non-goals
 
