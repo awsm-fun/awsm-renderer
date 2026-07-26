@@ -80,6 +80,50 @@ When Phase 1+2 land: delete the probe's baked haze hemisphere
 density: ~0.008, base_height: 0, height_falloff: ~0.05 }` in author.js —
 same look, but it applies to any scene and both light paths.
 
+## Landing sequence (verified against the code, 2026-07-26)
+
+Read the relevant files before writing this up; the notes below are what the
+code actually looks like today, not what the design assumed.
+
+1. **Config types.** `AtmosphereConfig { enabled, color, density, base_height,
+   height_falloff }` in `packages/crates/scene/src/post_process.rs` (serde with
+   `#[serde(default)]` initialisers matching the renderer defaults, exactly like
+   `SsrConfig`), mirrored as `Atmosphere` in
+   `packages/crates/renderer/src/post_process.rs`. The two are **mirrored, not
+   shared** — that is the established house convention here (`SsrConfig` ↔
+   `Ssr`); don't "improve" it as a side effect.
+2. **scene-loader** maps scene → renderer in the same place it maps `ssr`.
+3. **Cache key.** Add `atmosphere: bool` to `ShaderCacheKeyEffects`
+   (`render_passes/effects/shader/cache_key.rs`) and an `{% if atmosphere %}`
+   arm in `effects_wgsl/compute.wgsl` + `template.rs`. **`enabled` is the
+   structural axis; every other field is a live uniform.** Off ⇒ the fog term
+   is not compiled in at all, which is what "zero cost when off" has to mean.
+4. **The effects pass has NO params uniform buffer today** — bloom/SSR each own
+   theirs and the effects pass owns none. One must be added: copy the
+   `BloomParams` shape in `render_passes/bloom/render_pass.rs` (gpu_buffer +
+   `raw_data: [u8; BYTE_SIZE]` + `MappedUploader`, `BYTE_SIZE` padded to 16),
+   add a bind-group entry in `effects/bind_group.rs`, and write it per frame
+   from `render.rs` next to the existing `bloom.params.write(...)` call. This is
+   the bulk of Phase 1 and the reason it isn't a one-file change.
+5. **Phase 1 shader**: `effects_wgsl/helpers/atmosphere.wgsl` with
+   `apply_atmosphere(rgb, coords, camera)` — reconstruct view distance from
+   depth (the pass already binds depth for DoF), `t = exp(-density * dist)`
+   with the closed-form height integral when `height_falloff > 0`, sky pixels
+   at a large fixed distance. Apply **before** bloom in `compute.wgsl`.
+6. **Phase 2** (separate commit): the same term on the SSR miss fallback
+   (`ssr_wgsl/trace.wgsl`, reusing the `box_project` intersection distance),
+   IBL specular in `brdf_pbr.wgsl`, and BVH hits (`bvh_trace.wgsl`, `best_t` is
+   already there).
+7. **Editor surface**: `SetPostProcess` fields in editor-protocol → editor
+   `state.rs` apply + inverse → MCP `set_post_process` params **and its
+   description** (there is a native test asserting MCP tools and docs stay in
+   sync — it will fail if the description isn't updated).
+8. **`wgsl_validation` pins**: assert the fog term is present when on and
+   absent when off.
+9. **Layer-A scene** `examples/test-scenes/atmosphere/` with `author.js` +
+   `verify.md`. Note the lesson from `shadows-all`: **write `verify.md` against
+   what the golden actually shows**, or it fails correct builds.
+
 ## Non-goals
 
 Volumetric light shafts / froxel scattering (different feature tier);
