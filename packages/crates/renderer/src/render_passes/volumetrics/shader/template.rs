@@ -24,6 +24,9 @@ pub struct ShaderTemplateVolumetricsBindGroups {
     pub sscs_step_count: u32,
     /// Shadows sit at group 2 (0 = volume, 1 = lights).
     pub shadow_group_index: u32,
+    /// Collapse shadow filtering to the 1-tap hard path (see the shared
+    /// `shadow/bind_groups.wgsl`). Only the volumetrics pass sets this.
+    pub shadow_force_hard: bool,
     /// Z-slice count for `froxel_walk.wgsl`.
     pub froxel_slice_count: u32,
     /// Depth convention (003) — read by the shared shadow include.
@@ -41,6 +44,7 @@ impl ShaderTemplateVolumetricsBindGroups {
             sscs_available: false,
             sscs_step_count: 1,
             shadow_group_index: 2,
+            shadow_force_hard: true,
             froxel_slice_count: crate::render_passes::light_culling::DEFAULT_SLICE_COUNT,
             reverse_z: key.reverse_z,
             multisampled_geometry: false,

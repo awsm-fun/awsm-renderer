@@ -210,6 +210,9 @@ pub struct ShaderTemplateTransparentMaterialBindGroups {
     /// include. `lights` is folded into `main` (group 0) so the
     /// shadow group lives at slot 1 on the transparent pipeline.
     pub shadow_group_index: u32,
+    /// Collapse shadow filtering to the 1-tap hard path (see the shared
+    /// `shadow/bind_groups.wgsl`). Only the volumetrics pass sets this.
+    pub shadow_force_hard: bool,
     /// SSCS is opaque-only — the transparent pass doesn't have access
     /// to a depth texture it can sample on the same frame without a
     /// feedback loop. `false` here makes `apply_sscs` short-circuit.
@@ -250,6 +253,7 @@ impl ShaderTemplateTransparentMaterialBindGroups {
             texture_pool_samplers_len: cache_key.texture_pool_samplers_len,
             multisampled_geometry: cache_key.msaa_sample_count.is_some(),
             shadow_group_index: 1,
+            shadow_force_hard: false,
             sscs_available: false,
             sscs_step_count: 1,
             needs_shadow_sampling: inc.apply_lighting,

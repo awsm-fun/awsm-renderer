@@ -34,6 +34,9 @@ pub struct ShaderTemplateMaterialOpaqueBindGroups {
     /// `shared_wgsl/shadow/bind_groups.wgsl` include can be reused by
     /// the transparent pipeline (slot 1).
     pub shadow_group_index: u32,
+    /// Collapse shadow filtering to the 1-tap hard path (see the shared
+    /// `shadow/bind_groups.wgsl`). Only the volumetrics pass sets this.
+    pub shadow_force_hard: bool,
     /// Registry bucket list — drives the templated `ClassifyBuckets`
     /// struct emit, must match the classify-pass writer's struct
     /// byte-for-byte.
@@ -443,6 +446,7 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
                 msaa_sample_count,
                 debug,
                 shadow_group_index: 3,
+                shadow_force_hard: false,
                 // Opaque is SSCS-capable; effective gate is the global enable.
                 // step_count clamped ≥1 (safe loop bound + f32(steps) divisor).
                 sscs_available: value.sscs_enabled,

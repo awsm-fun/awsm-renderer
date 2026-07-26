@@ -45,4 +45,5 @@ struct AtmosphereParamsRaw {
 // because they live in three shader modules with no shared include.
 const FROXEL_TILE_PIXEL_SIZE: f32 = 16.0;
 @group(0) @binding(8) var volumetric_tex: texture_3d<f32>;
+@group(0) @binding(9) var volumetric_sampler: sampler;
 {% endif %}

@@ -51,5 +51,20 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             vec3<i32>(vec3<u32>(gid.xy, slice)),
             vec4<f32>(accumulated, transmittance),
         );
+
+        // Once the air is opaque, every remaining slice contributes nothing —
+        // `transmittance * slice_scatter` is already zero to the precision the
+        // rgba16float target can hold. Fill the tail with the saturated value
+        // and stop marching. In a dense scene this cuts most of the column.
+        if (transmittance < 0.002) {
+            for (var tail = slice + 1u; tail < slice_count; tail = tail + 1u) {
+                textureStore(
+                    dst_volume,
+                    vec3<i32>(vec3<u32>(gid.xy, tail)),
+                    vec4<f32>(accumulated, transmittance),
+                );
+            }
+            return;
+        }
     }
 }

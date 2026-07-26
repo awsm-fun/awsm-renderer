@@ -563,7 +563,16 @@ fn sample_shadow_cube(desc: ShadowDescriptor, world_pos: vec3<f32>, world_normal
     {% else %}
     let ref_depth = clamp(ndc_z, 0.0, 1.0) - world_bias * grad;
     {% endif %}
+    // `shadow_force_hard` collapses every filter to the 1-tap hard path. Set
+    // by the VOLUMETRICS pass: a PCSS blocker search runs ~24 search taps plus
+    // ~32 PCF taps, and at ~260k froxels on a 1080p frame that is millions of
+    // texture reads per light for a result the volume integral immediately
+    // blurs away. Surfaces are unaffected — they leave the flag false.
+{% if shadow_force_hard %}
+    let hardness = 0.0;
+{% else %}
     let hardness = desc.bias_params.z;
+{% endif %}
 
     if hardness < 0.5 {
         return textureSampleCompareLevel(
@@ -990,7 +999,16 @@ fn sample_shadow_cascade_array(
     {% else %}
     let ref_depth = ndc.z - desc.bias_params.x * depth_grad;
     {% endif %}
+    // `shadow_force_hard` collapses every filter to the 1-tap hard path. Set
+    // by the VOLUMETRICS pass: a PCSS blocker search runs ~24 search taps plus
+    // ~32 PCF taps, and at ~260k froxels on a 1080p frame that is millions of
+    // texture reads per light for a result the volume integral immediately
+    // blurs away. Surfaces are unaffected — they leave the flag false.
+{% if shadow_force_hard %}
+    let hardness = 0.0;
+{% else %}
     let hardness = desc.bias_params.z;
+{% endif %}
 
     let inv_atlas = vec2<f32>(
         1.0 / shadow_globals.cascade_array.x,
@@ -1216,7 +1234,16 @@ fn sample_shadow_descriptor(
     {% else %}
     let ref_depth = ndc.z - desc.bias_params.x * depth_grad;
     {% endif %}
+    // `shadow_force_hard` collapses every filter to the 1-tap hard path. Set
+    // by the VOLUMETRICS pass: a PCSS blocker search runs ~24 search taps plus
+    // ~32 PCF taps, and at ~260k froxels on a 1080p frame that is millions of
+    // texture reads per light for a result the volume integral immediately
+    // blurs away. Surfaces are unaffected — they leave the flag false.
+{% if shadow_force_hard %}
+    let hardness = 0.0;
+{% else %}
     let hardness = desc.bias_params.z;
+{% endif %}
 
     // PCF / PCSS taps must stay inside this cascade's tile of the
     // atlas. The tile-pack allocator places cascades edge-to-edge,

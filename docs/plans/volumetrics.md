@@ -153,13 +153,33 @@ Four bugs on the way, three of which only a browser could find:
    ignored; the same hazard applies to the SERVER, and restarting the dev task
    after a protocol change is now part of the loop.
 
-### Known artifact — blockiness
+### Quality + cost
 
-The beams stair-step visibly at the froxel grid: 16 px columns, 32 slices,
-nearest-neighbour `textureLoad`, no temporal. Expected at this stage and exactly
-what the remaining work addresses — the temporal reprojection stage (already a
-config axis, `volumetric_temporal`) plus a filtered fetch. Do NOT ship the
-dance-off light show before that lands; the artifact reads as broken.
+Blockiness FIXED by filtering the fetch. The composite samples the integrated
+volume trilinearly (`textureSampleLevel`) instead of `textureLoad`-ing a froxel
+centre, so the hardware interpolates across all three axes for the price of one
+sampler. Watch the half-texel offset: froxel values live at CENTRES, so slice
+`i` is at `(i + 0.5)/n` — sampling at `i/n` shifts the whole volume half a
+froxel toward the origin and the beams lean away from their lights.
+
+Three costs deliberately bounded:
+
+- **Shadow filtering is forced HARD in the volume** (`shadow_force_hard` on the
+  shared shadow include, set only by this pass). The plan called for it from the
+  start and the first implementation didn't actually do it: a PCSS light runs a
+  ~24-tap blocker search plus ~32 PCF taps, and at ~260k froxels on a 1080p
+  frame that is millions of texture reads per light for detail the volume
+  integral immediately blurs away. Surfaces are untouched.
+- **The integrate march early-outs** once transmittance drops below 0.002 — the
+  remaining slices contribute nothing the rgba16float target can hold. The tail
+  is filled with the saturated value so the composite still reads correctly.
+- **Zero-density froxels skip the light walk entirely**, which is most of the
+  volume in any scene with a haze layer rather than uniform fog.
+
+`volumetric_temporal` remains unimplemented (the config axis and cache key
+exist). With the filtered fetch the beams already read as air, so it's now a
+refinement — jittered sampling plus a history blend — rather than the thing
+standing between here and shipping.
 
 ## Per-light `volumetric_intensity`
 

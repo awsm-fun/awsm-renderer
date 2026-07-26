@@ -14,10 +14,11 @@ use crate::{
 use awsm_renderer_core::{
     bind_groups::{
         BindGroupDescriptor, BindGroupEntry, BindGroupLayoutResource, BindGroupResource,
-        BufferBindingLayout, BufferBindingType, StorageTextureAccess, StorageTextureBindingLayout,
-        TextureBindingLayout,
+        BufferBindingLayout, BufferBindingType, SamplerBindingLayout, SamplerBindingType,
+        StorageTextureAccess, StorageTextureBindingLayout, TextureBindingLayout,
     },
     buffers::BufferBinding,
+    sampler::{AddressMode, FilterMode, SamplerDescriptor},
     texture::{TextureSampleType, TextureViewDimension},
 };
 
@@ -35,6 +36,11 @@ pub struct EffectsBindGroups {
     /// lazy pass hasn't been built. Same reason as the weights dummy: one
     /// layout shape across the toggle, for 8 bytes of VRAM.
     dummy_volume_view: Option<web_sys::GpuTextureView>,
+    /// Trilinear sampler for the froxel volume. Filtering it is what turns the
+    /// grid from a visible staircase into haze: at 16 px columns and 32 slices
+    /// a nearest fetch shows every froxel boundary, and hardware trilinear is
+    /// free next to the alternative (marching, or a finer grid).
+    volume_sampler: Option<web_sys::GpuSampler>,
 }
 
 impl EffectsBindGroups {
@@ -95,12 +101,26 @@ impl EffectsBindGroups {
                 })?
         };
 
+        let volume_sampler = ctx.gpu.create_sampler(Some(
+            &SamplerDescriptor {
+                label: Some("Effects Volumetrics Trilinear"),
+                mag_filter: Some(FilterMode::Linear),
+                min_filter: Some(FilterMode::Linear),
+                address_mode_u: Some(AddressMode::ClampToEdge),
+                address_mode_v: Some(AddressMode::ClampToEdge),
+                address_mode_w: Some(AddressMode::ClampToEdge),
+                ..SamplerDescriptor::default()
+            }
+            .into(),
+        ));
+
         Ok(Self {
             multisampled_bind_group_layout_key,
             singlesampled_bind_group_layout_key,
             bind_group: None,
             dummy_weights_view: Some(dummy_weights_view),
             dummy_volume_view: Some(dummy_volume_view),
+            volume_sampler: Some(volume_sampler),
         })
     }
 
@@ -170,6 +190,14 @@ impl EffectsBindGroups {
         entries.push(BindGroupEntry::new(
             entries.len() as u32,
             BindGroupResource::TextureView(Cow::Borrowed(volume_view)),
+        ));
+        let volume_sampler = self
+            .volume_sampler
+            .as_ref()
+            .expect("volume sampler exists after new()");
+        entries.push(BindGroupEntry::new(
+            entries.len() as u32,
+            BindGroupResource::Sampler(volume_sampler),
         ));
 
         let descriptor = BindGroupDescriptor::new(
@@ -281,15 +309,24 @@ fn bind_group_layout_cache_key(
                 visibility_compute: true,
             },
             // Integrated froxel volume (1×1×1 dummy unless volumetrics is on).
-            // UnfilterableFloat + textureLoad rather than a sampler: adding a
-            // sampler here would mean a second new binding, and the froxel
-            // grid is already coarse enough that the trilinear smoothing worth
-            // having is the temporal pass's job, not the fetch's.
+            // FILTERABLE + sampled, not `textureLoad`: the grid is 16 px
+            // columns by 32 slices, so a nearest fetch renders every froxel
+            // boundary as a visible step. Hardware trilinear costs one sampler
+            // and is what makes the beams read as air.
             BindGroupLayoutCacheKeyEntry {
                 resource: BindGroupLayoutResource::Texture(
                     TextureBindingLayout::new()
                         .with_view_dimension(TextureViewDimension::N3d)
-                        .with_sample_type(TextureSampleType::UnfilterableFloat),
+                        .with_sample_type(TextureSampleType::Float),
+                ),
+                visibility_vertex: false,
+                visibility_fragment: false,
+                visibility_compute: true,
+            },
+            // Its trilinear sampler.
+            BindGroupLayoutCacheKeyEntry {
+                resource: BindGroupLayoutResource::Sampler(
+                    SamplerBindingLayout::new().with_binding_type(SamplerBindingType::Filtering),
                 ),
                 visibility_vertex: false,
                 visibility_fragment: false,
