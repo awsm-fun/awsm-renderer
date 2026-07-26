@@ -117,16 +117,40 @@ code actually looks like today, not what the design assumed.
    shared `helpers/depth.wgsl` gated on `dof || atmosphere` — haze without DoF
    couldn't otherwise see them. `AtmosphereParams` is carried through
    `RenderPassesDescriptors` (like `hzb_texture`) because `from_resolved` is
-   sync and has no gpu handle. **Browser verification is pending step 7** —
-   Browser-verified (2026-07-26) as a three-state A/B/C in the `atmosphere`
+   sync and has no gpu handle. Browser-verified (2026-07-26) as a three-state A/B/C in the `atmosphere`
    test scene: haze off = no depth ramp at all; haze on with falloff 0.25 =
    pillar ramp + mast height gradient + sky gradient; haze on with falloff 0 =
    pillar ramp unchanged, mast and sky both flat. State B is what proves the
    height integral is real rather than the distance term in disguise.
-6. **Phase 2** (separate commit): the same term on the SSR miss fallback
-   (`ssr_wgsl/trace.wgsl`, reusing the `box_project` intersection distance),
-   IBL specular in `brdf_pbr.wgsl`, and BVH hits (`bvh_trace.wgsl`, `best_t` is
-   already there).
+6. **Phase 2** — NOT STARTED. Scoped against the code 2026-07-26; it is a
+   bigger change than the design implies, for one reason: **the haze params
+   have to reach the MATERIAL shaders**, and `AtmosphereParams` is owned by the
+   effects pass, which the material passes never bind.
+
+   Three routes were considered:
+   - *A new binding on every material bind group* — `material_opaque`'s group 0
+     is already 25+ entries and the same uniform would have to be added to
+     transparent + decal + edge_resolve too. Widest change, most churn.
+   - **Pack the haze block into `frame_globals`** (RECOMMENDED). That uniform is
+     already documented as "bound alongside the camera in every pass that pulls
+     camera", it is already bound by the effects pass (binding 5) AND
+     `material_opaque` (binding 22), and it currently carries 16 bytes of pure
+     padding in a 32-byte buffer. Growing it to 64 bytes costs one shared
+     struct edit (`shared_wgsl/frame_globals.wgsl` + its Rust writer) and
+     reaches every consumer with NO new bindings anywhere. Phase 1's dedicated
+     `AtmosphereParams` would then be redundant and should be folded in rather
+     than left as a second source of the same numbers.
+   - *Leave the reflection paths unhazed* — rejected: SSR hands off to IBL
+     specular at `spread_cutoff`, so hazing one path and not the other puts a
+     visible seam right at the cutoff. Phase 2 is all-or-nothing across SSR
+     miss + IBL specular + BVH hits.
+
+   The remaining cost after the uniform reaches the materials: an `atmosphere`
+   structural axis on `ShaderCacheKeyMaterialOpaque` (and transparent/decal) so
+   "zero cost when off" still holds there, then the term itself on the SSR miss
+   fallback (`ssr_wgsl/trace.wgsl` — reuse the `box_project_env_dir`
+   intersection distance), IBL specular (`brdf_pbr.wgsl`), and BVH hits
+   (`bvh_trace.wgsl`, `best_t` is already there).
 7. ✅ **Editor surface**: `SetPostProcess` fields in editor-protocol → editor
    `state.rs` apply + inverse → MCP `set_post_process` params **and its
    description** (there is a native test asserting MCP tools and docs stay in
