@@ -54,6 +54,14 @@ pub struct VolumetricsBindGroups {
     pub volume_layout_key: BindGroupLayoutKey,
     pub lights_layout_key: BindGroupLayoutKey,
     pub shadows_layout_key: BindGroupLayoutKey,
+    /// 1×1×1 stand-in bound at `inject`'s src slot. NOT an optimisation — a
+    /// correctness requirement: the layout is shared with `integrate`, and
+    /// binding the scatter volume at BOTH the sampled and the storage slot puts
+    /// one texture in two usages inside a single synchronization scope, which
+    /// WebGPU rejects outright. The rule is per SUBRESOURCE and applies to what
+    /// the bind group DECLARES — not, as this code first assumed, to what the
+    /// shader actually reads.
+    dummy_src_view: Option<web_sys::GpuTextureView>,
     inject: Option<web_sys::GpuBindGroup>,
     integrate: Option<web_sys::GpuBindGroup>,
     lights: Option<web_sys::GpuBindGroup>,
@@ -124,10 +132,37 @@ impl VolumetricsBindGroups {
             },
         )?;
 
+        let dummy_src = ctx.gpu.create_texture(
+            &awsm_renderer_core::texture::TextureDescriptor::new(
+                TextureFormat::Rgba16float,
+                awsm_renderer_core::texture::Extent3d::new(1, Some(1), Some(1)),
+                awsm_renderer_core::texture::TextureUsage::new().with_texture_binding(),
+            )
+            .with_dimension(awsm_renderer_core::texture::TextureDimension::N3d)
+            .with_label("Volumetrics Inject Src Dummy")
+            .into(),
+        )?;
+        let dummy_src_view = {
+            let descriptor: web_sys::GpuTextureViewDescriptor =
+                awsm_renderer_core::texture::TextureViewDescriptor::new(Some(
+                    "Volumetrics Inject Src Dummy",
+                ))
+                .with_dimension(TextureViewDimension::N3d)
+                .into();
+            dummy_src
+                .create_view_with_descriptor(&descriptor)
+                .map_err(|e| {
+                    awsm_renderer_core::error::AwsmCoreError::create_texture_view(
+                        format!("{e:?}").into(),
+                    )
+                })?
+        };
+
         Ok(Self {
             volume_layout_key,
             lights_layout_key,
             shadows_layout_key,
+            dummy_src_view: Some(dummy_src_view),
             inject: None,
             integrate: None,
             lights: None,
@@ -168,16 +203,20 @@ impl VolumetricsBindGroups {
     ) -> Result<()> {
         let layout = ctx.bind_group_layouts.get(self.volume_layout_key)?;
 
-        // `inject` binds the scatter volume as its DESTINATION and has no real
-        // source — but the layout is shared with `integrate`, so slot 2 needs
-        // something. Binding the destination's own sample view is safe because
-        // the inject shader never reads it (WebGPU only forbids simultaneous
-        // read+write through the same *view*, and a shader that doesn't sample
-        // can't race with itself).
+        // `inject` writes the scatter volume and reads nothing, but the layout
+        // is shared with `integrate`, so slot 2 needs a texture. It gets a
+        // DUMMY, not the destination's own sample view: WebGPU's
+        // synchronization-scope rule is per subresource and keys off what the
+        // bind group declares, so scatter-as-sampled + scatter-as-storage in
+        // one group is rejected no matter what the shader body does.
         let mut inject_entries = self.common_entries(ctx, params);
+        let dummy_src = self
+            .dummy_src_view
+            .as_ref()
+            .expect("dummy src view exists after new()");
         inject_entries.push(BindGroupEntry::new(
             2,
-            BindGroupResource::TextureView(Cow::Borrowed(&texture.scatter_sample_view)),
+            BindGroupResource::TextureView(Cow::Borrowed(dummy_src)),
         ));
         inject_entries.push(BindGroupEntry::new(
             3,

@@ -126,71 +126,40 @@ it.
 
 ## Stages
 
-**Status: fully wired, renders without error, but the volume reads back EMPTY.**
-Everything is in place — the lazy `Option<VolumetricsRenderPass>`, the
-build-on-enable, the per-frame resize + params write + dispatch, the bind-group
-recreate arm, the effects binding, the composite, and `atmosphere_phase()`
-flipped to `Volumetric`. Browser-verified to the extent that it *runs*: no GPU
-validation errors, shadows and lighting unaffected.
+**Status: WORKING.** Beams render — a luminous cone in the air above a slotted
+occluder, with a dark shaft below where a bar blocks the light, and lit pools +
+shadow stripes on the floor. Browser-verified 2026-07-26.
 
-But the composite has no effect. Raising `density` from 0.03 to 0.25 changes
-the frame not at all, which means the sampled volume is `(0,0,0,1)` — no
-extinction, no in-scatter — rather than "beams are too dim". Two bugs were
-already found and fixed on the way here, so this is the third in the same area:
+Four bugs on the way, three of which only a browser could find:
 
-1. FIXED — a `TextureDescriptor` defaults to **2D**, so every 3D view of the
-   volume (and of the effects dummy) was invalid. Naga validates the *shader*;
-   nothing native validates texture/view/layout agreement, which is precisely
-   what the browser-verify rule is for.
-2. FIXED — the volume inherited the light-culling **far plane (~10 km)**. 32
-   exponential slices over that make the far ones kilometres thick, saturating
-   to solid haze and washing the whole frame flat. The volume now carries its
-   own `volumetric_distance` (default 80 m), which is why every engine ships
-   that knob.
-3. OPEN — the volume reads empty.
+1. A `TextureDescriptor` defaults to **2D**, so every 3D view of the volume (and
+   of the effects dummy) was invalid, taking the whole Effects bind group with
+   it. Naga validates the *shader*; nothing native validates texture/view/layout
+   agreement.
+2. The volume inherited the light-culling **far plane (~10 km)**. 32 exponential
+   slices over that make the far ones kilometres thick, saturating to solid haze
+   and washing the frame flat. Hence `volumetric_distance` (default 80 m).
+3. **The inject bind group had the scatter volume in two usages at once** —
+   sampled at slot 2 (only because the layout is shared with `integrate`) and
+   storage-write at slot 3. WebGPU's synchronization-scope rule is per
+   SUBRESOURCE and keys off what the bind group DECLARES, not what the shader
+   body reads. The code carried a confident comment asserting the opposite;
+   inject now binds a 1×1×1 dummy at slot 2.
+4. Not a renderer bug at all: the **MCP server binary was stale**, and since it
+   deserializes and re-serializes each command, it silently dropped every field
+   it didn't know — so `atmosphere_mode` never reached the editor while
+   `density`/`color` did. Two "the feature does nothing" screenshots came from
+   that. The MCP tool docs warn callers that unknown fields are silently
+   ignored; the same hazard applies to the SERVER, and restarting the dev task
+   after a protocol change is now part of the loop.
 
-**Debug order for the next session** (cheapest discriminating test first):
+### Known artifact — blockiness
 
-- Make the composite output the raw fetch (`return integrated.rgb * 100`, or
-  visualise `1 - integrated.a`). That splits "volume is empty" from "composite
-  math is wrong" in one rebuild, and everything below is downstream of it.
-- If the volume is genuinely empty: is `inject` dispatching at all? Check the
-  `Volumetrics` GPU timestamp scope, then have `inject` write a constant
-  `vec4(1,0,0,1)` — if that shows, the bug is in the medium/light math; if not,
-  it's the dispatch or the bind group.
-- Suspect the **effects bind group is holding the 1×1×1 dummy**: it binds
-  whatever `render_passes.volumetrics` was at the last `TextureViewRecreate`,
-  and the lazy build marks that recreate itself — verify the ordering actually
-  produces a rebind AFTER the pass exists, rather than assuming it.
-- Suspect `UnfilterableFloat` on an `rgba16float` 3D texture, and the
-  `textureLoad` coordinate order.
-
-
-A froxel volume (`rgba16float`, RGB = in-scattered radiance, A = extinction),
-sized ~(viewport/8) × 64 slices over the same exponential depth mapping the
-light culling uses.
-
-1. **Media injection** — write extinction + albedo per froxel from the
-   atmosphere config (the same height-profile function Phase 1 uses, evaluated
-   at the froxel centre rather than integrated along a ray). This is the stage
-   that makes the medium *3D* instead of a per-pixel function of depth.
-2. **Light injection** — for each froxel, walk `froxel_walk` and accumulate
-   `light_colour · attenuation · shadow · phase(cos θ) · volumetric_intensity`.
-   Henyey-Greenstein for the phase term (one `g` per scene is enough; a per-
-   light `g` is a later refinement, not an MVP knob).
-3. **Temporal reprojection** (optional, structural) — the froxel volume is
-   heavily undersampled, so a jittered slice offset plus a reprojected history
-   blend is what turns it from banded to smooth. Gate it like `ssr.temporal`:
-   off by default, structural, and only worth compiling when asked for.
-4. **Front-to-back integration** — a single pass down the slices accumulating
-   transmittance, writing the integrated scattering per froxel.
-5. **Apply in EFFECTS** — sample the integrated volume at the pixel's froxel and
-   composite. **This REPLACES the analytic fog term, it does not stack with
-   it**: the volume already carries the same medium's extinction, so running
-   both double-counts the air and the scene goes twice as murky as authored.
-   Concretely: the `atmosphere` arm in `effects_wgsl/compute.wgsl` becomes a
-   three-way choice — off / analytic / volumetric — on the cache key, not two
-   independent booleans.
+The beams stair-step visibly at the froxel grid: 16 px columns, 32 slices,
+nearest-neighbour `textureLoad`, no temporal. Expected at this stage and exactly
+what the remaining work addresses — the temporal reprojection stage (already a
+config axis, `volumetric_temporal`) plus a filtered fetch. Do NOT ship the
+dance-off light show before that lands; the artifact reads as broken.
 
 ## Per-light `volumetric_intensity`
 
