@@ -55,7 +55,33 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             scattered += froxel_light_contribution(index, world_pos, to_eye, g);
         }
 
-        scattered *= volumetric_params.scattering_color * density;
+        // In-scattered source term: sigma_s * (L_ambient + sum L_i).
+        //
+        // The AMBIENT term is what the first implementation was missing, and
+        // its absence is why the two haze modes disagreed by 3.5x on the same
+        // medium: air that no punctual light reaches was a pure ABSORBER, so
+        // the volumetric path faded a distant surface to BLACK where the
+        // analytic path fades it to `color`. Real media in-scatter the room
+        // (sky, bounce, the walls), not only the lights the culling grid bins.
+        //
+        // The weight is exactly 1.0, and that is a derivation rather than a
+        // taste call. With source S = color * density and extinction density,
+        // `integrate`'s per-slice term S/sigma_t * (1 - exp(-sigma_t*d))
+        // telescopes down the column to `color * (1 - T)` — the analytic
+        // path's term, identically. So the two modes now agree in the limit
+        // where no light participates in the medium, which is the invariant
+        // `volumetric_matches_analytic_without_lights` pins.
+        //
+        // Note what is NOT here: `scattering_color` no longer tints the
+        // lights. The medium's scattering albedo is neutral, so a beam is the
+        // colour of its LIGHT — a white hazer does not turn a red beam blue.
+        // `color` therefore keeps its one documented meaning in both modes:
+        // the radiance unlit air glows at.
+        // The ambient term rides INSIDE the density > 0 guard on purpose:
+        // zero density means no medium, hence nothing to in-scatter. Adding
+        // it unconditionally would paint haze above the layer's ceiling,
+        // which is exactly what `base_height` + `height_falloff` prevent.
+        scattered = (scattered + volumetric_params.scattering_color) * density;
     }
 
     textureStore(dst_volume, vec3<i32>(gid), vec4<f32>(scattered, density));

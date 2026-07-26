@@ -89,10 +89,10 @@ group 1 = lights (the 4-entry shape above), group 2 = shadows.
 ## Config shape (landed)
 
 The volumetric knobs live ON `AtmosphereConfig` rather than in a config of
-their own, because they describe **the same medium** — `color` is the
-scattering tint, `density` the extinction, `base_height`/`height_falloff` the
-profile. Only the integration changes. So the switch is one three-way `mode`,
-not an enable plus a style flag:
+their own, because they describe **the same medium** — `color` is the radiance
+unlit air glows at (what an infinitely distant surface fades to), `density` the
+extinction, `base_height`/`height_falloff` the profile. Only the integration
+changes. So the switch is one three-way `mode`, not an enable plus a style flag:
 
     mode: AtmosphereMode         // STRUCTURAL — Off | Fog | Volumetric
     scattering_anisotropy: f32   // Henyey-Greenstein g, default 0.3 (forward)
@@ -180,6 +180,119 @@ Three costs deliberately bounded:
 exist). With the filtered fetch the beams already read as air, so it's now a
 refinement — jittered sampling plus a history blend — rather than the thing
 standing between here and shipping.
+
+## Two bugs found from the live editor (2026-07-26)
+
+Reported by David against the dance-off stage: *the haze changes massively with
+zoom level*, and *zoomed in, the cone edges are hard straight-edged facets with
+banding inside them*. Both were investigated by measurement before any art
+tuning, and neither had the cause the reporting suggested.
+
+### (a) The medium had no ambient in-scatter — FIXED
+
+The suspicion was the far plane: `volumetric_distance` is measured from the
+camera, so zoomed out the stage falls beyond it and the composite clamps to the
+last slice. **That is not what was happening.** Clamping *under*-estimates the
+medium (it stops the air early), and at the framings in question it was moving
+almost nothing — the backdrop sits ~2 m past a 25 m far plane.
+
+The decisive test was an A/B of the two haze modes on the *identical* medium,
+since they are documented as "the same air, integrated differently". Mean luma
+over the stage region, orbit radius 25, `density 0.11`:
+
+| mode | mean luma |
+|---|---|
+| `off` | 22.2 |
+| `fog` (analytic) | **50.6** |
+| `volumetric` | **14.5** |
+
+A 3.5x disagreement. The analytic path ends in `rgb * T + color * (1 - T)`; the
+volumetric path's source term was `scattered *= scattering_color * density`,
+where `scattered` is *only* the punctual + directional light walk. So air that
+no light reaches in-scattered **nothing** — the medium was a pure absorber, and
+the volumetric mode faded distant surfaces to BLACK where the analytic mode
+fades them to `color`. Real media in-scatter the room (sky, bounce, walls), not
+only the lights the culling grid bins.
+
+That also explains the zoom dependence exactly, and why it felt like more than
+fog: close up the ray is short *and* crosses the beams, so in-scatter wins and
+the haze is net ADDITIVE (measured 26.4 → 29.1 at radius 8); wide, the ray is
+long and mostly outside the spots' 8 m range, so extinction has nothing to
+replace it and the haze is net SUBTRACTIVE. The sign of the effect flipped with
+camera distance — a 1.7x swing in stage brightness from a camera move alone.
+
+Fixed by making the source term additive:
+
+    scattered = (scattered + volumetric_params.scattering_color) * density
+
+The weight on the ambient term is exactly **1.0**, and that is derived rather
+than tuned: with source `S = color * density` and extinction `density`,
+`integrate`'s energy-conserving slice term `S/sigma_t * (1 - exp(-sigma_t*d))`
+telescopes down the column to `color * (1 - T)` — the analytic term,
+identically. `ambient_inscatter_telescopes_to_the_analytic_haze_term` pins the
+algebra over exponential slice thicknesses and a range of colours/densities;
+`volumetrics_inject_adds_ambient_inscatter` pins the shape in the emitted WGSL
+with comments stripped, so the term can't be silently deleted.
+
+Note what the fix also removes: `scattering_color` no longer multiplies the
+lights. The medium's scattering albedo is now neutral, so **a beam is the colour
+of its light** — a white hazer doesn't turn a red beam blue — and `color` keeps
+one meaning in both modes instead of being a tint in one and a fade target in
+the other.
+
+Browser-verified: volumetric now measures **53.7** against analytic's 50.6 at
+the same framing. The residual 6% is the beams' in-scatter, which is exactly
+what the volumetric path is supposed to add on top.
+
+### (b) Froxel Z quantization — CONFIRMED, not yet fixed
+
+Confirmed by changing *only* the slice distribution (`volumetric_distance`
+25 → 8, one live uniform, same camera, same everything else): the hard straight
+edges on the beam cones moved and softened. They are depth-slice boundaries seen
+at a glancing angle, not XY tile edges and not shadow-map aliasing.
+
+The arithmetic says why. The volume borrows the light-culling grid's near plane,
+which is the **camera's** near plane (0.1 m), and slices exponentially from
+there: `slice(z) = 32 * ln(z / 0.1) / ln(z_far / 0.1)`. At `volumetric_distance
+= 25` that puts **half of the 32 slices between 0.1 m and 1.6 m** — empty air in
+front of the lens for any framing of a stage. At the authored camera the whole
+subject (view_z ~5–9 m) lands in slices 22.7–26.1: **about 3.4 slices for the
+entire stage.** Each is ~1 m thick where the beams are ~1.5 m wide.
+
+That distribution is right for its original job and wrong for this one.
+Exponential slicing exists to equalize *screen-space* error over a 0.1 m → 10 km
+light-binning range; volumetric error is world-space and the range is tens of
+metres.
+
+Still to do, and the two are entangled — see below.
+
+### The far plane must stop being an art knob
+
+`volumetric_distance` is documented as a cost/quality budget, but it is welded
+to the amount of medium: beyond it the composite clamps, so the air simply ends.
+That was demonstrated above — dropping it 25 → 8 to buy z-resolution visibly
+*removed haze*. You cannot currently spend the slice budget where the beams are
+without changing the look.
+
+The fix is the Frostbite split: froxel volume near, **analytic continuation
+far**. The composite already has everything it needs — `apply_atmosphere`'s
+closed-form height integral describes the same medium, and beyond the volume
+there is no beam detail left to preserve anyway. Order matters (light crosses
+the far segment first, then the near one):
+
+    (rgb * T_analytic + color * (1 - T_analytic)) * T_volume + inscatter_volume
+
+with the analytic term evaluated over `[z_far_volume, depth]` only. Sky pixels
+stop being pinned to "exactly `volumetric_distance` away" and get the saturating
+distance the analytic path already uses.
+
+With that landed, `volumetric_distance` becomes a real quality knob and can drop
+to roughly the subject's depth extent — which is also most of the fix for (b),
+since the slices then land on the stage. Whether 32 slices is enough should be
+re-judged *after* that, not before: Frostbite and UE both ship 64, and doubling
+is 2x the froxels (~16 MB of rgba16float at 1080p) for 2x the z-resolution, but
+it is the expensive lever and it should be spent only if a correctly-ranged
+volume still bands.
 
 ## Per-light `volumetric_intensity`
 

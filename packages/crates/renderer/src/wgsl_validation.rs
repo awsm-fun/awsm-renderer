@@ -2368,3 +2368,41 @@ fn volumetrics_inject_uses_the_shared_froxel_walk() {
         );
     }
 }
+
+/// The injected source term must ADD the ambient in-scatter to the light walk,
+/// not multiply the walk by it.
+///
+/// Without the additive term, air that no punctual light reaches is a pure
+/// absorber: the volumetric mode fades a distant surface to BLACK where the
+/// analytic mode fades it to `color`. Measured on the dance-off stage at 25 m,
+/// the same medium rendered at mean luma 14.5 volumetric vs 50.6 analytic —
+/// a 3.5x disagreement between two modes documented as "the same air,
+/// integrated differently".
+///
+/// Asserted on the rendered source with comments stripped, so it pins code
+/// rather than the paragraph above it.
+#[test]
+fn volumetrics_inject_adds_ambient_inscatter() {
+    use crate::render_passes::volumetrics::shader::cache_key::{
+        ShaderCacheKeyVolumetrics, VolumetricsStage,
+    };
+    use crate::render_passes::volumetrics::shader::template::ShaderTemplateVolumetrics;
+
+    let key = ShaderCacheKeyVolumetrics {
+        stage: VolumetricsStage::Inject,
+        reverse_z: true,
+    };
+    let src = ShaderTemplateVolumetrics::try_from(&key)
+        .unwrap()
+        .into_source()
+        .unwrap();
+    let code = strip_wgsl_comments(&src);
+
+    assert!(
+        code.contains("(scattered + volumetric_params.scattering_color) * density"),
+        "volumetrics inject must form its source term as \
+         `(lights + color) * density`. `scattered *= color * density` — the \
+         original shape — drops the ambient in-scatter entirely and makes the \
+         volumetric mode disagree with the analytic one on the same medium."
+    );
+}

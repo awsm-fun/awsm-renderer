@@ -216,3 +216,86 @@ impl VolumetricsRenderPass {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    /// CPU mirror of `integrate.wgsl`'s per-slice march. Deliberately a
+    /// transcription rather than a shared implementation: the shader is the
+    /// only place this runs for real, so what is worth pinning is the ALGEBRA
+    /// it relies on, not a second copy of the code. Keep the two in step by
+    /// hand — the identity below is what breaks loudly if they drift.
+    fn march_column(source: f32, extinction: f32, thicknesses: &[f32]) -> (f32, f32) {
+        let mut accumulated = 0.0f32;
+        let mut transmittance = 1.0f32;
+        for &d in thicknesses {
+            let slice_transmittance = (-(extinction * d)).exp();
+            let slice_scatter = source * (1.0 - slice_transmittance) / extinction.max(1e-6);
+            accumulated += transmittance * slice_scatter;
+            transmittance *= slice_transmittance;
+        }
+        (accumulated, transmittance)
+    }
+
+    /// The derivation behind the ambient in-scatter weight of exactly 1.0 in
+    /// `inject.wgsl`.
+    ///
+    /// With source `S = color * density` and extinction `sigma_t = density`,
+    /// the per-slice term `S/sigma_t * (1 - exp(-sigma_t*d))` telescopes down
+    /// the whole column to `color * (1 - T)` — which is the analytic path's
+    /// `rgb * T + color * (1 - T)` term, identically. That is what makes the
+    /// `fog` and `volumetric` modes describe the SAME medium instead of
+    /// disagreeing by 3.5x, which is what they did while air the punctual
+    /// lights never reached was a pure absorber.
+    ///
+    /// Any other weight silently re-tunes every scene's haze relative to the
+    /// analytic mode, so the constant is pinned here rather than in prose.
+    #[test]
+    fn ambient_inscatter_telescopes_to_the_analytic_haze_term() {
+        // Exponential slice thicknesses, as the froxel grid actually produces
+        // them — a uniform march would hide a thickness-weighting mistake.
+        let thicknesses: Vec<f32> = (0..32)
+            .map(|s| 0.1f32 * (1.188f32.powi(s + 1) - 1.188f32.powi(s)))
+            .collect();
+
+        for &color in &[0.05f32, 0.45, 0.7, 1.0] {
+            for &density in &[0.005f32, 0.02, 0.11, 0.4] {
+                let (accumulated, transmittance) =
+                    march_column(color * density, density, &thicknesses);
+                let analytic = color * (1.0 - transmittance);
+                assert!(
+                    (accumulated - analytic).abs() < 1e-4,
+                    "color={color} density={density}: volumetric column \
+                     accumulated {accumulated}, analytic term is {analytic} — \
+                     the ambient weight is no longer 1.0, or the slice \
+                     integral is no longer energy-conserving"
+                );
+            }
+        }
+    }
+
+    /// The march must early-out only where it cannot matter. `integrate.wgsl`
+    /// stops once transmittance drops below 0.002 and fills the tail with the
+    /// saturated value; this pins that the truncated column is within float
+    /// noise of the full one, so the optimisation can't be quietly changing
+    /// the image.
+    #[test]
+    fn early_out_threshold_costs_nothing_visible() {
+        let thicknesses: Vec<f32> = (0..32).map(|_| 1.0).collect();
+        let (full, _) = march_column(0.5 * 0.4, 0.4, &thicknesses);
+        let truncated_len = thicknesses
+            .iter()
+            .scan(1.0f32, |t, &d| {
+                *t *= (-(0.4 * d)).exp();
+                Some(*t)
+            })
+            .position(|t| t < 0.002)
+            .map(|i| i + 1)
+            .expect("a 32 m column at density 0.4 must saturate");
+        let (truncated, _) = march_column(0.5 * 0.4, 0.4, &thicknesses[..truncated_len]);
+        assert!(
+            (full - truncated).abs() < 0.002,
+            "early-out at 0.002 transmittance changed the column from {full} \
+             to {truncated}"
+        );
+    }
+}
