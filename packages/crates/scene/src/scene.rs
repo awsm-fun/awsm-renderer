@@ -53,4 +53,15 @@ pub struct Scene {
     /// The node hierarchy.
     #[serde(default)]
     pub nodes: Vec<EditorNode>,
+    /// The Camera node this scene is authored to be VIEWED through, carried
+    /// from the editor's active camera so a framing composed in the editor is
+    /// the framing the player renders — without the framing having to be
+    /// duplicated as constants in player code.
+    ///
+    /// `None` = the player picks its own camera; that is what every
+    /// pre-feature bundle deserializes to, so this is additive. A hint rather
+    /// than a mandate: a player driving its own camera (a chase cam, a replay
+    /// free-cam) is free to ignore it.
+    #[serde(default)]
+    pub active_camera: Option<crate::tree::NodeId>,
 }

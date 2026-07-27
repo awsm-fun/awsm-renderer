@@ -62,6 +62,10 @@ pub fn project_to_scene(project: &EditorProject) -> Scene {
         animations: project.editor_animations.clone(),
         mixer: project.anim_mixer.clone(),
         nodes: project.nodes.clone(),
+        // Carry the authored viewing camera through to the bundle, so a
+        // framing composed in the editor is the framing the player renders
+        // instead of being re-derived as constants in player code.
+        active_camera: project.active_camera,
     }
 }
 
