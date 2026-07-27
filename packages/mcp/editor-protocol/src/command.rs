@@ -585,6 +585,17 @@ pub enum EditorCommand {
         /// keeps older wire payloads (no probe key) deserializing.
         #[serde(default)]
         probe: Option<ReflectionProbe>,
+        /// Per-slot environment rotations (Euler DEGREES, X then Y then Z),
+        /// independent of each other exactly like the three slots above:
+        /// `None` PRESERVES that slot's current rotation, `Some([0,0,0])`
+        /// clears it. `#[serde(default)]` keeps older wire payloads
+        /// deserializing.
+        #[serde(default)]
+        skybox_rotation: Option<[f32; 3]>,
+        #[serde(default)]
+        specular_rotation: Option<[f32; 3]>,
+        #[serde(default)]
+        irradiance_rotation: Option<[f32; 3]>,
     },
 
     /// Patch the renderer-wide shadow config on `scene.shadows` (persisted into
@@ -676,6 +687,38 @@ pub enum EditorCommand {
         /// pass). Persisted like `ssr_temporal`.
         #[serde(default)]
         ssr_bvh_reflections: Option<bool>,
+        // Atmosphere fields carry the same `#[serde(default)]` discipline as
+        // the SSR block above, for the same forward/backward-compat reason.
+        /// How haze is integrated: `Off` / `Fog` (analytic) / `Volumetric`
+        /// (froxel, with light shafts). STRUCTURAL — selects which haze term,
+        /// if any, is compiled into the effects shader.
+        #[serde(default)]
+        atmosphere_mode: Option<crate::AtmosphereMode>,
+        /// Linear RGB an infinitely distant surface fades to (live uniform).
+        #[serde(default)]
+        atmosphere_color: Option<[f32; 3]>,
+        /// Haze extinction per meter; the 1/e distance is `1 / density`
+        /// (live uniform).
+        #[serde(default)]
+        atmosphere_density: Option<f32>,
+        /// World Y at which haze density is full (live uniform).
+        #[serde(default)]
+        atmosphere_base_height: Option<f32>,
+        /// Exponential thinning per meter above `atmosphere_base_height`;
+        /// 0 = uniform medium (live uniform).
+        #[serde(default)]
+        atmosphere_height_falloff: Option<f32>,
+        /// Henyey-Greenstein phase anisotropy (0 isotropic, >0 forward).
+        /// Live uniform; only read in `Volumetric` mode.
+        #[serde(default)]
+        atmosphere_scattering_anisotropy: Option<f32>,
+        /// Far plane of the froxel volume in meters (live uniform).
+        #[serde(default)]
+        atmosphere_volumetric_distance: Option<f32>,
+        /// Temporally reproject the froxel volume (STRUCTURAL). Only
+        /// meaningful in `Volumetric` mode.
+        #[serde(default)]
+        atmosphere_volumetric_temporal: Option<bool>,
     },
 
     /// Set editor viewport view options — partial update, every field

@@ -10,11 +10,11 @@ use crate::{
         compute_pipeline::{ComputePipelineCacheKey, ComputePipelineKey},
         Pipelines,
     },
-    post_process::PostProcessing,
+    post_process::{AtmosphereMode, PostProcessing},
     render_passes::{
         effects::{
             bind_group::EffectsBindGroups,
-            shader::cache_key::{BloomPhase, ShaderCacheKeyEffects},
+            shader::cache_key::{AtmospherePhase, BloomPhase, ShaderCacheKeyEffects},
         },
         RenderPassInitContext,
     },
@@ -47,6 +47,20 @@ pub struct EffectsPipelinesDescriptors {
     /// shader cache. To fold into the cross-tail
     /// `ComputePipelines::ensure_keys` batch.
     pub pipeline_cache_keys: Vec<ComputePipelineCacheKey>,
+}
+
+/// The compiled haze variant for a post-processing config.
+///
+/// A near-identity map now that the config carries a three-way `mode` rather
+/// than an enable plus a style flag — which is the point: the meaningless
+/// "volumetric but disabled" state can no longer be constructed, so nothing
+/// here has to decide what it would mean.
+fn atmosphere_phase(post_processing: &PostProcessing) -> AtmospherePhase {
+    match post_processing.atmosphere.mode {
+        AtmosphereMode::Off => AtmospherePhase::None,
+        AtmosphereMode::Fog => AtmospherePhase::Analytic,
+        AtmosphereMode::Volumetric => AtmospherePhase::Volumetric,
+    }
 }
 
 impl EffectsPipelines {
@@ -122,6 +136,7 @@ impl EffectsPipelines {
                     smaa_anti_alias: anti_aliasing.smaa,
                     bloom_phase,
                     dof: post_processing.dof,
+                    atmosphere: atmosphere_phase(post_processing),
                     multisampled_geometry,
                     reverse_z,
                 })
@@ -227,5 +242,49 @@ impl EffectsPipelines {
             .await?;
         self.install_resolved(post_processing, resolved);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::post_process::Atmosphere;
+
+    fn pp(mode: AtmosphereMode) -> PostProcessing {
+        PostProcessing {
+            atmosphere: Atmosphere {
+                mode,
+                ..Atmosphere::default()
+            },
+            ..PostProcessing::default()
+        }
+    }
+
+    /// Haze off must resolve to the `None` phase. That's the whole basis of
+    /// "zero cost when off": the shader templates gate every haze include and
+    /// every haze uniform on this phase, so `None` here is what makes the
+    /// compiled effects shader identical to a build with no haze feature.
+    #[test]
+    fn off_compiles_no_haze_phase() {
+        assert_eq!(
+            atmosphere_phase(&pp(AtmosphereMode::Off)),
+            AtmospherePhase::None
+        );
+        assert_eq!(
+            atmosphere_phase(&pp(AtmosphereMode::Fog)),
+            AtmospherePhase::Analytic
+        );
+    }
+
+    /// Volumetric mode must compile the volumetric phase, NOT the analytic
+    /// one. The two would look broadly similar in a screenshot — same medium,
+    /// same colour — so a regression to the fog term is the kind that hides:
+    /// you'd lose the beams and keep plausible haze.
+    #[test]
+    fn volumetric_compiles_the_volumetric_phase() {
+        assert_eq!(
+            atmosphere_phase(&pp(AtmosphereMode::Volumetric)),
+            AtmospherePhase::Volumetric
+        );
     }
 }

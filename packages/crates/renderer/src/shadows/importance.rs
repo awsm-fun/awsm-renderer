@@ -206,6 +206,7 @@ mod tests {
             color: [1.0, 1.0, 1.0],
             intensity: 1.0,
             direction: [0.0, -1.0, 0.0],
+            volumetric_intensity: 1.0,
         };
         let frustum =
             Frustum::from_view_projection(glam::Mat4::perspective_rh(1.0, 1.0, 0.1, 100.0), false);
@@ -224,6 +225,7 @@ mod tests {
             intensity: 10.0,
             position: [0.0, 0.0, -100.0],
             range: 1.0,
+            volumetric_intensity: 1.0,
         };
         let d = light_importance_decision(&light, Vec3::ZERO, &frustum);
         assert_eq!(d.tier, ShadowQualityTier::Low);
@@ -239,6 +241,7 @@ mod tests {
             intensity: 100.0,
             position: [0.0, 0.0, 1.0],
             range: 5.0,
+            volumetric_intensity: 1.0,
         };
         let d = light_importance_decision(&light, Vec3::ZERO, &frustum);
         assert_eq!(d.tier, ShadowQualityTier::Ultra);

@@ -339,6 +339,7 @@ fn light_param(p: LightParamKind) -> LightParam {
         LightParamKind::Range => LightParam::Range,
         LightParamKind::InnerAngle => LightParam::InnerAngle,
         LightParamKind::OuterAngle => LightParam::OuterAngle,
+        LightParamKind::VolumetricIntensity => LightParam::VolumetricIntensity,
     }
 }
 

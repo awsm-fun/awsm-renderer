@@ -23,7 +23,9 @@ fn get_lights_info() -> LightsInfo {
             lights_info.data.y,
             lights_info.data.z,
             lights_info.probe_center_enabled,
-            lights_info.probe_half_pad.xyz
+            lights_info.probe_half_pad.xyz,
+            env_rot_mat(lights_info.spec_rot_0, lights_info.spec_rot_1, lights_info.spec_rot_2),
+            env_rot_mat(lights_info.irr_rot_0, lights_info.irr_rot_1, lights_info.irr_rot_2)
         )
     );
 }

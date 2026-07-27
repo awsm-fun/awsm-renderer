@@ -52,6 +52,10 @@ pub struct PostProcessConfig {
     /// project.toml ⇄ scene.toml automatically; off by default (zero cost).
     #[serde(default)]
     pub ssr: SsrConfig,
+    /// Atmospheric haze. Nested like [`SsrConfig`]; off by default (the fog
+    /// term isn't even compiled into the effects shader).
+    #[serde(default)]
+    pub atmosphere: AtmosphereConfig,
 }
 
 fn default_bloom_threshold() -> f32 {
@@ -79,6 +83,121 @@ impl Default for PostProcessConfig {
             bloom_intensity: default_bloom_intensity(),
             bloom_scatter: default_bloom_scatter(),
             ssr: SsrConfig::default(),
+            atmosphere: AtmosphereConfig::default(),
+        }
+    }
+}
+
+/// Atmospheric haze configuration. Nested in [`PostProcessConfig`].
+///
+/// A stylized exponential medium — not a physically-derived Rayleigh/Mie sky.
+/// Distant geometry fades toward [`color`](Self::color) at a rate set by
+/// [`density`](Self::density), optionally thinning with height so a scene can
+/// have haze pooling low and clear air above it.
+///
+/// How the medium is integrated is [`mode`](Self::mode) — a three-way choice,
+/// **not** an on/off plus a style flag, because the volumetric path REPLACES
+/// the analytic one rather than adding to it (same air; running both would
+/// extinguish it twice). `mode` and
+/// [`volumetric_temporal`](Self::volumetric_temporal) are the **structural**
+/// fields; everything else is a live uniform.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub struct AtmosphereConfig {
+    /// Off / analytic fog / froxel volumetrics. STRUCTURAL — `Off` compiles no
+    /// haze term at all.
+    #[serde(default)]
+    pub mode: AtmosphereMode,
+    /// Linear radiance of fully-saturated haze — what an infinitely distant
+    /// surface fades to. Live uniform.
+    #[serde(default = "default_atmosphere_color")]
+    pub color: [f32; 3],
+    /// Extinction per meter; the 1/e distance is `1 / density`. Live uniform.
+    #[serde(default = "default_atmosphere_density")]
+    pub density: f32,
+    /// World Y at which density is full. Live uniform.
+    #[serde(default)]
+    pub base_height: f32,
+    /// Exponential thinning per meter above `base_height`. `0` = uniform
+    /// medium (no height falloff at all). Live uniform.
+    #[serde(default = "default_atmosphere_height_falloff")]
+    pub height_falloff: f32,
+    /// Henyey-Greenstein phase anisotropy: `0` isotropic, `> 0` forward
+    /// scattering (bright halo around a light you look toward), `< 0` back
+    /// scattering. Live uniform; only read on the volumetric path.
+    #[serde(default = "default_scattering_anisotropy")]
+    pub scattering_anisotropy: f32,
+    /// How far the froxel volume extends, in meters. The light-culling grid
+    /// this volume borrows its slicing from runs to ~10 km so it can bin
+    /// distant lights — marching a 32-slice volume over THAT range gives
+    /// kilometre-thick far slices that saturate to solid haze and wash the
+    /// whole frame out. So the volume gets its own, much nearer far plane and
+    /// simply doesn't simulate the medium past it. Live uniform; volumetric
+    /// mode only.
+    #[serde(default = "default_volumetric_distance")]
+    pub volumetric_distance: f32,
+    /// Temporally reproject + blend the froxel volume across frames. The volume
+    /// is heavily undersampled, so this is what turns banding into smooth haze
+    /// — at the cost of ghosting behind fast movers. STRUCTURAL; only
+    /// meaningful in [`AtmosphereMode::Volumetric`].
+    #[serde(default)]
+    pub volumetric_temporal: bool,
+}
+
+fn default_atmosphere_color() -> [f32; 3] {
+    [0.5, 0.6, 0.7]
+}
+fn default_atmosphere_density() -> f32 {
+    0.02
+}
+fn default_atmosphere_height_falloff() -> f32 {
+    0.0
+}
+fn default_volumetric_distance() -> f32 {
+    // ~80 m covers an arena or a club interior, which is what beams are for.
+    // Every engine ships a knob like this (Unreal's default is 60 m).
+    80.0
+}
+fn default_scattering_anisotropy() -> f32 {
+    // Mild forward scatter. Real haze and smoke are strongly forward-scattering,
+    // and it's what makes a beam pointed toward the camera flare instead of
+    // reading as a flat grey cone.
+    0.3
+}
+
+/// How atmospheric haze is integrated. Mirrors the renderer's
+/// `AtmospherePhase`; a three-way type so the meaningless fourth state of
+/// "volumetric but disabled" can't be spelled.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub enum AtmosphereMode {
+    /// No haze. The term isn't compiled into the effects shader at all, so
+    /// pre-atmosphere projects round-trip and cost nothing.
+    #[default]
+    Off,
+    /// Closed-form fog along the view ray: cheap aerial perspective, and the
+    /// right choice for most scenes. No light shafts — it never asks which
+    /// lights reach a point in the air.
+    Fog,
+    /// Froxel scattering volume with per-light in-scatter: beams, shafts, a
+    /// pool of lit haze under a fixture. Substantially more expensive; wants
+    /// [`AtmosphereConfig::volumetric_temporal`] to look smooth.
+    Volumetric,
+}
+
+impl Default for AtmosphereConfig {
+    fn default() -> Self {
+        Self {
+            mode: AtmosphereMode::Off,
+            color: default_atmosphere_color(),
+            density: default_atmosphere_density(),
+            base_height: 0.0,
+            height_falloff: default_atmosphere_height_falloff(),
+            scattering_anisotropy: default_scattering_anisotropy(),
+            volumetric_distance: default_volumetric_distance(),
+            volumetric_temporal: false,
         }
     }
 }
@@ -203,4 +322,69 @@ pub enum ToneMappingConfig {
     KhronosNeutralPbr,
     /// ACES filmic.
     Aces,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A `[post_process]` block authored before atmosphere existed must parse
+    /// with haze OFF and the renderer defaults on every other field — the
+    /// "pre-atmosphere projects round-trip and cost nothing" claim in
+    /// [`AtmosphereConfig`]'s docs, held to by a test rather than by hope.
+    #[test]
+    fn pre_atmosphere_post_process_parses_with_haze_off() {
+        let toml_src = r#"
+bloom = true
+exposure = 1.5
+"#;
+        let parsed: PostProcessConfig = toml::from_str(toml_src).unwrap();
+        assert!(parsed.bloom);
+        assert_eq!(parsed.atmosphere, AtmosphereConfig::default());
+        assert_eq!(parsed.atmosphere.mode, AtmosphereMode::Off);
+    }
+
+    /// `mode` is the on-disk tag for the haze integration, so these names are a
+    /// persistence contract exactly like `LightParamKind`'s: rename a variant
+    /// and every scene that authored it silently reverts to clear air on the
+    /// next load rather than failing loudly.
+    #[test]
+    fn atmosphere_mode_wire_names_are_stable() {
+        for (mode, wire) in [
+            (AtmosphereMode::Off, "\"off\""),
+            (AtmosphereMode::Fog, "\"fog\""),
+            (AtmosphereMode::Volumetric, "\"volumetric\""),
+        ] {
+            assert_eq!(serde_json::to_string(&mode).unwrap(), wire);
+            assert_eq!(
+                serde_json::from_str::<AtmosphereMode>(wire).unwrap(),
+                mode,
+                "{wire} must parse back to the variant that wrote it"
+            );
+        }
+    }
+
+    /// An authored haze block survives a project.toml round-trip field for
+    /// field. `density`/`height_falloff` in particular are the ones a
+    /// serialize-then-reparse gap would silently reset to the defaults,
+    /// turning a tuned scene back into clear air.
+    #[test]
+    fn authored_atmosphere_roundtrips_through_toml() {
+        let authored = PostProcessConfig {
+            atmosphere: AtmosphereConfig {
+                mode: AtmosphereMode::Volumetric,
+                color: [0.016, 0.019, 0.028],
+                density: 0.008,
+                base_height: -1.25,
+                height_falloff: 0.05,
+                scattering_anisotropy: 0.65,
+                volumetric_distance: 45.0,
+                volumetric_temporal: true,
+            },
+            ..PostProcessConfig::default()
+        };
+        let round_tripped: PostProcessConfig =
+            toml::from_str(&toml::to_string(&authored).unwrap()).unwrap();
+        assert_eq!(round_tripped.atmosphere, authored.atmosphere);
+    }
 }

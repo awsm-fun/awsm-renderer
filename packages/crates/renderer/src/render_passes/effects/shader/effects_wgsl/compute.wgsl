@@ -26,10 +26,40 @@
     /*************** END bloom.wgsl ******************/
 {% endif %}
 
+{# Both haze paths read depth, not just the analytic one: the froxel path needs
+   it to find which slice of the scattering volume a pixel sits in. #}
+{% if dof || atmosphere || atmosphere_volumetric %}
+    /*************** START depth.wgsl ******************/
+    {% include "effects_wgsl/helpers/depth.wgsl" %}
+    /*************** END depth.wgsl ******************/
+{% endif %}
+
 {% if dof %}
     /*************** START dof.wgsl ******************/
     {% include "effects_wgsl/helpers/dof.wgsl" %}
     /*************** END dof.wgsl ******************/
+{% endif %}
+
+{# The MEDIUM math is shared: the analytic path integrates the whole view ray
+   with it, the volumetric path integrates only the segment BEYOND its froxel
+   volume. Exactly one copy, for either consumer — same shape as depth.wgsl
+   above, and for the same reason. #}
+{% if atmosphere || atmosphere_volumetric %}
+    /*************** START atmosphere_medium.wgsl ******************/
+    {% include "effects_wgsl/helpers/atmosphere_medium.wgsl" %}
+    /*************** END atmosphere_medium.wgsl ******************/
+{% endif %}
+
+{% if atmosphere %}
+    /*************** START atmosphere.wgsl ******************/
+    {% include "effects_wgsl/helpers/atmosphere.wgsl" %}
+    /*************** END atmosphere.wgsl ******************/
+{% endif %}
+
+{% if atmosphere_volumetric %}
+    /*************** START atmosphere_volumetric.wgsl ******************/
+    {% include "effects_wgsl/helpers/atmosphere_volumetric.wgsl" %}
+    /*************** END atmosphere_volumetric.wgsl ******************/
 {% endif %}
 
 
@@ -60,8 +90,31 @@ fn main(
         var rgb = composite_color.rgb;
     {% endif %}
 
+    // Haze goes in before the bloom composite, and the composite scales the
+    // ADDED glow by the pixel's haze transmittance (recorded by the apply_*
+    // helpers in `atmosphere_scene_transmittance`). The pyramid itself is
+    // built by the dedicated bloom pass from the PRE-haze composite — it runs
+    // before this shader — so scaling here is what keeps an emitter buried in
+    // dense haze from blooming at full strength through the fog. Residual
+    // approximation: the glow is attenuated by the RECEIVING pixel's
+    // transmittance (not the source's), and the in-scattered haze itself
+    // doesn't bloom.
+    {% if atmosphere %}
+        rgb = apply_atmosphere(rgb, coords, pixel_center, screen_dims_f32, camera);
+    {% endif %}
+
+    {% if atmosphere_volumetric %}
+        rgb = apply_atmosphere_volumetric(rgb, coords, pixel_center, screen_dims_f32, camera);
+    {% endif %}
+
     {% if bloom %}
-        rgb = apply_bloom(rgb, coords, screen_dims_i32);
+        {% if atmosphere || atmosphere_volumetric %}
+            let pre_bloom_rgb = rgb;
+            rgb = apply_bloom(rgb, coords, screen_dims_i32);
+            rgb = pre_bloom_rgb + (rgb - pre_bloom_rgb) * atmosphere_scene_transmittance;
+        {% else %}
+            rgb = apply_bloom(rgb, coords, screen_dims_i32);
+        {% endif %}
     {% endif %}
 
     {% if dof %}

@@ -19,6 +19,10 @@
 use awsm_renderer_materials::MaterialShaderId;
 
 use crate::dynamic_materials::{BucketEntry, ShadingBase};
+use crate::render_passes::effects::shader::cache_key::{
+    AtmospherePhase, BloomPhase, ShaderCacheKeyEffects,
+};
+use crate::render_passes::effects::shader::template::ShaderTemplateEffects;
 use crate::render_passes::material_decal::shader::cache_key::ShaderCacheKeyMaterialDecal;
 use crate::render_passes::material_decal::shader::template::ShaderTemplateMaterialDecal;
 use crate::render_passes::material_opaque::shader::cache_key::{
@@ -1109,6 +1113,115 @@ fn material_final_blend_shader_validates() {
 }
 
 #[test]
+fn env_rotation_applied_in_every_env_sampling_path() {
+    // env-rotation: `EnvironmentConfig::rotation` turns each environment
+    // cubemap INDEPENDENTLY (skybox / specular / irradiance). Two things have
+    // to hold, and this pins both:
+    //
+    //  1. EVERY consumer of an env cubemap rotates its lookup direction —
+    //     miss one and that path silently ignores the author's rotation.
+    //  2. Each consumer uses ITS OWN SLOT's matrix. This is the subtle half:
+    //     with a single shared matrix any wiring "worked", but now that the
+    //     slots can disagree, a consumer reading the wrong one is a real bug
+    //     that only shows when an author points two slots different ways.
+    //     Note especially that SSR's `skybox_tex` binding is actually the
+    //     PREFILTERED ENV (see ssr/bind_group.rs), so SSR takes SPECULAR.
+    //
+    // The matrices upload already-inverted and are identity when unrotated, so
+    // these are RUNTIME values, not template axes: asserting the rotate exists
+    // in every permutation also catches a `{% if env_rotation %}` gate
+    // sneaking in later.
+    const SKYBOX_CALL: &str = "env_rot * ray_dir";
+    const IBL_SPECULAR_CALL: &str = "ibl_info.spec_rot * R";
+    const IBL_DIFFUSE_ARG: &str = "ibl_info.irr_rot";
+    const SSR_CALL: &str = "env_rot * dir_w";
+
+    // 1) Opaque PBR: specular (samplePrefilteredEnv) + diffuse
+    //    (sampleIrradiance) both rotate.
+    for (msaa, mips) in CONFIGS {
+        let key = first_party_key(MaterialShaderId::PBR, ShadingBase::Pbr, false, msaa, mips);
+        let label = format!("opaque/pbr env-rotation msaa={msaa:?} mips={mips}");
+        let src = render(&key, &label);
+        naga_validate(&src, &label);
+        assert!(
+            src.contains(IBL_SPECULAR_CALL),
+            "{label}: specular IBL must rotate its lookup: `{IBL_SPECULAR_CALL}`"
+        );
+        assert!(
+            src.contains(IBL_DIFFUSE_ARG),
+            "{label}: diffuse IBL must rotate by the IRRADIANCE slot: `{IBL_DIFFUSE_ARG}`"
+        );
+        // ...and must NOT cross the two. Sampling the irradiance cubemap with
+        // the specular matrix (or vice versa) is invisible while the slots
+        // hold equal rotations and wrong the moment they don't — exactly the
+        // bug the per-slot split introduces, so pin it explicitly.
+        assert!(
+            !src.contains("irradiance_sampler, ibl_info.spec_rot"),
+            "{label}: irradiance must not be sampled with the SPECULAR rotation"
+        );
+        assert!(
+            !src.contains("ibl_info.irr_rot * R"),
+            "{label}: prefiltered env must not be sampled with the IRRADIANCE rotation"
+        );
+    }
+
+    // 2) The skybox writer. It compiles with `inc = skybox_only`, so it CANNOT
+    //    reach `get_lights_info()` — it must read the always-bound
+    //    `lights_info` uniform through `env_rotation_mat`. Pin both halves:
+    //    the rotate itself, and the fact the matrix comes from that uniform.
+    {
+        for (msaa, mips) in CONFIGS {
+            let mut key =
+                first_party_key(MaterialShaderId::PBR, ShadingBase::Pbr, false, msaa, mips);
+            key.owns_skybox = true;
+            let label = format!("skybox env-rotation msaa={msaa:?} mips={mips}");
+            let src = render(&key, &label);
+            naga_validate(&src, &label);
+            assert!(
+                src.contains(SKYBOX_CALL),
+                "{label}: skybox must rotate its view ray: `{SKYBOX_CALL}`"
+            );
+            assert!(
+                src.contains("env_rotation_mat(lights_info)"),
+                "{label}: the skybox kernel has no light accessors — it must read the \
+                 rotation via `env_rotation_mat(lights_info)`"
+            );
+        }
+    }
+
+    // 3) The SSR miss fallback, which mirrors the matrix through SsrParams.
+    {
+        use crate::render_passes::ssr::shader::cache_key::{
+            ShaderCacheKeySsr, ShaderCacheKeySsrTrace, SsrMode, SsrTrace,
+        };
+        use crate::render_passes::ssr::shader::template::ShaderTemplateSsr;
+        for mode in [SsrMode::Mirror, SsrMode::Glossy] {
+            for trace in [SsrTrace::LinearDda, SsrTrace::HiZ] {
+                let key = ShaderCacheKeySsr::Trace(ShaderCacheKeySsrTrace {
+                    mode,
+                    trace,
+                    half_res: false,
+                    multisampled_geometry: false,
+                    reverse_z: false,
+                    debug: 0,
+                    bvh: false,
+                });
+                let label = format!("ssr env-rotation mode={mode:?} trace={trace:?}");
+                let src = ShaderTemplateSsr::try_from(&key)
+                    .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
+                    .into_source()
+                    .unwrap_or_else(|e| panic!("{label}: render failed: {e:?}"));
+                naga_validate(&src, &label);
+                assert!(
+                    src.contains(SSR_CALL),
+                    "{label}: the SSR env fallback must rotate its lookup: `{SSR_CALL}`"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn box_projected_probe_in_both_env_paths() {
     // box-projected-probe (comment-pinned in brdf_pbr.wgsl + trace.wgsl): the
     // reflection-probe parallax correction must go through the ONE shared
@@ -2122,6 +2235,436 @@ fn skybox_edge_accumulator_stride_tracks_the_ssr_axis() {
             writes_descriptor, write_ssr_descriptor,
             "{label}: sky writer must zero the SSR descriptor words IFF the \
              wide layout allocated them"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Effects pass — atmosphere
+// ---------------------------------------------------------------------------
+
+/// Strip `//` and `/* */` comments so a test can assert on emitted CODE rather
+/// than on prose. Shared includes legitimately *mention* features they're
+/// shared with — `depth.wgsl` explains that it serves DoF and atmosphere both —
+/// and a comment costs nothing to compile.
+fn strip_wgsl_comments(src: &str) -> String {
+    let mut out = String::with_capacity(src.len());
+    let bytes = src.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+        } else if bytes[i] == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'*' {
+            i += 2;
+            while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                i += 1;
+            }
+            i = (i + 2).min(bytes.len());
+        } else {
+            out.push(bytes[i] as char);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Renders the effects compute shader for a cache key. Panics with the
+/// template error on failure, like `render` does for materials.
+fn render_effects(key: &ShaderCacheKeyEffects, label: &str) -> String {
+    ShaderTemplateEffects::try_from(key)
+        .unwrap_or_else(|e| panic!("{label}: effects template build failed: {e:?}"))
+        .into_source()
+        .unwrap_or_else(|e| panic!("{label}: effects template render failed: {e:?}"))
+}
+
+fn effects_key(
+    atmosphere: AtmospherePhase,
+    dof: bool,
+    bloom_phase: BloomPhase,
+    msaa: bool,
+    reverse_z: bool,
+) -> ShaderCacheKeyEffects {
+    ShaderCacheKeyEffects {
+        smaa_anti_alias: false,
+        multisampled_geometry: msaa,
+        bloom_phase,
+        dof,
+        atmosphere,
+        reverse_z,
+    }
+}
+
+/// Every effects variant across the atmosphere × dof × bloom × msaa ×
+/// reverse-z matrix must be valid WGSL.
+///
+/// The atmosphere include is what makes this matrix worth walking: it needs
+/// `load_depth` / `linearize_depth`, which used to live inside `dof.wgsl` and
+/// are now in `depth.wgsl` gated on `dof || atmosphere`. Get that condition
+/// wrong in either direction and you get an undefined function (haze without
+/// DoF) or a duplicate definition (both on) — neither of which shows up until
+/// a real pipeline compile in a browser.
+#[test]
+fn effects_variants_are_valid_wgsl() {
+    for atmosphere in [
+        AtmospherePhase::None,
+        AtmospherePhase::Analytic,
+        AtmospherePhase::Volumetric,
+    ] {
+        for dof in [false, true] {
+            for bloom_phase in [BloomPhase::None, BloomPhase::Blend] {
+                for msaa in [false, true] {
+                    for reverse_z in [false, true] {
+                        let label = format!(
+                            "effects atmosphere={atmosphere:?} dof={dof} \
+                             bloom={bloom_phase:?} msaa={msaa} reverse_z={reverse_z}"
+                        );
+                        let src = render_effects(
+                            &effects_key(atmosphere, dof, bloom_phase, msaa, reverse_z),
+                            &label,
+                        );
+                        naga_validate(&src, &label);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// `enabled` is the STRUCTURAL axis: haze off must compile to a shader with no
+/// fog term and no haze uniform at all. "Zero cost when off" is a claim about
+/// the emitted code, so assert on the emitted code — a live-uniform
+/// implementation that multiplied by a zero density would pass a screenshot
+/// test and fail this one.
+#[test]
+fn atmosphere_term_is_present_only_when_enabled() {
+    for dof in [false, true] {
+        for atmosphere in [
+            AtmospherePhase::None,
+            AtmospherePhase::Analytic,
+            AtmospherePhase::Volumetric,
+        ] {
+            let label = format!("effects atmosphere={atmosphere:?} dof={dof}");
+            let src = render_effects(
+                &effects_key(atmosphere, dof, BloomPhase::None, false, false),
+                &label,
+            );
+
+            assert_eq!(
+                src.contains("apply_atmosphere("),
+                atmosphere == AtmospherePhase::Analytic,
+                "{label}: the ANALYTIC fog term must be compiled in for exactly \
+                 that phase — the volumetric path replaces it, so compiling both \
+                 would extinguish the air twice"
+            );
+            assert_eq!(
+                src.contains("atmosphere_params"),
+                atmosphere != AtmospherePhase::None,
+                "{label}: the haze uniform must be declared on BOTH haze paths \
+                 (they describe the same medium) and on neither when off"
+            );
+
+            // "Zero cost when off" as a property of the emitted code, not a
+            // claim: with haze off the word doesn't appear in the shader AT
+            // ALL — no include, no uniform, no branch, nothing to fold away
+            // and nothing for a driver to get wrong. A live-uniform
+            // implementation multiplying by zero density would satisfy every
+            // screenshot and fail here.
+            if atmosphere == AtmospherePhase::None {
+                let code = strip_wgsl_comments(&src).to_lowercase();
+                assert!(
+                    !code.contains("atmosphere"),
+                    "{label}: haze off must emit CODE with no trace of \
+                     atmosphere in it"
+                );
+            }
+
+            // The volumetric arm is a DIFFERENT function and a different
+            // binding pair from the analytic one. Pinning both directions is
+            // what stops a regression that silently swaps the froxel composite
+            // for the per-pixel fog: same medium, same colour, plausible
+            // screenshot — and no beams.
+            assert_eq!(
+                src.contains("apply_atmosphere_volumetric("),
+                atmosphere == AtmospherePhase::Volumetric,
+                "{label}: the froxel composite must be compiled in for exactly \
+                 the volumetric phase"
+            );
+            assert_eq!(
+                src.contains("volumetric_sampler"),
+                atmosphere == AtmospherePhase::Volumetric,
+                "{label}: the volume's trilinear sampler must be declared IFF \
+                 the froxel composite is compiled in — a nearest fetch is what \
+                 makes the beams a staircase"
+            );
+
+            // The shared depth helpers come in for EITHER consumer, exactly
+            // once. Two copies is a WGSL redefinition error; zero is an
+            // undefined call from whichever consumer is on.
+            assert_eq!(
+                src.matches("fn linearize_depth(").count(),
+                usize::from(dof || atmosphere != AtmospherePhase::None),
+                "{label}: linearize_depth must be defined exactly once when \
+                 either DoF or atmosphere needs it, and not at all otherwise"
+            );
+
+            // Same shape, one layer up: the MEDIUM math is shared by both haze
+            // paths (the analytic one integrates the whole ray, the volumetric
+            // one integrates past its froxel volume), so it must land exactly
+            // once for either and never for neither.
+            assert_eq!(
+                src.matches("fn atmosphere_optical_depth(").count(),
+                usize::from(atmosphere != AtmospherePhase::None),
+                "{label}: the shared medium math must be defined exactly once \
+                 for either haze path — two copies is a WGSL redefinition, \
+                 zero is an undefined call"
+            );
+
+            // The volumetric path must actually CONTINUE the medium past its
+            // far plane. Without this call the composite clamps to the last
+            // slice, the air ends at `volumetric_distance`, and a knob
+            // documented as a cost/quality budget silently becomes an art
+            // knob — shrinking it to buy z-resolution removes haze.
+            //
+            // Note this is not double-fogging: the analytic tail covers
+            // [volume_far, surface], a segment the volume does not.
+            // `dist - dist_in_volume` IS the disjoint tail: total ray length
+            // minus the part the volume covered. Pinning that expression pins
+            // the semantics rather than the formatting.
+            assert_eq!(
+                strip_wgsl_comments(&src).contains("dist - dist_in_volume"),
+                atmosphere == AtmospherePhase::Volumetric,
+                "{label}: the volumetric composite must integrate the medium \
+                 BEYOND the froxel volume analytically, over exactly the \
+                 segment the volume did not cover"
+            );
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Volumetrics
+// ---------------------------------------------------------------------------
+
+/// Both volumetrics stages must be valid WGSL under both depth conventions.
+///
+/// This is the pass's main non-browser safety net, and it earns its keep: the
+/// stage bodies call into THREE shared includes they don't own (`light_access`,
+/// `froxel_walk`, the shadow bind-group + sampling machinery). A signature
+/// drift in any of them is an undefined-function error that would otherwise
+/// surface only as a pipeline-compile failure in a browser.
+#[test]
+fn volumetrics_shaders_validate() {
+    use crate::render_passes::volumetrics::shader::cache_key::{
+        ShaderCacheKeyVolumetrics, VolumetricsStage,
+    };
+    use crate::render_passes::volumetrics::shader::template::ShaderTemplateVolumetrics;
+
+    for stage in [VolumetricsStage::Inject, VolumetricsStage::Integrate] {
+        for reverse_z in [false, true] {
+            for temporal in [false, true] {
+                let label = format!(
+                    "volumetrics stage={stage:?} reverse_z={reverse_z} temporal={temporal}"
+                );
+                let key = ShaderCacheKeyVolumetrics {
+                    stage,
+                    reverse_z,
+                    temporal,
+                };
+                let src = ShaderTemplateVolumetrics::try_from(&key)
+                    .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
+                    .into_source()
+                    .unwrap_or_else(|e| panic!("{label}: template render failed: {e:?}"));
+                naga_validate(&src, &label);
+            }
+        }
+    }
+}
+
+/// The volume must walk lights through the SHARED froxel enumeration, not a
+/// private copy. If someone reimplements the walk here, the medium and the
+/// surfaces can disagree about which lights are in a column — the exact
+/// failure `froxel_walk.wgsl`'s "SINGLE SOURCE OF TRUTH" header exists to
+/// prevent, and one that looks like plausible art rather than a bug.
+#[test]
+fn volumetrics_inject_uses_the_shared_froxel_walk() {
+    use crate::render_passes::volumetrics::shader::cache_key::{
+        ShaderCacheKeyVolumetrics, VolumetricsStage,
+    };
+    use crate::render_passes::volumetrics::shader::template::ShaderTemplateVolumetrics;
+
+    let key = ShaderCacheKeyVolumetrics {
+        stage: VolumetricsStage::Inject,
+        reverse_z: true,
+        temporal: false,
+    };
+    let src = ShaderTemplateVolumetrics::try_from(&key)
+        .unwrap()
+        .into_source()
+        .unwrap();
+
+    for needle in [
+        "froxel_base_for_pixel(",
+        "froxel_light_count(",
+        "get_directional_light_index(",
+        "sample_shadow_descriptor(",
+    ] {
+        assert!(
+            src.contains(needle),
+            "volumetrics inject must call the shared `{needle}` — a private \
+             reimplementation lets the medium and the surfaces disagree"
+        );
+    }
+}
+
+/// The injected source term must ADD the ambient in-scatter to the light walk,
+/// not multiply the walk by it.
+///
+/// Without the additive term, air that no punctual light reaches is a pure
+/// absorber: the volumetric mode fades a distant surface to BLACK where the
+/// analytic mode fades it to `color`. Measured on the dance-off stage at 25 m,
+/// the same medium rendered at mean luma 14.5 volumetric vs 50.6 analytic —
+/// a 3.5x disagreement between two modes documented as "the same air,
+/// integrated differently".
+///
+/// Asserted on the rendered source with comments stripped, so it pins code
+/// rather than the paragraph above it.
+#[test]
+fn volumetrics_inject_adds_ambient_inscatter() {
+    use crate::render_passes::volumetrics::shader::cache_key::{
+        ShaderCacheKeyVolumetrics, VolumetricsStage,
+    };
+    use crate::render_passes::volumetrics::shader::template::ShaderTemplateVolumetrics;
+
+    let key = ShaderCacheKeyVolumetrics {
+        stage: VolumetricsStage::Inject,
+        reverse_z: true,
+        temporal: false,
+    };
+    let src = ShaderTemplateVolumetrics::try_from(&key)
+        .unwrap()
+        .into_source()
+        .unwrap();
+    let code = strip_wgsl_comments(&src);
+
+    assert!(
+        code.contains("(scattered + volumetric_params.scattering_color) * density"),
+        "volumetrics inject must form its source term as \
+         `(lights + color) * density`. `scattered *= color * density` — the \
+         original shape — drops the ambient in-scatter entirely and makes the \
+         volumetric mode disagree with the analytic one on the same medium."
+    );
+}
+
+/// The MEDIUM must be sampled at the froxel's fixed centre, never at the
+/// jittered point — on every variant.
+///
+/// This is a regression pin for a self-inflicted whole-frame flicker. The
+/// first temporal implementation evaluated density at the jittered sample
+/// point, and because the alpha channel is deliberately NOT accumulated across
+/// frames, every froxel's extinction — and therefore every pixel's
+/// transmittance — changed on every frame. It reads as the whole image
+/// pulsing, and it is most obvious exactly where the image is brightest.
+///
+/// Lighting at the jittered point, medium at the centre. Both halves asserted,
+/// because swapping them back compiles and looks plausible in a screenshot.
+#[test]
+fn volumetrics_samples_medium_at_the_froxel_centre() {
+    use crate::render_passes::volumetrics::shader::cache_key::{
+        ShaderCacheKeyVolumetrics, VolumetricsStage,
+    };
+    use crate::render_passes::volumetrics::shader::template::ShaderTemplateVolumetrics;
+
+    for temporal in [false, true] {
+        let key = ShaderCacheKeyVolumetrics {
+            stage: VolumetricsStage::Inject,
+            reverse_z: true,
+            temporal,
+        };
+        let code = strip_wgsl_comments(
+            &ShaderTemplateVolumetrics::try_from(&key)
+                .unwrap()
+                .into_source()
+                .unwrap(),
+        );
+
+        assert!(
+            code.contains("froxel_medium_density(froxel_center_world(gid.xy, gid.z).y)"),
+            "temporal={temporal}: density must be evaluated at the froxel \
+             CENTRE. Sampling it at the jittered point flickers the extinction \
+             every frame, because alpha is not temporally accumulated."
+        );
+        assert!(
+            code.contains("froxel_sample_world(gid.xy, gid.z)"),
+            "temporal={temporal}: the LIGHTING must be evaluated at the \
+             jittered sample point — that is what the jitter is for."
+        );
+    }
+}
+
+/// `temporal` is a STRUCTURAL axis, and this pins both halves of that claim.
+///
+/// The temporal variant must carry the reprojection and the history sampler;
+/// the non-temporal one must carry NEITHER — not a sampler it never uses, not
+/// a dead reprojection branch. The sampler is the load-bearing half: it sits
+/// in group 0's bind-group LAYOUT, so if it leaked into the non-temporal
+/// variant the two would share a pipeline layout and the axis would stop being
+/// structural at all.
+#[test]
+fn volumetrics_temporal_is_structural() {
+    use crate::render_passes::volumetrics::shader::cache_key::{
+        ShaderCacheKeyVolumetrics, VolumetricsStage,
+    };
+    use crate::render_passes::volumetrics::shader::template::ShaderTemplateVolumetrics;
+
+    for temporal in [false, true] {
+        let key = ShaderCacheKeyVolumetrics {
+            stage: VolumetricsStage::Inject,
+            reverse_z: true,
+            temporal,
+        };
+        let code = strip_wgsl_comments(
+            &ShaderTemplateVolumetrics::try_from(&key)
+                .unwrap()
+                .into_source()
+                .unwrap(),
+        );
+
+        // Note `prev_view_projection` alone is NOT a valid probe: it is a
+        // FIELD on the shared `CameraRaw`, declared in every variant. What
+        // must be temporal-only is its USE.
+        for needle in [
+            "history_sampler",
+            "reproject_history(",
+            "camera_raw.prev_view_projection *",
+        ] {
+            assert_eq!(
+                code.contains(needle),
+                temporal,
+                "temporal={temporal}: `{needle}` must be present iff temporal"
+            );
+        }
+    }
+
+    // INTEGRATE marches an already-injected volume. It must not grow a history
+    // read on either variant — the accumulation happens once, in inject, or it
+    // is applied twice.
+    for temporal in [false, true] {
+        let key = ShaderCacheKeyVolumetrics {
+            stage: VolumetricsStage::Integrate,
+            reverse_z: true,
+            temporal,
+        };
+        let code = strip_wgsl_comments(
+            &ShaderTemplateVolumetrics::try_from(&key)
+                .unwrap()
+                .into_source()
+                .unwrap(),
+        );
+        assert!(
+            !code.contains("reproject_history("),
+            "temporal={temporal}: integrate must never reproject"
         );
     }
 }

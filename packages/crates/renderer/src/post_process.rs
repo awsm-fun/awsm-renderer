@@ -31,6 +31,9 @@ pub struct PostProcessing {
     /// Screen-space reflections. See [`Ssr`]. `enabled = false` (default)
     /// records no pass + allocates no targets.
     pub ssr: Ssr,
+    /// Atmospheric haze. See [`Atmosphere`]. `enabled = false` (default)
+    /// doesn't compile the fog term into the effects shader.
+    pub atmosphere: Atmosphere,
 }
 
 impl Eq for PostProcessing {}
@@ -89,6 +92,68 @@ impl Default for Ssr {
     }
 }
 
+/// Runtime atmospheric-haze settings (mirrors
+/// `awsm_renderer_scene::post_process::AtmosphereConfig`).
+///
+/// A stylized exponential medium applied in the EFFECTS pass: a pixel's colour
+/// is lerped toward `color` by `1 - exp(-density · distance)`, with an optional
+/// closed-form height integral so haze can pool below `base_height` and thin
+/// out above it.
+///
+/// `mode` and `volumetric_temporal` are the **structural** fields. `mode` is a
+/// three-way choice rather than an enable plus a style flag: the volumetric
+/// path REPLACES the analytic term (same medium — running both double-counts
+/// the air). Everything else is a LIVE uniform.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Atmosphere {
+    /// Off / analytic fog / froxel volumetrics. Structural.
+    pub mode: AtmosphereMode,
+    /// Linear radiance an infinitely distant surface fades to.
+    pub color: [f32; 3],
+    /// Extinction per meter (1/e distance = `1 / density`).
+    pub density: f32,
+    /// World Y where density is full.
+    pub base_height: f32,
+    /// Exponential thinning per meter above `base_height`; `0` = uniform.
+    pub height_falloff: f32,
+    /// Henyey-Greenstein phase anisotropy (0 iso, >0 forward). Live uniform,
+    /// volumetric path only.
+    pub scattering_anisotropy: f32,
+    /// Far plane of the froxel volume in meters — the medium isn't simulated
+    /// past it. Deliberately much nearer than the light-culling far plane the
+    /// slicing is borrowed from (see the scene-side docs). Live uniform.
+    pub volumetric_distance: f32,
+    /// Temporal reprojection of the froxel volume. Structural.
+    pub volumetric_temporal: bool,
+}
+
+/// Runtime mirror of `awsm_renderer_scene::post_process::AtmosphereMode`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum AtmosphereMode {
+    #[default]
+    Off,
+    /// Closed-form fog along the view ray. Cheap; no light shafts.
+    Fog,
+    /// Froxel scattering volume with per-light in-scatter. Beams and shafts,
+    /// substantially more expensive.
+    Volumetric,
+}
+
+impl Default for Atmosphere {
+    fn default() -> Self {
+        Self {
+            mode: AtmosphereMode::Off,
+            color: [0.5, 0.6, 0.7],
+            density: 0.02,
+            base_height: 0.0,
+            height_falloff: 0.0,
+            scattering_anisotropy: 0.3,
+            volumetric_distance: 80.0,
+            volumetric_temporal: false,
+        }
+    }
+}
+
 /// Tonemapping operator selection.
 #[derive(Clone, Debug, PartialEq, Eq, Copy, Hash)]
 pub enum ToneMapping {
@@ -109,6 +174,7 @@ impl Default for PostProcessing {
             bloom_intensity: 1.0,
             bloom_scatter: 1.0,
             ssr: Ssr::default(),
+            atmosphere: Atmosphere::default(),
         }
     }
 }
@@ -155,7 +221,14 @@ impl AwsmRenderer {
             || self.post_processing.ssr.temporal != pp.ssr.temporal
             || self.post_processing.ssr.resolution_scale != pp.ssr.resolution_scale
             || self.post_processing.ssr.debug != pp.ssr.debug
-            || self.post_processing.ssr.bvh_reflections != pp.ssr.bvh_reflections;
+            || self.post_processing.ssr.bvh_reflections != pp.ssr.bvh_reflections
+            // Atmosphere's structural axes: `mode` selects which haze term (if
+            // any) is compiled into the effects shader, `volumetric_temporal`
+            // selects the froxel variant. Colour/density/heights/anisotropy are
+            // live uniforms and must not recompile — that's the tuning case.
+            || self.post_processing.atmosphere.mode != pp.atmosphere.mode
+            || self.post_processing.atmosphere.volumetric_temporal
+                != pp.atmosphere.volumetric_temporal;
         // Toggling SSR flips the `write_ssr_descriptor` axis on the
         // material_opaque cache key, so the live material modules must recompile
         // to add/drop the descriptor store (lazy — only the variants the scene
@@ -241,6 +314,59 @@ impl AwsmRenderer {
             let bloom =
                 crate::render_passes::bloom::render_pass::BloomRenderPass::new(&mut ctx).await?;
             self.render_passes.bloom = Some(bloom);
+            self.bind_groups
+                .mark_create(crate::bind_groups::BindGroupCreate::TextureViewRecreate);
+        }
+
+        // LAZY volumetrics: mirrors bloom/SSR. The froxel volume is a pair of
+        // 3D textures plus two compute pipelines, so a session that never asks
+        // for beams must never build it. Awaited here so the next frame
+        // dispatches without compiling; the `TextureViewRecreate` mark makes
+        // that frame's bind-group drain build the groups against live views
+        // (the per-frame `ensure_size` then grows the 1×1 volume, marking
+        // again — the same flow a boot-enabled volumetric config uses).
+        //
+        // ALSO a structural REBUILD path: `volumetric_temporal` adds the
+        // history sampler to group 0's layout and selects a different `inject`
+        // variant, so a pass built for one setting holds a stale layout +
+        // pipeline for the other. Exactly the trap `ssr_pass_rebuild_needed`
+        // above exists for, and the same fix.
+        let volumetrics_rebuild_needed = self
+            .render_passes
+            .volumetrics
+            .as_ref()
+            .is_some_and(|v| v.temporal != self.post_processing.atmosphere.volumetric_temporal);
+        if self.post_processing.atmosphere.mode == AtmosphereMode::Volumetric
+            && (self.render_passes.volumetrics.is_none() || volumetrics_rebuild_needed)
+        {
+            let mut ctx = crate::render_passes::RenderPassInitContext {
+                gpu: &self.gpu,
+                bind_group_layouts: &mut self.bind_group_layouts,
+                pipeline_layouts: &mut self.pipeline_layouts,
+                pipelines: &mut self.pipelines,
+                shaders: &mut self.shaders,
+                render_texture_formats: &mut self.render_textures.formats,
+                textures: &mut self.textures,
+                features: &self.features,
+                anti_aliasing: &self.anti_aliasing,
+                post_processing: &self.post_processing,
+                prep_config: &self.prep_config,
+                max_edge_budget: self.material_edge_buffers.as_ref().map(|b| b.max_edge_budget).unwrap_or(crate::render_passes::material_opaque::edge_buffers::DEFAULT_MAX_EDGE_BUDGET_DESKTOP),
+            };
+            let volumetrics =
+                crate::render_passes::volumetrics::render_pass::VolumetricsRenderPass::new(
+                    &mut ctx,
+                )
+                .await?;
+            // On the REBUILD path, destroy the old pass's GPU volumes rather
+            // than letting the assignment drop them: bind groups and
+            // pipelines are cheap to orphan, but the scatter / integrated /
+            // history 3D textures are real VRAM the JS GC can't see — the
+            // same rule `ensure_size` follows on resize.
+            if let Some(old) = self.render_passes.volumetrics.take() {
+                old.texture.destroy();
+            }
+            self.render_passes.volumetrics = Some(volumetrics);
             self.bind_groups
                 .mark_create(crate::bind_groups::BindGroupCreate::TextureViewRecreate);
         }

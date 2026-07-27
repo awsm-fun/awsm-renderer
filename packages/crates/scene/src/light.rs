@@ -14,6 +14,9 @@ pub enum LightConfig {
         intensity: f32,
         #[serde(default)]
         shadow: LightShadowConfig,
+        /// See [`default_volumetric_intensity`].
+        #[serde(default = "default_volumetric_intensity")]
+        volumetric_intensity: f32,
     },
     Point {
         color: [f32; 3],
@@ -21,6 +24,9 @@ pub enum LightConfig {
         range: f32,
         #[serde(default)]
         shadow: LightShadowConfig,
+        /// See [`default_volumetric_intensity`].
+        #[serde(default = "default_volumetric_intensity")]
+        volumetric_intensity: f32,
     },
     Spot {
         color: [f32; 3],
@@ -30,7 +36,60 @@ pub enum LightConfig {
         outer_angle: f32,
         #[serde(default)]
         shadow: LightShadowConfig,
+        /// See [`default_volumetric_intensity`].
+        #[serde(default = "default_volumetric_intensity")]
+        volumetric_intensity: f32,
     },
+}
+
+/// How strongly a light scatters in participating media, independent of how
+/// strongly it lights surfaces. `1.0` = fully present in the medium; `0.0` =
+/// surfaces only, invisible in the air.
+///
+/// An artistic knob rather than a physical consequence: a key light usually
+/// shouldn't fog the room, and a beam fixture should blaze in the air even
+/// where it barely reaches the floor. Defaulted (not `Option`) so scenes
+/// authored before volumetrics round-trip as "unchanged".
+fn default_volumetric_intensity() -> f32 {
+    1.0
+}
+
+impl LightConfig {
+    /// This light's [volumetric intensity](default_volumetric_intensity).
+    pub fn volumetric_intensity(&self) -> f32 {
+        match self {
+            LightConfig::Directional {
+                volumetric_intensity,
+                ..
+            }
+            | LightConfig::Point {
+                volumetric_intensity,
+                ..
+            }
+            | LightConfig::Spot {
+                volumetric_intensity,
+                ..
+            } => *volumetric_intensity,
+        }
+    }
+
+    /// Mutable access to [`Self::volumetric_intensity`].
+    pub fn volumetric_intensity_mut(&mut self) -> &mut f32 {
+        match self {
+            LightConfig::Directional {
+                volumetric_intensity,
+                ..
+            }
+            | LightConfig::Point {
+                volumetric_intensity,
+                ..
+            }
+            | LightConfig::Spot {
+                volumetric_intensity,
+                ..
+            } => volumetric_intensity,
+        }
+    }
 }
 
 /// On-disk shadow configuration for a punctual light. Mirrors the
@@ -282,12 +341,14 @@ impl LightConfig {
                     resolution: 2048,
                     ..shadow.clone()
                 },
+                volumetric_intensity: default_volumetric_intensity(),
             },
             LightKind::Point => Self::Point {
                 color: [1.0, 1.0, 1.0],
                 intensity: 60.0,
                 range: 20.0,
                 shadow: shadow.clone(),
+                volumetric_intensity: default_volumetric_intensity(),
             },
             LightKind::Spot => Self::Spot {
                 color: [1.0, 1.0, 1.0],
@@ -299,7 +360,48 @@ impl LightConfig {
                     hardness: LightShadowHardness::Hard,
                     ..shadow
                 },
+                volumetric_intensity: default_volumetric_intensity(),
             },
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A light authored before volumetrics existed must parse as "fully
+    /// present in the medium" rather than as 0 — an `f32`'s serde default is
+    /// `0.0`, which would make every pre-existing light silently invisible in
+    /// the air the moment volumetrics ships. That's the whole reason this
+    /// field carries an explicit `default = ` rather than `#[serde(default)]`.
+    #[test]
+    fn pre_volumetrics_light_parses_as_fully_present() {
+        let toml_src = r#"
+[spot]
+color = [1.0, 0.9, 0.7]
+intensity = 1800.0
+range = 25.0
+inner_angle = 0.35
+outer_angle = 0.5
+"#;
+        let parsed: LightConfig = toml::from_str(toml_src).unwrap();
+        assert_eq!(parsed.volumetric_intensity(), 1.0);
+    }
+
+    /// An authored value survives the round-trip on every light kind.
+    #[test]
+    fn authored_volumetric_intensity_roundtrips() {
+        for kind in [LightKind::Directional, LightKind::Point, LightKind::Spot] {
+            let mut cfg = LightConfig::default_for(kind);
+            *cfg.volumetric_intensity_mut() = 0.35;
+            let round_tripped: LightConfig =
+                toml::from_str(&toml::to_string(&cfg).unwrap()).unwrap();
+            assert_eq!(
+                round_tripped.volumetric_intensity(),
+                0.35,
+                "{kind:?} lost its volumetric intensity through toml"
+            );
         }
     }
 }

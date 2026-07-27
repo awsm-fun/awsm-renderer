@@ -1,7 +1,7 @@
 use awsm_renderer_scene::animation::{CustomAnimationRef, MixerDoc, StoredAnimation};
 use awsm_renderer_scene::{
-    AssetId, CustomMaterialRef, EditorNode, EnvironmentConfig, MaterialDef, PostProcessConfig,
-    ShadowsConfig,
+    AssetId, CustomMaterialRef, EditorNode, EnvironmentConfig, MaterialDef, NodeId,
+    PostProcessConfig, ShadowsConfig,
 };
 
 use crate::assets::AssetTable;
@@ -253,6 +253,19 @@ pub struct EditorProject {
     /// onto the locked defaults (Meshopt + Smart 0.1mm + KTX2).
     #[serde(default)]
     pub bundle_options: BundleOptions,
+    /// Which authored camera the EDITOR viewport looks through, if any.
+    ///
+    /// Editor-only, and deliberately part of the project rather than session
+    /// state: a scene authored for a fixed in-game camera (a stage set, a
+    /// fixed-angle game) is meaningless viewed from the default free camera,
+    /// which starts far enough out that the set reads as a speck. Storing it
+    /// means opening the project puts you where the game will be, so what you
+    /// tune is what ships.
+    ///
+    /// `None` keeps the free camera, which is right for scenes with no
+    /// authored viewpoint. `#[serde(default)]` so older projects round-trip.
+    #[serde(default)]
+    pub active_camera: Option<NodeId>,
     #[serde(default)]
     pub nodes: Vec<EditorNode>,
 }
@@ -308,5 +321,63 @@ mod bundle_options_tests {
         let toml_str = toml::to_string_pretty(&project).unwrap();
         let back: EditorProject = toml::from_str(&toml_str).unwrap();
         assert_eq!(back.bundle_options, project.bundle_options);
+    }
+}
+
+#[cfg(test)]
+mod env_roundtrip_tests {
+    use super::*;
+    use awsm_renderer_scene::EnvSlot;
+
+    /// A whole `project.toml` whose `[environment]` block uses KTX specular +
+    /// irradiance must survive parse → re-serialize. Guards the open→save
+    /// round-trip that silently dropped a scene's HDR environment
+    /// (docs/plans/env-ktx-lost-on-project-load.md). The standalone
+    /// `EnvironmentConfig` parse is covered in `awsm-renderer-scene`; this
+    /// pins the shape as it appears nested inside `EditorProject`.
+    #[test]
+    fn project_toml_preserves_ktx_environment_slots() {
+        let src = r#"
+name = "SCENE"
+
+[environment.skybox.sky_gradient]
+zenith = [0.015, 0.02, 0.05]
+nadir = [0.004, 0.004, 0.008]
+
+[environment.specular.ktx]
+asset_id = "7ac215ae-1e66-4ad1-8bf7-f3b8d5566668"
+
+[environment.irradiance.ktx]
+asset_id = "99e98c3a-fc34-42da-88bf-fc415cf61589"
+
+[environment.probe]
+enabled = true
+center = [0.0, 1.6, 0.0]
+half_extents = [3.4, 2.0, 2.3]
+"#;
+        let project: EditorProject = toml::from_str(src).expect("parse project.toml");
+        assert!(
+            matches!(project.environment.specular, EnvSlot::Ktx { .. }),
+            "specular parsed as {:?}",
+            project.environment.specular
+        );
+        assert!(
+            matches!(project.environment.irradiance, EnvSlot::Ktx { .. }),
+            "irradiance parsed as {:?}",
+            project.environment.irradiance
+        );
+
+        // …and survives a re-serialize, which is what Save actually writes.
+        let out = toml::to_string_pretty(&project).expect("serialize");
+        let back: EditorProject = toml::from_str(&out).expect("reparse");
+        assert!(
+            matches!(back.environment.specular, EnvSlot::Ktx { .. }),
+            "specular lost on re-serialize; emitted:\n{out}"
+        );
+        assert!(
+            matches!(back.environment.irradiance, EnvSlot::Ktx { .. }),
+            "irradiance lost on re-serialize; emitted:\n{out}"
+        );
+        assert_eq!(back.environment.ktx_asset_ids().len(), 2);
     }
 }

@@ -24,6 +24,7 @@ pub mod shadow_masked_custom_vertex;
 pub mod shared;
 pub mod smaa;
 pub mod ssr;
+pub mod volumetrics;
 
 use std::ops::Range;
 
@@ -60,6 +61,7 @@ use crate::{
         occlusion::compaction::CompactionRenderPass,
         occlusion::render_pass::OcclusionRenderPass,
         ssr::render_pass::SsrRenderPass,
+        volumetrics::render_pass::VolumetricsRenderPass,
     },
     render_textures::RenderTextureFormats,
     shaders::Shaders,
@@ -132,6 +134,10 @@ pub struct RenderPasses {
     /// dispatches without further compiles). The per-frame `render()` /
     /// `ensure_size` wiring lives in `render.rs` and skips when `None`.
     pub bloom: Option<BloomRenderPass>,
+    /// Froxel volumetric scattering. LAZY like bloom: `None` until the haze
+    /// mode is first set to `Volumetric` — a scene that never asks for beams
+    /// allocates no volume and compiles neither compute shader.
+    pub volumetrics: Option<VolumetricsRenderPass>,
     /// Lazy SMAA pre-pass (edges + blend weights): `None` until SMAA is first
     /// enabled and DROPPED again on disable, so SMAA off is zero-cost (no
     /// textures, no dispatches; the effects shader variant without the flag
@@ -241,12 +247,21 @@ pub struct RenderPassesDescriptors {
     /// handle to assemble the typed `HzbRenderPass`. Per-frame
     /// resize in `render.rs` reallocates against the live viewport.
     hzb_texture: Option<hzb::texture::HzbTexture>,
+    /// The effects pass's live haze uniform. Allocated in
+    /// `describe_pipelines` for the same reason `hzb_texture` is — the buffer
+    /// needs a gpu handle and `from_resolved` is sync. Unconditional: unlike
+    /// bloom/SSR the effects pass is never lazy, and its bind-group layout
+    /// carries the binding whether or not haze is on.
+    atmosphere_params: effects::render_pass::AtmosphereParams,
     /// Fully-constructed bloom pass. Built in `describe_pipelines` (which has
     /// the gpu handle + async ctx) ONLY when the boot config enables bloom,
     /// and moved straight into `from_resolved`'s output — bloom self-contains
     /// its own bind groups + pipelines rather than joining the cross-renderer
     /// pool.
     bloom: Option<BloomRenderPass>,
+    /// Fully-constructed volumetrics pass — same lazy discipline as bloom,
+    /// keyed on the boot config's haze mode.
+    volumetrics: Option<VolumetricsRenderPass>,
     /// Fully-constructed SSR pass — self-contained like bloom, and lazy on
     /// `ssr.enabled` the same way.
     ssr: Option<SsrRenderPass>,
@@ -779,12 +794,27 @@ impl RenderPasses {
             None
         };
 
+        // Effects-pass haze uniform — same "sync from_resolved has no gpu
+        // handle" reason as the HZB texture above.
+        let atmosphere_params = effects::render_pass::AtmosphereParams::new(ctx.gpu)?;
+
         // Bloom — self-contained (own bind groups + pipelines + params + tiny
         // initial texture). LAZY: built only when the boot config enables
         // bloom; otherwise `set_post_processing` compiles it on the first
         // `bloom: true` flip. Built here (when needed) where the async ctx +
         // gpu handle are available; moved unchanged into `from_resolved`'s
         // output.
+        // Volumetrics — self-contained like bloom, and lazy for a much bigger
+        // reason: the volume is a pair of 3D textures and two compute
+        // pipelines that a scene without beams should never pay for.
+        let volumetrics = if ctx.post_processing.atmosphere.mode
+            == crate::post_process::AtmosphereMode::Volumetric
+        {
+            Some(VolumetricsRenderPass::new(ctx).await?)
+        } else {
+            None
+        };
+
         let bloom = if ctx.post_processing.bloom {
             Some(BloomRenderPass::new(ctx).await?)
         } else {
@@ -840,7 +870,9 @@ impl RenderPasses {
                 hzb_slot,
             },
             hzb_texture,
+            atmosphere_params,
             bloom,
+            volumetrics,
             ssr,
             smaa,
         })
@@ -872,7 +904,9 @@ impl RenderPasses {
             ranges,
             per_pass_descs,
             hzb_texture,
+            atmosphere_params,
             bloom,
+            volumetrics,
             ssr,
             smaa,
             ..
@@ -1051,6 +1085,7 @@ impl RenderPasses {
         let effects = EffectsRenderPass {
             bind_groups: effects_bg,
             pipelines: effects_pipelines,
+            atmosphere_params,
         };
 
         let display = DisplayRenderPass {
@@ -1078,6 +1113,7 @@ impl RenderPasses {
             material_transparent,
             effects,
             bloom,
+            volumetrics,
             ssr,
             smaa,
             display,

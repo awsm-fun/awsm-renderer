@@ -188,6 +188,37 @@ pub struct Lights {
     /// classic direction-only sample. Packed into the info uniform's tail
     /// (bytes 48..80) and mirrored into the SSR params uniform each frame.
     reflection_probe: Option<ReflectionProbeBox>,
+    /// Authored environment rotations — one per cubemap, because the slots are
+    /// independently rotatable by design (background pointing one way while
+    /// reflections come from another is a real authoring move). Each is the
+    /// WORLD→CUBE matrix the shaders actually want, i.e. already the INVERSE
+    /// of the rotation the author dialled in, so no shader inverts per pixel.
+    /// Identity = unrotated. Packed into the info uniform's tail
+    /// (bytes 80..224); the specular one is additionally mirrored into the SSR
+    /// params uniform, like the probe above.
+    env_rotation_inv: EnvRotationMatrices,
+}
+
+/// The three world→cube environment matrices, one per cubemap slot.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EnvRotationMatrices {
+    /// Rotates the skybox background lookup.
+    pub skybox: glam::Mat3,
+    /// Rotates the prefiltered-env lookup — the material IBL specular term
+    /// AND the SSR miss fallback, which are the same reflection.
+    pub specular: glam::Mat3,
+    /// Rotates the irradiance (ambient) lookup.
+    pub irradiance: glam::Mat3,
+}
+
+impl Default for EnvRotationMatrices {
+    fn default() -> Self {
+        Self {
+            skybox: glam::Mat3::IDENTITY,
+            specular: glam::Mat3::IDENTITY,
+            irradiance: glam::Mat3::IDENTITY,
+        }
+    }
 }
 
 /// The world-space box a [`Lights::set_reflection_probe`] probe projects
@@ -213,7 +244,11 @@ impl Lights {
     ///   directional: array<vec4<u32>, 2> (32) — packed indices of the ≤8 directionals
     ///   probe_center_enabled: vec4<f32> (16) — reflection-probe box center + enabled flag
     ///   probe_half_pad: vec4<f32> (16) — probe box half-extents + pad
-    pub const INFO_SIZE: usize = 80;
+    ///   skybox_rot_0/1/2:  vec4<f32> (48) — world→cube skybox rotation columns
+    ///   spec_rot_0/1/2:    vec4<f32> (48) — ditto, prefiltered-env (specular)
+    ///   irr_rot_0/1/2:     vec4<f32> (48) — ditto, irradiance
+    /// (each column packs xyz, .w is padding)
+    pub const INFO_SIZE: usize = 224;
 
     /// Creates light buffers and initializes IBL state.
     pub fn new(gpu: &AwsmRendererWebGpu, ibl: Ibl, brdf_lut: BrdfLut) -> Result<Self> {
@@ -248,6 +283,7 @@ impl Lights {
             info_uploader: crate::buffer::mapped_uploader::MappedUploader::new("Lights Info"),
             punctual_scratch: Vec::new(),
             reflection_probe: None,
+            env_rotation_inv: EnvRotationMatrices::default(),
         })
     }
 
@@ -267,6 +303,50 @@ impl Lights {
     /// miss fallback projects identically to the material IBL path.
     pub fn reflection_probe(&self) -> Option<ReflectionProbeBox> {
         self.reflection_probe
+    }
+
+    /// Set the PER-SLOT environment rotations from Euler angles in DEGREES,
+    /// applied X then Y then Z. Each cubemap turns independently: the slots
+    /// are meant to be able to disagree (background one way, reflections
+    /// another), so this takes three and never couples them.
+    ///
+    /// Stored as the INVERSE (world→cube). A rotation matrix is orthonormal,
+    /// so the inverse is the transpose — a transpose here instead of an
+    /// inversion per pixel. All-zero restores identity.
+    pub fn set_env_rotations_euler_degrees(
+        &mut self,
+        skybox: [f32; 3],
+        specular: [f32; 3],
+        irradiance: [f32; 3],
+    ) {
+        // Orthonormal ⇒ inverse == transpose.
+        let inv_of = |[x, y, z]: [f32; 3]| {
+            glam::Mat3::from_euler(
+                glam::EulerRot::XYZ,
+                x.to_radians(),
+                y.to_radians(),
+                z.to_radians(),
+            )
+            .transpose()
+        };
+        let next = EnvRotationMatrices {
+            skybox: inv_of(skybox),
+            specular: inv_of(specular),
+            irradiance: inv_of(irradiance),
+        };
+        if self.env_rotation_inv != next {
+            self.env_rotation_inv = next;
+            self.lighting_info_gpu_dirty = true;
+        }
+    }
+
+    /// The current world→cube environment rotations (already inverted — see
+    /// [`Self::set_env_rotations_euler_degrees`]). The render loop mirrors the
+    /// SPECULAR one into the SSR params uniform: the SSR miss fallback stands
+    /// in for the IBL specular term, so it must sample at that slot's
+    /// orientation, not the skybox's.
+    pub fn env_rotations_inv(&self) -> EnvRotationMatrices {
+        self.env_rotation_inv
     }
 
     /// Mapped-ring upload telemetry for the lights buffers.
@@ -513,7 +593,10 @@ impl Lights {
                 None
             };
 
-            // Fixed 80-byte block — stack array, no per-frame heap allocation.
+            // Fixed `INFO_SIZE` (= 224) byte block — 80 bytes of counts /
+            // directional list / probe tail, then the 3×48-byte
+            // environment-rotation tail at 80..224. Stack array, no per-frame
+            // heap allocation.
             let mut data = [0u8; Self::INFO_SIZE];
             data[0..4].copy_from_slice(&(self.lights.len() as u32).to_ne_bytes());
             data[4..8].copy_from_slice(&self.ibl.prefiltered_env.mip_count.to_ne_bytes());
@@ -548,6 +631,32 @@ impl Lights {
                 }
             }
 
+            // Environment-rotation tail (bytes 80..224): three world→cube
+            // matrices — skybox, specular, irradiance — each as three vec4
+            // columns (xyz used, w padding). `Mat3` is column-major, so
+            // `col(c)` is column `c`, matching the WGSL
+            // `mat3x3<f32>(rot_0.xyz, rot_1.xyz, rot_2.xyz)` reconstruction,
+            // which also takes columns. Identity when unrotated — NOT the
+            // zeros a `[0u8; N]` leaves, which would collapse every env
+            // direction to the origin and read as a black environment.
+            for (slot, m) in [
+                self.env_rotation_inv.skybox,
+                self.env_rotation_inv.specular,
+                self.env_rotation_inv.irradiance,
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let base = 80 + slot * 48;
+                for c in 0..3usize {
+                    let col = m.col(c);
+                    for r in 0..3usize {
+                        let off = base + c * 16 + r * 4;
+                        data[off..off + 4].copy_from_slice(&col[r].to_ne_bytes());
+                    }
+                }
+            }
+
             self.info_uploader.write_dirty_ranges(
                 gpu,
                 &self.gpu_info_buffer,
@@ -569,12 +678,16 @@ pub enum Light {
         color: [f32; 3],
         intensity: f32,
         direction: [f32; 3],
+        /// See [`Light::volumetric_intensity`].
+        volumetric_intensity: f32,
     },
     Point {
         color: [f32; 3],
         intensity: f32,
         position: [f32; 3],
         range: f32,
+        /// See [`Light::volumetric_intensity`].
+        volumetric_intensity: f32,
     },
     Spot {
         color: [f32; 3],
@@ -584,12 +697,59 @@ pub enum Light {
         range: f32,
         inner_angle: f32,
         outer_angle: f32,
+        /// See [`Light::volumetric_intensity`].
+        volumetric_intensity: f32,
     },
 }
 
 impl Light {
     /// Packed byte size for a light in the storage buffer.
     pub const BYTE_SIZE: usize = 64;
+
+    /// How strongly this light scatters in participating media, independent of
+    /// how strongly it lights surfaces. `1.0` (the default) = fully present in
+    /// the medium; `0.0` = surfaces only, invisible in the air.
+    ///
+    /// This is an ARTISTIC knob, not a physical consequence: a key light
+    /// usually shouldn't fog the room, and a beam fixture should blaze in the
+    /// air even where it barely reaches the floor. Read by the volumetric
+    /// light-injection stage (docs/plans/volumetrics.md); the surface shading
+    /// path ignores it entirely.
+    pub fn volumetric_intensity(&self) -> f32 {
+        match self {
+            Light::Directional {
+                volumetric_intensity,
+                ..
+            }
+            | Light::Point {
+                volumetric_intensity,
+                ..
+            }
+            | Light::Spot {
+                volumetric_intensity,
+                ..
+            } => *volumetric_intensity,
+        }
+    }
+
+    /// Mutable access to [`Self::volumetric_intensity`], for the editor's live
+    /// light panel and the scene bridge.
+    pub fn volumetric_intensity_mut(&mut self) -> &mut f32 {
+        match self {
+            Light::Directional {
+                volumetric_intensity,
+                ..
+            }
+            | Light::Point {
+                volumetric_intensity,
+                ..
+            }
+            | Light::Spot {
+                volumetric_intensity,
+                ..
+            } => volumetric_intensity,
+        }
+    }
 
     /// Re-derives this light's world-space pose from a node world matrix
     /// (the glTF/transform convention: position is the translation column,
@@ -772,7 +932,10 @@ impl Light {
         //   dir_inner: vec4<f32>,
         //   // color.rgb + intensity
         //   color_intensity: vec4<f32>,
-        //   // kind (as uint) + outer_cone + 2 pads (or extra params)
+        //   // kind (as uint) + outer_cone + shadow_index (bitcast) +
+        //   // volumetric_intensity. The last word used to be pure padding;
+        //   // volumetrics claims it, so the 64-byte stride is unchanged and
+        //   // no buffer or bind group moves.
         //   kind_outer_pad: vec4<f32>,
         // };
 
@@ -786,6 +949,7 @@ impl Light {
                 color,
                 intensity,
                 direction,
+                volumetric_intensity,
             } => {
                 // row 1
                 write(Value::SkipVec3); // skip position
@@ -806,13 +970,14 @@ impl Light {
                 write((&self.enum_value()).into());
                 write(Value::SkipN32(1)); // skip outer_cone (unused for directional)
                 write((&shadow_index_f32).into());
-                write(Value::SkipN32(1)); // pad
+                write((volumetric_intensity).into());
             }
             Light::Point {
                 color,
                 intensity,
                 position,
                 range,
+                volumetric_intensity,
             } => {
                 // row 1. Pack the *effective* influence radius, not the raw
                 // glTF range: an unlimited-range light (`range <= 0`) would
@@ -834,7 +999,7 @@ impl Light {
                 write((&self.enum_value()).into());
                 write(Value::SkipN32(1)); // skip outer_cone (unused for point)
                 write((&shadow_index_f32).into());
-                write(Value::SkipN32(1)); // pad
+                write((volumetric_intensity).into());
             }
             Light::Spot {
                 color,
@@ -844,6 +1009,7 @@ impl Light {
                 range,
                 inner_angle,
                 outer_angle,
+                volumetric_intensity,
             } => {
                 // The shader compares against cosines (`dot(light_dir, axis)`),
                 // so pre-compute cos(angle) here instead of storing raw radians.
@@ -866,7 +1032,7 @@ impl Light {
                 write((&self.enum_value()).into());
                 write((&outer_cos).into());
                 write((&shadow_index_f32).into());
-                write(Value::SkipN32(1)); // pad
+                write((volumetric_intensity).into());
             }
         }
 
@@ -887,4 +1053,72 @@ type Result<T> = std::result::Result<T, AwsmLightError>;
 pub enum AwsmLightError {
     #[error("[light] {0:?}")]
     Core(#[from] AwsmCoreError),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `volumetric_intensity` rides the word that used to be pure padding at
+    /// the end of `kind_outer_pad`, so the packed stride does NOT grow.
+    ///
+    /// That matters beyond tidiness: `Light::BYTE_SIZE` sets the light storage
+    /// buffer's stride and its `MAX_PUNCTUAL_LIGHTS` budget, and the WGSL
+    /// `LightPacked` struct mirrors it. A stride change that slipped through
+    /// would silently reinterpret every light after the first — so pin the
+    /// size AND the offset, not just the round-trip.
+    #[test]
+    fn volumetric_intensity_rides_the_free_pad_word() {
+        assert_eq!(
+            Light::BYTE_SIZE,
+            64,
+            "packing volumetric intensity must not grow the light stride"
+        );
+
+        let light = Light::Spot {
+            color: [1.0, 1.0, 1.0],
+            intensity: 80.0,
+            position: [0.0, 3.0, 0.0],
+            direction: [0.0, -1.0, 0.0],
+            range: 25.0,
+            inner_angle: 0.35,
+            outer_angle: 0.7,
+            volumetric_intensity: 0.25,
+        };
+        let shadow_index = 7u32;
+        let packed = light.storage_buffer_data(shadow_index);
+
+        // Row 4 is (kind, outer_cos, shadow_index, volumetric_intensity).
+        let read = |at: usize| f32::from_ne_bytes(packed[at..at + 4].try_into().unwrap());
+        assert_eq!(read(60), 0.25, "volumetric intensity lands at offset 60");
+        // The neighbour it shares a row with must be untouched — an off-by-one
+        // in the writer would corrupt the shadow index into a garbage
+        // descriptor lookup rather than fail loudly.
+        assert_eq!(
+            read(56).to_bits(),
+            shadow_index,
+            "the shadow index must still be recoverable from offset 56"
+        );
+    }
+
+    /// Every variant carries the field, and the accessor reads it off all
+    /// three — the injection stage asks for it without knowing the kind.
+    #[test]
+    fn volumetric_intensity_reads_from_every_light_kind() {
+        let directional = Light::Directional {
+            color: [1.0; 3],
+            intensity: 4.0,
+            direction: [0.0, -1.0, 0.0],
+            volumetric_intensity: 0.0,
+        };
+        let point = Light::Point {
+            color: [1.0; 3],
+            intensity: 60.0,
+            position: [0.0; 3],
+            range: 20.0,
+            volumetric_intensity: 2.5,
+        };
+        assert_eq!(directional.volumetric_intensity(), 0.0);
+        assert_eq!(point.volumetric_intensity(), 2.5);
+    }
 }

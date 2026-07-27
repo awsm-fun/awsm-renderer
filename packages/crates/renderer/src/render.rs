@@ -655,6 +655,53 @@ impl AwsmRenderer {
             }
         }
 
+        // Atmospheric-haze live-tuning uniforms. Unlike bloom's, this buffer
+        // lives on the always-present effects pass (no lazy Option), so the
+        // only guard is the enable — `write` itself no-ops when the bytes
+        // haven't moved, so a haze-on scene that never touches the sliders
+        // uploads exactly once.
+        if self.post_processing.atmosphere.mode != crate::post_process::AtmosphereMode::Off {
+            self.render_passes.effects.atmosphere_params.write(
+                &self.gpu,
+                &self.post_processing.atmosphere,
+                self.light_culling_buffers.froxel_depth(),
+            )?;
+        }
+
+        // Froxel volume: resize, upload the medium, and build it. Runs BEFORE
+        // the effects pass, which samples the integrated result — the volume
+        // has to describe THIS frame's air, not last frame's.
+        // Lazy pass: `None` until the mode is first set to Volumetric
+        // (set_post_processing builds it awaited, so Volumetric ⇒ `Some` by the
+        // next frame).
+        if self.post_processing.atmosphere.mode == crate::post_process::AtmosphereMode::Volumetric {
+            if let Some(volumetrics) = self.render_passes.volumetrics.as_mut() {
+                if volumetrics.ensure_size(
+                    &self.gpu,
+                    render_texture_views.width,
+                    render_texture_views.height,
+                )? {
+                    self.bind_groups
+                        .mark_create(BindGroupCreate::TextureViewRecreate);
+                }
+                let (grid_x, grid_y) = (volumetrics.texture.width, volumetrics.texture.height);
+                let z_near = self.light_culling_buffers.froxel_depth().z_near;
+                // AFTER `ensure_size`, which resets the frame counter on a
+                // reallocation — that reset is what marks the brand-new,
+                // uninitialised history volume as unusable for this frame.
+                let (frame, history_valid) = volumetrics.begin_frame();
+                volumetrics.params.write(
+                    &self.gpu,
+                    &self.post_processing.atmosphere,
+                    grid_x,
+                    grid_y,
+                    z_near,
+                    frame,
+                    history_valid,
+                )?;
+            }
+        }
+
         // SSR live-tuning uniforms (no ensure_size — the ssr target lives in
         // RenderTextures and resizes with the rest). Only written when enabled.
         if self.post_processing.ssr.enabled {
@@ -708,6 +755,10 @@ impl AwsmRenderer {
                     // fallback box-projects identically to the IBL path.
                     self.lights.reflection_probe(),
                     bvh_instances,
+                    // ...and the environment rotation, for the same reason:
+                    // a miss must fall back to the env at the orientation the
+                    // IBL path sampled it at.
+                    self.lights.env_rotations_inv().specular,
                 )?;
             }
             if bvh_buffers_recreated {
@@ -1702,6 +1753,16 @@ impl AwsmRenderer {
                     ctx.render_texture_views.width,
                     ctx.render_texture_views.height,
                 )?;
+            }
+        }
+
+        // Build the froxel volume before the effects pass samples it. Gated on
+        // the mode, so the two dispatches cost nothing in Off / Fog.
+        if ctx.post_processing.atmosphere.mode == crate::post_process::AtmosphereMode::Volumetric {
+            if let Some(volumetrics) = self.render_passes.volumetrics.as_ref() {
+                let _maybe_span_guard =
+                    crate::profiling::cpu_scope(&self.logging, "Volumetrics RenderPass", true);
+                volumetrics.render(&ctx)?;
             }
         }
 

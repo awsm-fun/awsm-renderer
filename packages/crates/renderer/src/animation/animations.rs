@@ -801,6 +801,11 @@ impl AwsmRenderer {
                         Light::Spot { outer_angle, .. } => Some(AnimationData::F32(*outer_angle)),
                         _ => None,
                     },
+                    // Every variant carries it, so the accessor answers without
+                    // matching on the kind.
+                    LightParam::VolumetricIntensity => {
+                        Some(AnimationData::F32(l.volumetric_intensity()))
+                    }
                 }
             }
             AnimationTarget::Camera { camera, param } => {
@@ -1227,6 +1232,12 @@ fn apply_light_param(
                     *outer_angle = scalar;
                 }
             });
+        }
+        LightParam::VolumetricIntensity => {
+            let scalar = data_to_f32(value)?;
+            // Applies to every light kind, unlike range / the cone angles —
+            // there is no variant for which "presence in the air" is undefined.
+            lights.update(light, |l| *l.volumetric_intensity_mut() = scalar);
         }
     }
 

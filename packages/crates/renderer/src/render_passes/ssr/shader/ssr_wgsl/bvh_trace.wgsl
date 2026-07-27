@@ -52,6 +52,11 @@ struct SsrParams {
     probe_half_pad: vec4<f32>,
     // x = TLAS instance count, yzw pad.
     bvh_meta: vec4<f32>,
+    // World→cube environment rotation (see trace.wgsl) — declared here only
+    // so every SSR stage's buffer layout stays identical.
+    env_rot_0: vec4<f32>,
+    env_rot_1: vec4<f32>,
+    env_rot_2: vec4<f32>,
 };
 
 // 32-byte node, layouts match bvh.rs: leaf when (a & 0x80000000) != 0 —

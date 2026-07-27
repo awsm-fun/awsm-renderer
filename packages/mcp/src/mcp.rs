@@ -1216,6 +1216,27 @@ pub struct EnvironmentParams {
     /// cubemap to look right (the probe re-aims lookups INTO that map).
     #[serde(default)]
     pub probe: Option<awsm_renderer_scene::ReflectionProbe>,
+    /// Rotation of the SKYBOX cubemap — the visible background only. Euler
+    /// angles in DEGREES as `[x, y, z]`, applied X then Y then Z. `y` is the
+    /// one you almost always want: it spins the room horizontally, which is
+    /// how you aim an interesting quadrant of a bake at the camera (or swing a
+    /// distracting one out of shot) WITHOUT re-baking the cubemap. Omit to
+    /// keep the current value; `[0,0,0]` clears it.
+    #[serde(default)]
+    pub skybox_rotation: Option<[f32; 3]>,
+    /// Rotation of the SPECULAR (prefiltered) cubemap — what REFLECTIONS
+    /// sample, both the material IBL specular term and the SSR miss fallback.
+    /// INDEPENDENT of `skybox_rotation`: keying reflections from a different
+    /// direction than the visible backdrop is a deliberate authoring move, so
+    /// these never move together unless you set both. Euler DEGREES
+    /// `[x, y, z]`; omit to keep, `[0,0,0]` to clear.
+    #[serde(default)]
+    pub specular_rotation: Option<[f32; 3]>,
+    /// Rotation of the IRRADIANCE cubemap — what AMBIENT light samples.
+    /// Independent of the other two. Euler DEGREES `[x, y, z]`; omit to keep,
+    /// `[0,0,0]` to clear.
+    #[serde(default)]
+    pub irradiance_rotation: Option<[f32; 3]>,
     /// Agent-authored sky-gradient nadir (ground) color, linear-RGB `[r,g,b]`.
     /// Pairs with `zenith`.
     #[serde(default)]
@@ -1388,6 +1409,47 @@ pub struct PostProcessParams {
     /// rebuilds the SSR pass. Requires ssr_enabled.
     #[serde(default)]
     pub ssr_bvh_reflections: Option<bool>,
+    /// How haze is integrated: "off" (default), "fog" (analytic view-ray
+    /// fog), or "volumetric" (froxel scattering with light shafts).
+    /// STRUCTURAL — selects which haze term, if any, is compiled into the
+    /// effects shader. Omit to leave unchanged.
+    #[serde(default)]
+    pub atmosphere_mode: Option<String>,
+    /// Haze colour as linear RGB — what an infinitely distant surface fades
+    /// to (default [0.5, 0.6, 0.7]). Live uniform. Omit to leave unchanged.
+    #[serde(default)]
+    pub atmosphere_color: Option<[f32; 3]>,
+    /// Haze extinction per meter (default 0.02); a surface at `1 / density`
+    /// meters is 63% hazed. Live uniform. Omit to leave unchanged.
+    #[serde(default)]
+    pub atmosphere_density: Option<f32>,
+    /// World Y at which haze density is full (default 0). Below this the
+    /// medium is uniform; above it thins per `atmosphere_height_falloff`.
+    /// Live uniform. Omit to leave unchanged.
+    #[serde(default)]
+    pub atmosphere_base_height: Option<f32>,
+    /// Exponential haze thinning per meter above `atmosphere_base_height`
+    /// (default 0 = uniform medium, no height structure). Live uniform.
+    /// Omit to leave unchanged.
+    #[serde(default)]
+    pub atmosphere_height_falloff: Option<f32>,
+    /// Henyey-Greenstein phase anisotropy (default 0.3): 0 isotropic, > 0
+    /// forward-scattering (a beam aimed at the camera flares), < 0 back.
+    /// Live uniform, read only in "volumetric" mode. Omit to leave unchanged.
+    #[serde(default)]
+    pub atmosphere_scattering_anisotropy: Option<f32>,
+    /// Far plane of the froxel volume in meters (default 80). The medium is
+    /// not simulated past it — deliberately much nearer than the light-culling
+    /// far plane the volume borrows its slicing from. Live uniform,
+    /// "volumetric" mode only. Omit to leave unchanged.
+    #[serde(default)]
+    pub atmosphere_volumetric_distance: Option<f32>,
+    /// Temporally reproject + blend the froxel volume across frames (default
+    /// off). Turns banding into smooth haze, at the cost of ghosting behind
+    /// fast movers. STRUCTURAL; only meaningful in "volumetric" mode. Omit to
+    /// leave unchanged.
+    #[serde(default)]
+    pub atmosphere_volumetric_temporal: Option<bool>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -4173,6 +4235,21 @@ impl EditorMcp {
     }
 
     #[tool(
+        description = "Set how strongly a light scatters in VOLUMETRIC MEDIA — how much of it you see in the air — independently of how strongly it lights surfaces. Params: { node: <light node UUID>, value: <number> }, same {node, value} shape as set_light_intensity. 1.0 (default) = fully present in the medium; 0.0 = surfaces only, invisible in the air; > 1.0 over-drives the beam. This is an ARTISTIC knob, not a physical consequence: a key light usually should NOT fog the room (set it near 0), while a beam fixture should blaze in the air even where it barely reaches the floor (set intensity low, this high). Applies to every light kind (unlike set_light_range / set_light_angles, which are kind-specific). Only has a visible effect once atmospheric haze is on (set_post_process atmosphere_mode: 'fog' or 'volumetric') — with no medium there is nothing to scatter in. Persisted on the light node + carried in the player bundle; also animatable as the 'Volumetric' light track."
+    )]
+    async fn set_light_volumetric_intensity(
+        &self,
+        Parameters(p): Parameters<LightScalarParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::SetLightParam {
+            node: parse_node(&p.node)?,
+            param: LightParamKind::VolumetricIntensity,
+            value: vec![p.value],
+        })
+        .await
+    }
+
+    #[tool(
         description = "Set a point/spot light node's range. Params: { node: <light node UUID>, value: <number> }."
     )]
     async fn set_light_range(
@@ -4404,7 +4481,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Set the scene environment. THREE INDEPENDENT slots — skybox (background), specular (the prefiltered/roughness-mipped IBL map that drives reflections), and irradiance (the diffuse-convolved IBL map that drives ambient light). Two ways: (1) `zenith` + `nadir` ([r,g,b] linear) sets ALL THREE to a two-color SKY GRADIENT — author dusk / overcast / night / studio from your own colors (no hosting needed). (2) Otherwise each of skybox / specular / irradiance accepts: 'builtin' for the built-in default sky, an existing KTX cubemap asset UUID, OR a https:// URL to a .ktx2 cubemap. PARTIAL UPDATE: an OMITTED slot keeps its current config (pass 'builtin' to explicitly reset one) — so e.g. keeping default-sky irradiance while overriding just specular is one call, and slots never silently reset each other across sequential calls. Slots are fully decoupled (unlike before, specular and irradiance are set separately). URL cubemaps are fetched AND parse-validated here — a non-cubemap/bad .ktx2 fails this call instead of silently keeping the previous environment. Precedence: zenith/nadir > per-slot args. `probe` sets the box-projected reflection probe ({enabled, center, half_extents} — parallax-anchors specular env lookups to the scene bounds; omit to preserve it). CAVEAT: the zenith/nadir gradient shortcut FULL-REPLACES the environment and resets an enabled probe to OFF unless the call also passes `probe`. A fresh scene already seeds the built-in environment. Use get_snapshot (project.environment, incl. environment.probe) to read what is currently set."
+        description = "Set the scene environment. THREE INDEPENDENT slots — skybox (background), specular (the prefiltered/roughness-mipped IBL map that drives reflections), and irradiance (the diffuse-convolved IBL map that drives ambient light). Two ways: (1) `zenith` + `nadir` ([r,g,b] linear) sets ALL THREE to a two-color SKY GRADIENT — author dusk / overcast / night / studio from your own colors (no hosting needed). (2) Otherwise each of skybox / specular / irradiance accepts: 'builtin' for the built-in default sky, an existing KTX cubemap asset UUID, OR a https:// URL to a .ktx2 cubemap. PARTIAL UPDATE: an OMITTED slot keeps its current config (pass 'builtin' to explicitly reset one) — so e.g. keeping default-sky irradiance while overriding just specular is one call, and slots never silently reset each other across sequential calls. Slots are fully decoupled (unlike before, specular and irradiance are set separately). URL cubemaps are fetched AND parse-validated here — a non-cubemap/bad .ktx2 fails this call instead of silently keeping the previous environment. Precedence: zenith/nadir > per-slot args. `probe` sets the box-projected reflection probe ({enabled, center, half_extents} — parallax-anchors specular env lookups to the scene bounds; omit to preserve it). `skybox_rotation` / `specular_rotation` / `irradiance_rotation` ([x,y,z] Euler DEGREES, applied X then Y then Z) turn each cubemap INDEPENDENTLY — background, reflections and ambient can deliberately point different ways. Use them to aim an interesting part of a bake at the camera (or swing a distracting one out of shot) without re-baking; `y` spins the room horizontally and is the usual knob. Set all three the same to turn the whole room. Each omitted rotation is PRESERVED; [0,0,0] clears one. CAVEAT: the zenith/nadir gradient shortcut FULL-REPLACES the environment and resets an enabled probe to OFF and every slot rotation to zero unless the call also passes `probe` / the `*_rotation` args. A fresh scene already seeds the built-in environment. Use get_snapshot (project.environment, incl. environment.probe) to read what is currently set."
     )]
     async fn set_environment(
         &self,
@@ -4421,8 +4498,14 @@ impl EditorMcp {
                         specular: grad,
                         irradiance: grad,
                         // Full-replace semantics: the gradient shortcut resets
-                        // the probe too unless the call carries one.
+                        // the probe and the rotation too unless the call
+                        // carries them.
                         probe: p.probe.unwrap_or_default(),
+                        rotation: awsm_renderer_scene::EnvRotation {
+                            skybox: p.skybox_rotation.unwrap_or_default(),
+                            specular: p.specular_rotation.unwrap_or_default(),
+                            irradiance: p.irradiance_rotation.unwrap_or_default(),
+                        },
                     },
                 })
                 .await;
@@ -4478,6 +4561,9 @@ impl EditorMcp {
             specular,
             irradiance,
             probe: p.probe,
+            skybox_rotation: p.skybox_rotation,
+            specular_rotation: p.specular_rotation,
+            irradiance_rotation: p.irradiance_rotation,
         })
         .await
     }
@@ -4540,12 +4626,23 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Set the global post-processing settings: tonemapping ('none' | 'khronos_neutral_pbr' | 'aces'), bloom (bool), dof (bool — depth of field, uses the active camera's focus/aperture), exposure (f32, EV stops pre-tonemap: 0 unity, +1 twice as bright), and the bloom tuning knobs bloom_threshold / bloom_knee / bloom_intensity / bloom_scatter (all f32). Bloom is a COD/Jimenez-style mip-pyramid glow: bloom_threshold (default 1.0) is the HDR luminance above which pixels glow, bloom_knee (0.5) softens the fade-in, bloom_intensity (1.0) is the mix strength, bloom_scatter (1.0) widens the halo toward coarser mips. Also SCREEN-SPACE REFLECTIONS via the ssr_* fields: ssr_enabled (bool, default off — zero cost when off), ssr_intensity / ssr_max_distance / ssr_thickness / ssr_max_steps / ssr_spread_cutoff / ssr_edge_fade / ssr_temporal_weight (LIVE uniforms), ssr_temporal + ssr_resolution_scale (0.5 half-res default / 1.0 full — STRUCTURAL, recompile the SSR pass). Glossy/metallic PBR surfaces reflect on-screen content; roughness beyond ssr_spread_cutoff falls back to IBL. Persisted on scene.post_process + carried in the player bundle; applied to the live renderer immediately. Every field is optional (patch semantics — only the ones you pass change). tonemapping/bloom/dof/ssr_enabled/ssr_temporal/ssr_resolution_scale recompile pipelines (wait_render_settled after); everything else is a LIVE uniform (no recompile). Defaults: khronos_neutral_pbr, bloom off, dof off, exposure 0, threshold 1.0, knee 0.5, intensity 1.0, scatter 1.0. Also structural: ssr_debug (0-4 trace debug views: confidence/travel/source/steps — TRANSIENT, never persisted, absent from get_post_process) and ssr_bvh_reflections (software-BVH off-screen reflection hits for polished pixels, spread < 0.25; default off, high-end tier). GOTCHA: the ssr_* params are FLAT top-level fields — a nested {\"ssr\":{...}} object is SILENTLY IGNORED (unknown fields don't error); verify with get_post_process after setting (except ssr_debug, which is transient and unreported). Read the current values back with get_post_process."
+        description = "Set the global post-processing settings: tonemapping ('none' | 'khronos_neutral_pbr' | 'aces'), bloom (bool), dof (bool — depth of field, uses the active camera's focus/aperture), exposure (f32, EV stops pre-tonemap: 0 unity, +1 twice as bright), and the bloom tuning knobs bloom_threshold / bloom_knee / bloom_intensity / bloom_scatter (all f32). Bloom is a COD/Jimenez-style mip-pyramid glow: bloom_threshold (default 1.0) is the HDR luminance above which pixels glow, bloom_knee (0.5) softens the fade-in, bloom_intensity (1.0) is the mix strength, bloom_scatter (1.0) widens the halo toward coarser mips. Also SCREEN-SPACE REFLECTIONS via the ssr_* fields: ssr_enabled (bool, default off — zero cost when off), ssr_intensity / ssr_max_distance / ssr_thickness / ssr_max_steps / ssr_spread_cutoff / ssr_edge_fade / ssr_temporal_weight (LIVE uniforms), ssr_temporal + ssr_resolution_scale (0.5 half-res default / 1.0 full — STRUCTURAL, recompile the SSR pass). Glossy/metallic PBR surfaces reflect on-screen content; roughness beyond ssr_spread_cutoff falls back to IBL. Persisted on scene.post_process + carried in the player bundle; applied to the live renderer immediately. Every field is optional (patch semantics — only the ones you pass change). tonemapping/bloom/dof/ssr_enabled/ssr_temporal/ssr_resolution_scale recompile pipelines (wait_render_settled after); everything else is a LIVE uniform (no recompile). Defaults: khronos_neutral_pbr, bloom off, dof off, exposure 0, threshold 1.0, knee 0.5, intensity 1.0, scatter 1.0. Also structural: ssr_debug (0-4 trace debug views: confidence/travel/source/steps — TRANSIENT, never persisted, absent from get_post_process) and ssr_bvh_reflections (software-BVH off-screen reflection hits for polished pixels, spread < 0.25; default off, high-end tier). Also ATMOSPHERIC HAZE via the atmosphere_* fields. atmosphere_mode is the one structural switch and it is THREE-WAY, not on/off: 'off' (default — no haze term compiled at all, zero cost), 'fog' (closed-form fog along the view ray; cheap aerial perspective, NO light shafts), or 'volumetric' (froxel scattering volume with per-light in-scatter — beams, shafts, lit haze under a fixture; substantially more expensive). 'volumetric' REPLACES 'fog' rather than adding to it: both describe the same air, so they are alternatives, not layers. The medium itself is shared by both modes: atmosphere_color ([f32;3] linear RGB an infinitely distant surface fades to, default [0.5,0.6,0.7]), atmosphere_density (extinction per meter, default 0.02 — a surface at 1/density meters is 63% hazed), atmosphere_base_height (world Y where density is full, default 0), atmosphere_height_falloff (exponential thinning per meter ABOVE base_height, default 0 = uniform medium). With a falloff > 0 the haze pools below base_height and thins above, so the sky keeps a finite haze while the horizon saturates. Volumetric-only: atmosphere_volumetric_distance (how far the froxel volume reaches, meters, default 80 — the medium is NOT simulated past it; deliberately much nearer than the light-culling far plane the volume borrows its slicing from, since 32 slices over ~10km makes the far ones kilometres thick and they saturate to solid haze), atmosphere_scattering_anisotropy (Henyey-Greenstein g, default 0.3 — > 0 forward-scatters so a beam aimed at the camera flares; LIVE) and atmosphere_volumetric_temporal (bool, default off, STRUCTURAL — reprojects the volume across frames, turning banding into smooth haze at the cost of ghosting behind fast movers). Per-LIGHT participation is separate: see set_light_volumetric_intensity. GOTCHA: the ssr_* and atmosphere_* params are FLAT top-level fields — a nested {\"ssr\":{...}} or {\"atmosphere\":{...}} object is SILENTLY IGNORED (unknown fields don't error); verify with get_post_process after setting (except ssr_debug, which is transient and unreported). Read the current values back with get_post_process."
     )]
     async fn set_post_process(
         &self,
         Parameters(p): Parameters<PostProcessParams>,
     ) -> Result<CallToolResult, McpError> {
+        let atmosphere_mode = match p.atmosphere_mode.as_deref() {
+            None => None,
+            Some("off") => Some(awsm_renderer_editor_protocol::AtmosphereMode::Off),
+            Some("fog") => Some(awsm_renderer_editor_protocol::AtmosphereMode::Fog),
+            Some("volumetric") => Some(awsm_renderer_editor_protocol::AtmosphereMode::Volumetric),
+            Some(other) => {
+                return Ok(CallToolResult::error(vec![Content::text(format!(
+                    "unknown atmosphere_mode '{other}': expected 'off', 'fog', or 'volumetric'"
+                ))]))
+            }
+        };
         let tonemapping = match p.tonemapping.as_deref() {
             None => None,
             Some("none") => Some(ToneMappingConfig::None),
@@ -4584,13 +4681,21 @@ impl EditorMcp {
             ssr_temporal_weight: p.ssr_temporal_weight,
             ssr_debug: p.ssr_debug,
             ssr_bvh_reflections: p.ssr_bvh_reflections,
+            atmosphere_mode,
+            atmosphere_color: p.atmosphere_color,
+            atmosphere_density: p.atmosphere_density,
+            atmosphere_base_height: p.atmosphere_base_height,
+            atmosphere_height_falloff: p.atmosphere_height_falloff,
+            atmosphere_scattering_anisotropy: p.atmosphere_scattering_anisotropy,
+            atmosphere_volumetric_distance: p.atmosphere_volumetric_distance,
+            atmosphere_volumetric_temporal: p.atmosphere_volumetric_temporal,
         })
         .await
     }
 
     #[tool(
         annotations(read_only_hint = true),
-        description = "Current global post-processing settings as JSON (the read half of set_post_process): tonemapping, bloom, dof, exposure, bloom_threshold/knee/intensity/scatter, and the full ssr block (enabled, intensity, max_distance, thickness, max_steps, spread_cutoff, edge_fade, resolution_scale, temporal, temporal_weight, bvh_reflections). ssr debug views are transient and NOT reported. Pure read."
+        description = "Current global post-processing settings as JSON (the read half of set_post_process): tonemapping, bloom, dof, exposure, bloom_threshold/knee/intensity/scatter, the full ssr block (enabled, intensity, max_distance, thickness, max_steps, spread_cutoff, edge_fade, resolution_scale, temporal, temporal_weight, bvh_reflections), and the atmosphere block (mode, color, density, base_height, height_falloff, scattering_anisotropy, volumetric_distance, volumetric_temporal). ssr debug views are transient and NOT reported. Pure read."
     )]
     async fn get_post_process(&self) -> Result<CallToolResult, McpError> {
         self.query(EditorQuery::PostProcess).await

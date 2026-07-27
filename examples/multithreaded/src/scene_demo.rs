@@ -184,6 +184,7 @@ async fn run_render(
                 intensity: 80.0,
                 position: [0.0, 4.0, 0.0],
                 range: 40.0,
+                volumetric_intensity: 1.0,
             },
             None,
         )
@@ -452,6 +453,7 @@ fn demo_scene() -> awsm_renderer_scene::Scene {
             intensity: 60.0,
             range: 40.0,
             shadow: Default::default(),
+            volumetric_intensity: 1.0,
         }),
         locked: false,
         visible: true,

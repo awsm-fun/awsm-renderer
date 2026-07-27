@@ -6,7 +6,7 @@
 use awsm_renderer_editor_protocol::{LightKind, PrimitiveShape};
 
 use crate::controller::InsertSpec;
-use crate::engine::scene::{AssetId, AssetSource, EnvSlot};
+use crate::engine::scene::{AssetId, AssetSource, EnvRotation, EnvSlot};
 use crate::prelude::*;
 
 /// Dispatch an insert of `spec` at the scene root.
@@ -334,6 +334,9 @@ impl Slot {
             specular,
             irradiance,
             probe: None,
+            skybox_rotation: None,
+            specular_rotation: None,
+            irradiance_rotation: None,
         }
     }
 }
@@ -344,7 +347,167 @@ fn environment_row() -> Dom {
         .child(env_slot_picker(Slot::Skybox))
         .child(env_slot_picker(Slot::Specular))
         .child(env_slot_picker(Slot::Irradiance))
+        .child(env_rotation_button())
     })
+}
+
+/// Which cubemap a rotation row drives. Each is INDEPENDENT — pointing the
+/// background one way while reflections or ambient come from another is a
+/// deliberate authoring move, so these never move together.
+#[derive(Clone, Copy, PartialEq)]
+enum RotSlot {
+    Skybox,
+    Specular,
+    Irradiance,
+}
+
+impl RotSlot {
+    fn title(self) -> &'static str {
+        match self {
+            RotSlot::Skybox => "Skybox",
+            RotSlot::Specular => "IBL Specular",
+            RotSlot::Irradiance => "IBL Irradiance",
+        }
+    }
+    /// What this slot actually drives — the reason an author would turn THIS
+    /// one rather than the others.
+    fn hint(self) -> &'static str {
+        match self {
+            RotSlot::Skybox => "the visible background",
+            RotSlot::Specular => "reflections (IBL specular + SSR fallback)",
+            RotSlot::Irradiance => "ambient light",
+        }
+    }
+    fn get(self, rot: &EnvRotation) -> [f32; 3] {
+        match self {
+            RotSlot::Skybox => rot.skybox,
+            RotSlot::Specular => rot.specular,
+            RotSlot::Irradiance => rot.irradiance,
+        }
+    }
+    /// A `PatchEnvironment` touching ONLY this slot's rotation — the other two
+    /// stay `None` and are preserved.
+    fn patch(self, v: [f32; 3]) -> EditorCommand {
+        let (skybox_rotation, specular_rotation, irradiance_rotation) = match self {
+            RotSlot::Skybox => (Some(v), None, None),
+            RotSlot::Specular => (None, Some(v), None),
+            RotSlot::Irradiance => (None, None, Some(v)),
+        };
+        EditorCommand::PatchEnvironment {
+            skybox: None,
+            specular: None,
+            irradiance: None,
+            probe: None,
+            skybox_rotation,
+            specular_rotation,
+            irradiance_rotation,
+        }
+    }
+}
+
+/// Ribbon trigger for the rotation modal. Three slots × three axes is far too
+/// much to sit inline next to the pickers, so the ribbon carries one button
+/// that reports whether ANY rotation is currently set.
+fn env_rotation_button() -> Dom {
+    html!("span", {
+        .child_signal(controller().scene.environment.signal_ref(|env| {
+            let identity = env.rotation.is_identity();
+            Some(
+                Btn::new()
+                    .label(if identity { "Rotation\u{2026}" } else { "Rotation \u{25CF}" })
+                    .icon("env")
+                    .size(BtnSize::Sm)
+                    .variant(if identity { BtnVariant::Ghost } else { BtnVariant::Primary })
+                    .on_click(open_env_rotation)
+                    .render(),
+            )
+        }))
+    })
+}
+
+/// Per-slot environment rotation (Euler degrees, XYZ).
+///
+/// An AUTHORING transform on the cubemaps, not on the scene: it turns a bake
+/// under a fixed world, so a map whose interesting quadrant faces the wrong
+/// way can be aimed at the camera — or a distracting one (an LED wall, a sun)
+/// swung out of shot — WITHOUT re-baking. `Y` is the usual knob.
+///
+/// Every row tracks `scene.environment`, so it reflects each write path (these
+/// fields, MCP `set_environment`, project load), and dispatches a partial
+/// `PatchEnvironment` touching only its own slot.
+fn open_env_rotation() {
+    Modal::open(|| {
+        let row = |slot: RotSlot| {
+            html!("div", {
+                .style("display", "flex").style("flex-direction", "column").style("gap", "4px")
+                .child(html!("div", {
+                    .style("display", "flex").style("align-items", "baseline").style("gap", "6px")
+                    .child(html!("span", {
+                        .style("font-size", "12.5px").style("color", "var(--text-1)")
+                        .text(slot.title())
+                    }))
+                    .child(html!("span", {
+                        .style("font-size", "11.5px").style("color", "var(--text-2)")
+                        .text(slot.hint())
+                    }))
+                }))
+                .child(vec3_signal(
+                    controller().scene.environment.signal_ref(move |env| {
+                        let v = slot.get(&env.rotation);
+                        [v[0] as f64, v[1] as f64, v[2] as f64]
+                    }),
+                    1.0,
+                    move |v| {
+                        let cmd = slot.patch([v[0] as f32, v[1] as f32, v[2] as f32]);
+                        spawn_local(async move {
+                            if let Err(err) = controller().dispatch(cmd).await {
+                                tracing::error!("ribbon: env rotation patch failed: {err}");
+                            }
+                        });
+                    },
+                ))
+            })
+        };
+
+        ModalCard::new("Environment rotation")
+            .width(460.0)
+            .child(html!("div", {
+                .style("display", "flex").style("flex-direction", "column").style("gap", "14px")
+                .child(html!("span", {
+                    .style("font-size", "12.5px").style("color", "var(--text-2)").style("line-height", "1.5")
+                    .text("Turn each environment cubemap in place (Euler degrees, X then Y then Z). \
+                           Aims a bake at the camera without re-baking it. The three are \
+                           INDEPENDENT — set them the same to turn the whole room, or differently \
+                           to key reflections from one direction while the backdrop faces another.")
+                }))
+                .child(row(RotSlot::Skybox))
+                .child(row(RotSlot::Specular))
+                .child(row(RotSlot::Irradiance))
+            }))
+            .footer(html!("div", {
+                .style("display", "flex").style("gap", "8px")
+                .child(Btn::new().label("Reset all").variant(BtnVariant::Ghost)
+                    .on_click(|| {
+                        spawn_local(async {
+                            let zero = Some([0.0_f32; 3]);
+                            if let Err(err) = controller().dispatch(EditorCommand::PatchEnvironment {
+                                skybox: None,
+                                specular: None,
+                                irradiance: None,
+                                probe: None,
+                                skybox_rotation: zero,
+                                specular_rotation: zero,
+                                irradiance_rotation: zero,
+                            }).await {
+                                tracing::error!("ribbon: env rotation reset failed: {err}");
+                            }
+                        });
+                    }).render())
+                .child(Btn::new().label("Done").variant(BtnVariant::Primary)
+                    .on_click(Modal::close).render())
+            }))
+            .render()
+    });
 }
 
 /// A per-slot picker. The trigger label reflects the CURRENT assignment (reacts

@@ -1,27 +1,12 @@
+// Depth of Field.
+//
+// `linearize_depth` / `load_depth` live in `helpers/depth.wgsl` (shared with
+// atmosphere), included by compute.wgsl ahead of this file.
+
 // Depth of Field constants
 const DOF_MAX_BLUR: f32 = 16.0;          // Maximum blur radius in pixels
 const DOF_SAMPLES: u32 = 16u;            // Number of samples for blur disk
 const SENSOR_HEIGHT: f32 = 0.024;        // 24mm full-frame sensor height (in meters)
-
-// Linearize depth from NDC depth buffer value
-fn linearize_depth(depth: f32, camera: Camera) -> f32 {
-    // Check for reverse-Z infinite far (proj[2][2] ≈ 0)
-    if (abs(camera.proj[2][2]) < 0.0001) {
-        // Reverse-Z with infinite far: proj[3][2] = near; depth = near / z.
-        let near = camera.proj[3][2];
-        return near / max(depth, 0.0001);
-    } else {
-        // Standard RH 0..1 projection (glam `perspective_rh`):
-        //   proj[2][2] = far/(near-far),  proj[3][2] = near*far/(near-far)
-        // so near = proj[3][2]/proj[2][2] and far = proj[3][2]/(proj[2][2]+1).
-        // Using proj[3][2] directly as `near` (the old code) yields a NEGATIVE
-        // near → negative linear depth → CoC clamped to 0 → DoF silently never
-        // blurred a single pixel.
-        let near = camera.proj[3][2] / camera.proj[2][2];
-        let far = camera.proj[3][2] / (camera.proj[2][2] + 1.0);
-        return (near * far) / (far - depth * (far - near));
-    }
-}
 
 // Calculate focal length from projection matrix in world units (meters)
 // Matches Blender's camera model with 24mm sensor height
@@ -54,30 +39,6 @@ fn calculate_coc(linear_depth: f32, camera: Camera) -> f32 {
     let coc_pixels = coc_world * screen_height / SENSOR_HEIGHT;
 
     return clamp(coc_pixels, 0.0, DOF_MAX_BLUR);
-}
-
-// Load depth, handling both multisampled and single-sampled textures
-fn load_depth(coords: vec2<i32>) -> f32 {
-    {% if multisampled_geometry %}
-        {% if reverse_z %}
-        // Reverse-Z (003): nearest = LARGEST depth; start from the far
-        // extreme (0.0) and max-reduce.
-        var min_depth = 0.0;
-        for (var s = 0u; s < 4u; s = s + 1u) {
-            let d = textureLoad(depth_tex, coords, i32(s));
-            min_depth = max(min_depth, d);
-        }
-        {% else %}
-        var min_depth = 1.0;
-        for (var s = 0u; s < 4u; s = s + 1u) {
-            let d = textureLoad(depth_tex, coords, i32(s));
-            min_depth = min(min_depth, d);
-        }
-        {% endif %}
-        return min_depth;
-    {% else %}
-        return textureLoad(depth_tex, coords, 0);
-    {% endif %}
 }
 
 // Disk sample offsets using golden angle distribution

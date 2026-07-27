@@ -63,6 +63,7 @@ struct LiveEnv {
     specular: Option<EnvSlot>,
     irradiance: Option<EnvSlot>,
     probe: Option<crate::engine::scene::ReflectionProbe>,
+    rotation: Option<crate::engine::scene::EnvRotation>,
 }
 
 /// Stash raw KTX bytes for a freshly-picked HDR asset so `env_sync` can resolve
@@ -134,7 +135,7 @@ pub fn start() {
 /// a failed fetch/upload stays dirty and the next emission — even of the
 /// identical config — retries instead of silently no-op'ing.
 async fn sync_env(env: &EnvironmentConfig) {
-    let (sky_changed, ibl_changed, probe_changed) = LIVE.with(|l| {
+    let (sky_changed, ibl_changed, probe_changed, rotation_changed) = LIVE.with(|l| {
         let l = l.borrow();
         (
             l.skybox.as_ref() != Some(&env.skybox),
@@ -143,6 +144,7 @@ async fn sync_env(env: &EnvironmentConfig) {
             l.specular.as_ref() != Some(&env.specular)
                 || l.irradiance.as_ref() != Some(&env.irradiance),
             l.probe.as_ref() != Some(&env.probe),
+            l.rotation != Some(env.rotation),
         )
     });
     if sky_changed {
@@ -170,6 +172,10 @@ async fn sync_env(env: &EnvironmentConfig) {
     if probe_changed {
         apply_probe(&env.probe).await;
         LIVE.with(|l| l.borrow_mut().probe = Some(env.probe));
+    }
+    if rotation_changed {
+        apply_rotation(env.rotation).await;
+        LIVE.with(|l| l.borrow_mut().rotation = Some(env.rotation));
     }
 }
 
@@ -204,6 +210,17 @@ async fn apply_probe(probe: &crate::engine::scene::ReflectionProbe) {
         );
 }
 
+/// Push the authored per-slot environment rotations into the renderer (a pure
+/// uniform update — infallible, no assets involved), so the editor viewport
+/// previews exactly what the player renders.
+async fn apply_rotation(rot: crate::engine::scene::EnvRotation) {
+    let handle = renderer_handle();
+    let mut renderer = handle.lock().await;
+    renderer
+        .lights
+        .set_env_rotations_euler_degrees(rot.skybox, rot.specular, rot.irradiance);
+}
+
 async fn apply_ibl(specular: &EnvSlot, irradiance: &EnvSlot) -> anyhow::Result<()> {
     let prefiltered = slot_image(specular, SPECULAR_SIZE).await?;
     let irradiance = slot_image(irradiance, IRRADIANCE_SIZE).await?;
@@ -232,8 +249,30 @@ async fn slot_image(slot: &EnvSlot, size: u32) -> anyhow::Result<CubemapImage> {
     }
 }
 
-/// Resolve a KTX cubemap by `AssetId`: the scene asset table gives the source,
-/// then bytes come from the in-memory HDR stash (picked files) or a URL fetch.
+/// Resolve a KTX cubemap by `AssetId`: the in-memory HDR stash first, then the
+/// scene asset table to learn where else the bytes might come from.
+///
+/// **The stash is checked BEFORE the table, and that order is the whole point.**
+/// The two halves of the save→reload round-trip disagreed about what an env KTX
+/// needs. `persistence::ktx_files` writes `assets/<id>.ktx2` driven by
+/// `environment.ktx_asset_ids()`, and `restore_ktx` re-stashes it the same way —
+/// both table-INDEPENDENT, and both run *before* `apply_project`, precisely so
+/// the environment resolves the first time it applies. This function then
+/// demanded a table entry and bailed before ever looking at the stash. A project
+/// whose asset table had lost the entry therefore loaded with its cubemap bytes
+/// sitting in memory, unused, and fell back to a black sky gradient — reporting
+/// only "not in the project asset table", which points at the wrong half.
+///
+/// That is exactly what happened to the dance-off stage: both env cubemaps
+/// present in `assets/`, both referenced by `[environment.*.ktx]`, neither
+/// carrying an `[assets.<id>]` entry, no IBL — and a whole lighting pass tuned
+/// against it. Reading the stash first makes the round-trip independent of the
+/// table, which is what the persistence side already assumed.
+///
+/// The remaining question is save-side and NOT fixed here: `ImportKtxEnvFromUrl`
+/// does insert an `AssetEntry`, and `reachable_assets` does scan the environment,
+/// so how the entry went missing is still open. Worth chasing, but the loader
+/// should be robust to it either way.
 async fn load_ktx_by_id(asset_id: AssetId) -> anyhow::Result<CubemapImage> {
     let entry = controller()
         .scene
@@ -242,18 +281,47 @@ async fn load_ktx_by_id(asset_id: AssetId) -> anyhow::Result<CubemapImage> {
         .unwrap()
         .entries
         .get(&asset_id)
-        .cloned()
-        .ok_or_else(|| anyhow::anyhow!("asset id {asset_id} not in the project asset table"))?;
+        .cloned();
+
+    // The stash: populated by the HDR picker, by `ImportKtxEnvFromUrl`, and by
+    // `restore_ktx` on load. If the bytes are here, nothing else matters.
+    if let Some(bytes) = stashed_ktx(asset_id) {
+        // Load anyway, but say so loudly: the stash satisfying a load the
+        // table can't is exactly the still-open save-side bug described
+        // above, and this warning is its only remaining symptom. Every
+        // table-driven flow (asset browser, MCP asset queries, any future
+        // unused-asset cleanup) still can't see this asset.
+        if entry.is_none() {
+            tracing::warn!(
+                "env KTX {asset_id}: bytes are stashed but the project asset \
+                 table has no entry for it — loading from the stash, but the \
+                 save side dropped the `[assets]` entry (see `load_ktx_by_id` \
+                 docs); table-driven flows will not see this asset"
+            );
+        }
+        let label = match entry.as_ref().map(|e| &e.source) {
+            Some(AssetSource::Filename(name)) => name.clone(),
+            Some(AssetSource::Url(url)) => url.clone(),
+            _ => asset_id.to_string(),
+        };
+        return CubemapImage::load_ktx_bytes(bytes)
+            .map_err(|e| anyhow::anyhow!("load ktx {label}: {e}"));
+    }
+
+    // Not stashed — the table is the only way to learn where the bytes live.
+    let entry = entry.ok_or_else(|| {
+        anyhow::anyhow!(
+            "asset id {asset_id} has no stashed KTX bytes and is not in the \
+             project asset table"
+        )
+    })?;
 
     let (label, bytes) = match &entry.source {
         AssetSource::Filename(name) => {
-            let bytes = stashed_ktx(asset_id).ok_or_else(|| {
-                anyhow::anyhow!(
-                    "KTX '{name}' bytes aren't in memory (re-pick the HDR set; on-disk \
-                     persistence of HDR assets is a follow-on)"
-                )
-            })?;
-            (name.clone(), bytes)
+            anyhow::bail!(
+                "KTX '{name}' bytes aren't in memory and no `assets/{asset_id}.ktx2` \
+                 was restored — re-pick the HDR set"
+            )
         }
         AssetSource::Url(url) => {
             let bytes = gloo_net::http::Request::get(url)

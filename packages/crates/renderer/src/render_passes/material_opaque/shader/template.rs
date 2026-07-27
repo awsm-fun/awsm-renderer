@@ -34,6 +34,9 @@ pub struct ShaderTemplateMaterialOpaqueBindGroups {
     /// `shared_wgsl/shadow/bind_groups.wgsl` include can be reused by
     /// the transparent pipeline (slot 1).
     pub shadow_group_index: u32,
+    /// Collapse shadow filtering to the 1-tap hard path (see the shared
+    /// `shadow/bind_groups.wgsl`). Only the volumetrics pass sets this.
+    pub shadow_force_hard: bool,
     /// Registry bucket list — drives the templated `ClassifyBuckets`
     /// struct emit, must match the classify-pass writer's struct
     /// byte-for-byte.
@@ -443,6 +446,7 @@ impl TryFrom<&ShaderCacheKeyMaterialOpaque> for ShaderTemplateMaterialOpaque {
                 msaa_sample_count,
                 debug,
                 shadow_group_index: 3,
+                shadow_force_hard: false,
                 // Opaque is SSCS-capable; effective gate is the global enable.
                 // step_count clamped ≥1 (safe loop bound + f32(steps) divisor).
                 sscs_available: value.sscs_enabled,
@@ -1173,8 +1177,20 @@ mod size_regression {
     // permanent ~2 KB addition so final_blend can resolve a coverage-correct
     // per-pixel descriptor (single-sample descriptors made SSR visibly undo
     // MSAA along silhouettes). Measured 91.1 KB empty; both ceilings bumped.
-    const CEIL_EMPTY_MSAA4_MIPS: usize = 94_000;
-    const CEIL_ALL_MSAA4_MIPS: usize = 134_000;
+    // **Per-slot environment rotation (`EnvironmentConfig::rotation`):** the
+    // always-included light ABI gained a world→cube matrix PER CUBEMAP — 9 vec4
+    // columns on `LightsInfoPacked` (skybox / specular / irradiance), 2 `mat3x3`
+    // on `IblInfo`, plus the shared `env_rot_mat` builder — and every
+    // env-sampling primitive rotates its lookup by its own slot's matrix. A
+    // permanent, intended addition: it is what lets a baked cubemap be re-aimed
+    // without a re-bake, and the slots are independent BY DESIGN (background
+    // one way, reflections another), so the three matrices cannot be collapsed
+    // back into one. The ABI part lands in EVERY Custom shader, lean included —
+    // hence both ceilings move. One builder function rather than three
+    // accessors keeps that ABI cost as small as it can be. Measured 94.4 KB
+    // empty / 135.8 KB all.
+    const CEIL_EMPTY_MSAA4_MIPS: usize = 95_000;
+    const CEIL_ALL_MSAA4_MIPS: usize = 137_000;
 
     #[test]
     fn custom_shader_sizes_within_ceiling() {

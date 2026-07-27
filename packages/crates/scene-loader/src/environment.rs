@@ -57,6 +57,17 @@ pub async fn apply_environment(
                 half_extents: env.probe.half_extents,
             },
         ));
+
+    // Authored per-slot environment rotations. Each cubemap turns
+    // independently — the slots are meant to be able to disagree. Set
+    // unconditionally (rather than only when non-zero) so clearing a rotation
+    // actually restores identity on the renderer rather than leaving the
+    // previous scene's value in place.
+    renderer.lights.set_env_rotations_euler_degrees(
+        env.rotation.skybox,
+        env.rotation.specular,
+        env.rotation.irradiance,
+    );
     Ok(())
 }
 

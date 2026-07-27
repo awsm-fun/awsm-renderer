@@ -1,8 +1,13 @@
 //! Effects render pass execution.
 
-use awsm_renderer_core::command::compute_pass::ComputePassDescriptor;
+use awsm_renderer_core::{
+    buffers::{BufferDescriptor, BufferUsage},
+    command::compute_pass::ComputePassDescriptor,
+    renderer::AwsmRendererWebGpu,
+};
 
 use crate::{
+    buffer::mapped_uploader::MappedUploader,
     error::Result,
     render::RenderContext,
     render_passes::{
@@ -14,10 +19,115 @@ use crate::{
     },
 };
 
+/// `AtmosphereParams` — 48-byte uniform: `color` (vec3), `density`,
+/// `base_height`, `height_falloff`, then the froxel VOLUME's depth range
+/// (`slice_count`, `z_near`, `z_far`) used only by the volumetric composite,
+/// plus tail padding to the vec4 alignment WGSL gives the struct.
+///
+/// `z_near` is COPIED from `LightCullingBuffers::froxel_depth` rather than
+/// re-derived, and `z_far` is derived by the same expression the volumetrics
+/// pass uses: the effects pass has to map a pixel's depth back to the same
+/// slice the volume was written with, and two derivations that disagree by a
+/// hair misregister the whole volume. The mapping itself is UNIFORM across
+/// the range — the light grid's exponential slicing stops here.
+///
+/// Unlike `BloomParams` (which lives on the lazily-built `BloomRenderPass`)
+/// this buffer is owned by the effects pass and therefore ALWAYS exists — the
+/// bind-group layout carries the binding whether or not haze is on, keeping
+/// one layout shape across the toggle exactly like the 1×1 SMAA dummy. Only
+/// the compiled shader varies; the haze-off variant simply never reads it.
+pub struct AtmosphereParams {
+    pub gpu_buffer: web_sys::GpuBuffer,
+    raw_data: [u8; Self::BYTE_SIZE],
+    uploader: MappedUploader,
+}
+
+impl AtmosphereParams {
+    pub const BYTE_SIZE: usize = 48;
+
+    pub fn new(gpu: &AwsmRendererWebGpu) -> Result<Self> {
+        let gpu_buffer = gpu.create_buffer(
+            &BufferDescriptor::new(
+                Some("AtmosphereParams"),
+                Self::BYTE_SIZE,
+                BufferUsage::new().with_uniform().with_copy_dst(),
+            )
+            .into(),
+        )?;
+
+        let mut params = Self {
+            gpu_buffer,
+            raw_data: [0; Self::BYTE_SIZE],
+            uploader: MappedUploader::new("AtmosphereParams"),
+        };
+        // Seed from the config defaults so the first frame after an enable
+        // renders the authored haze even if the per-frame write is skipped.
+        let defaults = crate::post_process::Atmosphere::default();
+        params.pack(
+            &defaults,
+            crate::render_passes::light_culling::buffers::FroxelDepthRange::default(),
+        );
+        Ok(params)
+    }
+
+    fn pack(
+        &mut self,
+        atmosphere: &crate::post_process::Atmosphere,
+        froxel: crate::render_passes::light_culling::buffers::FroxelDepthRange,
+    ) {
+        let d = &mut self.raw_data;
+        d[0..4].copy_from_slice(&atmosphere.color[0].to_ne_bytes());
+        d[4..8].copy_from_slice(&atmosphere.color[1].to_ne_bytes());
+        d[8..12].copy_from_slice(&atmosphere.color[2].to_ne_bytes());
+        d[12..16].copy_from_slice(&atmosphere.density.to_ne_bytes());
+        d[16..20].copy_from_slice(&atmosphere.base_height.to_ne_bytes());
+        d[20..24].copy_from_slice(&atmosphere.height_falloff.to_ne_bytes());
+        d[24..28].copy_from_slice(
+            &(crate::render_passes::volumetrics::texture::FROXEL_SLICE_COUNT as f32).to_ne_bytes(),
+        );
+        // The VOLUME's range, not the light grid's — the composite maps a
+        // pixel's depth back to the slice the volumetrics pass wrote, so it
+        // has to use that pass's mapping, which is uniform across this range.
+        // Both `max(z_near * 2.0)` clamps must stay identical to the one in
+        // `VolumetricParams::pack`, or the composite reads a slice the volume
+        // never wrote.
+        let z_far = atmosphere.volumetric_distance.max(froxel.z_near * 2.0);
+        d[28..32].copy_from_slice(&froxel.z_near.to_ne_bytes());
+        d[32..36].copy_from_slice(&z_far.to_ne_bytes());
+    }
+
+    /// Packs + uploads via the mapped-ring path, skipping the GPU write when
+    /// the bytes are unchanged — same house standard as `BloomParams`: these
+    /// only move on user edits, so an every-frame upload while haze is merely
+    /// ENABLED is pure idle work.
+    pub fn write(
+        &mut self,
+        gpu: &AwsmRendererWebGpu,
+        atmosphere: &crate::post_process::Atmosphere,
+        froxel: crate::render_passes::light_culling::buffers::FroxelDepthRange,
+    ) -> Result<()> {
+        let prev = self.raw_data;
+        self.pack(atmosphere, froxel);
+        if self.raw_data == prev {
+            return Ok(());
+        }
+        self.uploader.write_dirty_ranges(
+            gpu,
+            &self.gpu_buffer,
+            Self::BYTE_SIZE,
+            self.raw_data.as_slice(),
+            &[(0, Self::BYTE_SIZE)],
+        )?;
+        Ok(())
+    }
+}
+
 /// Effects pass bind groups and pipelines.
 pub struct EffectsRenderPass {
     pub bind_groups: EffectsBindGroups,
     pub pipelines: EffectsPipelines,
+    /// Live atmospheric-haze uniform (colour / density / heights).
+    pub atmosphere_params: AtmosphereParams,
 }
 
 impl EffectsRenderPass {
@@ -25,10 +135,12 @@ impl EffectsRenderPass {
     pub async fn new(ctx: &mut RenderPassInitContext<'_>) -> Result<Self> {
         let bind_groups = EffectsBindGroups::new(ctx).await?;
         let pipelines = EffectsPipelines::new(ctx, &bind_groups).await?;
+        let atmosphere_params = AtmosphereParams::new(ctx.gpu)?;
 
         Ok(Self {
             bind_groups,
             pipelines,
+            atmosphere_params,
         })
     }
 

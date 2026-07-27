@@ -413,8 +413,8 @@ fn node_group(node: &Arc<Node>) -> Option<TargetGroup> {
     })
 }
 
-/// The light-parameter rows for a light node. Intensity + Color always; Range
-/// only for Point/Spot; Inner/OuterAngle only for Spot.
+/// The light-parameter rows for a light node. Intensity + Color + Volumetric
+/// always; Range only for Point/Spot; Inner/OuterAngle only for Spot.
 fn light_rows(node: crate::engine::scene::NodeId, kind: LightKind) -> Vec<PropRow> {
     let mut rows = vec![
         PropRow {
@@ -434,6 +434,17 @@ fn light_rows(node: crate::engine::scene::NodeId, kind: LightKind) -> Vec<PropRo
             label: "Color".into(),
             badge: Some("LIGHT"),
             hint: "vec3 \u{00b7} light".into(),
+        },
+        // Unconditional like Intensity/Color: every light kind participates in
+        // the medium, so there's no variant to gate this on.
+        PropRow {
+            target: TrackTarget::Light {
+                node,
+                param: LightParamKind::VolumetricIntensity,
+            },
+            label: "Volumetric".into(),
+            badge: Some("LIGHT"),
+            hint: "scalar \u{00b7} light".into(),
         },
     ];
     if matches!(kind, LightKind::Point | LightKind::Spot) {

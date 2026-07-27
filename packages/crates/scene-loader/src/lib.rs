@@ -946,6 +946,26 @@ pub fn post_process_to_renderer(
             debug: pp.ssr.debug,
             bvh_reflections: pp.ssr.bvh_reflections,
         },
+        atmosphere: awsm_renderer::post_process::Atmosphere {
+            mode: match pp.atmosphere.mode {
+                awsm_renderer_scene::AtmosphereMode::Off => {
+                    awsm_renderer::post_process::AtmosphereMode::Off
+                }
+                awsm_renderer_scene::AtmosphereMode::Fog => {
+                    awsm_renderer::post_process::AtmosphereMode::Fog
+                }
+                awsm_renderer_scene::AtmosphereMode::Volumetric => {
+                    awsm_renderer::post_process::AtmosphereMode::Volumetric
+                }
+            },
+            color: pp.atmosphere.color,
+            density: pp.atmosphere.density,
+            base_height: pp.atmosphere.base_height,
+            height_falloff: pp.atmosphere.height_falloff,
+            scattering_anisotropy: pp.atmosphere.scattering_anisotropy,
+            volumetric_distance: pp.atmosphere.volumetric_distance,
+            volumetric_temporal: pp.atmosphere.volumetric_temporal,
+        },
     }
 }
 
@@ -1802,6 +1822,37 @@ async fn materialize(
         // no runtime renderable) need nothing further here. `Mesh` /
         // `SkinnedMesh` / `Light` / `Camera` are handled by the arms above.
         NodeKind::Group | NodeKind::Collider(_) => {}
+    }
+
+    // Apply the node's authored shadow flags to every mesh it just created.
+    //
+    // These round-trip through `scene.toml` and the editor honours them, but
+    // until now NOTHING applied them on load: the only other
+    // `set_mesh_shadow_flags` call in this file is the transparent-material
+    // override in `load_glb_under`, so an authored `cast = false` was silently
+    // ignored and the mesh kept casting.
+    // The bundle's geometry-only glbs carry no shadow flags of their own, so
+    // the scene node is the only place the information exists.
+    //
+    // AND-ed with the flags the mesh already carries: the transparency
+    // override already ran (inside the NodeKind match above, at glb build
+    // time) and forced both off for transparent meshes, which have no
+    // visibility geometry for the shadow pass to draw. That rule must win
+    // over whatever the artist authored — authored flags may only narrow the
+    // current state, never re-enable it.
+    if let Some(cfg) = node.kind.mesh_shadow() {
+        if let Some(keys) = maps.node_meshes.get(&node.id) {
+            for &k in keys {
+                let current = renderer.mesh_shadow_flags(k);
+                let _ = renderer.set_mesh_shadow_flags(
+                    k,
+                    awsm_renderer::shadows::MeshShadowFlags {
+                        cast: cfg.cast && current.cast,
+                        receive: cfg.receive && current.receive,
+                    },
+                );
+            }
+        }
     }
 
     // Honor `visible == false` for this node's meshes (sprites included): hide

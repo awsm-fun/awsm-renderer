@@ -43,6 +43,9 @@ pub struct ShaderTemplateMaterialPrepBindGroups {
     pub sscs_step_count: u32,
     /// Bind-group slot the shadow bindings live at (group 2 for prep).
     pub shadow_group_index: u32,
+    /// Collapse shadow filtering to the 1-tap hard path (see the shared
+    /// `shadow/bind_groups.wgsl`). Only the volumetrics pass sets this.
+    pub shadow_force_hard: bool,
     /// Z-slice count for `froxel_walk.wgsl` (`FROXEL_SLICE_COUNT`).
     pub froxel_slice_count: u32,
     /// Depth convention (003) — read by the shared SSCS body in
@@ -95,6 +98,7 @@ impl TryFrom<&ShaderCacheKeyMaterialPrep> for ShaderTemplateMaterialPrep {
                 sscs_available: key.sscs_enabled,
                 sscs_step_count: key.sscs_step_count.max(1),
                 shadow_group_index: 2,
+                shadow_force_hard: false,
                 froxel_slice_count,
                 reverse_z: key.reverse_z,
             },

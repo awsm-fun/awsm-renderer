@@ -29,6 +29,7 @@ use crate::{
         shader_cache_key::ShaderCacheKeyRenderPass,
         smaa::shader::template::ShaderTemplateSmaa,
         ssr::shader::template::ShaderTemplateSsr,
+        volumetrics::shader::template::ShaderTemplateVolumetrics,
     },
     shaders::AwsmShaderError,
 };
@@ -63,6 +64,7 @@ pub enum ShaderTemplateRenderPass {
     Effects(ShaderTemplateEffects),
     Display(ShaderTemplateDisplay),
     Ssr(ShaderTemplateSsr),
+    Volumetrics(ShaderTemplateVolumetrics),
 }
 
 impl TryFrom<&ShaderCacheKeyRenderPass> for ShaderTemplateRenderPass {
@@ -94,6 +96,9 @@ impl TryFrom<&ShaderCacheKeyRenderPass> for ShaderTemplateRenderPass {
             ShaderCacheKeyRenderPass::BloomDownsample(cache_key) => Ok(
                 ShaderTemplateRenderPass::BloomDownsample(cache_key.try_into()?),
             ),
+            ShaderCacheKeyRenderPass::Volumetrics(cache_key) => {
+                Ok(ShaderTemplateRenderPass::Volumetrics(cache_key.try_into()?))
+            }
             ShaderCacheKeyRenderPass::BloomCombine(cache_key) => Ok(
                 ShaderTemplateRenderPass::BloomCombine(cache_key.try_into()?),
             ),
@@ -167,6 +172,7 @@ impl ShaderTemplateRenderPass {
             ShaderTemplateRenderPass::HzbReduce(tmpl) => tmpl.into_source(),
             ShaderTemplateRenderPass::BloomDownsample(tmpl) => tmpl.into_source(),
             ShaderTemplateRenderPass::BloomCombine(tmpl) => tmpl.into_source(),
+            ShaderTemplateRenderPass::Volumetrics(tmpl) => tmpl.into_source(),
             ShaderTemplateRenderPass::Smaa(tmpl) => tmpl.into_source(),
             ShaderTemplateRenderPass::LightCulling(tmpl) => tmpl.into_source(),
             ShaderTemplateRenderPass::MaterialClassify(tmpl) => tmpl.into_source(),
@@ -222,6 +228,7 @@ impl ShaderTemplateRenderPass {
             ShaderTemplateRenderPass::Effects(tmpl) => tmpl.debug_label(),
             ShaderTemplateRenderPass::Display(tmpl) => tmpl.debug_label(),
             ShaderTemplateRenderPass::Ssr(tmpl) => tmpl.debug_label(),
+            ShaderTemplateRenderPass::Volumetrics(tmpl) => tmpl.debug_label(),
         }
     }
 }

@@ -273,7 +273,15 @@ fn get_halton_jitter(frame_count: u32) -> Vec2 {
     Vec2::new(x, y)
 }
 
-fn halton(mut index: u32, base: u32) -> f32 {
+/// The Halton low-discrepancy sequence — `index`-th term in `base`.
+///
+/// Shared rather than private because more than one feature wants a jitter
+/// sequence and they must not each grow their own: volumetrics jitters its
+/// froxel sample point with it, the (currently disabled) TAA camera jitter
+/// above uses it, and any future temporal pass will want it too. What is NOT
+/// shared is the SPACE each applies it in — NDC pixels for a camera jitter,
+/// froxel units for a volume — because that is genuinely per-feature.
+pub(crate) fn halton(mut index: u32, base: u32) -> f32 {
     let mut result = 0.0;
     let mut f = 1.0;
 

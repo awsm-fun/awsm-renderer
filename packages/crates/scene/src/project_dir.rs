@@ -188,6 +188,7 @@ mod tests {
                 asset_id: irradiance,
             },
             probe: Default::default(),
+            rotation: Default::default(),
         };
         // The bake emits one file per env KTX id, at the shared convention path.
         let env_files: Vec<BundleFile> = scene
@@ -227,10 +228,23 @@ mod tests {
             specular: grad,
             irradiance: grad,
             probe: Default::default(),
+            // Per-slot rotations must survive the SAME scene.toml the player
+            // bundle carries — the bundle half of "authored in the editor,
+            // seen in the player". Deliberately DIFFERENT per slot, so a
+            // bundle that collapsed them to one value fails here.
+            rotation: crate::EnvRotation {
+                skybox: [0.0, 137.5, 0.0],
+                specular: [0.0, -40.0, 0.0],
+                irradiance: [12.0, 0.0, 0.0],
+            },
         };
         let toml = scene_to_toml(&scene).unwrap();
         let loaded = scene_from_toml(&toml).unwrap();
         assert_eq!(loaded.environment, scene.environment);
+        assert_eq!(
+            loaded.environment.rotation, scene.environment.rotation,
+            "per-slot env rotations must survive the bundled scene.toml"
+        );
         assert!(
             loaded.environment.ktx_asset_ids().is_empty(),
             "gradient env references no KTX assets"

@@ -122,7 +122,7 @@ dedicated tool reaches it indirectly · **dispatch** = escape hatch only ·
 | `remove_material_variant` | `remove_material_variant` | tool | |
 | `rename_material_variant` | `rename_material_variant` | tool | |
 | `copy_material_instance` | `copy_material_instance` | tool | |
-| `set_light_param` | `set_light_color`, `set_light_intensity`, `set_light_range`, `set_light_angles` | tool | |
+| `set_light_param` | `set_light_color`, `set_light_intensity`, `set_light_range`, `set_light_angles`, `set_light_volumetric_intensity` | tool | |
 
 ### Environment / global settings
 
@@ -132,7 +132,7 @@ dedicated tool reaches it indirectly · **dispatch** = escape hatch only ·
 | `patch_environment` | `set_environment` | tool | Partial semantics: omitted slots keep bindings. |
 | `set_shadows` | `set_shadows` (+ `set_sscs` subset) | tool | Full `ShadowsConfig` patch; read via `get_shadows`. |
 | `set_shadows_sscs` | — | dispatch | LEGACY: kept so old MCP binaries / recorded histories still apply; `set_sscs` now dispatches `set_shadows`. Fine as dispatch-only. |
-| `set_post_process` | `set_post_process` | tool | Flat `ssr_*` fields; read via `get_post_process`. |
+| `set_post_process` | `set_post_process` | tool | Flat `ssr_*` + `atmosphere_*` fields; read via `get_post_process`. |
 | `set_view_options` | `set_view_options` | tool | Read via `get_view_options`. |
 
 ### View / camera / time (transient)

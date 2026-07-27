@@ -24,11 +24,14 @@ use crate::{
     },
 };
 
-/// `SsrParams` — 80-byte uniform (20×f32): the live-tuning knobs (§5a) plus
+/// `SsrParams` — 128-byte uniform (32×f32): the live-tuning knobs (§5a) plus
 /// the mirrored reflection-probe box (bytes 32..64 — copied from
 /// `Lights::reflection_probe` each frame so the SSR miss fallback projects
-/// identically to the material IBL path). Layout must match `struct
-/// SsrParams` in `ssr_wgsl/trace.wgsl`.
+/// identically to the material IBL path) and the mirrored world→cube
+/// environment rotation (bytes 80..128 — copied from
+/// `Lights::env_rotation_inv` for the same reason: a rotated environment must
+/// look the same in an SSR miss as it does in the IBL fetch beside it).
+/// Layout must match `struct SsrParams` in `ssr_wgsl/trace.wgsl`.
 pub struct SsrParams {
     pub gpu_buffer: web_sys::GpuBuffer,
     raw_data: [u8; Self::BYTE_SIZE],
@@ -43,7 +46,7 @@ pub struct SsrParams {
 }
 
 impl SsrParams {
-    pub const BYTE_SIZE: usize = 80;
+    pub const BYTE_SIZE: usize = 128;
 
     pub fn new(gpu: &AwsmRendererWebGpu) -> Result<Self> {
         let gpu_buffer = gpu.create_buffer(
@@ -60,7 +63,18 @@ impl SsrParams {
             uploader: MappedUploader::new("SsrParams"),
             frame: 0,
         };
-        params.pack(1.0, 100.0, 1.0, 96.0, 0.6, 0.1, 0.9, None, 0);
+        params.pack(
+            1.0,
+            100.0,
+            1.0,
+            96.0,
+            0.6,
+            0.1,
+            0.9,
+            None,
+            0,
+            glam::Mat3::IDENTITY,
+        );
         Ok(params)
     }
 
@@ -76,6 +90,7 @@ impl SsrParams {
         temporal_weight: f32,
         probe: Option<crate::lights::ReflectionProbeBox>,
         bvh_instances: u32,
+        env_rotation_inv: glam::Mat3,
     ) {
         self.raw_data[0..4].copy_from_slice(&intensity.to_ne_bytes());
         self.raw_data[4..8].copy_from_slice(&max_distance.to_ne_bytes());
@@ -101,6 +116,19 @@ impl SsrParams {
         // [64..80] = bvh_meta: x = TLAS instance count (f32 — exact to 16M).
         self.raw_data[64..80].fill(0);
         self.raw_data[64..68].copy_from_slice(&(bvh_instances as f32).to_ne_bytes());
+        // [80..128] = world→cube environment rotation, three vec4 columns
+        // (xyz used, w pad), mirrored from `Lights::env_rotation_inv`. NOT
+        // zero-filled first: identity is the neutral value here, and zeros
+        // would collapse every miss-fallback direction to the origin.
+        for c in 0..3usize {
+            let col = env_rotation_inv.col(c);
+            for r in 0..3usize {
+                let off = 80 + c * 16 + r * 4;
+                self.raw_data[off..off + 4].copy_from_slice(&col[r].to_ne_bytes());
+            }
+            // The .w padding lane.
+            self.raw_data[80 + c * 16 + 12..80 + c * 16 + 16].fill(0);
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -116,6 +144,7 @@ impl SsrParams {
         temporal_weight: f32,
         probe: Option<crate::lights::ReflectionProbeBox>,
         bvh_instances: u32,
+        env_rotation_inv: glam::Mat3,
     ) -> Result<()> {
         // The frame counter only rotates the march jitter when a temporal
         // pass accumulates it (temporal_weight > 0). Advancing it with
@@ -136,6 +165,7 @@ impl SsrParams {
             temporal_weight,
             probe,
             bvh_instances,
+            env_rotation_inv,
         );
         if self.raw_data == prev {
             return Ok(());

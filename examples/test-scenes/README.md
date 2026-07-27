@@ -64,6 +64,8 @@ bundles, which are window-independent.
 | `mirror` | perfect-mirror SSR (spread 0: spatially deterministic trace + 16-frame temporal supersampling, tight resolve AA kernel, full-res, bloom off; touching-sphere contact probe) | reflection pixel-identical in shape to geometry, no serration/noise/dashes |
 | `ssr-arena` | the full reflections stack in one production frame: box-projected HDR probe, BVH off-screen fallback, per-material `ssr_mask` (floor 0.7), emissive-only content (see its README) | glossy floor mirrors rings/pads/red wall; platform occluder column stays a soft maroon smudge (BVH-filled), not black; reflections damped ~30% vs mask 1.0 |
 | `bloom-post` | bloom knobs, tonemappers (aces vs khronos_neutral_pbr), exposure, DoF | halo scales with intensity; tonemapper switch visibly re-grades |
+| `volumetrics` | froxel volumetric scattering: light shafts, shadowed beams in the medium | a lit cone above three separated bars, dark shafts below them, lit air in the gaps; switching to `fog` removes the cone and leaves the floor identical; no `golden.png` — see its `verify.md` |
+| `atmosphere` | atmospheric haze (`post_process.atmosphere`): distance term + closed-form height integral | identical pillars ramp toward the haze colour with distance; a mast spanning `base_height` greys toward its base; no `golden.png` — see its `verify.md` |
 | `lights-many` | froxel culling under many point/spot lights | dozens of local lights, correct falloff, interactive frame rate |
 | `particles` | particle emitter (existing instancing path) | emitter animates; instance colors apply |
 | `decals` | decal projection | decal lands on geometry only, no skybox bleed |

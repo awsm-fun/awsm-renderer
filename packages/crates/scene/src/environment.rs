@@ -23,6 +23,59 @@ pub struct EnvironmentConfig {
     pub irradiance: EnvSlot,
     #[serde(default)]
     pub probe: ReflectionProbe,
+    /// Per-slot rigid rotation of the environment cubemaps. PER SLOT, and
+    /// deliberately so: pointing the background one way while the reflections
+    /// or the ambient come from another is a real authoring move (aim a bake's
+    /// interesting quadrant at the camera for reflections while keeping the
+    /// visible backdrop where it was, key a room from one side without
+    /// swinging the walls, …). Slots stay as decoupled here as they are
+    /// everywhere else in this struct.
+    #[serde(default)]
+    pub rotation: EnvRotation,
+}
+
+/// Euler-degree rotations for the three environment slots, mirroring the slot
+/// fields on [`EnvironmentConfig`] one-for-one.
+///
+/// This is an AUTHORING transform on the environment, not on the scene: it
+/// turns a cubemap under a fixed world, letting a bake whose interesting
+/// quadrant faces the wrong way be aimed at the camera without re-baking.
+///
+/// Angles are DEGREES applied X then Y then Z (intrinsic), which makes
+/// `[0, 180, 0]` the "spin the room around" knob an author reaches for most.
+/// All-zero is identity, and costs one mat3 multiply per env fetch — the
+/// matrices upload already-inverted, so no shader ever inverts per pixel.
+#[derive(Clone, Copy, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub struct EnvRotation {
+    /// Turns the visible background only.
+    #[serde(default)]
+    pub skybox: [f32; 3],
+    /// Turns the prefiltered (roughness-mipped) map that drives REFLECTIONS —
+    /// both the material IBL specular term and the SSR miss fallback.
+    #[serde(default)]
+    pub specular: [f32; 3],
+    /// Turns the diffuse-convolved map that drives AMBIENT light.
+    #[serde(default)]
+    pub irradiance: [f32; 3],
+}
+
+impl EnvRotation {
+    /// Whether every slot is unrotated.
+    pub fn is_identity(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// The same rotation on all three slots — the "turn the whole room"
+    /// shorthand, for when the slots are NOT meant to disagree.
+    pub fn uniform(euler_degrees: [f32; 3]) -> Self {
+        Self {
+            skybox: euler_degrees,
+            specular: euler_degrees,
+            irradiance: euler_degrees,
+        }
+    }
 }
 
 impl EnvironmentConfig {
@@ -110,6 +163,48 @@ pub enum EnvSlot {
 mod tests {
     use super::*;
 
+    /// A `project.toml`-shaped `[environment]` block with KTX **specular +
+    /// irradiance** and a gradient skybox must parse back as `Ktx` on both
+    /// slots. Guards the open→save round-trip: a silent fall back to the
+    /// default here loses a scene's whole HDR environment with no error
+    /// (docs/plans/env-ktx-lost-on-project-load.md).
+    #[test]
+    fn ktx_specular_and_irradiance_parse_from_project_toml_shape() {
+        let toml_src = r#"
+[skybox.sky_gradient]
+zenith = [0.015, 0.02, 0.05]
+nadir = [0.004, 0.004, 0.008]
+
+[specular.ktx]
+asset_id = "7ac215ae-1e66-4ad1-8bf7-f3b8d5566668"
+
+[irradiance.ktx]
+asset_id = "99e98c3a-fc34-42da-88bf-fc415cf61589"
+
+[probe]
+enabled = true
+center = [0.0, 1.6, 0.0]
+half_extents = [3.4, 2.0, 2.3]
+"#;
+        let cfg: EnvironmentConfig = toml::from_str(toml_src).expect("parse [environment] block");
+        assert!(
+            matches!(cfg.specular, EnvSlot::Ktx { .. }),
+            "specular parsed as {:?}, expected Ktx",
+            cfg.specular
+        );
+        assert!(
+            matches!(cfg.irradiance, EnvSlot::Ktx { .. }),
+            "irradiance parsed as {:?}, expected Ktx",
+            cfg.irradiance
+        );
+        assert_eq!(
+            cfg.ktx_asset_ids().len(),
+            2,
+            "both KTX slots must be reported"
+        );
+        assert!(cfg.probe.enabled);
+    }
+
     /// The three slots are fully independent: skybox / specular / irradiance can
     /// each be a different kind (built-in default, sky-gradient, or KTX) in the
     /// SAME config, and it round-trips through the scene.toml / project.toml serde
@@ -127,6 +222,14 @@ mod tests {
                 asset_id: AssetId::new(),
             },
             probe: Default::default(),
+            // A DIFFERENT non-trivial rotation per slot — a serde shape that
+            // dropped a field, reordered them, or collapsed the three back
+            // into one shared value diverges here.
+            rotation: EnvRotation {
+                skybox: [15.0, -120.0, 7.5],
+                specular: [0.0, 44.0, 0.0],
+                irradiance: [-8.0, 0.0, 190.0],
+            },
         };
         let toml = toml::to_string_pretty(&cfg).unwrap();
         let back: EnvironmentConfig = toml::from_str(&toml).unwrap();
@@ -135,6 +238,29 @@ mod tests {
             cfg.ktx_asset_ids().len(),
             1,
             "only the KTX slot carries bytes"
+        );
+    }
+
+    /// `rotation` is `#[serde(default)]`, so every environment block written
+    /// BEFORE the field existed must still deserialize — and land on identity,
+    /// not on garbage. Without this, loading an older project.toml / bundled
+    /// scene.toml would fail outright or silently pick up a rotation nobody
+    /// authored.
+    #[test]
+    fn rotation_defaults_to_identity_for_pre_feature_documents() {
+        let legacy = r#"
+            [skybox]
+            built_in_default = {}
+            [specular]
+            built_in_default = {}
+            [irradiance]
+            built_in_default = {}
+        "#;
+        let cfg: EnvironmentConfig =
+            toml::from_str(legacy).expect("pre-rotation environment still deserializes");
+        assert!(
+            cfg.rotation.is_identity(),
+            "a document with no rotation key means UNROTATED on every slot"
         );
     }
 }

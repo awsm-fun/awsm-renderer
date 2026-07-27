@@ -306,6 +306,7 @@ impl BindGroups {
             TransparentShadows,
             LightCulling,
             Bloom,
+            Volumetrics,
             Smaa,
             Ssr,
             Effects,
@@ -391,6 +392,10 @@ impl BindGroups {
                     // bloom texture (write) + its per-mip pyramid views — all
                     // recreated on resize.
                     functions_to_call.insert(FunctionToCall::Bloom);
+                    // The froxel volume is sized from the viewport (tiles of
+                    // 16px), so a resize reallocates it and both stage bind
+                    // groups have to rebind.
+                    functions_to_call.insert(FunctionToCall::Volumetrics);
                     // SMAA pre-pass binds composite (read) + its edges/weights
                     // textures — all recreated on resize/toggle.
                     functions_to_call.insert(FunctionToCall::Smaa);
@@ -522,6 +527,14 @@ impl BindGroups {
                     // bindings (the "Extended Shadows" layout) alongside the
                     // edge data/id — rebind on a shadow-resource change.
                     functions_to_call.insert(FunctionToCall::MaterialOpaqueEdge);
+                    // The volumetrics shadows group binds the same atlas /
+                    // cube / cascade views (via
+                    // `build_shadow_bind_group_entries`), so an atlas grow or
+                    // shadow-config change must rebind it too — otherwise the
+                    // froxel pass keeps sampling the orphaned old atlas and
+                    // beam shadows diverge from surface shadows. No-op while
+                    // the pass is `None` (the dispatch arm skips).
+                    functions_to_call.insert(FunctionToCall::Volumetrics);
                 }
                 BindGroupCreate::MaterialClassifyBuffersResize => {
                     // Classify rebuilds its own bind group; opaque
@@ -581,6 +594,14 @@ impl BindGroups {
                     // Prep's group(1) binds lights_storage + cull_params, both
                     // reallocated on a froxel-buffer resize (Stage 3b).
                     functions_to_call.insert(FunctionToCall::MaterialPrep);
+                    // The volumetrics lights group binds the same merged
+                    // `storage_buffer` + `params_buffer` (`inject`'s froxel
+                    // walk reads the culled light lists). A per-froxel
+                    // capacity grow reallocates both with NO viewport change
+                    // — no `TextureViewRecreate` fires — so without this the
+                    // medium keeps walking the orphaned old buffers until a
+                    // resize. No-op while the pass is `None`.
+                    functions_to_call.insert(FunctionToCall::Volumetrics);
                 }
             }
         }
@@ -859,6 +880,19 @@ impl BindGroups {
                         bind_groups.recreate(&ctx, texture, &params.gpu_buffer)?;
                     }
                 }
+                FunctionToCall::Volumetrics => {
+                    // Lazy pass: `None` until haze mode is first set to
+                    // Volumetric (same flow as bloom above).
+                    if let Some(volumetrics) = render_passes.volumetrics.as_mut() {
+                        let crate::render_passes::volumetrics::render_pass::VolumetricsRenderPass {
+                            bind_groups,
+                            texture,
+                            params,
+                            ..
+                        } = volumetrics;
+                        bind_groups.recreate(&ctx, texture, &params.gpu_buffer)?;
+                    }
+                }
                 FunctionToCall::Ssr => {
                     // Lazy pass: `None` until SSR is first enabled (same flow
                     // as bloom above).
@@ -880,10 +914,25 @@ impl BindGroups {
                         .smaa
                         .as_ref()
                         .map(|s| s.textures.weights_view.clone());
-                    render_passes
-                        .effects
-                        .bind_groups
-                        .recreate(&ctx, weights_view.as_ref())?;
+                    // Same trick for the volumetrics volume — `None` while the
+                    // lazy pass doesn't exist, which binds the 1×1×1 dummy.
+                    let volume_view = render_passes
+                        .volumetrics
+                        .as_ref()
+                        .map(|v| v.texture.integrated_sample_view.clone());
+                    // Destructure so the atmosphere uniform and the bind groups
+                    // borrow disjointly (same shape as the SSR arm above).
+                    let crate::render_passes::effects::render_pass::EffectsRenderPass {
+                        bind_groups,
+                        atmosphere_params,
+                        ..
+                    } = &mut render_passes.effects;
+                    bind_groups.recreate(
+                        &ctx,
+                        weights_view.as_ref(),
+                        &atmosphere_params.gpu_buffer,
+                        volume_view.as_ref(),
+                    )?;
                 }
                 FunctionToCall::Display => {
                     render_passes.display.bind_groups.recreate(&ctx)?;

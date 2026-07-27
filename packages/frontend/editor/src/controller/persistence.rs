@@ -162,6 +162,7 @@ pub fn to_editor_project(ctrl: &EditorController) -> EditorProject {
         editor_animations,
         anim_mixer: ctrl.anim_mixer.get_cloned(),
         bundle_options: ctrl.scene.bundle_options.get(),
+        active_camera: ctrl.active_camera.get(),
         nodes,
     }
 }
@@ -794,6 +795,11 @@ pub fn apply_project(ctrl: &EditorController, project: EditorProject) {
     ctrl.scene.shadows.set(project.shadows);
     ctrl.scene.post_process.set(project.post_process);
     ctrl.scene.bundle_options.set(project.bundle_options);
+    // Restore the authored viewpoint. Without this every load dropped to the
+    // free camera, which starts far enough out that a stage-sized set reads as
+    // a speck — so the first thing anyone did on opening a project was hunt for
+    // the camera they had been working through.
+    ctrl.active_camera.set_neq(project.active_camera);
     *ctrl.scene.assets.lock().unwrap() = project.assets;
     if !project.name.is_empty() {
         ctrl.project_name.set(project.name);
@@ -1326,7 +1332,17 @@ pub async fn apply_inmem(
 pub async fn load_project_from_url(ctrl: &EditorController, base_url: &str) -> EditorResult<()> {
     let base = base_url.trim_end_matches('/');
     let url = format!("{base}/project.toml");
+    // Bypass the browser HTTP cache. A static dev server (`http-server`,
+    // `python3 -m http.server`) commonly sends a long `cache-control: max-age`,
+    // so re-loading a project you just saved silently replays the STALE
+    // `project.toml` — the scene looks like it lost whatever you last changed
+    // (it cost a long debugging session here: a re-saved HDR environment kept
+    // "reverting" to the built-in gradient, which was the cached pre-edit file
+    // all along). An authoring tool must never open a stale project. Same
+    // approach as `renderer-gltf`'s loader: the fetch cache MODE, not a
+    // `?cb=<ts>` URL cachebuster, so the URL / cache key stays clean.
     let resp = gloo_net::http::Request::get(&url)
+        .cache(web_sys::RequestCache::NoStore)
         .send()
         .await
         .map_err(|e| EditorError::Msg(format!("fetch {url}: {e}")))?;
@@ -1350,6 +1366,7 @@ pub async fn load_project_from_url(ctrl: &EditorController, base_url: &str) -> E
         let file_url = format!("{base}/{path}");
         async move {
             let resp = gloo_net::http::Request::get(&file_url)
+                .cache(web_sys::RequestCache::NoStore)
                 .send()
                 .await
                 .map_err(|e| e.to_string())?;
@@ -1368,6 +1385,7 @@ pub async fn load_project_from_url(ctrl: &EditorController, base_url: &str) -> E
                 let file_url = format!("{base}/{path}");
                 async move {
                     let resp = gloo_net::http::Request::get(&file_url)
+                        .cache(web_sys::RequestCache::NoStore)
                         .send()
                         .await
                         .map_err(|e| e.to_string())?;
