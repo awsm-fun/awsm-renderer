@@ -188,7 +188,14 @@ impl VolumetricParams {
             // resize, when the history volume holds nothing. Blending against
             // a cleared volume would fade the medium in over ~12 frames, which
             // reads as the haze arriving late.
-            (j, if history_valid { Self::HISTORY_BLEND } else { 0.0 })
+            (
+                j,
+                if history_valid {
+                    Self::HISTORY_BLEND
+                } else {
+                    0.0
+                },
+            )
         } else {
             ([0.0; 3], 0.0)
         };
@@ -334,12 +341,8 @@ impl VolumetricsRenderPass {
             ctx.command_encoder.copy_texture_to_texture(
                 &TexelCopyTextureInfo::new(&self.texture.scatter).into(),
                 &TexelCopyTextureInfo::new(history).into(),
-                &awsm_renderer_core::texture::Extent3d::new(
-                    gx,
-                    Some(gy),
-                    Some(FROXEL_SLICE_COUNT),
-                )
-                .into(),
+                &awsm_renderer_core::texture::Extent3d::new(gx, Some(gy), Some(FROXEL_SLICE_COUNT))
+                    .into(),
             )?;
         }
         Ok(())

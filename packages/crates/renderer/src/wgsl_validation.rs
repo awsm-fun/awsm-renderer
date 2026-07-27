@@ -2355,18 +2355,19 @@ fn volumetrics_shaders_validate() {
     for stage in [VolumetricsStage::Inject, VolumetricsStage::Integrate] {
         for reverse_z in [false, true] {
             for temporal in [false, true] {
-            let label =
-                format!("volumetrics stage={stage:?} reverse_z={reverse_z} temporal={temporal}");
-            let key = ShaderCacheKeyVolumetrics {
-                stage,
-                reverse_z,
-                temporal,
-            };
-            let src = ShaderTemplateVolumetrics::try_from(&key)
-                .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
-                .into_source()
-                .unwrap_or_else(|e| panic!("{label}: template render failed: {e:?}"));
-            naga_validate(&src, &label);
+                let label = format!(
+                    "volumetrics stage={stage:?} reverse_z={reverse_z} temporal={temporal}"
+                );
+                let key = ShaderCacheKeyVolumetrics {
+                    stage,
+                    reverse_z,
+                    temporal,
+                };
+                let src = ShaderTemplateVolumetrics::try_from(&key)
+                    .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
+                    .into_source()
+                    .unwrap_or_else(|e| panic!("{label}: template render failed: {e:?}"));
+                naga_validate(&src, &label);
             }
         }
     }

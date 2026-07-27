@@ -262,10 +262,7 @@ impl VolumetricsBindGroups {
             .dummy_src_view
             .as_ref()
             .expect("dummy src view exists after new()");
-        let inject_src = texture
-            .history_sample_view
-            .as_ref()
-            .unwrap_or(dummy_src);
+        let inject_src = texture.history_sample_view.as_ref().unwrap_or(dummy_src);
         inject_entries.push(BindGroupEntry::new(
             2,
             BindGroupResource::TextureView(Cow::Borrowed(inject_src)),
@@ -275,10 +272,7 @@ impl VolumetricsBindGroups {
             BindGroupResource::TextureView(Cow::Borrowed(&texture.scatter_storage_view)),
         ));
         if let Some(sampler) = self.history_sampler.as_ref() {
-            inject_entries.push(BindGroupEntry::new(
-                4,
-                BindGroupResource::Sampler(sampler),
-            ));
+            inject_entries.push(BindGroupEntry::new(4, BindGroupResource::Sampler(sampler)));
         }
         self.inject = Some(ctx.gpu.create_bind_group(
             &BindGroupDescriptor::new(layout, Some("Volumetrics Inject"), inject_entries).into(),
@@ -297,10 +291,7 @@ impl VolumetricsBindGroups {
         // `inject`, and a bind group must supply every entry its layout
         // declares.
         if let Some(sampler) = self.history_sampler.as_ref() {
-            integrate_entries.push(BindGroupEntry::new(
-                4,
-                BindGroupResource::Sampler(sampler),
-            ));
+            integrate_entries.push(BindGroupEntry::new(4, BindGroupResource::Sampler(sampler)));
         }
         self.integrate = Some(
             ctx.gpu.create_bind_group(
