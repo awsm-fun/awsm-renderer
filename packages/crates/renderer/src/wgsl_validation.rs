@@ -1114,20 +1114,26 @@ fn material_final_blend_shader_validates() {
 
 #[test]
 fn env_rotation_applied_in_every_env_sampling_path() {
-    // env-rotation: the authored `EnvironmentConfig::rotation` turns the
-    // skybox AND both IBL cubemaps together. That only holds if EVERY
-    // consumer of an environment cubemap rotates its lookup direction by the
-    // same world→cube matrix — miss one and the background faces a different
-    // way than the light it casts (or a reflection points at a different part
-    // of the room than the sky behind it). The matrix is uploaded already
-    // inverted and identity when unrotated, so this is a RUNTIME value, not a
-    // template axis: assert the rotate is present in every permutation, which
-    // also catches a `{% if env_rotation %}` gate sneaking in later.
+    // env-rotation: `EnvironmentConfig::rotation` turns each environment
+    // cubemap INDEPENDENTLY (skybox / specular / irradiance). Two things have
+    // to hold, and this pins both:
     //
-    // The four env consumers, and the expression each must contain:
+    //  1. EVERY consumer of an env cubemap rotates its lookup direction —
+    //     miss one and that path silently ignores the author's rotation.
+    //  2. Each consumer uses ITS OWN SLOT's matrix. This is the subtle half:
+    //     with a single shared matrix any wiring "worked", but now that the
+    //     slots can disagree, a consumer reading the wrong one is a real bug
+    //     that only shows when an author points two slots different ways.
+    //     Note especially that SSR's `skybox_tex` binding is actually the
+    //     PREFILTERED ENV (see ssr/bind_group.rs), so SSR takes SPECULAR.
+    //
+    // The matrices upload already-inverted and are identity when unrotated, so
+    // these are RUNTIME values, not template axes: asserting the rotate exists
+    // in every permutation also catches a `{% if env_rotation %}` gate
+    // sneaking in later.
     const SKYBOX_CALL: &str = "env_rot * ray_dir";
-    const IBL_SPECULAR_CALL: &str = "ibl_info.env_rot * R";
-    const IBL_DIFFUSE_CALL: &str = "env_rot * n";
+    const IBL_SPECULAR_CALL: &str = "ibl_info.spec_rot * R";
+    const IBL_DIFFUSE_ARG: &str = "ibl_info.irr_rot";
     const SSR_CALL: &str = "env_rot * dir_w";
 
     // 1) Opaque PBR: specular (samplePrefilteredEnv) + diffuse
@@ -1142,8 +1148,20 @@ fn env_rotation_applied_in_every_env_sampling_path() {
             "{label}: specular IBL must rotate its lookup: `{IBL_SPECULAR_CALL}`"
         );
         assert!(
-            src.contains(IBL_DIFFUSE_CALL),
-            "{label}: diffuse IBL must rotate its lookup: `{IBL_DIFFUSE_CALL}`"
+            src.contains(IBL_DIFFUSE_ARG),
+            "{label}: diffuse IBL must rotate by the IRRADIANCE slot: `{IBL_DIFFUSE_ARG}`"
+        );
+        // ...and must NOT cross the two. Sampling the irradiance cubemap with
+        // the specular matrix (or vice versa) is invisible while the slots
+        // hold equal rotations and wrong the moment they don't — exactly the
+        // bug the per-slot split introduces, so pin it explicitly.
+        assert!(
+            !src.contains("irradiance_sampler, ibl_info.spec_rot"),
+            "{label}: irradiance must not be sampled with the SPECULAR rotation"
+        );
+        assert!(
+            !src.contains("ibl_info.irr_rot * R"),
+            "{label}: prefiltered env must not be sampled with the IRRADIANCE rotation"
         );
     }
 

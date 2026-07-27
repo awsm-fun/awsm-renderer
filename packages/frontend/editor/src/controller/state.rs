@@ -3350,7 +3350,9 @@ impl EditorController {
                 specular,
                 irradiance,
                 probe,
-                rotation,
+                skybox_rotation,
+                specular_rotation,
+                irradiance_rotation,
             } => {
                 // Partial update: `None` slots PRESERVE the current config, so
                 // setting just one slot (skybox / specular / irradiance) doesn't
@@ -3363,7 +3365,13 @@ impl EditorController {
                     specular: specular.unwrap_or(prev.specular),
                     irradiance: irradiance.unwrap_or(prev.irradiance),
                     probe: probe.unwrap_or(prev.probe),
-                    rotation: rotation.unwrap_or(prev.rotation),
+                    // Per-slot: an omitted rotation preserves THAT slot only,
+                    // so patching one never resets the other two.
+                    rotation: crate::engine::scene::EnvRotation {
+                        skybox: skybox_rotation.unwrap_or(prev.rotation.skybox),
+                        specular: specular_rotation.unwrap_or(prev.rotation.specular),
+                        irradiance: irradiance_rotation.unwrap_or(prev.rotation.irradiance),
+                    },
                 };
                 self.scene.environment.set(next);
                 self.scene.bump_revision();

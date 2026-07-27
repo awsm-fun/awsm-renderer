@@ -585,12 +585,17 @@ pub enum EditorCommand {
         /// keeps older wire payloads (no probe key) deserializing.
         #[serde(default)]
         probe: Option<ReflectionProbe>,
-        /// Rigid rotation of the environment as a whole (skybox + both IBL
-        /// cubemaps), as Euler angles in DEGREES applied X then Y then Z.
-        /// `None` preserves the current rotation; `Some([0,0,0])` clears it.
-        /// `#[serde(default)]` keeps older wire payloads deserializing.
+        /// Per-slot environment rotations (Euler DEGREES, X then Y then Z),
+        /// independent of each other exactly like the three slots above:
+        /// `None` PRESERVES that slot's current rotation, `Some([0,0,0])`
+        /// clears it. `#[serde(default)]` keeps older wire payloads
+        /// deserializing.
         #[serde(default)]
-        rotation: Option<[f32; 3]>,
+        skybox_rotation: Option<[f32; 3]>,
+        #[serde(default)]
+        specular_rotation: Option<[f32; 3]>,
+        #[serde(default)]
+        irradiance_rotation: Option<[f32; 3]>,
     },
 
     /// Patch the renderer-wide shadow config on `scene.shadows` (persisted into

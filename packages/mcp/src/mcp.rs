@@ -1216,17 +1216,27 @@ pub struct EnvironmentParams {
     /// cubemap to look right (the probe re-aims lookups INTO that map).
     #[serde(default)]
     pub probe: Option<awsm_renderer_scene::ReflectionProbe>,
-    /// Rigid rotation of the WHOLE environment — skybox, specular and
-    /// irradiance together, so the visible background and the light it casts
-    /// never disagree. Euler angles in DEGREES as `[x, y, z]`, applied X then
-    /// Y then Z. `y` is the one you almost always want: it spins the room
-    /// horizontally, which is how you aim an interesting quadrant of a bake at
-    /// the camera (or swing a distracting one out of shot) WITHOUT re-baking
-    /// the cubemap. Omit to keep the current rotation; pass `[0,0,0]` to clear
-    /// it. Applies to the editor viewport and the exported player bundle
-    /// identically.
+    /// Rotation of the SKYBOX cubemap — the visible background only. Euler
+    /// angles in DEGREES as `[x, y, z]`, applied X then Y then Z. `y` is the
+    /// one you almost always want: it spins the room horizontally, which is
+    /// how you aim an interesting quadrant of a bake at the camera (or swing a
+    /// distracting one out of shot) WITHOUT re-baking the cubemap. Omit to
+    /// keep the current value; `[0,0,0]` clears it.
     #[serde(default)]
-    pub rotation: Option<[f32; 3]>,
+    pub skybox_rotation: Option<[f32; 3]>,
+    /// Rotation of the SPECULAR (prefiltered) cubemap — what REFLECTIONS
+    /// sample, both the material IBL specular term and the SSR miss fallback.
+    /// INDEPENDENT of `skybox_rotation`: keying reflections from a different
+    /// direction than the visible backdrop is a deliberate authoring move, so
+    /// these never move together unless you set both. Euler DEGREES
+    /// `[x, y, z]`; omit to keep, `[0,0,0]` to clear.
+    #[serde(default)]
+    pub specular_rotation: Option<[f32; 3]>,
+    /// Rotation of the IRRADIANCE cubemap — what AMBIENT light samples.
+    /// Independent of the other two. Euler DEGREES `[x, y, z]`; omit to keep,
+    /// `[0,0,0]` to clear.
+    #[serde(default)]
+    pub irradiance_rotation: Option<[f32; 3]>,
     /// Agent-authored sky-gradient nadir (ground) color, linear-RGB `[r,g,b]`.
     /// Pairs with `zenith`.
     #[serde(default)]
@@ -4472,7 +4482,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Set the scene environment. THREE INDEPENDENT slots — skybox (background), specular (the prefiltered/roughness-mipped IBL map that drives reflections), and irradiance (the diffuse-convolved IBL map that drives ambient light). Two ways: (1) `zenith` + `nadir` ([r,g,b] linear) sets ALL THREE to a two-color SKY GRADIENT — author dusk / overcast / night / studio from your own colors (no hosting needed). (2) Otherwise each of skybox / specular / irradiance accepts: 'builtin' for the built-in default sky, an existing KTX cubemap asset UUID, OR a https:// URL to a .ktx2 cubemap. PARTIAL UPDATE: an OMITTED slot keeps its current config (pass 'builtin' to explicitly reset one) — so e.g. keeping default-sky irradiance while overriding just specular is one call, and slots never silently reset each other across sequential calls. Slots are fully decoupled (unlike before, specular and irradiance are set separately). URL cubemaps are fetched AND parse-validated here — a non-cubemap/bad .ktx2 fails this call instead of silently keeping the previous environment. Precedence: zenith/nadir > per-slot args. `probe` sets the box-projected reflection probe ({enabled, center, half_extents} — parallax-anchors specular env lookups to the scene bounds; omit to preserve it). `rotation` ([x,y,z] Euler DEGREES, applied X then Y then Z) turns the WHOLE environment — skybox + both IBL maps together, so background and lighting stay consistent; use it to aim an interesting part of a bake at the camera (or swing a distracting one out of shot) without re-baking. `y` spins the room horizontally and is the usual knob. Omit to preserve; [0,0,0] clears. CAVEAT: the zenith/nadir gradient shortcut FULL-REPLACES the environment and resets an enabled probe to OFF and the rotation to zero unless the call also passes `probe` / `rotation`. A fresh scene already seeds the built-in environment. Use get_snapshot (project.environment, incl. environment.probe) to read what is currently set."
+        description = "Set the scene environment. THREE INDEPENDENT slots — skybox (background), specular (the prefiltered/roughness-mipped IBL map that drives reflections), and irradiance (the diffuse-convolved IBL map that drives ambient light). Two ways: (1) `zenith` + `nadir` ([r,g,b] linear) sets ALL THREE to a two-color SKY GRADIENT — author dusk / overcast / night / studio from your own colors (no hosting needed). (2) Otherwise each of skybox / specular / irradiance accepts: 'builtin' for the built-in default sky, an existing KTX cubemap asset UUID, OR a https:// URL to a .ktx2 cubemap. PARTIAL UPDATE: an OMITTED slot keeps its current config (pass 'builtin' to explicitly reset one) — so e.g. keeping default-sky irradiance while overriding just specular is one call, and slots never silently reset each other across sequential calls. Slots are fully decoupled (unlike before, specular and irradiance are set separately). URL cubemaps are fetched AND parse-validated here — a non-cubemap/bad .ktx2 fails this call instead of silently keeping the previous environment. Precedence: zenith/nadir > per-slot args. `probe` sets the box-projected reflection probe ({enabled, center, half_extents} — parallax-anchors specular env lookups to the scene bounds; omit to preserve it). `skybox_rotation` / `specular_rotation` / `irradiance_rotation` ([x,y,z] Euler DEGREES, applied X then Y then Z) turn each cubemap INDEPENDENTLY — background, reflections and ambient can deliberately point different ways. Use them to aim an interesting part of a bake at the camera (or swing a distracting one out of shot) without re-baking; `y` spins the room horizontally and is the usual knob. Set all three the same to turn the whole room. Each omitted rotation is PRESERVED; [0,0,0] clears one. CAVEAT: the zenith/nadir gradient shortcut FULL-REPLACES the environment and resets an enabled probe to OFF and every slot rotation to zero unless the call also passes `probe` / the `*_rotation` args. A fresh scene already seeds the built-in environment. Use get_snapshot (project.environment, incl. environment.probe) to read what is currently set."
     )]
     async fn set_environment(
         &self,
@@ -4492,7 +4502,11 @@ impl EditorMcp {
                         // the probe and the rotation too unless the call
                         // carries them.
                         probe: p.probe.unwrap_or_default(),
-                        rotation: p.rotation.unwrap_or_default(),
+                        rotation: awsm_renderer_scene::EnvRotation {
+                            skybox: p.skybox_rotation.unwrap_or_default(),
+                            specular: p.specular_rotation.unwrap_or_default(),
+                            irradiance: p.irradiance_rotation.unwrap_or_default(),
+                        },
                     },
                 })
                 .await;
@@ -4548,7 +4562,9 @@ impl EditorMcp {
             specular,
             irradiance,
             probe: p.probe,
-            rotation: p.rotation,
+            skybox_rotation: p.skybox_rotation,
+            specular_rotation: p.specular_rotation,
+            irradiance_rotation: p.irradiance_rotation,
         })
         .await
     }

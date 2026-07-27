@@ -8,8 +8,8 @@
 //! never serialized.
 
 pub use awsm_renderer_editor_protocol::{
-    CameraConfig, CameraProjection, ColliderShape, EnvSlot, EnvironmentConfig, LightConfig,
-    LightKind, NodeKind, ReflectionProbe, Trs,
+    CameraConfig, CameraProjection, ColliderShape, EnvRotation, EnvSlot, EnvironmentConfig,
+    LightConfig, LightKind, NodeKind, ReflectionProbe, Trs,
 };
 
 /// Load state of the renderer-side asset (glb/gltf) for a `Model` node.

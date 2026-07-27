@@ -24,17 +24,30 @@ struct LightsInfoPacked {
     // Zeroed = disabled = classic direction-only env sampling.
     probe_center_enabled: vec4<f32>,
     probe_half_pad: vec4<f32>,
-    // Env rotation (bytes 80..128): world→cube, 3 columns, xyz used. Already
-    // inverted CPU-side (see lights.rs). Identity = unrotated.
-    env_rot_0: vec4<f32>,
-    env_rot_1: vec4<f32>,
-    env_rot_2: vec4<f32>,
+    // Per-slot env rotation (bytes 80..224): world→cube, 3 columns each, xyz
+    // used. Slots rotate INDEPENDENTLY by design. Already inverted CPU-side
+    // (see lights.rs). Identity = unrotated.
+    skybox_rot_0: vec4<f32>,
+    skybox_rot_1: vec4<f32>,
+    skybox_rot_2: vec4<f32>,
+    spec_rot_0: vec4<f32>,
+    spec_rot_1: vec4<f32>,
+    spec_rot_2: vec4<f32>,
+    irr_rot_0: vec4<f32>,
+    irr_rot_1: vec4<f32>,
+    irr_rot_2: vec4<f32>,
 }
 
-// Takes the uniform as a PARAMETER, not a binding read: prep/volumetrics
-// include this file before declaring `lights_info`.
+// One builder, called per slot — smaller than three near-identical accessors,
+// which matters: this file is in EVERY shader (see the size ceilings).
+fn env_rot_mat(c0: vec4<f32>, c1: vec4<f32>, c2: vec4<f32>) -> mat3x3<f32> {
+    return mat3x3<f32>(c0.xyz, c1.xyz, c2.xyz);
+}
+
+// Skybox slot. Takes the uniform as a PARAMETER, not a binding read:
+// prep/volumetrics include this file before declaring `lights_info`.
 fn env_rotation_mat(info: LightsInfoPacked) -> mat3x3<f32> {
-    return mat3x3<f32>(info.env_rot_0.xyz, info.env_rot_1.xyz, info.env_rot_2.xyz);
+    return env_rot_mat(info.skybox_rot_0, info.skybox_rot_1, info.skybox_rot_2);
 }
 
 struct LightsInfo {
@@ -50,9 +63,11 @@ struct IblInfo {
     // gates the correction at runtime — NOT a template axis.
     probe_center_enabled: vec4<f32>,
     probe_half: vec3<f32>,
-    // World→cube env rotation (see `env_rotation_mat`), carried here so every
-    // primitive already taking IblInfo can rotate without the binding.
-    env_rot: mat3x3<f32>,
+    // World→cube rotations for the two IBL cubemaps, carried here so every
+    // primitive already taking IblInfo can rotate without the binding. Two
+    // fields, not one: specular and irradiance rotate independently.
+    spec_rot: mat3x3<f32>,
+    irr_rot: mat3x3<f32>,
 }
 
 struct LightPacked {

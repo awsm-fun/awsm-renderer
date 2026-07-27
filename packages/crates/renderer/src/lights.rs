@@ -188,12 +188,37 @@ pub struct Lights {
     /// classic direction-only sample. Packed into the info uniform's tail
     /// (bytes 48..80) and mirrored into the SSR params uniform each frame.
     reflection_probe: Option<ReflectionProbeBox>,
-    /// Authored environment rotation, as the WORLD→CUBE matrix the shaders
-    /// actually want (i.e. already the inverse of the rotation the author
-    /// dialled in). Stored inverted so no shader inverts per pixel. Identity
-    /// = unrotated. Packed into the info uniform's tail (bytes 80..128) and
-    /// mirrored into the SSR params uniform, exactly like the probe above.
-    env_rotation_inv: glam::Mat3,
+    /// Authored environment rotations — one per cubemap, because the slots are
+    /// independently rotatable by design (background pointing one way while
+    /// reflections come from another is a real authoring move). Each is the
+    /// WORLD→CUBE matrix the shaders actually want, i.e. already the INVERSE
+    /// of the rotation the author dialled in, so no shader inverts per pixel.
+    /// Identity = unrotated. Packed into the info uniform's tail
+    /// (bytes 80..224); the specular one is additionally mirrored into the SSR
+    /// params uniform, like the probe above.
+    env_rotation_inv: EnvRotationMatrices,
+}
+
+/// The three world→cube environment matrices, one per cubemap slot.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EnvRotationMatrices {
+    /// Rotates the skybox background lookup.
+    pub skybox: glam::Mat3,
+    /// Rotates the prefiltered-env lookup — the material IBL specular term
+    /// AND the SSR miss fallback, which are the same reflection.
+    pub specular: glam::Mat3,
+    /// Rotates the irradiance (ambient) lookup.
+    pub irradiance: glam::Mat3,
+}
+
+impl Default for EnvRotationMatrices {
+    fn default() -> Self {
+        Self {
+            skybox: glam::Mat3::IDENTITY,
+            specular: glam::Mat3::IDENTITY,
+            irradiance: glam::Mat3::IDENTITY,
+        }
+    }
 }
 
 /// The world-space box a [`Lights::set_reflection_probe`] probe projects
@@ -219,8 +244,11 @@ impl Lights {
     ///   directional: array<vec4<u32>, 2> (32) — packed indices of the ≤8 directionals
     ///   probe_center_enabled: vec4<f32> (16) — reflection-probe box center + enabled flag
     ///   probe_half_pad: vec4<f32> (16) — probe box half-extents + pad
-    ///   env_rot_0/1/2: vec4<f32> (48) — world→cube env rotation columns (.w pad)
-    pub const INFO_SIZE: usize = 128;
+    ///   skybox_rot_0/1/2:  vec4<f32> (48) — world→cube skybox rotation columns
+    ///   spec_rot_0/1/2:    vec4<f32> (48) — ditto, prefiltered-env (specular)
+    ///   irr_rot_0/1/2:     vec4<f32> (48) — ditto, irradiance
+    /// (each column packs xyz, .w is padding)
+    pub const INFO_SIZE: usize = 224;
 
     /// Creates light buffers and initializes IBL state.
     pub fn new(gpu: &AwsmRendererWebGpu, ibl: Ibl, brdf_lut: BrdfLut) -> Result<Self> {
@@ -255,7 +283,7 @@ impl Lights {
             info_uploader: crate::buffer::mapped_uploader::MappedUploader::new("Lights Info"),
             punctual_scratch: Vec::new(),
             reflection_probe: None,
-            env_rotation_inv: glam::Mat3::IDENTITY,
+            env_rotation_inv: EnvRotationMatrices::default(),
         })
     }
 
@@ -277,35 +305,47 @@ impl Lights {
         self.reflection_probe
     }
 
-    /// Set the environment's rigid rotation from Euler angles in DEGREES,
-    /// applied X then Y then Z. Rotates the skybox AND both IBL cubemaps
-    /// together, so the visible background and the light it casts stay
-    /// consistent — the whole point of the knob.
+    /// Set the PER-SLOT environment rotations from Euler angles in DEGREES,
+    /// applied X then Y then Z. Each cubemap turns independently: the slots
+    /// are meant to be able to disagree (background one way, reflections
+    /// another), so this takes three and never couples them.
     ///
     /// Stored as the INVERSE (world→cube). A rotation matrix is orthonormal,
-    /// so the inverse is the transpose and this costs a transpose here rather
-    /// than an inversion per pixel. `[0, 0, 0]` restores identity.
-    pub fn set_env_rotation_euler_degrees(&mut self, euler_degrees: [f32; 3]) {
-        let [x, y, z] = euler_degrees;
-        let rot = glam::Mat3::from_euler(
-            glam::EulerRot::XYZ,
-            x.to_radians(),
-            y.to_radians(),
-            z.to_radians(),
-        );
+    /// so the inverse is the transpose — a transpose here instead of an
+    /// inversion per pixel. All-zero restores identity.
+    pub fn set_env_rotations_euler_degrees(
+        &mut self,
+        skybox: [f32; 3],
+        specular: [f32; 3],
+        irradiance: [f32; 3],
+    ) {
         // Orthonormal ⇒ inverse == transpose.
-        let inv = rot.transpose();
-        if self.env_rotation_inv != inv {
-            self.env_rotation_inv = inv;
+        let inv_of = |[x, y, z]: [f32; 3]| {
+            glam::Mat3::from_euler(
+                glam::EulerRot::XYZ,
+                x.to_radians(),
+                y.to_radians(),
+                z.to_radians(),
+            )
+            .transpose()
+        };
+        let next = EnvRotationMatrices {
+            skybox: inv_of(skybox),
+            specular: inv_of(specular),
+            irradiance: inv_of(irradiance),
+        };
+        if self.env_rotation_inv != next {
+            self.env_rotation_inv = next;
             self.lighting_info_gpu_dirty = true;
         }
     }
 
-    /// The current world→cube environment rotation (already inverted — see
-    /// [`Self::set_env_rotation_euler_degrees`]). The render loop mirrors this
-    /// into the SSR params uniform so the SSR miss fallback samples the
-    /// environment at the same orientation the material IBL path does.
-    pub fn env_rotation_inv(&self) -> glam::Mat3 {
+    /// The current world→cube environment rotations (already inverted — see
+    /// [`Self::set_env_rotations_euler_degrees`]). The render loop mirrors the
+    /// SPECULAR one into the SSR params uniform: the SSR miss fallback stands
+    /// in for the IBL specular term, so it must sample at that slot's
+    /// orientation, not the skybox's.
+    pub fn env_rotations_inv(&self) -> EnvRotationMatrices {
         self.env_rotation_inv
     }
 
@@ -588,20 +628,29 @@ impl Lights {
                 }
             }
 
-            // Environment-rotation tail (bytes 80..128): the world→cube matrix
-            // as three vec4 columns (xyz used, w padding). `Mat3` is
-            // column-major, so `col(c)` is column `c` — matching the WGSL
-            // `mat3x3<f32>(env_rot_0.xyz, env_rot_1.xyz, env_rot_2.xyz)`
-            // reconstruction, which also takes columns. Identity when
-            // unrotated, so the default write is a plain identity matrix
-            // rather than the zeros a `[0u8; N]` would leave (which would
-            // collapse every env direction to the origin and read as a
-            // uniformly black environment).
-            for c in 0..3usize {
-                let col = self.env_rotation_inv.col(c);
-                for r in 0..3usize {
-                    let off = 80 + c * 16 + r * 4;
-                    data[off..off + 4].copy_from_slice(&col[r].to_ne_bytes());
+            // Environment-rotation tail (bytes 80..224): three world→cube
+            // matrices — skybox, specular, irradiance — each as three vec4
+            // columns (xyz used, w padding). `Mat3` is column-major, so
+            // `col(c)` is column `c`, matching the WGSL
+            // `mat3x3<f32>(rot_0.xyz, rot_1.xyz, rot_2.xyz)` reconstruction,
+            // which also takes columns. Identity when unrotated — NOT the
+            // zeros a `[0u8; N]` leaves, which would collapse every env
+            // direction to the origin and read as a black environment.
+            for (slot, m) in [
+                self.env_rotation_inv.skybox,
+                self.env_rotation_inv.specular,
+                self.env_rotation_inv.irradiance,
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let base = 80 + slot * 48;
+                for c in 0..3usize {
+                    let col = m.col(c);
+                    for r in 0..3usize {
+                        let off = base + c * 16 + r * 4;
+                        data[off..off + 4].copy_from_slice(&col[r].to_ne_bytes());
+                    }
                 }
             }
 

@@ -63,7 +63,7 @@ struct LiveEnv {
     specular: Option<EnvSlot>,
     irradiance: Option<EnvSlot>,
     probe: Option<crate::engine::scene::ReflectionProbe>,
-    rotation: Option<[f32; 3]>,
+    rotation: Option<crate::engine::scene::EnvRotation>,
 }
 
 /// Stash raw KTX bytes for a freshly-picked HDR asset so `env_sync` can resolve
@@ -210,15 +210,15 @@ async fn apply_probe(probe: &crate::engine::scene::ReflectionProbe) {
         );
 }
 
-/// Push the authored environment rotation into the renderer (a pure uniform
-/// update — infallible, no assets involved). Turns skybox + both IBL cubemaps
-/// together, so the editor viewport previews exactly what the player renders.
-async fn apply_rotation(euler_degrees: [f32; 3]) {
+/// Push the authored per-slot environment rotations into the renderer (a pure
+/// uniform update — infallible, no assets involved), so the editor viewport
+/// previews exactly what the player renders.
+async fn apply_rotation(rot: crate::engine::scene::EnvRotation) {
     let handle = renderer_handle();
     let mut renderer = handle.lock().await;
     renderer
         .lights
-        .set_env_rotation_euler_degrees(euler_degrees);
+        .set_env_rotations_euler_degrees(rot.skybox, rot.specular, rot.irradiance);
 }
 
 async fn apply_ibl(specular: &EnvSlot, irradiance: &EnvSlot) -> anyhow::Result<()> {

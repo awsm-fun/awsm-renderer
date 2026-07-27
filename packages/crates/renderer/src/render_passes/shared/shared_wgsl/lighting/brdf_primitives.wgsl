@@ -292,7 +292,7 @@ fn samplePrefilteredEnv(
     let mip_level = roughness * max_mip;
     // Rotate into cube space LAST — after any box projection the caller did,
     // which works in world space and must not see the env rotation.
-    return textureSampleLevel(filtered_env_tex, filtered_env_sampler, ibl_info.env_rot * R, mip_level).rgb;
+    return textureSampleLevel(filtered_env_tex, filtered_env_sampler, ibl_info.spec_rot * R, mip_level).rgb;
 }
 
 // Sample BRDF integration LUT (2D texture indexed by N·V and roughness)

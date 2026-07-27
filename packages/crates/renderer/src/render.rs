@@ -758,7 +758,7 @@ impl AwsmRenderer {
                     // ...and the environment rotation, for the same reason:
                     // a miss must fall back to the env at the orientation the
                     // IBL path sampled it at.
-                    self.lights.env_rotation_inv(),
+                    self.lights.env_rotations_inv().specular,
                 )?;
             }
             if bvh_buffers_recreated {

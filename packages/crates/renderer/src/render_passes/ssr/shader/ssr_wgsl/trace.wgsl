@@ -66,12 +66,14 @@ struct SsrParams {
     // Software-BVH: x = TLAS instance count (bvh_trace.wgsl reads it; kept
     // here so every SSR stage declares the SAME buffer layout).
     bvh_meta: vec4<f32>,
-    // World→cube environment rotation, mirrored from the lights info uniform
-    // (render.rs copies it each frame) so an SSR MISS falls back to the
-    // environment at the same orientation the IBL fetch beside it uses — a
-    // disagreement here would read as reflections pointing at a different
-    // part of the room than the skybox behind them. Three columns; xyz used,
-    // w pad. Identity = unrotated.
+    // World→cube rotation for the SPECULAR slot, mirrored from the lights info
+    // uniform (render.rs copies it each frame). Specular, NOT skybox: despite
+    // its name, `skybox_tex` in this pass binds the PREFILTERED ENV (see
+    // ssr/bind_group.rs), because the miss fallback stands in for exactly the
+    // IBL specular term the brdf suppressed. Taking the skybox rotation here
+    // would desync SSR from the IBL it replaces the moment an author points
+    // the two slots different ways — which is the whole reason rotations are
+    // per-slot. Three columns; xyz used, w pad. Identity = unrotated.
     env_rot_0: vec4<f32>,
     env_rot_1: vec4<f32>,
     env_rot_2: vec4<f32>,

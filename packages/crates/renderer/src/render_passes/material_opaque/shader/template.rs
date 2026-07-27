@@ -1177,17 +1177,20 @@ mod size_regression {
     // permanent ~2 KB addition so final_blend can resolve a coverage-correct
     // per-pixel descriptor (single-sample descriptors made SSR visibly undo
     // MSAA along silhouettes). Measured 91.1 KB empty; both ceilings bumped.
-    // **Environment rotation (`EnvironmentConfig::rotation`):** the always-included
-    // light ABI gained the world→cube matrix (3 vec4 columns on
-    // `LightsInfoPacked`, a `mat3x3` on `IblInfo`, plus the `env_rotation_mat`
-    // accessor), and every env-sampling primitive rotates its lookup direction.
-    // A permanent, intended addition — it is what lets skybox + both IBL maps
-    // turn together, so a baked cubemap can be re-aimed without a re-bake. The
-    // ABI part lands in EVERY Custom shader (lean included); the rotates ride
-    // the lit includes. Measured 93.8 KB empty / 135.0 KB all; the ALL ceiling
-    // bumped (empty still fits under its existing one).
-    const CEIL_EMPTY_MSAA4_MIPS: usize = 94_000;
-    const CEIL_ALL_MSAA4_MIPS: usize = 136_000;
+    // **Per-slot environment rotation (`EnvironmentConfig::rotation`):** the
+    // always-included light ABI gained a world→cube matrix PER CUBEMAP — 9 vec4
+    // columns on `LightsInfoPacked` (skybox / specular / irradiance), 2 `mat3x3`
+    // on `IblInfo`, plus the shared `env_rot_mat` builder — and every
+    // env-sampling primitive rotates its lookup by its own slot's matrix. A
+    // permanent, intended addition: it is what lets a baked cubemap be re-aimed
+    // without a re-bake, and the slots are independent BY DESIGN (background
+    // one way, reflections another), so the three matrices cannot be collapsed
+    // back into one. The ABI part lands in EVERY Custom shader, lean included —
+    // hence both ceilings move. One builder function rather than three
+    // accessors keeps that ABI cost as small as it can be. Measured 94.4 KB
+    // empty / 135.8 KB all.
+    const CEIL_EMPTY_MSAA4_MIPS: usize = 95_000;
+    const CEIL_ALL_MSAA4_MIPS: usize = 137_000;
 
     #[test]
     fn custom_shader_sizes_within_ceiling() {

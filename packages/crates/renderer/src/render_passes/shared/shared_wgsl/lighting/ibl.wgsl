@@ -22,7 +22,7 @@ fn sample_ibl_diffuse(n: vec3<f32>) -> vec3<f32> {
     // Honours the scene's authored environment rotation, as built-in PBR does —
     // a custom material must not disagree with the meshes beside it about which
     // way the environment faces.
-    let env_rot = get_lights_info().ibl.env_rot;
+    let env_rot = get_lights_info().ibl.irr_rot;
     return textureSampleLevel(ibl_irradiance_tex, ibl_irradiance_sampler, env_rot * normalize(n), 0.0).rgb * PI;
 }
 
@@ -34,7 +34,7 @@ fn sample_ibl_specular(r: vec3<f32>, roughness: f32) -> vec3<f32> {
     return textureSampleLevel(
         ibl_filtered_env_tex,
         ibl_filtered_env_sampler,
-        info.ibl.env_rot * normalize(r),
+        info.ibl.spec_rot * normalize(r),
         saturate(roughness) * max_mip,
     ).rgb;
 }
