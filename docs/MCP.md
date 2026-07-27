@@ -270,7 +270,8 @@ every command/query, and each tool self-describes over the MCP schema.
   `set_light_volumetric_intensity` (presence in volumetric media, independent of
   surface intensity; needs `set_post_process { atmosphere_enabled: true }` to be
   visible — with no medium there's nothing to scatter in).
-- `set_environment { skybox?, specular?, irradiance?, zenith?, nadir? }` — THREE
+- `set_environment { skybox?, specular?, irradiance?, zenith?, nadir?, probe?,
+  rotation? }` — THREE
   independent slots (skybox background / specular IBL / irradiance IBL), each
   `"builtin"`, a KTX cubemap (asset id or `.ktx2` URL), OR an **agent-authored sky
   gradient**: pass `zenith` + `nadir` (`[r,g,b]` linear) and it sets all three
@@ -278,6 +279,14 @@ every command/query, and each tool self-describes over the MCP schema.
   own colors, no hosted `.ktx2`). **PARTIAL update:** an omitted slot KEEPS its
   current binding (pass `"builtin"` to explicitly reset one). Read the slots back
   via `get_snapshot` → `project.environment`.
+  `rotation` (`[x,y,z]` Euler **degrees**, applied X→Y→Z) turns the WHOLE
+  environment — skybox *and* both IBL maps together, so the visible background
+  and the light it casts never disagree. Use it to aim the interesting quadrant
+  of a bake at the camera, or swing a distracting one (an LED wall, a sun) out
+  of shot, **without re-baking the cubemap**; `y` spins the room horizontally
+  and is the usual knob. Applies identically in the editor viewport, the
+  exported bundle, and the player. Omit to preserve; `[0,0,0]` clears.
+  Also available as the **Env rot°** fields in the Environment ribbon.
 - `set_shadows { … }` / `get_shadows` — patch/read the renderer-wide shadow
   config (`scene.shadows`, persisted + carried in the player bundle): the
   `sscs_*` contact-shadow block, `atlas_size`, `evsm_atlas_size` / `evsm_exponent`

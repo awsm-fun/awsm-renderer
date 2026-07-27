@@ -1177,8 +1177,17 @@ mod size_regression {
     // permanent ~2 KB addition so final_blend can resolve a coverage-correct
     // per-pixel descriptor (single-sample descriptors made SSR visibly undo
     // MSAA along silhouettes). Measured 91.1 KB empty; both ceilings bumped.
+    // **Environment rotation (`EnvironmentConfig::rotation`):** the always-included
+    // light ABI gained the world→cube matrix (3 vec4 columns on
+    // `LightsInfoPacked`, a `mat3x3` on `IblInfo`, plus the `env_rotation_mat`
+    // accessor), and every env-sampling primitive rotates its lookup direction.
+    // A permanent, intended addition — it is what lets skybox + both IBL maps
+    // turn together, so a baked cubemap can be re-aimed without a re-bake. The
+    // ABI part lands in EVERY Custom shader (lean included); the rotates ride
+    // the lit includes. Measured 93.8 KB empty / 135.0 KB all; the ALL ceiling
+    // bumped (empty still fits under its existing one).
     const CEIL_EMPTY_MSAA4_MIPS: usize = 94_000;
-    const CEIL_ALL_MSAA4_MIPS: usize = 134_000;
+    const CEIL_ALL_MSAA4_MIPS: usize = 136_000;
 
     #[test]
     fn custom_shader_sizes_within_ceiling() {

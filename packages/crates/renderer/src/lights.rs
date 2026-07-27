@@ -188,6 +188,12 @@ pub struct Lights {
     /// classic direction-only sample. Packed into the info uniform's tail
     /// (bytes 48..80) and mirrored into the SSR params uniform each frame.
     reflection_probe: Option<ReflectionProbeBox>,
+    /// Authored environment rotation, as the WORLD→CUBE matrix the shaders
+    /// actually want (i.e. already the inverse of the rotation the author
+    /// dialled in). Stored inverted so no shader inverts per pixel. Identity
+    /// = unrotated. Packed into the info uniform's tail (bytes 80..128) and
+    /// mirrored into the SSR params uniform, exactly like the probe above.
+    env_rotation_inv: glam::Mat3,
 }
 
 /// The world-space box a [`Lights::set_reflection_probe`] probe projects
@@ -213,7 +219,8 @@ impl Lights {
     ///   directional: array<vec4<u32>, 2> (32) — packed indices of the ≤8 directionals
     ///   probe_center_enabled: vec4<f32> (16) — reflection-probe box center + enabled flag
     ///   probe_half_pad: vec4<f32> (16) — probe box half-extents + pad
-    pub const INFO_SIZE: usize = 80;
+    ///   env_rot_0/1/2: vec4<f32> (48) — world→cube env rotation columns (.w pad)
+    pub const INFO_SIZE: usize = 128;
 
     /// Creates light buffers and initializes IBL state.
     pub fn new(gpu: &AwsmRendererWebGpu, ibl: Ibl, brdf_lut: BrdfLut) -> Result<Self> {
@@ -248,6 +255,7 @@ impl Lights {
             info_uploader: crate::buffer::mapped_uploader::MappedUploader::new("Lights Info"),
             punctual_scratch: Vec::new(),
             reflection_probe: None,
+            env_rotation_inv: glam::Mat3::IDENTITY,
         })
     }
 
@@ -267,6 +275,38 @@ impl Lights {
     /// miss fallback projects identically to the material IBL path.
     pub fn reflection_probe(&self) -> Option<ReflectionProbeBox> {
         self.reflection_probe
+    }
+
+    /// Set the environment's rigid rotation from Euler angles in DEGREES,
+    /// applied X then Y then Z. Rotates the skybox AND both IBL cubemaps
+    /// together, so the visible background and the light it casts stay
+    /// consistent — the whole point of the knob.
+    ///
+    /// Stored as the INVERSE (world→cube). A rotation matrix is orthonormal,
+    /// so the inverse is the transpose and this costs a transpose here rather
+    /// than an inversion per pixel. `[0, 0, 0]` restores identity.
+    pub fn set_env_rotation_euler_degrees(&mut self, euler_degrees: [f32; 3]) {
+        let [x, y, z] = euler_degrees;
+        let rot = glam::Mat3::from_euler(
+            glam::EulerRot::XYZ,
+            x.to_radians(),
+            y.to_radians(),
+            z.to_radians(),
+        );
+        // Orthonormal ⇒ inverse == transpose.
+        let inv = rot.transpose();
+        if self.env_rotation_inv != inv {
+            self.env_rotation_inv = inv;
+            self.lighting_info_gpu_dirty = true;
+        }
+    }
+
+    /// The current world→cube environment rotation (already inverted — see
+    /// [`Self::set_env_rotation_euler_degrees`]). The render loop mirrors this
+    /// into the SSR params uniform so the SSR miss fallback samples the
+    /// environment at the same orientation the material IBL path does.
+    pub fn env_rotation_inv(&self) -> glam::Mat3 {
+        self.env_rotation_inv
     }
 
     /// Mapped-ring upload telemetry for the lights buffers.
@@ -513,7 +553,7 @@ impl Lights {
                 None
             };
 
-            // Fixed 80-byte block — stack array, no per-frame heap allocation.
+            // Fixed 128-byte block — stack array, no per-frame heap allocation.
             let mut data = [0u8; Self::INFO_SIZE];
             data[0..4].copy_from_slice(&(self.lights.len() as u32).to_ne_bytes());
             data[4..8].copy_from_slice(&self.ibl.prefiltered_env.mip_count.to_ne_bytes());
@@ -545,6 +585,23 @@ impl Lights {
                 data[60..64].copy_from_slice(&1.0f32.to_ne_bytes());
                 for (i, v) in probe.half_extents.iter().enumerate() {
                     data[64 + i * 4..68 + i * 4].copy_from_slice(&v.to_ne_bytes());
+                }
+            }
+
+            // Environment-rotation tail (bytes 80..128): the world→cube matrix
+            // as three vec4 columns (xyz used, w padding). `Mat3` is
+            // column-major, so `col(c)` is column `c` — matching the WGSL
+            // `mat3x3<f32>(env_rot_0.xyz, env_rot_1.xyz, env_rot_2.xyz)`
+            // reconstruction, which also takes columns. Identity when
+            // unrotated, so the default write is a plain identity matrix
+            // rather than the zeros a `[0u8; N]` would leave (which would
+            // collapse every env direction to the origin and read as a
+            // uniformly black environment).
+            for c in 0..3usize {
+                let col = self.env_rotation_inv.col(c);
+                for r in 0..3usize {
+                    let off = 80 + c * 16 + r * 4;
+                    data[off..off + 4].copy_from_slice(&col[r].to_ne_bytes());
                 }
             }
 

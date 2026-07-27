@@ -63,6 +63,7 @@ struct LiveEnv {
     specular: Option<EnvSlot>,
     irradiance: Option<EnvSlot>,
     probe: Option<crate::engine::scene::ReflectionProbe>,
+    rotation: Option<[f32; 3]>,
 }
 
 /// Stash raw KTX bytes for a freshly-picked HDR asset so `env_sync` can resolve
@@ -134,7 +135,7 @@ pub fn start() {
 /// a failed fetch/upload stays dirty and the next emission — even of the
 /// identical config — retries instead of silently no-op'ing.
 async fn sync_env(env: &EnvironmentConfig) {
-    let (sky_changed, ibl_changed, probe_changed) = LIVE.with(|l| {
+    let (sky_changed, ibl_changed, probe_changed, rotation_changed) = LIVE.with(|l| {
         let l = l.borrow();
         (
             l.skybox.as_ref() != Some(&env.skybox),
@@ -143,6 +144,7 @@ async fn sync_env(env: &EnvironmentConfig) {
             l.specular.as_ref() != Some(&env.specular)
                 || l.irradiance.as_ref() != Some(&env.irradiance),
             l.probe.as_ref() != Some(&env.probe),
+            l.rotation != Some(env.rotation),
         )
     });
     if sky_changed {
@@ -170,6 +172,10 @@ async fn sync_env(env: &EnvironmentConfig) {
     if probe_changed {
         apply_probe(&env.probe).await;
         LIVE.with(|l| l.borrow_mut().probe = Some(env.probe));
+    }
+    if rotation_changed {
+        apply_rotation(env.rotation).await;
+        LIVE.with(|l| l.borrow_mut().rotation = Some(env.rotation));
     }
 }
 
@@ -202,6 +208,17 @@ async fn apply_probe(probe: &crate::engine::scene::ReflectionProbe) {
                     half_extents: probe.half_extents,
                 }),
         );
+}
+
+/// Push the authored environment rotation into the renderer (a pure uniform
+/// update — infallible, no assets involved). Turns skybox + both IBL cubemaps
+/// together, so the editor viewport previews exactly what the player renders.
+async fn apply_rotation(euler_degrees: [f32; 3]) {
+    let handle = renderer_handle();
+    let mut renderer = handle.lock().await;
+    renderer
+        .lights
+        .set_env_rotation_euler_degrees(euler_degrees);
 }
 
 async fn apply_ibl(specular: &EnvSlot, irradiance: &EnvSlot) -> anyhow::Result<()> {

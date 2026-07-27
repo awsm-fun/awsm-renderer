@@ -66,6 +66,15 @@ struct SsrParams {
     // Software-BVH: x = TLAS instance count (bvh_trace.wgsl reads it; kept
     // here so every SSR stage declares the SAME buffer layout).
     bvh_meta: vec4<f32>,
+    // World→cube environment rotation, mirrored from the lights info uniform
+    // (render.rs copies it each frame) so an SSR MISS falls back to the
+    // environment at the same orientation the IBL fetch beside it uses — a
+    // disagreement here would read as reflections pointing at a different
+    // part of the room than the skybox behind them. Three columns; xyz used,
+    // w pad. Identity = unrotated.
+    env_rot_0: vec4<f32>,
+    env_rot_1: vec4<f32>,
+    env_rot_2: vec4<f32>,
 };
 
 // M1 probes everything with integer textureLoad (depth is non-filterable), so
@@ -653,7 +662,10 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // unconditionally turned every star of a starfield skybox into a bright
     // blob reflection on near-mirror floors.
     let env_mip = spread * f32(textureNumLevels(skybox_tex) - 1u);
-    let env = textureSampleLevel(skybox_tex, skybox_sampler, dir_w, env_mip).rgb;
+    // Rotate into cube space AFTER the box projection (which is world-space)
+    // — same order as samplePrefilteredEnv, so the two paths agree.
+    let env_rot = mat3x3<f32>(params.env_rot_0.xyz, params.env_rot_1.xyz, params.env_rot_2.xyz);
+    let env = textureSampleLevel(skybox_tex, skybox_sampler, env_rot * dir_w, env_mip).rgb;
     {% if bvh %}
     // Software-BVH fallback (wgsl_validation pins this): a REAL off-screen
     // hit for this exact ray beats the probe/env approximation. Weighted by

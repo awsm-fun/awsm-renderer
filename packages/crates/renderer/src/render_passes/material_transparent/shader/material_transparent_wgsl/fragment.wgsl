@@ -109,7 +109,7 @@ fn sample_transmission_background_for_ior(
             let ibl_info = get_lights_info().ibl;
             let max_mip = f32(ibl_info.prefiltered_env_mip_count - 1u);
             let mip_level = roughness * max_mip;
-            return textureSampleLevel(ibl_filtered_env_tex, ibl_filtered_env_sampler, sample_dir, mip_level).rgb;
+            return textureSampleLevel(ibl_filtered_env_tex, ibl_filtered_env_sampler, ibl_info.env_rot * sample_dir, mip_level).rgb;
         {% else %}
             // No IBL available, return black
             return vec3<f32>(0.0);

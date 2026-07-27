@@ -50,7 +50,7 @@ fn cs_opaque(
     let triangle_index = join32(visibility_data_info.x, visibility_data_info.y);
     if (triangle_index == U32_MAX) {
         let camera = camera_from_raw(camera_raw);
-        let color = sample_skybox(coords, screen_dims_f32, camera, skybox_tex, skybox_sampler);
+        let color = sample_skybox(coords, screen_dims_f32, camera, skybox_tex, skybox_sampler, env_rotation_mat(lights_info));
         textureStore(opaque_tex, coords, color);
     }
 }
@@ -98,7 +98,7 @@ fn cs_shade(
         let visibility_data_info = textureLoad(visibility_data_tex, coords, 0);
         let triangle_index = join32(visibility_data_info.x, visibility_data_info.y);
         if (triangle_index == U32_MAX) {
-            let color = sample_skybox(coords, screen_dims_f32, camera, skybox_tex, skybox_sampler);
+            let color = sample_skybox(coords, screen_dims_f32, camera, skybox_tex, skybox_sampler, env_rotation_mat(lights_info));
             textureStore(opaque_tex, coords, color);
         }
         return;
@@ -160,7 +160,7 @@ fn cs_shade(
             if (mesh_meta_s.is_hud == 1u) { is_sky = true; }
         }
         if (is_sky) {
-            let sky_col = sample_skybox(coords, sky_screen_dims_f32, camera, skybox_tex, skybox_sampler);
+            let sky_col = sample_skybox(coords, sky_screen_dims_f32, camera, skybox_tex, skybox_sampler, env_rotation_mat(lights_info));
             // Tonemapped-space accumulate — MUST match the material edge arm
             // (both writers feed the same accumulator): Σ t(s), t(s)=s/(1+s),
             // weight word = plain sample count. See final_blend.wgsl.

@@ -19,7 +19,11 @@
 
 /// Diffuse irradiance for normal `n` (already π-corrected for a Lambertian BRDF).
 fn sample_ibl_diffuse(n: vec3<f32>) -> vec3<f32> {
-    return textureSampleLevel(ibl_irradiance_tex, ibl_irradiance_sampler, normalize(n), 0.0).rgb * PI;
+    // Honours the scene's authored environment rotation, as built-in PBR does —
+    // a custom material must not disagree with the meshes beside it about which
+    // way the environment faces.
+    let env_rot = get_lights_info().ibl.env_rot;
+    return textureSampleLevel(ibl_irradiance_tex, ibl_irradiance_sampler, env_rot * normalize(n), 0.0).rgb * PI;
 }
 
 /// Prefiltered specular radiance along reflection vector `r` at `roughness`
@@ -30,7 +34,7 @@ fn sample_ibl_specular(r: vec3<f32>, roughness: f32) -> vec3<f32> {
     return textureSampleLevel(
         ibl_filtered_env_tex,
         ibl_filtered_env_sampler,
-        normalize(r),
+        info.ibl.env_rot * normalize(r),
         saturate(roughness) * max_mip,
     ).rgb;
 }

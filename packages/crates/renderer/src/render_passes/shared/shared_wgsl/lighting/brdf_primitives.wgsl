@@ -264,12 +264,19 @@ fn sheen_albedo_scaling(sheen_color: vec3<f32>, sheen_roughness: f32, n_dot_v: f
 // should read albedo·L but read albedo·L/π). Restore the missing factor
 // here so every diffuse-IBL consumer is corrected in one place; specular
 // IBL samples the prefiltered env separately and is unaffected.
+//
+// `env_rot` is the scene's world→cube environment rotation (identity when the
+// scene authors none). Applied to the LOOKUP DIRECTION, which is what "rotate
+// the environment" means: the world is fixed and the cubemap turns under it.
+// Taken as a parameter rather than read from a binding so this stays a pure
+// primitive usable from every pass.
 fn sampleIrradiance(
     n: vec3<f32>,
     irradiance_tex: texture_cube<f32>,
-    irradiance_sampler: sampler
+    irradiance_sampler: sampler,
+    env_rot: mat3x3<f32>
 ) -> vec3<f32> {
-    return textureSampleLevel(irradiance_tex, irradiance_sampler, n, 0.0).rgb * PI;
+    return textureSampleLevel(irradiance_tex, irradiance_sampler, env_rot * n, 0.0).rgb * PI;
 }
 
 // Sample prefiltered environment map for specular IBL (split-sum approximation)
@@ -283,7 +290,9 @@ fn samplePrefilteredEnv(
 ) -> vec3<f32> {
     let max_mip = f32(ibl_info.prefiltered_env_mip_count - 1u);
     let mip_level = roughness * max_mip;
-    return textureSampleLevel(filtered_env_tex, filtered_env_sampler, R, mip_level).rgb;
+    // Rotate into cube space LAST — after any box projection the caller did,
+    // which works in world space and must not see the env rotation.
+    return textureSampleLevel(filtered_env_tex, filtered_env_sampler, ibl_info.env_rot * R, mip_level).rgb;
 }
 
 // Sample BRDF integration LUT (2D texture indexed by N·V and roughness)

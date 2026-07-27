@@ -188,6 +188,7 @@ mod tests {
                 asset_id: irradiance,
             },
             probe: Default::default(),
+            rotation: Default::default(),
         };
         // The bake emits one file per env KTX id, at the shared convention path.
         let env_files: Vec<BundleFile> = scene
@@ -227,10 +228,19 @@ mod tests {
             specular: grad,
             irradiance: grad,
             probe: Default::default(),
+            // The env rotation must survive the SAME scene.toml the player
+            // bundle carries — this is the bundle half of "authored in the
+            // editor, seen in the player".
+            rotation: [0.0, 137.5, 0.0],
         };
         let toml = scene_to_toml(&scene).unwrap();
         let loaded = scene_from_toml(&toml).unwrap();
         assert_eq!(loaded.environment, scene.environment);
+        assert_eq!(
+            loaded.environment.rotation,
+            [0.0, 137.5, 0.0],
+            "env rotation must survive the bundled scene.toml"
+        );
         assert!(
             loaded.environment.ktx_asset_ids().is_empty(),
             "gradient env references no KTX assets"

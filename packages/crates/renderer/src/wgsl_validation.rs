@@ -1113,6 +1113,97 @@ fn material_final_blend_shader_validates() {
 }
 
 #[test]
+fn env_rotation_applied_in_every_env_sampling_path() {
+    // env-rotation: the authored `EnvironmentConfig::rotation` turns the
+    // skybox AND both IBL cubemaps together. That only holds if EVERY
+    // consumer of an environment cubemap rotates its lookup direction by the
+    // same world→cube matrix — miss one and the background faces a different
+    // way than the light it casts (or a reflection points at a different part
+    // of the room than the sky behind it). The matrix is uploaded already
+    // inverted and identity when unrotated, so this is a RUNTIME value, not a
+    // template axis: assert the rotate is present in every permutation, which
+    // also catches a `{% if env_rotation %}` gate sneaking in later.
+    //
+    // The four env consumers, and the expression each must contain:
+    const SKYBOX_CALL: &str = "env_rot * ray_dir";
+    const IBL_SPECULAR_CALL: &str = "ibl_info.env_rot * R";
+    const IBL_DIFFUSE_CALL: &str = "env_rot * n";
+    const SSR_CALL: &str = "env_rot * dir_w";
+
+    // 1) Opaque PBR: specular (samplePrefilteredEnv) + diffuse
+    //    (sampleIrradiance) both rotate.
+    for (msaa, mips) in CONFIGS {
+        let key = first_party_key(MaterialShaderId::PBR, ShadingBase::Pbr, false, msaa, mips);
+        let label = format!("opaque/pbr env-rotation msaa={msaa:?} mips={mips}");
+        let src = render(&key, &label);
+        naga_validate(&src, &label);
+        assert!(
+            src.contains(IBL_SPECULAR_CALL),
+            "{label}: specular IBL must rotate its lookup: `{IBL_SPECULAR_CALL}`"
+        );
+        assert!(
+            src.contains(IBL_DIFFUSE_CALL),
+            "{label}: diffuse IBL must rotate its lookup: `{IBL_DIFFUSE_CALL}`"
+        );
+    }
+
+    // 2) The skybox writer. It compiles with `inc = skybox_only`, so it CANNOT
+    //    reach `get_lights_info()` — it must read the always-bound
+    //    `lights_info` uniform through `env_rotation_mat`. Pin both halves:
+    //    the rotate itself, and the fact the matrix comes from that uniform.
+    {
+        for (msaa, mips) in CONFIGS {
+            let mut key =
+                first_party_key(MaterialShaderId::PBR, ShadingBase::Pbr, false, msaa, mips);
+            key.owns_skybox = true;
+            let label = format!("skybox env-rotation msaa={msaa:?} mips={mips}");
+            let src = render(&key, &label);
+            naga_validate(&src, &label);
+            assert!(
+                src.contains(SKYBOX_CALL),
+                "{label}: skybox must rotate its view ray: `{SKYBOX_CALL}`"
+            );
+            assert!(
+                src.contains("env_rotation_mat(lights_info)"),
+                "{label}: the skybox kernel has no light accessors — it must read the \
+                 rotation via `env_rotation_mat(lights_info)`"
+            );
+        }
+    }
+
+    // 3) The SSR miss fallback, which mirrors the matrix through SsrParams.
+    {
+        use crate::render_passes::ssr::shader::cache_key::{
+            ShaderCacheKeySsr, ShaderCacheKeySsrTrace, SsrMode, SsrTrace,
+        };
+        use crate::render_passes::ssr::shader::template::ShaderTemplateSsr;
+        for mode in [SsrMode::Mirror, SsrMode::Glossy] {
+            for trace in [SsrTrace::LinearDda, SsrTrace::HiZ] {
+                let key = ShaderCacheKeySsr::Trace(ShaderCacheKeySsrTrace {
+                    mode,
+                    trace,
+                    half_res: false,
+                    multisampled_geometry: false,
+                    reverse_z: false,
+                    debug: 0,
+                    bvh: false,
+                });
+                let label = format!("ssr env-rotation mode={mode:?} trace={trace:?}");
+                let src = ShaderTemplateSsr::try_from(&key)
+                    .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
+                    .into_source()
+                    .unwrap_or_else(|e| panic!("{label}: render failed: {e:?}"));
+                naga_validate(&src, &label);
+                assert!(
+                    src.contains(SSR_CALL),
+                    "{label}: the SSR env fallback must rotate its lookup: `{SSR_CALL}`"
+                );
+            }
+        }
+    }
+}
+
+#[test]
 fn box_projected_probe_in_both_env_paths() {
     // box-projected-probe (comment-pinned in brdf_pbr.wgsl + trace.wgsl): the
     // reflection-probe parallax correction must go through the ONE shared

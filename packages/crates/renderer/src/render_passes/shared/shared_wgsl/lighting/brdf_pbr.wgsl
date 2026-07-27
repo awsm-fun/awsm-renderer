@@ -244,7 +244,7 @@ fn brdf_ibl_with_transmission(
 
     if (effective_transmission > 0.0) {
         // Diffuse IBL contribution
-        let irradiance = sampleIrradiance(n, ibl_irradiance_tex, ibl_irradiance_sampler);
+        let irradiance = sampleIrradiance(n, ibl_irradiance_tex, ibl_irradiance_sampler, ibl_info.env_rot);
         let diffuse_brdf = base_color * (1.0 / PI) * irradiance;
 
         // Transmission BTDF contribution
@@ -270,7 +270,7 @@ fn brdf_ibl_with_transmission(
         base_layer = mix(diffuse_brdf, transmission_btdf, effective_transmission);
     } else {
         // No transmission - standard diffuse
-        let irradiance = sampleIrradiance(n, ibl_irradiance_tex, ibl_irradiance_sampler);
+        let irradiance = sampleIrradiance(n, ibl_irradiance_tex, ibl_irradiance_sampler, ibl_info.env_rot);
         base_layer = base_color * (1.0 / PI) * irradiance;
     }
 
@@ -287,7 +287,7 @@ fn brdf_ibl_with_transmission(
     // purely the transmitted environment in the transmission tint.
     var transmit_back = vec3<f32>(0.0);
     {% if pbr_features.diffuse_transmission %}
-    let back_irradiance = sampleIrradiance(-n, ibl_irradiance_tex, ibl_irradiance_sampler);
+    let back_irradiance = sampleIrradiance(-n, ibl_irradiance_tex, ibl_irradiance_sampler, ibl_info.env_rot);
     let dt_transmitted = (1.0 - F_view_max) * (1.0 - metallic)
         * color.diffuse_transmission_color
         * (1.0 / PI) * back_irradiance;
@@ -364,7 +364,7 @@ fn brdf_ibl_with_transmission(
     {% if pbr_features.sheen %}
     let sheen_scaling = sheen_albedo_scaling(color.sheen_color, color.sheen_roughness, n_dot_v);
     var base_with_sheen = base_contribution * sheen_scaling;
-    let irradiance_sheen = sampleIrradiance(n, ibl_irradiance_tex, ibl_irradiance_sampler);
+    let irradiance_sheen = sampleIrradiance(n, ibl_irradiance_tex, ibl_irradiance_sampler, ibl_info.env_rot);
     let sheen_alpha = color.sheen_roughness * color.sheen_roughness;
     let fresnel_sheen = pow(1.0 - n_dot_v, 3.0); // Softer falloff
     let sheen_contrib = color.sheen_color * irradiance_sheen * sheen_alpha * fresnel_sheen * color.occlusion;

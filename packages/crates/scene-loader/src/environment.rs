@@ -57,6 +57,12 @@ pub async fn apply_environment(
                 half_extents: env.probe.half_extents,
             },
         ));
+
+    // Authored environment rotation — turns skybox + both IBL cubemaps
+    // together. Set unconditionally (rather than only when non-zero) so
+    // clearing a rotation in the editor actually restores identity on the
+    // renderer rather than leaving the previous scene's value in place.
+    renderer.lights.set_env_rotation_euler_degrees(env.rotation);
     Ok(())
 }
 

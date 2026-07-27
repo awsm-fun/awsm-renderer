@@ -1,9 +1,16 @@
+// `env_rot` is the scene's world→cube environment rotation — the SAME matrix
+// the IBL paths apply, so the visible background and the light it casts turn
+// together. Passed as a parameter rather than read from `get_lights_info()`
+// because the skybox kernel compiles with `inc = skybox_only`, which gates the
+// light accessors out; callers read the always-bound `lights_info` uniform
+// through `env_rotation_mat`.
 fn sample_skybox(
     coords: vec2<i32>,
     screen_dims: vec2<f32>,
     camera: Camera,
     skybox_tex: texture_cube<f32>,
-    skybox_sampler: sampler
+    skybox_sampler: sampler,
+    env_rot: mat3x3<f32>
 ) -> vec4<f32> {
     let uv = (vec2<f32>(coords) + vec2<f32>(0.5, 0.5)) / screen_dims;
 
@@ -53,8 +60,9 @@ fn sample_skybox(
     );
     let ray_dir = normalize(inv_view_rotation * view_ray);
 
-    // Sample the cubemap using the ray direction
-    let color = textureSampleLevel(skybox_tex, skybox_sampler, ray_dir, 0.0);
+    // Sample the cubemap using the ray direction, rotated into cube space by
+    // the authored environment rotation (identity when unrotated).
+    let color = textureSampleLevel(skybox_tex, skybox_sampler, env_rot * ray_dir, 0.0);
 
     // Return raw HDR values - tone mapping happens in the display pass
     return color;

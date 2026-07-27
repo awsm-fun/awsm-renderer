@@ -334,6 +334,7 @@ impl Slot {
             specular,
             irradiance,
             probe: None,
+            rotation: None,
         }
     }
 }
@@ -344,6 +345,60 @@ fn environment_row() -> Dom {
         .child(env_slot_picker(Slot::Skybox))
         .child(env_slot_picker(Slot::Specular))
         .child(env_slot_picker(Slot::Irradiance))
+        .child(env_rotation_fields())
+    })
+}
+
+/// Environment rotation (Euler degrees, XYZ) — turns skybox + BOTH IBL maps
+/// together, so the background and the light it casts stay consistent. Lets an
+/// author aim the interesting quadrant of a bake at the camera without
+/// re-baking the cubemap; `Y` is the usual knob (spins the room horizontally).
+///
+/// Tracks `scene.environment` so it reflects every write path (this control,
+/// MCP `set_environment`, project load), and dispatches a partial
+/// `PatchEnvironment` so editing the rotation never disturbs the three slots.
+fn env_rotation_fields() -> Dom {
+    html!("div", {
+        .style("display", "flex").style("align-items", "center").style("gap", "5px")
+        .child(html!("span", {
+            .style("font-size", "11px")
+            .style("color", "var(--fg-2)")
+            .style("white-space", "nowrap")
+            .text("Env rot°")
+        }))
+        .child(html!("div", {
+            .style("width", "150px")
+            .child(vec3_signal(
+                controller()
+                    .scene
+                    .environment
+                    .signal_ref(|env| {
+                        [
+                            env.rotation[0] as f64,
+                            env.rotation[1] as f64,
+                            env.rotation[2] as f64,
+                        ]
+                    }),
+                1.0,
+                move |v| {
+                    let rotation = [v[0] as f32, v[1] as f32, v[2] as f32];
+                    spawn_local(async move {
+                        if let Err(err) = controller()
+                            .dispatch(EditorCommand::PatchEnvironment {
+                                skybox: None,
+                                specular: None,
+                                irradiance: None,
+                                probe: None,
+                                rotation: Some(rotation),
+                            })
+                            .await
+                        {
+                            tracing::error!("ribbon: env rotation patch failed: {err}");
+                        }
+                    });
+                },
+            ))
+        }))
     })
 }
 

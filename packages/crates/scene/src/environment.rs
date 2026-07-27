@@ -23,6 +23,20 @@ pub struct EnvironmentConfig {
     pub irradiance: EnvSlot,
     #[serde(default)]
     pub probe: ReflectionProbe,
+    /// Rigid rotation applied to the environment as a whole — skybox,
+    /// specular and irradiance alike, so the background and the lighting it
+    /// casts never disagree. Euler angles in DEGREES, applied X then Y then Z
+    /// (intrinsic), which makes `[0, 180, 0]` the "spin the room around" knob
+    /// an author reaches for most.
+    ///
+    /// This is an AUTHORING transform on the environment, not on the scene:
+    /// it turns the cubemap under a fixed world, letting a bake whose
+    /// interesting quadrant faces the wrong way be aimed at the camera
+    /// without re-baking. Default `[0, 0, 0]` is identity and costs one
+    /// mat3 multiply per env fetch (the matrix is uploaded already-inverted,
+    /// so the shader never inverts per pixel).
+    #[serde(default)]
+    pub rotation: [f32; 3],
 }
 
 impl EnvironmentConfig {
@@ -169,6 +183,9 @@ half_extents = [3.4, 2.0, 2.3]
                 asset_id: AssetId::new(),
             },
             probe: Default::default(),
+            // A non-trivial rotation on every axis, so a serde shape that
+            // dropped or reordered the field diverges here.
+            rotation: [15.0, -120.0, 7.5],
         };
         let toml = toml::to_string_pretty(&cfg).unwrap();
         let back: EnvironmentConfig = toml::from_str(&toml).unwrap();
@@ -177,6 +194,30 @@ half_extents = [3.4, 2.0, 2.3]
             cfg.ktx_asset_ids().len(),
             1,
             "only the KTX slot carries bytes"
+        );
+    }
+
+    /// `rotation` is `#[serde(default)]`, so every environment block written
+    /// BEFORE the field existed must still deserialize — and land on identity,
+    /// not on garbage. Without this, loading an older project.toml / bundled
+    /// scene.toml would fail outright or silently pick up a rotation nobody
+    /// authored.
+    #[test]
+    fn rotation_defaults_to_identity_for_pre_feature_documents() {
+        let legacy = r#"
+            [skybox]
+            built_in_default = {}
+            [specular]
+            built_in_default = {}
+            [irradiance]
+            built_in_default = {}
+        "#;
+        let cfg: EnvironmentConfig =
+            toml::from_str(legacy).expect("pre-rotation environment still deserializes");
+        assert_eq!(
+            cfg.rotation,
+            [0.0, 0.0, 0.0],
+            "a document with no rotation key means UNROTATED"
         );
     }
 }

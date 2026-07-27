@@ -755,6 +755,10 @@ impl AwsmRenderer {
                     // fallback box-projects identically to the IBL path.
                     self.lights.reflection_probe(),
                     bvh_instances,
+                    // ...and the environment rotation, for the same reason:
+                    // a miss must fall back to the env at the orientation the
+                    // IBL path sampled it at.
+                    self.lights.env_rotation_inv(),
                 )?;
             }
             if bvh_buffers_recreated {
