@@ -162,6 +162,7 @@ pub fn to_editor_project(ctrl: &EditorController) -> EditorProject {
         editor_animations,
         anim_mixer: ctrl.anim_mixer.get_cloned(),
         bundle_options: ctrl.scene.bundle_options.get(),
+        active_camera: ctrl.active_camera.get(),
         nodes,
     }
 }
@@ -794,6 +795,11 @@ pub fn apply_project(ctrl: &EditorController, project: EditorProject) {
     ctrl.scene.shadows.set(project.shadows);
     ctrl.scene.post_process.set(project.post_process);
     ctrl.scene.bundle_options.set(project.bundle_options);
+    // Restore the authored viewpoint. Without this every load dropped to the
+    // free camera, which starts far enough out that a stage-sized set reads as
+    // a speck — so the first thing anyone did on opening a project was hunt for
+    // the camera they had been working through.
+    ctrl.active_camera.set_neq(project.active_camera);
     *ctrl.scene.assets.lock().unwrap() = project.assets;
     if !project.name.is_empty() {
         ctrl.project_name.set(project.name);

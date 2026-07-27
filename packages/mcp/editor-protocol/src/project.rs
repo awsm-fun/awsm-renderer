@@ -1,7 +1,7 @@
 use awsm_renderer_scene::animation::{CustomAnimationRef, MixerDoc, StoredAnimation};
 use awsm_renderer_scene::{
-    AssetId, CustomMaterialRef, EditorNode, EnvironmentConfig, MaterialDef, PostProcessConfig,
-    ShadowsConfig,
+    AssetId, CustomMaterialRef, EditorNode, EnvironmentConfig, MaterialDef, NodeId,
+    PostProcessConfig, ShadowsConfig,
 };
 
 use crate::assets::AssetTable;
@@ -253,6 +253,19 @@ pub struct EditorProject {
     /// onto the locked defaults (Meshopt + Smart 0.1mm + KTX2).
     #[serde(default)]
     pub bundle_options: BundleOptions,
+    /// Which authored camera the EDITOR viewport looks through, if any.
+    ///
+    /// Editor-only, and deliberately part of the project rather than session
+    /// state: a scene authored for a fixed in-game camera (a stage set, a
+    /// fixed-angle game) is meaningless viewed from the default free camera,
+    /// which starts far enough out that the set reads as a speck. Storing it
+    /// means opening the project puts you where the game will be, so what you
+    /// tune is what ships.
+    ///
+    /// `None` keeps the free camera, which is right for scenes with no
+    /// authored viewpoint. `#[serde(default)]` so older projects round-trip.
+    #[serde(default)]
+    pub active_camera: Option<NodeId>,
     #[serde(default)]
     pub nodes: Vec<EditorNode>,
 }
