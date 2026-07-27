@@ -24,9 +24,9 @@ drive:
      `wait_render_settled`; screenshot — **state A** (haze as authored).
   4. `set_post_process {atmosphere_height_falloff: 0}`; `wait_render_settled`;
      screenshot — **state B** (uniform medium, height structure removed).
-  5. `set_post_process {atmosphere_enabled: false}`; `wait_render_settled`;
+  5. `set_post_process {atmosphere_mode: "off"}`; `wait_render_settled`;
      screenshot — **state C** (haze off).
-  6. Restore: `set_post_process {atmosphere_enabled: true,
+  6. Restore: `set_post_process {atmosphere_mode: "fog",
      atmosphere_height_falloff: 0.25}`.
 
 expect:

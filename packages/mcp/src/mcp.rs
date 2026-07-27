@@ -1433,22 +1433,21 @@ pub struct PostProcessParams {
     /// Omit to leave unchanged.
     #[serde(default)]
     pub atmosphere_height_falloff: Option<f32>,
-    /// Far plane of the froxel volume in meters (default 80). The medium is
-    /// not simulated past it — deliberately much nearer than the light-culling
-    /// far plane the volume borrows its slicing from. Live uniform,
-    /// "volumetric" mode only. Omit to leave unchanged.
-    ///
     /// Henyey-Greenstein phase anisotropy (default 0.3): 0 isotropic, > 0
     /// forward-scattering (a beam aimed at the camera flares), < 0 back.
     /// Live uniform, read only in "volumetric" mode. Omit to leave unchanged.
     #[serde(default)]
     pub atmosphere_scattering_anisotropy: Option<f32>,
+    /// Far plane of the froxel volume in meters (default 80). The medium is
+    /// not simulated past it — deliberately much nearer than the light-culling
+    /// far plane the volume borrows its slicing from. Live uniform,
+    /// "volumetric" mode only. Omit to leave unchanged.
+    #[serde(default)]
+    pub atmosphere_volumetric_distance: Option<f32>,
     /// Temporally reproject + blend the froxel volume across frames (default
     /// off). Turns banding into smooth haze, at the cost of ghosting behind
     /// fast movers. STRUCTURAL; only meaningful in "volumetric" mode. Omit to
     /// leave unchanged.
-    #[serde(default)]
-    pub atmosphere_volumetric_distance: Option<f32>,
     #[serde(default)]
     pub atmosphere_volumetric_temporal: Option<bool>,
 }
@@ -4236,7 +4235,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Set how strongly a light scatters in VOLUMETRIC MEDIA — how much of it you see in the air — independently of how strongly it lights surfaces. Params: { node: <light node UUID>, value: <number> }, same {node, value} shape as set_light_intensity. 1.0 (default) = fully present in the medium; 0.0 = surfaces only, invisible in the air; > 1.0 over-drives the beam. This is an ARTISTIC knob, not a physical consequence: a key light usually should NOT fog the room (set it near 0), while a beam fixture should blaze in the air even where it barely reaches the floor (set intensity low, this high). Applies to every light kind (unlike set_light_range / set_light_angles, which are kind-specific). Only has a visible effect once atmospheric haze is on (set_post_process atmosphere_enabled) — with no medium there is nothing to scatter in. Persisted on the light node + carried in the player bundle; also animatable as the 'Volumetric' light track."
+        description = "Set how strongly a light scatters in VOLUMETRIC MEDIA — how much of it you see in the air — independently of how strongly it lights surfaces. Params: { node: <light node UUID>, value: <number> }, same {node, value} shape as set_light_intensity. 1.0 (default) = fully present in the medium; 0.0 = surfaces only, invisible in the air; > 1.0 over-drives the beam. This is an ARTISTIC knob, not a physical consequence: a key light usually should NOT fog the room (set it near 0), while a beam fixture should blaze in the air even where it barely reaches the floor (set intensity low, this high). Applies to every light kind (unlike set_light_range / set_light_angles, which are kind-specific). Only has a visible effect once atmospheric haze is on (set_post_process atmosphere_mode: 'fog' or 'volumetric') — with no medium there is nothing to scatter in. Persisted on the light node + carried in the player bundle; also animatable as the 'Volumetric' light track."
     )]
     async fn set_light_volumetric_intensity(
         &self,

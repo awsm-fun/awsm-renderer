@@ -37,6 +37,14 @@
 // `AtmosphereParamsRaw` + the `atmosphere_params` binding are declared in
 // `bind_groups.wgsl`, which renders ahead of this file.
 
+// Scene transmittance the haze pass applied to this pixel — 1.0 until
+// `apply_atmosphere` / `apply_atmosphere_volumetric` writes it. The bloom
+// composite in `main` reads it to attenuate the ADDED glow: the bloom pyramid
+// is built by the dedicated bloom pass from the PRE-haze composite, so
+// without this an emitter buried in dense haze still blooms at full strength
+// — a halo glowing through fog with no visible source.
+var<private> atmosphere_scene_transmittance: f32 = 1.0;
+
 // How far a sky pixel's ray is treated as travelling. Large enough that a
 // uniform medium saturates completely (exp(-density * 1e5) underflows for any
 // usable density), while a height-thinned one still converges via G().

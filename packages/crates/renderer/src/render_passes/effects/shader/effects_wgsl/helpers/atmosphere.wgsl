@@ -9,9 +9,10 @@
 // blend toward the haze colour.
 
 // Blend `rgb` toward the haze colour by how much medium the pixel's ray
-// crossed. Applied BEFORE bloom so the glow blooms the hazed image, not the
-// clear one — haze that sits on top of bloom reads as a flat wash over the
-// lights rather than as air between them.
+// crossed. Also records the pixel's transmittance in
+// `atmosphere_scene_transmittance` so the bloom composite in `main` can
+// attenuate its glow the same way — the pyramid itself is built from the
+// pre-haze composite by the separate bloom pass.
 fn apply_atmosphere(
     rgb: vec3<f32>,
     coords: vec2<i32>,
@@ -34,5 +35,6 @@ fn apply_atmosphere(
 
     let tau = atmosphere_optical_depth(params, camera.position.y, dir.y, dist);
     let transmittance = exp(-max(tau, 0.0));
+    atmosphere_scene_transmittance = transmittance;
     return rgb * transmittance + params.color * (1.0 - transmittance);
 }

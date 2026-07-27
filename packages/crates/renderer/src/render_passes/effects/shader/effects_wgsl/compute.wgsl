@@ -90,9 +90,15 @@ fn main(
         var rgb = composite_color.rgb;
     {% endif %}
 
-    // Haze goes in BEFORE bloom, so the glow blooms the hazed image. Applied
-    // after, it would wash flatly over the lights instead of reading as air
-    // between them.
+    // Haze goes in before the bloom composite, and the composite scales the
+    // ADDED glow by the pixel's haze transmittance (recorded by the apply_*
+    // helpers in `atmosphere_scene_transmittance`). The pyramid itself is
+    // built by the dedicated bloom pass from the PRE-haze composite — it runs
+    // before this shader — so scaling here is what keeps an emitter buried in
+    // dense haze from blooming at full strength through the fog. Residual
+    // approximation: the glow is attenuated by the RECEIVING pixel's
+    // transmittance (not the source's), and the in-scattered haze itself
+    // doesn't bloom.
     {% if atmosphere %}
         rgb = apply_atmosphere(rgb, coords, pixel_center, screen_dims_f32, camera);
     {% endif %}
@@ -102,7 +108,13 @@ fn main(
     {% endif %}
 
     {% if bloom %}
-        rgb = apply_bloom(rgb, coords, screen_dims_i32);
+        {% if atmosphere || atmosphere_volumetric %}
+            let pre_bloom_rgb = rgb;
+            rgb = apply_bloom(rgb, coords, screen_dims_i32);
+            rgb = pre_bloom_rgb + (rgb - pre_bloom_rgb) * atmosphere_scene_transmittance;
+        {% else %}
+            rgb = apply_bloom(rgb, coords, screen_dims_i32);
+        {% endif %}
     {% endif %}
 
     {% if dof %}

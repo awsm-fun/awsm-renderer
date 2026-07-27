@@ -593,7 +593,10 @@ impl Lights {
                 None
             };
 
-            // Fixed 128-byte block — stack array, no per-frame heap allocation.
+            // Fixed `INFO_SIZE` (= 224) byte block — 80 bytes of counts /
+            // directional list / probe tail, then the 3×48-byte
+            // environment-rotation tail at 80..224. Stack array, no per-frame
+            // heap allocation.
             let mut data = [0u8; Self::INFO_SIZE];
             data[0..4].copy_from_slice(&(self.lights.len() as u32).to_ne_bytes());
             data[4..8].copy_from_slice(&self.ibl.prefiltered_env.mip_count.to_ne_bytes());

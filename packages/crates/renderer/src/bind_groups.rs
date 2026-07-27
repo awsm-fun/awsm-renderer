@@ -527,6 +527,14 @@ impl BindGroups {
                     // bindings (the "Extended Shadows" layout) alongside the
                     // edge data/id — rebind on a shadow-resource change.
                     functions_to_call.insert(FunctionToCall::MaterialOpaqueEdge);
+                    // The volumetrics shadows group binds the same atlas /
+                    // cube / cascade views (via
+                    // `build_shadow_bind_group_entries`), so an atlas grow or
+                    // shadow-config change must rebind it too — otherwise the
+                    // froxel pass keeps sampling the orphaned old atlas and
+                    // beam shadows diverge from surface shadows. No-op while
+                    // the pass is `None` (the dispatch arm skips).
+                    functions_to_call.insert(FunctionToCall::Volumetrics);
                 }
                 BindGroupCreate::MaterialClassifyBuffersResize => {
                     // Classify rebuilds its own bind group; opaque
@@ -586,6 +594,14 @@ impl BindGroups {
                     // Prep's group(1) binds lights_storage + cull_params, both
                     // reallocated on a froxel-buffer resize (Stage 3b).
                     functions_to_call.insert(FunctionToCall::MaterialPrep);
+                    // The volumetrics lights group binds the same merged
+                    // `storage_buffer` + `params_buffer` (`inject`'s froxel
+                    // walk reads the culled light lists). A per-froxel
+                    // capacity grow reallocates both with NO viewport change
+                    // — no `TextureViewRecreate` fires — so without this the
+                    // medium keeps walking the orphaned old buffers until a
+                    // resize. No-op while the pass is `None`.
+                    functions_to_call.insert(FunctionToCall::Volumetrics);
                 }
             }
         }

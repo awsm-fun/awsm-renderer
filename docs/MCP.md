@@ -268,8 +268,8 @@ every command/query, and each tool self-describes over the MCP schema.
 **Lighting / environment**
 - `set_light_color`, `set_light_intensity`, `set_light_range`, `set_light_angles`,
   `set_light_volumetric_intensity` (presence in volumetric media, independent of
-  surface intensity; needs `set_post_process { atmosphere_enabled: true }` to be
-  visible — with no medium there's nothing to scatter in).
+  surface intensity; needs `set_post_process { atmosphere_mode: "fog" |
+  "volumetric" }` to be visible — with no medium there's nothing to scatter in).
 - `set_environment { skybox?, specular?, irradiance?, zenith?, nadir?, probe?,
   skybox_rotation?, specular_rotation?, irradiance_rotation? }` — THREE
   independent slots (skybox background / specular IBL / irradiance IBL), each

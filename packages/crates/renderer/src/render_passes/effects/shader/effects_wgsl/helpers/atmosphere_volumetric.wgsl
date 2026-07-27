@@ -67,6 +67,7 @@ fn apply_atmosphere_volumetric(
     // 1. The medium BEYOND the froxel volume, integrated in closed form. Skipped
     //    entirely for anything inside the volume, which is the common case.
     var out_rgb = rgb;
+    var tail_transmittance = 1.0;
     let dist_in_volume = min(dist, volume_far_z / cos_theta);
     if (dist > dist_in_volume) {
         // The segment starts where the volume ends, so the height integral has
@@ -79,6 +80,7 @@ fn apply_atmosphere_volumetric(
             dist - dist_in_volume,
         );
         let transmittance = exp(-max(tau, 0.0));
+        tail_transmittance = transmittance;
         out_rgb = rgb * transmittance + atmosphere_params.color * (1.0 - transmittance);
     }
 
@@ -101,5 +103,9 @@ fn apply_atmosphere_volumetric(
     let uvw = vec3<f32>(uv, clamp(w, 0.0, 1.0));
 
     let integrated = textureSampleLevel(volumetric_tex, volumetric_sampler, uvw, 0.0);
+    // Total scene transmittance = both DISJOINT segments in series: the
+    // analytic tail past the volume times the froxel volume's own
+    // transmittance. Read by the bloom composite in `main`.
+    atmosphere_scene_transmittance = tail_transmittance * integrated.a;
     return out_rgb * integrated.a + integrated.rgb;
 }

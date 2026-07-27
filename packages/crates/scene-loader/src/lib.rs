@@ -1827,23 +1827,28 @@ async fn materialize(
     // Apply the node's authored shadow flags to every mesh it just created.
     //
     // These round-trip through `scene.toml` and the editor honours them, but
-    // until now NOTHING applied them on load: the only `set_mesh_shadow_flags`
-    // call in this file is the transparent-material override below, so an
-    // authored `cast = false` was silently ignored and the mesh kept casting.
+    // until now NOTHING applied them on load: the only other
+    // `set_mesh_shadow_flags` call in this file is the transparent-material
+    // override in `load_glb_under`, so an authored `cast = false` was silently
+    // ignored and the mesh kept casting.
     // The bundle's geometry-only glbs carry no shadow flags of their own, so
     // the scene node is the only place the information exists.
     //
-    // Deliberately BEFORE the transparency override: a transparent mesh must
-    // not enter the shadow pass at all (it has no visibility geometry), so that
-    // rule has to win over whatever the artist authored.
+    // AND-ed with the flags the mesh already carries: the transparency
+    // override already ran (inside the NodeKind match above, at glb build
+    // time) and forced both off for transparent meshes, which have no
+    // visibility geometry for the shadow pass to draw. That rule must win
+    // over whatever the artist authored — authored flags may only narrow the
+    // current state, never re-enable it.
     if let Some(cfg) = node.kind.mesh_shadow() {
         if let Some(keys) = maps.node_meshes.get(&node.id) {
             for &k in keys {
+                let current = renderer.mesh_shadow_flags(k);
                 let _ = renderer.set_mesh_shadow_flags(
                     k,
                     awsm_renderer::shadows::MeshShadowFlags {
-                        cast: cfg.cast,
-                        receive: cfg.receive,
+                        cast: cfg.cast && current.cast,
+                        receive: cfg.receive && current.receive,
                     },
                 );
             }

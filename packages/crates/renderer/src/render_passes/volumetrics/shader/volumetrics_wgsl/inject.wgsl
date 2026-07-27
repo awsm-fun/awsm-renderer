@@ -257,10 +257,12 @@ fn froxel_light_contribution(
         shadow = sample_shadow_descriptor(light.shadow_index, world_pos, sample.light_dir);
     }
 
-    // Phase: cos between the direction light TRAVELS (-light_dir, since
-    // light_dir points from the froxel toward the light) and the direction we
-    // look FROM (-to_eye).
-    let cos_theta = dot(-sample.light_dir, -to_eye);
+    // Phase: cos between the direction the light TRAVELS (-light_dir, since
+    // light_dir points from the froxel toward the light) and the direction the
+    // scattered light travels to reach the eye (to_eye, froxel -> eye). With
+    // g > 0, a beam propagating toward the camera has cos_theta -> 1 (the HG
+    // forward lobe) and flares; negating either vector inverts the knob.
+    let cos_theta = dot(-sample.light_dir, to_eye);
     let phase = henyey_greenstein(cos_theta, g);
 
     return contribution * shadow * phase * volumetric_intensity;

@@ -286,6 +286,19 @@ async fn load_ktx_by_id(asset_id: AssetId) -> anyhow::Result<CubemapImage> {
     // The stash: populated by the HDR picker, by `ImportKtxEnvFromUrl`, and by
     // `restore_ktx` on load. If the bytes are here, nothing else matters.
     if let Some(bytes) = stashed_ktx(asset_id) {
+        // Load anyway, but say so loudly: the stash satisfying a load the
+        // table can't is exactly the still-open save-side bug described
+        // above, and this warning is its only remaining symptom. Every
+        // table-driven flow (asset browser, MCP asset queries, any future
+        // unused-asset cleanup) still can't see this asset.
+        if entry.is_none() {
+            tracing::warn!(
+                "env KTX {asset_id}: bytes are stashed but the project asset \
+                 table has no entry for it — loading from the stash, but the \
+                 save side dropped the `[assets]` entry (see `load_ktx_by_id` \
+                 docs); table-driven flows will not see this asset"
+            );
+        }
         let label = match entry.as_ref().map(|e| &e.source) {
             Some(AssetSource::Filename(name)) => name.clone(),
             Some(AssetSource::Url(url)) => url.clone(),

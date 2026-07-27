@@ -358,6 +358,14 @@ impl AwsmRenderer {
                     &mut ctx,
                 )
                 .await?;
+            // On the REBUILD path, destroy the old pass's GPU volumes rather
+            // than letting the assignment drop them: bind groups and
+            // pipelines are cheap to orphan, but the scatter / integrated /
+            // history 3D textures are real VRAM the JS GC can't see — the
+            // same rule `ensure_size` follows on resize.
+            if let Some(old) = self.render_passes.volumetrics.take() {
+                old.texture.destroy();
+            }
             self.render_passes.volumetrics = Some(volumetrics);
             self.bind_groups
                 .mark_create(crate::bind_groups::BindGroupCreate::TextureViewRecreate);
