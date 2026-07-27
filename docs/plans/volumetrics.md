@@ -599,3 +599,29 @@ already sanctions this for iteration). Note also that authoring the SCENE does
 NOT need the pin — `scene.toml` carries the settings regardless; the pin only
 decides whether the *game* renders them. So the art direction can be authored
 and exported now and will light up when 0.27 lands.
+
+## Authored per-mesh shadow flags were never applied on load (fixed)
+
+Found while art-directing dance-off: turning `shadow.cast` off on the robot
+meshes in the editor changed nothing in the player — the dancers kept casting.
+
+`MeshShadowConfig` is authored per node, persists to `project.toml`, survives
+export into the bundle's `scene.toml`, and the EDITOR honours it. But
+`scene-loader` never read it. The only `set_mesh_shadow_flags` call in the whole
+file was the transparency override (transparent meshes must not enter the shadow
+pass — they have no visibility geometry), and its own comment says "the bundle's
+geometry-only glb carries no per-mesh shadow flags, so set them here" — which is
+exactly right, and exactly why the scene node is the ONLY place that information
+exists on load. It was being dropped on the floor.
+
+`NodeKind::mesh_shadow()` already existed and already covered
+Mesh / SkinnedMesh / InstancesAlongCurve / Instancer; nothing called it. The fix
+applies it to every mesh key a node produced, in the same post-match pass that
+already honours `visible == false`, and deliberately BEFORE the transparency
+override so that rule still wins.
+
+**Worth noting as a process failure, not just a bug.** I had earlier "verified"
+the marquee's `cast = false` by parsing it out of the exported bundle and
+declaring it done. The bytes were correct and the render was not — the one check
+that would have caught this is looking at the picture. Verifying the artifact is
+not verifying the behaviour.
