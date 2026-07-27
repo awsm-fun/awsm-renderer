@@ -362,20 +362,140 @@ beam cones are gone, replaced by smooth shafts. The analytic handoff also stays
 seamless with the new mapping — at radius 25 with an 8 m volume the stage
 measures 51.5 against the analytic mode's 50.6 on the same medium.
 
+### `volumetric_temporal` — IMPLEMENTED, and it finishes (b)
+
+The last named piece. One sample per froxel is far too few for a grid this
+coarse, and the fix is not more samples this frame but a *different* sample
+every frame, blended with where the same air was last frame.
+
+- **Jitter** — Halton (2,3,5) over a 16-frame period, applied in FROXEL units
+  before the projection, so a physically wider froxel at the screen edge gets a
+  proportional offset. 3D on purpose: the 16 px XY grid shows as blocks exactly
+  like the slices do, so jittering only Z would have fixed half the artifact.
+- **History** — reprojected through `camera_raw.prev_view_projection`, the same
+  matrix SSR's temporal path uses. Off-screen and out-of-volume samples are
+  rejected, which is what stops screen edges smearing stale medium inward on a
+  camera turn.
+- **Only the in-scattered radiance accumulates.** Extinction is an analytic
+  function of froxel height — no sampling noise to average, and blending it
+  would smear the haze layer's own boundary whenever the camera moves
+  vertically.
+- **A copy, not a ping-pong.** Ping-pong saves ~2 MB/frame but needs two inject
+  AND two integrate bind groups alternating on frame parity — a whole class of
+  off-by-one-frame bugs for well under a millisecond of bandwidth.
+- **Structural, properly.** The history sampler sits in group 0's LAYOUT, so
+  the variants cannot share a pipeline layout. `set_post_processing` now
+  reconstructs the pass on the flip, following `ssr_pass_rebuild_needed`;
+  without that a pass built for one setting holds a stale layout for the other.
+
+Two bugs caught while writing it, both worth recording:
+
+- The history read needs **no half-texel offset**. Froxel centres sit at slice
+  `i + 0.5`, so the normalized coordinate is exactly `prev_slice_t`. The
+  effects composite DOES need one, because it samples accumulation-to-far-face
+  values rather than centres — getting that backwards leans every beam.
+- A test I wrote pinned `prev_view_projection` as temporal-only and failed:
+  it's a FIELD on the shared `CameraRaw`, declared in every variant. The pin is
+  now on its *use*.
+
+Browser-verified in the dance-off replay, mid-playback with both dancers
+moving: the froxel blocks and mottling are gone, and there is **no ghosting or
+trailing** on the movers, with shadows staying crisp on the deck.
+
+### Flicker at the fixtures — two self-inflicted bugs, both fixed
+
+David reported flicker near the lights immediately after temporal landed. Two
+distinct causes, and the second is the more interesting.
+
+**1. The medium was sampled at the JITTERED point.** Density is `f(world_y)`,
+and the alpha channel is deliberately NOT accumulated across frames — so
+jittering its sample point gave extinction full, unsmoothed frame-to-frame
+variance, and extinction scales the whole column's transmittance in
+`integrate`. At the fixtures (y≈3.6, above `base_height` 1.8 where the profile
+actually varies) a ±0.5-froxel Y jitter is ≈±9% extinction *every frame*, on
+the brightest part of the image. Below 1.8 m the profile is flat, which is why
+the deck never flickered. Lighting is now sampled at the jittered point and the
+medium at the fixed centre; `volumetrics_samples_medium_at_the_froxel_centre`
+pins both halves, because swapping them back compiles and looks plausible.
+
+**2. `inverse_square` is unbounded, and the volume lives inside the lights.**
+It guards its denominator at `1e-4`, which is correct for surfaces — a surface
+is never *inside* a light — and wrong for a medium, because the stage's
+fixtures hang in the air the froxels sample. A froxel 0.1 m from a
+1100-intensity spot samples radiance ~1e5, and the jitter moves that several-
+fold per frame: variance no temporal filter can average. Fixed by giving each
+light the finite emitting radius a real fixture has, rescaling
+`1/max(d², 1e-4)` into `1/max(d², r²)` with r = 0.5 m. Outside r the factor is
+exactly 1.0, so the beams (a ~3.6 m throw) are untouched; inside it the
+irradiance goes constant and the jitter has nothing left to vary.
+
+**And one anti-fix worth remembering.** An asymmetric history clamp — pull
+history down toward the current sample, the froxel analogue of SSR's 3×3
+neighbourhood AABB — *made the flicker worse*. Where the input has high
+variance the clamp alternates: bright frame, output jumps; dim frame, history
+is yanked to a small multiple of a small number; and the pair settles into a
+stable two-state flip-flop rather than averaging. Measured on the truss band at
+0.12x playback, cells swung 2-4x frame to frame (18.9 → 8.7 → 12.9 → 4.8) with
+it in place. Plain exponential smoothing *cannot* oscillate — `r_n = a·c_n +
+(1-a)·r_{n-1}` is monotone toward the mean for any bounded input — so the right
+place to intervene was the input's variance, not the filter. Fix the sampling,
+then let the filter be a filter.
+
+### The "vertical light" above the fixtures is NOT volumetric
+
+Also reported, and worth recording because the obvious suspect was wrong. All
+four `StageSpot`s aim downward — the widest cone's top edge is −23.9° from
+horizontal — so no spot lights the air above itself, and the froxel volume
+cannot be the source. Confirmed by setting every spot's `volumetric_intensity`
+to 0 (with cache bypass — `http-server`'s long `cache-control` applies to the
+served WORLD, not just the archive the taskfile buster covers): the wedge above
+the right-hand fixture is **unchanged**. It is surface lighting plus bloom on
+the marquee board and truss, so moving the fixtures off the wall is the right
+fix and it belongs in the art pass, not here.
+
+**The ghosting risk is documented rather than assumed.** `ssr_wgsl/temporal.wgsl`
+is a written-down post-mortem of this exact design — a bare reproject with no
+colour clamp at weight 0.85 smeared reflections into multi-frame trails, fixed
+there with a 3×3 neighbourhood-AABB clamp. This pass is also unclamped, at a
+*stickier* 0.92. What makes that survivable is spelled out on `HISTORY_BLEND`:
+the medium is low-frequency and has no reflection parallax (the air really is
+where reprojection says it is, which was precisely SSR's problem), the jitter
+is sub-froxel, and out-of-bounds history is hard-rejected. If a fast occluder
+cutting a beam ever does trail, the levers in order are: lower the weight,
+clamp against the froxel's own current value, then a full neighbourhood clamp.
+
+### On sharing temporal machinery across features
+
+Asked directly (David, 2026-07-27), and worth writing down because the answer
+is "mostly no, and here is the part that IS shared".
+
+- **`camera_raw.prev_view_projection` is the shared seam, and it already
+  exists.** SSR and volumetrics reproject through the identical matrix,
+  documented as the *unjittered* previous view-projection. That is the piece
+  that must never diverge, and it doesn't.
+- **The Halton generator is now shared** (`camera::halton`, `pub(crate)`).
+  It previously sat private behind the disabled `APPLY_JITTER` TAA camera
+  jitter; volumetrics had grown a second hardcoded copy, now deleted. What is
+  deliberately NOT shared is the SPACE each applies it in — TAA offsets a
+  projection matrix in NDC pixels, volumetrics offsets a sample point in froxel
+  units.
+- **The reprojection itself should not be shared.** SSR reprojects a screen
+  pixel and needs a depth read (`view_pos_from_depth`); volumetrics reprojects
+  a known world position and reads no depth at all. A common helper would wrap
+  `prev_view_proj * p`, which is one line and already common.
+- **If TAA ever lands** it owns the camera jitter (`APPLY_JITTER`, currently
+  `false`). Note the interaction to check then: `prev_view_projection` is
+  unjittered by design, but the froxel reconstruction uses `inv_proj`, which
+  WOULD be jittered — the two must be made consistent or the volume will
+  wobble against the camera.
+
 ### What's left on (b)
 
-A soft mottled quality remains in the mid-tones — the 16 px XY grid plus
-one-sample-per-froxel noise. Two levers, in order:
-
-1. **`volumetric_temporal`** — still unimplemented, and now clearly the
-   finisher rather than a nicety: per-frame jitter in inject plus a history
-   volume reprojected through `camera.prev_view_proj` (which already exists for
-   SSR temporal) is what turns one sample per froxel into smooth air. This is
-   the next thing to do.
-2. **Count** — 32 → 64 last, not first. Frostbite and UE both ship 64, and it's
-   2x the froxels (~9 MB of rgba16float at 1080p) for 2x the z-resolution, but
-   it is the expensive lever and should be spent only if a jittered,
-   correctly-ranged volume still bands.
+Nothing visible at the tuned settings. **Count** (32 → 64) stays unspent:
+Frostbite and UE both ship 64, and it is 2x the froxels for 2x the
+z-resolution, but a jittered, correctly-ranged, temporally-accumulated volume
+no longer bands — so it would be paying the expensive lever for an artifact
+that is gone.
 
 ## Per-light `volumetric_intensity`
 

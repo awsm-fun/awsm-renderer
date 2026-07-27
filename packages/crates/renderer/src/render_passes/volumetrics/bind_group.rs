@@ -26,10 +26,11 @@
 use awsm_renderer_core::{
     bind_groups::{
         BindGroupDescriptor, BindGroupEntry, BindGroupLayoutResource, BindGroupResource,
-        BufferBindingLayout, BufferBindingType, StorageTextureAccess, StorageTextureBindingLayout,
-        TextureBindingLayout,
+        BufferBindingLayout, BufferBindingType, SamplerBindingLayout, SamplerBindingType,
+        StorageTextureAccess, StorageTextureBindingLayout, TextureBindingLayout,
     },
     buffers::BufferBinding,
+    sampler::{AddressMode, FilterMode, SamplerDescriptor},
     texture::{TextureFormat, TextureSampleType, TextureViewDimension},
 };
 use std::borrow::Cow;
@@ -62,6 +63,11 @@ pub struct VolumetricsBindGroups {
     /// the bind group DECLARES — not, as this code first assumed, to what the
     /// shader actually reads.
     dummy_src_view: Option<web_sys::GpuTextureView>,
+    /// Trilinear sampler for the history volume. Only built (and only in the
+    /// layout) when temporal is on — so its `Option` IS the temporal flag as
+    /// far as this type is concerned, and every binding decision below reads
+    /// it rather than a separate bool that could drift out of step with it.
+    history_sampler: Option<web_sys::GpuSampler>,
     inject: Option<web_sys::GpuBindGroup>,
     integrate: Option<web_sys::GpuBindGroup>,
     lights: Option<web_sys::GpuBindGroup>,
@@ -69,19 +75,24 @@ pub struct VolumetricsBindGroups {
 }
 
 impl VolumetricsBindGroups {
-    pub async fn new(ctx: &mut RenderPassInitContext<'_>) -> Result<Self> {
-        let volume_entries = vec![
+    pub async fn new(ctx: &mut RenderPassInitContext<'_>, temporal: bool) -> Result<Self> {
+        let mut volume_entries = vec![
             // 0 camera_raw
             uniform_entry(),
             // 1 volumetric_params
             uniform_entry(),
-            // 2 src_volume — sampled. UnfilterableFloat: the integrate stage
-            // reads froxels by exact index (textureLoad), never interpolated.
+            // 2 src_volume — sampled.
+            //
+            // FILTERABLE, which `integrate` does not need (it reads froxels by
+            // exact index) but the temporal path does: reprojection lands
+            // between froxels by construction, so the history read has to
+            // interpolate. `textureLoad` is legal against a filterable binding,
+            // so one sample type serves both stages and the layout stays shared.
             BindGroupLayoutCacheKeyEntry {
                 resource: BindGroupLayoutResource::Texture(
                     TextureBindingLayout::new()
                         .with_view_dimension(TextureViewDimension::N3d)
-                        .with_sample_type(TextureSampleType::UnfilterableFloat),
+                        .with_sample_type(TextureSampleType::Float),
                 ),
                 visibility_vertex: false,
                 visibility_fragment: false,
@@ -99,6 +110,20 @@ impl VolumetricsBindGroups {
                 visibility_compute: true,
             },
         ];
+        if temporal {
+            // 4 history_sampler — present ONLY on the temporal variant, which
+            // is what makes `temporal` a structural axis rather than a uniform:
+            // it changes the layout, hence the pipeline layout, hence the
+            // pipeline.
+            volume_entries.push(BindGroupLayoutCacheKeyEntry {
+                resource: BindGroupLayoutResource::Sampler(
+                    SamplerBindingLayout::new().with_binding_type(SamplerBindingType::Filtering),
+                ),
+                visibility_vertex: false,
+                visibility_fragment: false,
+                visibility_compute: true,
+            });
+        }
         let volume_layout_key = ctx.bind_group_layouts.get_key(
             ctx.gpu,
             BindGroupLayoutCacheKey {
@@ -158,11 +183,30 @@ impl VolumetricsBindGroups {
                 })?
         };
 
+        // Trilinear + clamp: reprojection routinely lands a hair outside the
+        // volume at the screen edge, and REPEAT there would wrap the far side
+        // of the screen into the history.
+        let history_sampler = temporal.then(|| {
+            ctx.gpu.create_sampler(Some(
+                &SamplerDescriptor {
+                    label: Some("Volumetrics History Sampler"),
+                    mag_filter: Some(FilterMode::Linear),
+                    min_filter: Some(FilterMode::Linear),
+                    address_mode_u: Some(AddressMode::ClampToEdge),
+                    address_mode_v: Some(AddressMode::ClampToEdge),
+                    address_mode_w: Some(AddressMode::ClampToEdge),
+                    ..SamplerDescriptor::default()
+                }
+                .into(),
+            ))
+        });
+
         Ok(Self {
             volume_layout_key,
             lights_layout_key,
             shadows_layout_key,
             dummy_src_view: Some(dummy_src_view),
+            history_sampler,
             inject: None,
             integrate: None,
             lights: None,
@@ -210,18 +254,32 @@ impl VolumetricsBindGroups {
         // bind group declares, so scatter-as-sampled + scatter-as-storage in
         // one group is rejected no matter what the shader body does.
         let mut inject_entries = self.common_entries(ctx, params);
+        // Slot 2 is the HISTORY volume when temporal is on — a different
+        // texture from the scatter volume slot 3 writes, so the
+        // two-usages-in-one-scope rule is satisfied by construction. Without
+        // temporal it stays the dummy.
         let dummy_src = self
             .dummy_src_view
             .as_ref()
             .expect("dummy src view exists after new()");
+        let inject_src = texture
+            .history_sample_view
+            .as_ref()
+            .unwrap_or(dummy_src);
         inject_entries.push(BindGroupEntry::new(
             2,
-            BindGroupResource::TextureView(Cow::Borrowed(dummy_src)),
+            BindGroupResource::TextureView(Cow::Borrowed(inject_src)),
         ));
         inject_entries.push(BindGroupEntry::new(
             3,
             BindGroupResource::TextureView(Cow::Borrowed(&texture.scatter_storage_view)),
         ));
+        if let Some(sampler) = self.history_sampler.as_ref() {
+            inject_entries.push(BindGroupEntry::new(
+                4,
+                BindGroupResource::Sampler(sampler),
+            ));
+        }
         self.inject = Some(ctx.gpu.create_bind_group(
             &BindGroupDescriptor::new(layout, Some("Volumetrics Inject"), inject_entries).into(),
         ));
@@ -235,6 +293,15 @@ impl VolumetricsBindGroups {
             3,
             BindGroupResource::TextureView(Cow::Borrowed(&texture.integrated_storage_view)),
         ));
+        // `integrate` never samples with it, but the LAYOUT is shared with
+        // `inject`, and a bind group must supply every entry its layout
+        // declares.
+        if let Some(sampler) = self.history_sampler.as_ref() {
+            integrate_entries.push(BindGroupEntry::new(
+                4,
+                BindGroupResource::Sampler(sampler),
+            ));
+        }
         self.integrate = Some(
             ctx.gpu.create_bind_group(
                 &BindGroupDescriptor::new(layout, Some("Volumetrics Integrate"), integrate_entries)

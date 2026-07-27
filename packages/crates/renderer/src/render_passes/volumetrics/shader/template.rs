@@ -34,6 +34,9 @@ pub struct ShaderTemplateVolumetricsBindGroups {
     /// The shared shadow include branches on this for its depth reads; the
     /// volume has no MSAA target of its own.
     pub multisampled_geometry: bool,
+    /// Declare the history volume + its sampler. Structural: it changes the
+    /// bind-group layout, so it must match the pass's own `temporal`.
+    pub temporal: bool,
 }
 
 impl ShaderTemplateVolumetricsBindGroups {
@@ -48,6 +51,7 @@ impl ShaderTemplateVolumetricsBindGroups {
             froxel_slice_count: crate::render_passes::light_culling::DEFAULT_SLICE_COUNT,
             reverse_z: key.reverse_z,
             multisampled_geometry: false,
+            temporal: key.temporal,
         }
     }
 }
@@ -55,7 +59,10 @@ impl ShaderTemplateVolumetricsBindGroups {
 /// Per-froxel medium + in-scattered light.
 #[derive(Template, Debug, Default)]
 #[template(path = "volumetrics_wgsl/inject.wgsl", whitespace = "minimize")]
-pub struct ShaderTemplateVolumetricsInject;
+pub struct ShaderTemplateVolumetricsInject {
+    /// Jitter the sample point and blend against reprojected history.
+    pub temporal: bool,
+}
 
 /// Front-to-back accumulation down each froxel column.
 #[derive(Template, Debug, Default)]
@@ -67,6 +74,7 @@ pub struct ShaderTemplateVolumetricsIntegrate;
 pub struct ShaderTemplateVolumetrics {
     bind_groups: ShaderTemplateVolumetricsBindGroups,
     stage: VolumetricsStage,
+    temporal: bool,
 }
 
 impl TryFrom<&ShaderCacheKeyVolumetrics> for ShaderTemplateVolumetrics {
@@ -76,6 +84,7 @@ impl TryFrom<&ShaderCacheKeyVolumetrics> for ShaderTemplateVolumetrics {
         Ok(Self {
             bind_groups: ShaderTemplateVolumetricsBindGroups::new(key),
             stage: key.stage,
+            temporal: key.temporal,
         })
     }
 }
@@ -84,7 +93,10 @@ impl ShaderTemplateVolumetrics {
     pub fn into_source(self) -> Result<String> {
         let bind_groups = self.bind_groups.render()?;
         let body = match self.stage {
-            VolumetricsStage::Inject => ShaderTemplateVolumetricsInject.render()?,
+            VolumetricsStage::Inject => ShaderTemplateVolumetricsInject {
+                temporal: self.temporal,
+            }
+            .render()?,
             VolumetricsStage::Integrate => ShaderTemplateVolumetricsIntegrate.render()?,
         };
         Ok(format!("{bind_groups}\n{body}"))

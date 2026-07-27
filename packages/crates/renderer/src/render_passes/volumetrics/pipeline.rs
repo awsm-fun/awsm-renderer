@@ -25,9 +25,10 @@ impl VolumetricsPipelines {
         ctx: &mut RenderPassInitContext<'_>,
         bind_groups: &VolumetricsBindGroups,
         reverse_z: bool,
+        temporal: bool,
     ) -> Result<Self> {
         ctx.shaders
-            .ensure_keys(ctx.gpu, Self::shader_cache_keys(reverse_z))
+            .ensure_keys(ctx.gpu, Self::shader_cache_keys(reverse_z, temporal))
             .await?;
 
         let pipeline_layout = ctx.pipeline_layouts.get_key(
@@ -44,7 +45,14 @@ impl VolumetricsPipelines {
         for stage in [VolumetricsStage::Inject, VolumetricsStage::Integrate] {
             let shader = ctx
                 .shaders
-                .get_key(ctx.gpu, ShaderCacheKeyVolumetrics { stage, reverse_z })
+                .get_key(
+                    ctx.gpu,
+                    ShaderCacheKeyVolumetrics {
+                        stage,
+                        reverse_z,
+                        temporal,
+                    },
+                )
                 .await?;
             cache_keys.push(ComputePipelineCacheKey::new(shader, pipeline_layout));
         }
@@ -61,15 +69,17 @@ impl VolumetricsPipelines {
         })
     }
 
-    pub fn shader_cache_keys(reverse_z: bool) -> Vec<ShaderCacheKey> {
+    pub fn shader_cache_keys(reverse_z: bool, temporal: bool) -> Vec<ShaderCacheKey> {
         vec![
             ShaderCacheKey::from(ShaderCacheKeyVolumetrics {
                 stage: VolumetricsStage::Inject,
                 reverse_z,
+                temporal,
             }),
             ShaderCacheKey::from(ShaderCacheKeyVolumetrics {
                 stage: VolumetricsStage::Integrate,
                 reverse_z,
+                temporal,
             }),
         ]
     }

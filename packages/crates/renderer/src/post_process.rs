@@ -325,8 +325,19 @@ impl AwsmRenderer {
         // that frame's bind-group drain build the groups against live views
         // (the per-frame `ensure_size` then grows the 1×1 volume, marking
         // again — the same flow a boot-enabled volumetric config uses).
+        //
+        // ALSO a structural REBUILD path: `volumetric_temporal` adds the
+        // history sampler to group 0's layout and selects a different `inject`
+        // variant, so a pass built for one setting holds a stale layout +
+        // pipeline for the other. Exactly the trap `ssr_pass_rebuild_needed`
+        // above exists for, and the same fix.
+        let volumetrics_rebuild_needed = self
+            .render_passes
+            .volumetrics
+            .as_ref()
+            .is_some_and(|v| v.temporal != self.post_processing.atmosphere.volumetric_temporal);
         if self.post_processing.atmosphere.mode == AtmosphereMode::Volumetric
-            && self.render_passes.volumetrics.is_none()
+            && (self.render_passes.volumetrics.is_none() || volumetrics_rebuild_needed)
         {
             let mut ctx = crate::render_passes::RenderPassInitContext {
                 gpu: &self.gpu,

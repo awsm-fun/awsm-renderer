@@ -32,7 +32,37 @@ use crate::{
     },
 };
 
-/// `VolumetricParams` — 48-byte uniform describing the medium and the grid.
+/// Frames before the jitter sequence repeats. Longer than the ~12-frame
+/// history persistence, so the accumulated set genuinely covers the froxel
+/// rather than resampling the same handful of points.
+const JITTER_PERIOD: u32 = 16;
+
+/// This frame's sub-froxel sample offset, each component in [-0.5, 0.5).
+///
+/// Halton (2, 3, 5) rather than a random offset: the point of jitter is that
+/// consecutive frames sample DIFFERENT sub-froxel positions and that the set
+/// averages to the froxel centre. Random clumps, which reads as the haze
+/// breathing; a low-discrepancy sequence does not, and it keeps a frame
+/// reproducible, which matters for goldens.
+///
+/// Deliberately 3D. The XY grid is 16 px and shows as blocks exactly like the
+/// slices do, so jittering only Z would fix half the artifact.
+///
+/// The generator is the one already in `camera` (behind the disabled
+/// TAA camera jitter) rather than a second copy here. What deliberately is
+/// NOT shared is the space it is applied in: TAA offsets a projection matrix
+/// in NDC pixels, this offsets a sample point in froxel units. Same sequence,
+/// different meaning.
+fn jitter_for_frame(frame: u64) -> [f32; 3] {
+    let i = (frame % JITTER_PERIOD as u64) as u32 + 1;
+    [
+        crate::camera::halton(i, 2) - 0.5,
+        crate::camera::halton(i, 3) - 0.5,
+        crate::camera::halton(i, 5) - 0.5,
+    ]
+}
+
+/// `VolumetricParams` — 64-byte uniform describing the medium and the grid.
 ///
 ///   0  scattering_color : vec3<f32>   (the medium's albedo/tint)
 ///   12 density          : f32
@@ -43,6 +73,8 @@ use crate::{
 ///   32 grid_size        : vec2<u32>   (froxel columns in x, y)
 ///   40 z_near           : f32
 ///   44 z_far            : f32         (uniform slicing across [z_near, z_far])
+///   48 jitter           : vec3<f32>   (sub-froxel offset, zero when !temporal)
+///   60 history_blend    : f32         (0 = ignore history)
 ///
 /// The medium fields deliberately mirror `Atmosphere` one for one: the
 /// volumetric path renders the SAME air as the analytic path, only integrated
@@ -55,7 +87,32 @@ pub struct VolumetricParams {
 }
 
 impl VolumetricParams {
-    pub const BYTE_SIZE: usize = 48;
+    pub const BYTE_SIZE: usize = 64;
+
+    /// Fraction of the reprojected history kept per frame when temporal is on.
+    ///
+    /// 0.92 is ~12 frames of effective persistence against a 16-frame jitter
+    /// period, so the accumulated set covers most of the froxel and the grid
+    /// structure averages out rather than merely getting quieter.
+    ///
+    /// **This number is the ghosting risk, and it is deliberately not higher.**
+    /// `ssr_wgsl/temporal.wgsl` is a written-down post-mortem of exactly this
+    /// design: a bare reproject with no colour clamp at weight 0.85 (~7-frame
+    /// persistence) smeared reflections into multi-frame trails, and the fix
+    /// there was a 3x3 neighbourhood-AABB clamp. This pass is also an
+    /// unclamped reproject, at a *stickier* weight, so the same failure mode
+    /// is available to it.
+    ///
+    /// What makes that survivable here rather than merely optimistic: the
+    /// medium is low-frequency and has no reflection parallax (the air really
+    /// is where the reprojection says it is, which was precisely SSR's
+    /// problem), the jitter is sub-froxel so consecutive samples are the same
+    /// air, and the reprojection hard-rejects off-screen and out-of-volume
+    /// history. What can still trail is a fast occluder cutting a beam — a
+    /// dancer's arm. If it does, the levers in order are: lower this weight,
+    /// clamp against the froxel's own current value, then a full neighbourhood
+    /// clamp.
+    pub const HISTORY_BLEND: f32 = 0.92;
 
     pub fn new(gpu: &AwsmRendererWebGpu) -> Result<Self> {
         let gpu_buffer = gpu.create_buffer(
@@ -77,6 +134,8 @@ impl VolumetricParams {
             1,
             1,
             crate::render_passes::light_culling::buffers::FroxelDepthRange::default().z_near,
+            0,
+            false,
         );
         Ok(params)
     }
@@ -87,6 +146,8 @@ impl VolumetricParams {
         grid_x: u32,
         grid_y: u32,
         z_near: f32,
+        frame: u64,
+        history_valid: bool,
     ) {
         let d = &mut self.raw_data;
         d[0..4].copy_from_slice(&atmosphere.color[0].to_ne_bytes());
@@ -117,10 +178,29 @@ impl VolumetricParams {
         let z_far = atmosphere.volumetric_distance.max(z_near * 2.0);
         d[40..44].copy_from_slice(&z_near.to_ne_bytes());
         d[44..48].copy_from_slice(&z_far.to_ne_bytes());
+
+        // Jitter + history blend. Both are zero unless temporal is on, which
+        // makes the non-temporal variant bit-identical to what it rendered
+        // before this feature existed — the froxel centre, no history.
+        let (jitter, blend) = if atmosphere.volumetric_temporal {
+            let j = jitter_for_frame(frame);
+            // `history_valid` is false on the first frame after an enable or a
+            // resize, when the history volume holds nothing. Blending against
+            // a cleared volume would fade the medium in over ~12 frames, which
+            // reads as the haze arriving late.
+            (j, if history_valid { Self::HISTORY_BLEND } else { 0.0 })
+        } else {
+            ([0.0; 3], 0.0)
+        };
+        d[48..52].copy_from_slice(&jitter[0].to_ne_bytes());
+        d[52..56].copy_from_slice(&jitter[1].to_ne_bytes());
+        d[56..60].copy_from_slice(&jitter[2].to_ne_bytes());
+        d[60..64].copy_from_slice(&blend.to_ne_bytes());
     }
 
-    /// Packs + uploads, skipping the GPU write when nothing moved — same house
-    /// standard as `BloomParams`.
+    /// Packs + uploads. Unlike the other params buffers this one CANNOT skip an
+    /// unchanged write while temporal is on — the jitter moves every frame by
+    /// design, so "nothing moved" is only ever true with temporal off.
     pub fn write(
         &mut self,
         gpu: &AwsmRendererWebGpu,
@@ -128,9 +208,11 @@ impl VolumetricParams {
         grid_x: u32,
         grid_y: u32,
         z_near: f32,
+        frame: u64,
+        history_valid: bool,
     ) -> Result<()> {
         let prev = self.raw_data;
-        self.pack(atmosphere, grid_x, grid_y, z_near);
+        self.pack(atmosphere, grid_x, grid_y, z_near, frame, history_valid);
         if self.raw_data == prev {
             return Ok(());
         }
@@ -150,34 +232,62 @@ pub struct VolumetricsRenderPass {
     pub pipelines: VolumetricsPipelines,
     pub texture: VolumetricsTexture,
     pub params: VolumetricParams,
+    /// Structural — must match what the pipelines and the bind-group layout
+    /// were built for. `set_post_processing` reconstructs the whole pass when
+    /// the config flag disagrees, exactly as SSR does for its own axes.
+    pub temporal: bool,
+    /// Frames rendered since the last (re)allocation. Drives the jitter phase,
+    /// and its zero value is what marks the history volume as holding nothing.
+    frame: u64,
 }
 
 impl VolumetricsRenderPass {
     pub async fn new(ctx: &mut RenderPassInitContext<'_>) -> Result<Self> {
-        let bind_groups = VolumetricsBindGroups::new(ctx).await?;
+        let temporal = ctx.post_processing.atmosphere.volumetric_temporal;
+        let bind_groups = VolumetricsBindGroups::new(ctx, temporal).await?;
         let reverse_z = ctx.features.reverse_z;
-        let pipelines = VolumetricsPipelines::new(ctx, &bind_groups, reverse_z).await?;
+        let pipelines = VolumetricsPipelines::new(ctx, &bind_groups, reverse_z, temporal).await?;
         // Tiny initial allocation; the per-frame resize hook grows it to the
         // live viewport before the first dispatch (mirrors bloom).
-        let texture = VolumetricsTexture::new(ctx.gpu, 1, 1)?;
+        let texture = VolumetricsTexture::new(ctx.gpu, 1, 1, temporal)?;
         let params = VolumetricParams::new(ctx.gpu)?;
         Ok(Self {
             bind_groups,
             pipelines,
             texture,
             params,
+            temporal,
+            frame: 0,
         })
     }
 
     /// Re-allocates the volume to match the viewport. `true` ⇒ new textures,
     /// so the caller marks dependent bind groups dirty.
+    ///
+    /// A reallocation also RESETS the frame counter, which invalidates the
+    /// history: the new volume is uninitialised, and blending a resized frame
+    /// against it would pull garbage in for a dozen frames.
     pub fn ensure_size(
         &mut self,
         gpu: &AwsmRendererWebGpu,
         view_width: u32,
         view_height: u32,
     ) -> Result<bool> {
-        Ok(self.texture.ensure_size(gpu, view_width, view_height)?)
+        let resized = self
+            .texture
+            .ensure_size(gpu, view_width, view_height, self.temporal)?;
+        if resized {
+            self.frame = 0;
+        }
+        Ok(resized)
+    }
+
+    /// Advances the jitter phase and reports whether the history volume holds
+    /// a usable previous frame. Call once per frame, before `params.write`.
+    pub fn begin_frame(&mut self) -> (u64, bool) {
+        let frame = self.frame;
+        self.frame = self.frame.saturating_add(1);
+        (frame, self.temporal && frame > 0)
     }
 
     /// Injects then integrates the volume for this frame.
@@ -215,6 +325,23 @@ impl VolumetricsRenderPass {
         compute_pass.dispatch_workgroups(gx.div_ceil(8), Some(gy.div_ceil(8)), Some(1));
 
         compute_pass.end();
+
+        // Temporal: hand this frame's scatter volume to the next one. Must be
+        // AFTER `compute_pass.end()` — a copy is not a compute command and
+        // cannot be encoded inside the pass.
+        if let Some(history) = self.texture.history.as_ref() {
+            use awsm_renderer_core::command::copy_texture::TexelCopyTextureInfo;
+            ctx.command_encoder.copy_texture_to_texture(
+                &TexelCopyTextureInfo::new(&self.texture.scatter).into(),
+                &TexelCopyTextureInfo::new(history).into(),
+                &awsm_renderer_core::texture::Extent3d::new(
+                    gx,
+                    Some(gy),
+                    Some(FROXEL_SLICE_COUNT),
+                )
+                .into(),
+            )?;
+        }
         Ok(())
     }
 }

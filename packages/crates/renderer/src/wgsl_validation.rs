@@ -2354,13 +2354,20 @@ fn volumetrics_shaders_validate() {
 
     for stage in [VolumetricsStage::Inject, VolumetricsStage::Integrate] {
         for reverse_z in [false, true] {
-            let label = format!("volumetrics stage={stage:?} reverse_z={reverse_z}");
-            let key = ShaderCacheKeyVolumetrics { stage, reverse_z };
+            for temporal in [false, true] {
+            let label =
+                format!("volumetrics stage={stage:?} reverse_z={reverse_z} temporal={temporal}");
+            let key = ShaderCacheKeyVolumetrics {
+                stage,
+                reverse_z,
+                temporal,
+            };
             let src = ShaderTemplateVolumetrics::try_from(&key)
                 .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
                 .into_source()
                 .unwrap_or_else(|e| panic!("{label}: template render failed: {e:?}"));
             naga_validate(&src, &label);
+            }
         }
     }
 }
@@ -2380,6 +2387,7 @@ fn volumetrics_inject_uses_the_shared_froxel_walk() {
     let key = ShaderCacheKeyVolumetrics {
         stage: VolumetricsStage::Inject,
         reverse_z: true,
+        temporal: false,
     };
     let src = ShaderTemplateVolumetrics::try_from(&key)
         .unwrap()
@@ -2422,6 +2430,7 @@ fn volumetrics_inject_adds_ambient_inscatter() {
     let key = ShaderCacheKeyVolumetrics {
         stage: VolumetricsStage::Inject,
         reverse_z: true,
+        temporal: false,
     };
     let src = ShaderTemplateVolumetrics::try_from(&key)
         .unwrap()
@@ -2436,4 +2445,116 @@ fn volumetrics_inject_adds_ambient_inscatter() {
          original shape — drops the ambient in-scatter entirely and makes the \
          volumetric mode disagree with the analytic one on the same medium."
     );
+}
+
+/// The MEDIUM must be sampled at the froxel's fixed centre, never at the
+/// jittered point — on every variant.
+///
+/// This is a regression pin for a self-inflicted whole-frame flicker. The
+/// first temporal implementation evaluated density at the jittered sample
+/// point, and because the alpha channel is deliberately NOT accumulated across
+/// frames, every froxel's extinction — and therefore every pixel's
+/// transmittance — changed on every frame. It reads as the whole image
+/// pulsing, and it is most obvious exactly where the image is brightest.
+///
+/// Lighting at the jittered point, medium at the centre. Both halves asserted,
+/// because swapping them back compiles and looks plausible in a screenshot.
+#[test]
+fn volumetrics_samples_medium_at_the_froxel_centre() {
+    use crate::render_passes::volumetrics::shader::cache_key::{
+        ShaderCacheKeyVolumetrics, VolumetricsStage,
+    };
+    use crate::render_passes::volumetrics::shader::template::ShaderTemplateVolumetrics;
+
+    for temporal in [false, true] {
+        let key = ShaderCacheKeyVolumetrics {
+            stage: VolumetricsStage::Inject,
+            reverse_z: true,
+            temporal,
+        };
+        let code = strip_wgsl_comments(
+            &ShaderTemplateVolumetrics::try_from(&key)
+                .unwrap()
+                .into_source()
+                .unwrap(),
+        );
+
+        assert!(
+            code.contains("froxel_medium_density(froxel_center_world(gid.xy, gid.z).y)"),
+            "temporal={temporal}: density must be evaluated at the froxel \
+             CENTRE. Sampling it at the jittered point flickers the extinction \
+             every frame, because alpha is not temporally accumulated."
+        );
+        assert!(
+            code.contains("froxel_sample_world(gid.xy, gid.z)"),
+            "temporal={temporal}: the LIGHTING must be evaluated at the \
+             jittered sample point — that is what the jitter is for."
+        );
+    }
+}
+
+/// `temporal` is a STRUCTURAL axis, and this pins both halves of that claim.
+///
+/// The temporal variant must carry the reprojection and the history sampler;
+/// the non-temporal one must carry NEITHER — not a sampler it never uses, not
+/// a dead reprojection branch. The sampler is the load-bearing half: it sits
+/// in group 0's bind-group LAYOUT, so if it leaked into the non-temporal
+/// variant the two would share a pipeline layout and the axis would stop being
+/// structural at all.
+#[test]
+fn volumetrics_temporal_is_structural() {
+    use crate::render_passes::volumetrics::shader::cache_key::{
+        ShaderCacheKeyVolumetrics, VolumetricsStage,
+    };
+    use crate::render_passes::volumetrics::shader::template::ShaderTemplateVolumetrics;
+
+    for temporal in [false, true] {
+        let key = ShaderCacheKeyVolumetrics {
+            stage: VolumetricsStage::Inject,
+            reverse_z: true,
+            temporal,
+        };
+        let code = strip_wgsl_comments(
+            &ShaderTemplateVolumetrics::try_from(&key)
+                .unwrap()
+                .into_source()
+                .unwrap(),
+        );
+
+        // Note `prev_view_projection` alone is NOT a valid probe: it is a
+        // FIELD on the shared `CameraRaw`, declared in every variant. What
+        // must be temporal-only is its USE.
+        for needle in [
+            "history_sampler",
+            "reproject_history(",
+            "camera_raw.prev_view_projection *",
+        ] {
+            assert_eq!(
+                code.contains(needle),
+                temporal,
+                "temporal={temporal}: `{needle}` must be present iff temporal"
+            );
+        }
+    }
+
+    // INTEGRATE marches an already-injected volume. It must not grow a history
+    // read on either variant — the accumulation happens once, in inject, or it
+    // is applied twice.
+    for temporal in [false, true] {
+        let key = ShaderCacheKeyVolumetrics {
+            stage: VolumetricsStage::Integrate,
+            reverse_z: true,
+            temporal,
+        };
+        let code = strip_wgsl_comments(
+            &ShaderTemplateVolumetrics::try_from(&key)
+                .unwrap()
+                .into_source()
+                .unwrap(),
+        );
+        assert!(
+            !code.contains("reproject_history("),
+            "temporal={temporal}: integrate must never reproject"
+        );
+    }
 }

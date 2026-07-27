@@ -57,15 +57,30 @@ struct VolumetricParamsRaw {
     // analytic medium.
     z_near: f32,
     z_far: f32,
+    // Per-frame sub-froxel sample offset, in froxel units, each component in
+    // [-0.5, 0.5). Zero when temporal is off — one froxel, one centre sample.
+    jitter: vec3<f32>,
+    // Fraction of the REPROJECTED history kept. 0 disables the blend outright,
+    // which is what the first frame after an enable/resize uses (there is no
+    // history yet, and blending against a cleared volume would fade the medium
+    // in over ~20 frames).
+    history_blend: f32,
 };
 
 // ── group(0) — volume + params ───────────────────────────────────────────────
 @group(0) @binding(0) var<uniform> camera_raw: CameraRaw;
 @group(0) @binding(1) var<uniform> volumetric_params: VolumetricParamsRaw;
-// Read side. The inject stage never samples it (it has nothing to read yet);
-// the layout is shared with integrate, which does.
+// Read side. `integrate` samples the scatter volume here. `inject` binds
+// either a 1×1×1 dummy (no temporal) or LAST frame's scatter volume, which is
+// a different texture from the one it writes — the two-usages-in-one-scope
+// rule is per subresource and keys off what the bind group declares.
 @group(0) @binding(2) var src_volume: texture_3d<f32>;
 @group(0) @binding(3) var dst_volume: texture_storage_3d<rgba16float, write>;
+{% if temporal %}
+// Trilinear. Reprojection lands between froxels by construction — the whole
+// point is that this frame's jittered samples fall where last frame's did not.
+@group(0) @binding(4) var history_sampler: sampler;
+{% endif %}
 
 // ── group(1) — lights (mirrors material_prep / material_opaque) ──────────────
 @group(1) @binding(0) var<uniform> lights_info: LightsInfoPacked;

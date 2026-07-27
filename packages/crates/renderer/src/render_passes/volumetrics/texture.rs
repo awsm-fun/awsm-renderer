@@ -43,7 +43,7 @@ pub const FROXEL_SLICE_COUNT: u32 = 32;
 
 /// Owns the scattering + integrated volumes and the views both stages bind.
 pub struct VolumetricsTexture {
-    scatter: web_sys::GpuTexture,
+    pub scatter: web_sys::GpuTexture,
     /// Storage-write target for `inject`.
     pub scatter_storage_view: web_sys::GpuTextureView,
     /// Sampled source for `integrate`.
@@ -53,24 +53,49 @@ pub struct VolumetricsTexture {
     pub integrated_storage_view: web_sys::GpuTextureView,
     /// Sampled source for the effects pass.
     pub integrated_sample_view: web_sys::GpuTextureView,
+    /// PREVIOUS frame's scatter volume — `inject`'s history source when
+    /// temporal is on, `None` otherwise (it costs a full volume).
+    ///
+    /// A copy at the end of the frame rather than a ping-pong. Ping-ponging
+    /// would save the copy but needs two inject AND two integrate bind groups
+    /// alternating on frame parity, which is a whole class of off-by-one-frame
+    /// bugs for ~2 MB of copy at 1080p — well under a millisecond of bandwidth
+    /// on any GPU that can afford the pass in the first place.
+    pub history: Option<web_sys::GpuTexture>,
+    pub history_sample_view: Option<web_sys::GpuTextureView>,
     pub width: u32,
     pub height: u32,
+    temporal: bool,
 }
 
 impl VolumetricsTexture {
-    /// Release both volumes. The pass's resize path calls this rather than
+    /// Release every volume. The pass's resize path calls this rather than
     /// waiting on JS GC — at 16 px froxels these are a few MB each.
     pub fn destroy(self) {
         self.scatter.destroy();
         self.integrated.destroy();
+        if let Some(history) = self.history {
+            history.destroy();
+        }
     }
 
-    pub fn new(gpu: &AwsmRendererWebGpu, view_width: u32, view_height: u32) -> Result<Self> {
+    pub fn new(
+        gpu: &AwsmRendererWebGpu,
+        view_width: u32,
+        view_height: u32,
+        temporal: bool,
+    ) -> Result<Self> {
         let (width, height) = Self::dims_for(view_width, view_height);
         let (scatter, scatter_storage_view, scatter_sample_view) =
             create_volume(gpu, "Volumetrics Scatter", width, height)?;
         let (integrated, integrated_storage_view, integrated_sample_view) =
             create_volume(gpu, "Volumetrics Integrated", width, height)?;
+        let (history, history_sample_view) = if temporal {
+            let (tex, _storage, sample) = create_volume(gpu, "Volumetrics History", width, height)?;
+            (Some(tex), Some(sample))
+        } else {
+            (None, None)
+        };
         Ok(Self {
             scatter,
             scatter_storage_view,
@@ -78,8 +103,11 @@ impl VolumetricsTexture {
             integrated,
             integrated_storage_view,
             integrated_sample_view,
+            history,
+            history_sample_view,
             width,
             height,
+            temporal,
         })
     }
 
@@ -104,12 +132,13 @@ impl VolumetricsTexture {
         gpu: &AwsmRendererWebGpu,
         view_width: u32,
         view_height: u32,
+        temporal: bool,
     ) -> Result<bool> {
         let (width, height) = Self::dims_for(view_width, view_height);
-        if self.width == width && self.height == height {
+        if self.width == width && self.height == height && self.temporal == temporal {
             return Ok(false);
         }
-        let old = std::mem::replace(self, Self::new(gpu, view_width, view_height)?);
+        let old = std::mem::replace(self, Self::new(gpu, view_width, view_height, temporal)?);
         old.destroy();
         Ok(true)
     }
@@ -130,9 +159,16 @@ fn create_volume(
         &TextureDescriptor::new(
             TextureFormat::Rgba16float,
             Extent3d::new(width, Some(height), Some(FROXEL_SLICE_COUNT)),
+            // COPY_SRC/DST are for the temporal path's end-of-frame
+            // scatter → history copy. Declared unconditionally: the flags cost
+            // nothing when unused, and making the usage set depend on
+            // `temporal` would mean the copy silently failing validation on
+            // exactly the frame the feature is switched on.
             TextureUsage::new()
                 .with_storage_binding()
-                .with_texture_binding(),
+                .with_texture_binding()
+                .with_copy_src()
+                .with_copy_dst(),
         )
         // WITHOUT this the texture is 2D (the descriptor's default) and every
         // 3D view of it is invalid — a mismatch nothing catches natively, since

@@ -36,6 +36,10 @@ mod buffer;
 mod store;
 
 pub use buffer::CameraBuffer;
+/// Internal: the shared Halton jitter generator (see `buffer::halton`).
+/// Crate-visible only — it is an implementation detail of the temporal
+/// features, not part of the renderer's public surface.
+pub(crate) use buffer::halton;
 pub use store::{CameraKey, CameraParams, CameraProjectionParams, Cameras};
 
 use awsm_renderer_core::error::AwsmCoreError;

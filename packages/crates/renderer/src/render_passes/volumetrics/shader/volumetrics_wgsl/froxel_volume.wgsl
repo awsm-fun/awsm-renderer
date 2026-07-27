@@ -38,14 +38,19 @@ fn froxel_center_pixel(xy: vec2<u32>) -> vec2<f32> {
     return (vec2<f32>(xy) + vec2<f32>(0.5)) * f32(FROXEL_TILE_PIXEL_SIZE);
 }
 
-// World-space position at the centre of froxel (xy, slice).
+// World-space position inside froxel (xy, slice), offset by `offset` froxel
+// units from the centre.
 //
 // Reconstructed through `inv_view_proj` from the pixel + a view depth, rather
 // than by stepping a ray: the froxel grid is defined in screen × view-depth
 // space, so going back through the same projection is what keeps the volume
 // registered with the pixels that will sample it.
-fn froxel_center_world(xy: vec2<u32>, slice: u32) -> vec3<f32> {
-    let pixel = froxel_center_pixel(xy);
+fn froxel_world_at(xy: vec2<u32>, slice: u32, offset: vec3<f32>) -> vec3<f32> {
+    // The offset is in FROXEL units, applied before the projection, so it is
+    // uniform in the grid's own space rather than in metres — a froxel two
+    // columns out at the screen edge is physically wider, and a world-space
+    // offset would under-sample it.
+    let pixel = froxel_center_pixel(xy) + offset.xy * f32(FROXEL_TILE_PIXEL_SIZE);
     let uv = pixel / vec2<f32>(f32(cull_params.viewport_w), f32(cull_params.viewport_h));
     let ndc_xy = vec2<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
 
@@ -53,7 +58,7 @@ fn froxel_center_world(xy: vec2<u32>, slice: u32) -> vec3<f32> {
     // slices are uniform — under the old exponential mapping this had to be
     // the geometric mean, since an arithmetic midpoint drifted toward the far
     // face and biased every froxel backwards.
-    let view_z = froxel_slice_view_z(f32(slice) + 0.5);
+    let view_z = froxel_slice_view_z(f32(slice) + 0.5 + offset.z);
 
     // Unproject: build a view-space ray through the pixel, scale it so its
     // forward component equals `view_z`, then take it to world space.
@@ -61,6 +66,16 @@ fn froxel_center_world(xy: vec2<u32>, slice: u32) -> vec3<f32> {
     let view_dir = normalize(view_h.xyz / view_h.w);
     let view_pos = view_dir * (view_z / max(-view_dir.z, 1e-4));
     return (camera_raw.inv_view * vec4<f32>(view_pos, 1.0)).xyz;
+}
+
+// The froxel's fixed CENTRE. Frame-invariant by construction.
+fn froxel_center_world(xy: vec2<u32>, slice: u32) -> vec3<f32> {
+    return froxel_world_at(xy, slice, vec3<f32>(0.0));
+}
+
+// This frame's jittered sample point — where the LIGHTING is evaluated.
+fn froxel_sample_world(xy: vec2<u32>, slice: u32) -> vec3<f32> {
+    return froxel_world_at(xy, slice, volumetric_params.jitter);
 }
 
 // Thickness of slice `slice` in view depth — the path length a ray spends in
@@ -87,3 +102,17 @@ fn henyey_greenstein(cos_theta: f32, g: f32) -> f32 {
     let denom = 1.0 + g2 - 2.0 * g * cos_theta;
     return (1.0 - g2) / (4.0 * 3.14159265 * max(denom, 1e-4) * sqrt(max(denom, 1e-4)));
 }
+
+// Effective emitting radius of a punctual light INSIDE the medium, in metres.
+//
+// Surfaces can treat a light as a true point because they are never inside
+// one. Froxels are — the stage's fixtures hang in the air the volume samples —
+// and `1/r^2` has no bound there. 0.5 m is roughly a real fixture housing, and
+// it is comfortably smaller than the ~3.6 m throw of the dance-off spots, so
+// the beams themselves are untouched: the rescale is exactly 1.0 everywhere
+// beyond this radius.
+const VOLUMETRIC_LIGHT_RADIUS: f32 = 0.5;
+
+// `Light.kind` tag for a directional light (see light_access_types.wgsl).
+// Directionals have no position, so the radius softening cannot apply to them.
+const LIGHT_KIND_DIRECTIONAL: u32 = 1u;

@@ -686,12 +686,18 @@ impl AwsmRenderer {
                 }
                 let (grid_x, grid_y) = (volumetrics.texture.width, volumetrics.texture.height);
                 let z_near = self.light_culling_buffers.froxel_depth().z_near;
+                // AFTER `ensure_size`, which resets the frame counter on a
+                // reallocation — that reset is what marks the brand-new,
+                // uninitialised history volume as unusable for this frame.
+                let (frame, history_valid) = volumetrics.begin_frame();
                 volumetrics.params.write(
                     &self.gpu,
                     &self.post_processing.atmosphere,
                     grid_x,
                     grid_y,
                     z_near,
+                    frame,
+                    history_valid,
                 )?;
             }
         }
