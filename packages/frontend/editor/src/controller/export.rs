@@ -485,33 +485,50 @@ pub async fn bake_player_bundle(
             // `two_channel` records that the shipped bytes really ARE the
             // packed normal encode (fallbacks/passthrough ship unpacked
             // source-derived bytes, so they must not set the shader flag).
-            let (encoding, bytes, two_channel) = match encode {
+            // `verbatim` records that the shipped bytes ARE the source bytes,
+            // byte for byte — the one condition under which the asset entry's
+            // `content_hash` (a hash of the SOURCE) still describes the file we
+            // emit. Tracked explicitly rather than inferred by comparing
+            // `encoding` against the source mime, because a lossless-WebP
+            // re-encode of a WebP source changes the bytes while leaving the
+            // encoding equal.
+            let (encoding, bytes, two_channel, verbatim) = match encode {
                 ArtifactEncode::Asset(TextureExport::Source) => {
-                    (texture_encoding_from_mime(mime), bytes, false)
+                    (texture_encoding_from_mime(mime), bytes, false, true)
                 }
                 ArtifactEncode::Asset(TextureExport::WebpLossless) => {
                     match encode_webp_lossless(&bytes, mime) {
-                        Some(webp) => (awsm_renderer_scene::TextureEncoding::Webp, webp, false),
+                        Some(webp) => (
+                            awsm_renderer_scene::TextureEncoding::Webp,
+                            webp,
+                            false,
+                            false,
+                        ),
                         None => {
                             tracing::warn!(
                                 "bundle texture {artifact_id}: lossless WebP encode failed — \
                                  shipping source {}",
                                 mime.ext()
                             );
-                            (texture_encoding_from_mime(mime), bytes, false)
+                            (texture_encoding_from_mime(mime), bytes, false, true)
                         }
                     }
                 }
                 ArtifactEncode::Asset(TextureExport::WebpLossy { quality }) => {
                     match encode_webp(&bytes, mime.as_str(), quality as f64).await {
-                        Some(webp) => (awsm_renderer_scene::TextureEncoding::Webp, webp, false),
+                        Some(webp) => (
+                            awsm_renderer_scene::TextureEncoding::Webp,
+                            webp,
+                            false,
+                            false,
+                        ),
                         None => {
                             tracing::warn!(
                                 "bundle texture {artifact_id}: lossy WebP encode failed — \
                                  shipping source {}",
                                 mime.ext()
                             );
-                            (texture_encoding_from_mime(mime), bytes, false)
+                            (texture_encoding_from_mime(mime), bytes, false, true)
                         }
                     }
                 }
@@ -532,7 +549,12 @@ pub async fn bake_player_bundle(
                     // profile — and UNPACKED (we can't re-swizzle a finished
                     // container), so the shader flag stays off.
                     if matches!(mime, ImageMime::Ktx2) {
-                        (awsm_renderer_scene::TextureEncoding::Ktx2, bytes, false)
+                        (
+                            awsm_renderer_scene::TextureEncoding::Ktx2,
+                            bytes,
+                            false,
+                            true,
+                        )
                     } else {
                         match decode_rgba(&bytes, mime) {
                             Some((mut rgba, w, h)) if w % 4 == 0 && h % 4 == 0 => {
@@ -587,7 +609,12 @@ pub async fn bake_player_bundle(
                                                 String::new()
                                             }
                                         );
-                                        (awsm_renderer_scene::TextureEncoding::Ktx2, ktx2, packed)
+                                        (
+                                            awsm_renderer_scene::TextureEncoding::Ktx2,
+                                            ktx2,
+                                            packed,
+                                            false,
+                                        )
                                     }
                                     Err(e) => {
                                         tracing::warn!(
@@ -599,10 +626,14 @@ pub async fn bake_player_bundle(
                                                 awsm_renderer_scene::TextureEncoding::Webp,
                                                 webp,
                                                 false,
+                                                false,
                                             ),
-                                            None => {
-                                                (texture_encoding_from_mime(mime), bytes, false)
-                                            }
+                                            None => (
+                                                texture_encoding_from_mime(mime),
+                                                bytes,
+                                                false,
+                                                true,
+                                            ),
                                         }
                                     }
                                 }
@@ -615,10 +646,13 @@ pub async fn bake_player_bundle(
                                      — lossless WebP instead of KTX2"
                                 );
                                 match encode_webp_lossless(&bytes, mime) {
-                                    Some(webp) => {
-                                        (awsm_renderer_scene::TextureEncoding::Webp, webp, false)
-                                    }
-                                    None => (texture_encoding_from_mime(mime), bytes, false),
+                                    Some(webp) => (
+                                        awsm_renderer_scene::TextureEncoding::Webp,
+                                        webp,
+                                        false,
+                                        false,
+                                    ),
+                                    None => (texture_encoding_from_mime(mime), bytes, false, true),
                                 }
                             }
                             None => {
@@ -627,7 +661,7 @@ pub async fn bake_player_bundle(
                                      source {}",
                                     mime.ext()
                                 );
-                                (texture_encoding_from_mime(mime), bytes, false)
+                                (texture_encoding_from_mime(mime), bytes, false, true)
                             }
                         }
                     }
@@ -641,6 +675,18 @@ pub async fn bake_player_bundle(
                 if let Some(entry) = scene.assets.entries.get_mut(&artifact_id) {
                     entry.texture_encoding = Some(encoding);
                     entry.texture_two_channel_normal = two_channel;
+                    // Re-encoded in place: the file we just pushed is
+                    // `<artifact_id>.<encoding.ext()>`, NOT the source bytes the
+                    // entry's `content_hash` was taken over (the project save
+                    // writes `assets/<hash>.<source-ext>`). Leaving the hash
+                    // makes the entry claim a digest for bytes it does not
+                    // describe — path and hash disagree by construction, and any
+                    // consumer that trusts the hash to locate or validate the
+                    // artifact is wrong about both. Same reasoning as the
+                    // variant branch below, which has always cleared it.
+                    if !verbatim {
+                        entry.content_hash = String::new();
+                    }
                 }
             } else {
                 // Mint the variant's baked asset-table entry: same source
