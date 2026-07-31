@@ -278,6 +278,7 @@ name = "awsm-renderer-core"
 version = "0.28.0"
 dependencies = [
  "anyhow",
+ "bcdec_rs",
  "binpack2d",
  "cfg-if",
  "exr",
@@ -819,6 +820,12 @@ checksum = "ba62675e8242a4c4e806d12f11d136e626e6c8361d6b829310732241652a178a"
 dependencies = [
  "serde",
 ]
+
+[[package]]
+name = "bcdec_rs"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f09c37bc0e9f0924b7dae9988265ef3c76c88538f41a3b06caf4bed07cee5226"
 
 [[package]]
 name = "bevy_mikktspace"
