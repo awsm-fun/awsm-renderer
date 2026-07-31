@@ -19,6 +19,47 @@ pub fn is_block_compressed(format: TextureFormat) -> bool {
     block_dims(format).is_some()
 }
 
+/// Whether the device behind `caps` can create textures of `format` — i.e.
+/// the format's compression family's feature is enabled on the device
+/// (uncompressed formats are always `true`). Pair with
+/// [`latest_texture_compression`](crate::renderer::latest_texture_compression):
+/// desktop GPUs have BC, mobile GPUs have ETC2/ASTC, and creating a texture
+/// in an unsupported family throws a `TypeError` at `createTexture`.
+pub fn compression_supported(
+    format: TextureFormat,
+    caps: crate::renderer::TextureCompressionSupport,
+) -> bool {
+    use TextureFormat as F;
+    match format {
+        F::Bc1RgbaUnorm
+        | F::Bc1RgbaUnormSrgb
+        | F::Bc2RgbaUnorm
+        | F::Bc2RgbaUnormSrgb
+        | F::Bc3RgbaUnorm
+        | F::Bc3RgbaUnormSrgb
+        | F::Bc4RUnorm
+        | F::Bc4RSnorm
+        | F::Bc5RgUnorm
+        | F::Bc5RgSnorm
+        | F::Bc6hRgbUfloat
+        | F::Bc6hRgbFloat
+        | F::Bc7RgbaUnorm
+        | F::Bc7RgbaUnormSrgb => caps.bc,
+        F::Etc2Rgb8unorm
+        | F::Etc2Rgb8unormSrgb
+        | F::Etc2Rgb8a1unorm
+        | F::Etc2Rgb8a1unormSrgb
+        | F::Etc2Rgba8unorm
+        | F::Etc2Rgba8unormSrgb
+        | F::EacR11unorm
+        | F::EacR11snorm
+        | F::EacRg11unorm
+        | F::EacRg11snorm => caps.etc2,
+        _ if is_block_compressed(format) => caps.astc,
+        _ => true,
+    }
+}
+
 /// `(block_width, block_height, bytes_per_block)` for block-compressed
 /// formats, `None` for uncompressed ones.
 pub fn block_dims(format: TextureFormat) -> Option<(u32, u32, u32)> {

@@ -53,3 +53,4 @@ serde-wasm-bindgen = {workspace = true, optional = true}
 half = {workspace = true, optional = true}
 image = {workspace = true, optional = true}
 ktx2 = {workspace = true, optional = true}
+bcdec_rs = "0.2"
