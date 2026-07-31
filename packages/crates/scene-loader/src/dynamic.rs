@@ -94,13 +94,24 @@ pub async fn register_custom_materials(
             }
         };
         let wgsl = String::from_utf8_lossy(&wgsl).into_owned();
-        // Optional 2nd alpha-only WGSL window (masked cutouts). Absent for
-        // opaque/blend materials and older bundles → no cutout (back-compat).
-        let alpha_wgsl = assets
-            .fetch(&format!("{folder}/material.alpha.wgsl"))
-            .await
-            .ok()
-            .map(|b| String::from_utf8_lossy(&b).into_owned());
+        // Optional 2nd alpha-only WGSL window (masked cutouts). Only a Mask
+        // material can consume it (the masked template is its sole reader),
+        // so probe only when the definition says Mask — for opaque/blend
+        // customs the fetch was a guaranteed 404 on every load. Absent on a
+        // Mask material (older bundles) → no cutout; the registration guard
+        // below downgrades it to Opaque.
+        let alpha_wgsl = if matches!(
+            alpha_mode(def.alpha_mode.clone()),
+            awsm_renderer_materials::MaterialAlphaMode::Mask { .. }
+        ) {
+            assets
+                .fetch(&format!("{folder}/material.alpha.wgsl"))
+                .await
+                .ok()
+                .map(|b| String::from_utf8_lossy(&b).into_owned())
+        } else {
+            None
+        };
         let reg = registration_from_definition(&cm.id, &def, wgsl, alpha_wgsl);
         match renderer.register_material(reg) {
             Ok(shader_id) => {
