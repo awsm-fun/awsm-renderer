@@ -1105,7 +1105,7 @@ pub async fn load_scene_for_player(
                 collect(inst);
             }
         }
-        for (_, variants) in collect_material_variants(&scene.nodes) {
+        for (_, _, variants) in collect_material_variants(&scene.nodes) {
             for v in variants {
                 collect(&v.instance);
             }
@@ -1131,26 +1131,46 @@ pub async fn load_scene_for_player(
             }
         }
     }
-    // The material palette (`NodeKind::material_variants`): build EVERY variant
-    // into a ready key exactly like the selected one, so the game can swap
-    // looks with `set_mesh_material` alone. Built in Phase 1 with everything
-    // else so pipelines compile in the same Phase-4 batch (no first-swap
-    // hitch). (The selected variant is built twice — once here, once as the
-    // node's starting material above; the texture cache dedupes the heavy
-    // work.)
+    // The material palette (`NodeKind::material_variants`): build every
+    // NON-selected variant into a ready key, so the game can swap looks with
+    // `set_mesh_material` alone. Built in Phase 1 with everything else so
+    // pipelines compile in the same Phase-4 batch (no first-swap hitch).
+    //
+    // The SELECTED variant reuses the node's Phase-1 key rather than being
+    // built again: `selected_material()` returns that same variant's
+    // instance, so the second build minted a byte-identical duplicate — for
+    // a scene whose nodes carry only their selected variant (the common
+    // export shape), that silently DOUBLED the renderer's material count.
+    // Reuse is also the honest semantics: the palette entry for the selected
+    // variant IS the material the mesh is currently wearing.
     let mut node_material_variants: HashMap<NodeId, Vec<LoadedMaterialVariant>> = HashMap::new();
-    for (id, variants) in collect_material_variants(&scene.nodes) {
+    let (mut palette_reused, mut palette_built) = (0usize, 0usize);
+    for (id, selected, variants) in collect_material_variants(&scene.nodes) {
         let mut entries = Vec::with_capacity(variants.len());
         for v in variants {
-            let key = resolve_material(
-                renderer,
-                cache,
-                Some(&v.instance),
-                placeholder,
-                assets,
-                &custom,
-            )
-            .await;
+            let reuse = if Some(v.id) == selected {
+                maps.node_materials.get(&id).copied()
+            } else {
+                None
+            };
+            let key = match reuse {
+                Some(key) => {
+                    palette_reused += 1;
+                    key
+                }
+                None => {
+                    palette_built += 1;
+                    resolve_material(
+                        renderer,
+                        cache,
+                        Some(&v.instance),
+                        placeholder,
+                        assets,
+                        &custom,
+                    )
+                    .await
+                }
+            };
             entries.push(LoadedMaterialVariant {
                 id: v.id,
                 name: v.name.clone(),
@@ -1158,6 +1178,12 @@ pub async fn load_scene_for_player(
             });
         }
         node_material_variants.insert(id, entries);
+    }
+    if palette_reused + palette_built > 0 {
+        tracing::info!(
+            "material palette: {palette_built} extra variant materials built, \
+             {palette_reused} selected variants reusing their node's material"
+        );
     }
     on_phase(LoadPhase::BuildingMaterials { done: total, total });
     // The custom-WGSL asset → shader-id table (Phase 0) feeds Uniform resolution.
@@ -1361,16 +1387,24 @@ fn collect_prefetch_paths(nodes: &[EditorNode], scene: &Scene, paths: &mut Vec<S
 /// nodes with empty palettes are skipped.
 fn collect_material_variants(
     nodes: &[EditorNode],
-) -> Vec<(NodeId, &Vec<awsm_renderer_scene::MaterialVariant>)> {
+) -> Vec<(
+    NodeId,
+    Option<awsm_renderer_scene::VariantId>,
+    &Vec<awsm_renderer_scene::MaterialVariant>,
+)> {
     let mut out = Vec::new();
     fn walk<'a>(
         nodes: &'a [EditorNode],
-        out: &mut Vec<(NodeId, &'a Vec<awsm_renderer_scene::MaterialVariant>)>,
+        out: &mut Vec<(
+            NodeId,
+            Option<awsm_renderer_scene::VariantId>,
+            &'a Vec<awsm_renderer_scene::MaterialVariant>,
+        )>,
     ) {
         for n in nodes {
             if let Some(variants) = n.kind.material_variants() {
                 if !variants.is_empty() {
-                    out.push((n.id, variants));
+                    out.push((n.id, n.kind.selected_variant_id(), variants));
                 }
             }
             walk(&n.children, out);
@@ -4147,6 +4181,83 @@ fn insert_placeholder_material(renderer: &mut AwsmRenderer) -> MaterialKey {
         &renderer.dynamic_materials,
         &renderer.extras_pool,
     )
+}
+
+#[cfg(test)]
+mod material_palette_tests {
+    //! The palette build's reuse rule — "the SELECTED variant's key is the
+    //! node's Phase-1 key, only non-selected variants build anew" — leans on
+    //! two structural facts pinned here: `collect_material_variants` reports
+    //! each node's selected id alongside its palette, and the instance behind
+    //! that id is the SAME instance `collect_renderables` hands Phase 1
+    //! (`selected_material()`). The GPU half (key identity in `LoadedScene`)
+    //! needs a live renderer and is covered by the browser harness.
+    use super::{collect_material_variants, collect_renderables};
+    use awsm_renderer_scene::{
+        AssetId, EditorNode, MaterialInstance, MaterialVariant, MeshRef, NodeId, NodeKind,
+        VariantId,
+    };
+
+    fn variant(name: &str) -> MaterialVariant {
+        let mut instance = MaterialInstance::default();
+        instance.inline.base_color = [0.5, 0.5, 0.5, 1.0];
+        MaterialVariant {
+            id: VariantId::new(),
+            name: name.to_string(),
+            instance,
+        }
+    }
+
+    fn mesh_node(variants: Vec<MaterialVariant>, selected: Option<VariantId>) -> EditorNode {
+        EditorNode {
+            id: NodeId::new(),
+            name: String::new(),
+            transform: Default::default(),
+            kind: NodeKind::Mesh {
+                mesh: MeshRef(AssetId::new()),
+                material_variants: variants,
+                selected_variant: selected,
+                shadow: Default::default(),
+                lod: Default::default(),
+            },
+            locked: false,
+            visible: true,
+            prefab: false,
+            children: vec![],
+        }
+    }
+
+    #[test]
+    fn selected_id_rides_along_and_names_the_phase_1_instance() {
+        let (a, b) = (variant("a"), variant("b"));
+        let selected = a.id;
+        let nodes = vec![mesh_node(vec![a, b], Some(selected))];
+
+        let collected = collect_material_variants(&nodes);
+        assert_eq!(collected.len(), 1);
+        let (id, got_selected, variants) = &collected[0];
+        assert_eq!(*id, nodes[0].id);
+        assert_eq!(*got_selected, Some(selected));
+        assert_eq!(variants.len(), 2);
+
+        // The instance behind the selected id is exactly what Phase 1 builds
+        // from — reusing its key for the palette entry swaps in an identical
+        // material, never a different one.
+        let renderables = collect_renderables(&nodes);
+        let phase_1_instance = renderables[0].1.expect("selected ⇒ a starting material");
+        let selected_instance = &variants.iter().find(|v| v.id == selected).unwrap().instance;
+        assert_eq!(phase_1_instance, selected_instance);
+    }
+
+    #[test]
+    fn unassigned_selection_reuses_nothing() {
+        // `selected_variant: None` renders the magenta sentinel; every palette
+        // entry must still build (none can claim the placeholder key).
+        let nodes = vec![mesh_node(vec![variant("a")], None)];
+        let collected = collect_material_variants(&nodes);
+        assert_eq!(collected[0].1, None);
+        assert!(collect_renderables(&nodes)[0].1.is_none());
+    }
 }
 
 #[cfg(test)]
