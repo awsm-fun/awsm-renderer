@@ -375,9 +375,20 @@ async fn run(control_origin: String) -> Result<(), String> {
 /// Serve one decoded request and reply with the matching `id`.
 async fn serve_one(id: u64, req: Request) {
     activity_begin();
-    let resp = dispatch(req).await;
+    let resp = dispatch(id, req).await;
     send_frame(WsClientMsg::Response { id, resp });
     activity_end().await;
+}
+
+/// Send a progress keep-alive for an in-flight request. The server treats its
+/// request timeout as an IDLE timeout, so ticking this per bake step keeps a
+/// legitimately long operation (player-bundle export: per-texture KTX2
+/// encodes + per-file uploads) alive past the fixed window. Best-effort.
+fn send_progress(id: u64, note: &str) {
+    send_frame(WsClientMsg::Progress {
+        id,
+        note: (!note.is_empty()).then(|| note.to_string()),
+    });
 }
 
 /// Follow the agent to the workspace it's editing: when "Follow agent" is on
@@ -399,8 +410,9 @@ fn follow_agent_mode(mode: Option<awsm_renderer_editor_protocol::EditorMode>) {
 }
 
 /// Interpret a request against the live controller. All editor mutation flows
-/// through `EditorController` (the "all via controller" rule).
-async fn dispatch(req: Request) -> Response {
+/// through `EditorController` (the "all via controller" rule). `id` is the
+/// link request id — long operations tick [`send_progress`] against it.
+async fn dispatch(id: u64, req: Request) -> Response {
     let ctrl = controller();
     match req {
         Request::Mode => Response::Mode(ctrl.mode.get()),
@@ -461,8 +473,12 @@ async fn dispatch(req: Request) -> Response {
             // Per-call overrides merge onto the persisted options for THIS
             // bake only (the project's bundle_options are not modified).
             let options = overrides.map(|patch| patch.apply(ctrl.scene.bundle_options.get()));
-            bundle_response(crate::controller::export::bake_player_bundle(&ctrl, options).await)
-                .await
+            let tick = move |note: &str| send_progress(id, note);
+            bundle_response(
+                id,
+                crate::controller::export::bake_player_bundle(&ctrl, options, &tick).await,
+            )
+            .await
         }
         Request::SaveProject => {
             // Same persisted form a directory Save writes: `project.toml` first
@@ -481,7 +497,7 @@ async fn dispatch(req: Request) -> Response {
                         .collect()
                 })
                 .map_err(|e| format!("{e}"));
-            bundle_response(files).await
+            bundle_response(id, files).await
         }
     }
 }
@@ -509,6 +525,7 @@ async fn glb_response(result: Result<Vec<u8>, String>) -> Response {
 /// multi-file, multi-MiB bundle can't blow the session (or the agent's token
 /// stream — this replaced an inline-base64 query result that did exactly that).
 async fn bundle_response(
+    request_id: u64,
     result: Result<Vec<awsm_renderer_editor_protocol::BundleFile>, String>,
 ) -> Response {
     let files = match result {
@@ -517,8 +534,15 @@ async fn bundle_response(
     };
     let id = uuid::Uuid::new_v4().to_string();
     let origin = ORIGIN.with(|o| o.get_cloned());
+    let total = files.len();
     let mut metas = Vec::with_capacity(files.len());
-    for f in files {
+    for (index, f) in files.into_iter().enumerate() {
+        // Keep the link's idle timeout armed while a big bundle uploads
+        // (hundreds of files, hundreds of MB on a heavy scene).
+        send_progress(
+            request_id,
+            &format!("uploading {} ({}/{total})", f.path, index + 1),
+        );
         let byte_len = f.bytes.len();
         // Percent-encode each segment so a path lands intact in the URL; the
         // server decodes and re-validates it before touching the filesystem.
@@ -528,7 +552,7 @@ async fn bundle_response(
             .map(|seg| String::from(js_sys::encode_uri_component(seg)))
             .collect::<Vec<_>>()
             .join("/");
-        if let Err(e) = upload_bytes(&origin, "bundle", &format!("{id}/{encoded}"), f.bytes).await {
+        if let Err(e) = upload_bundle_file(&origin, &format!("{id}/{encoded}"), f.bytes).await {
             return Response::Err(format!("bundle upload failed ({}): {e}", f.path));
         }
         metas.push(BundleFileMeta {
@@ -537,6 +561,55 @@ async fn bundle_response(
         });
     }
     Response::Bundle(BundleHandle { id, files: metas })
+}
+
+/// Files below this ride a plain POST — the sha256 + probe round-trip only
+/// pays for itself on bytes that are slow to re-send.
+const UPLOAD_CACHE_MIN_BYTES: usize = 64 * 1024;
+
+/// Upload one bundle file, using the server's content-addressed upload cache
+/// for anything sizable: probe with an EMPTY `?sha256=` POST first (the server
+/// copies a previous upload's bytes on a hit), fall back to the real POST on a
+/// 412 miss — which then populates the cache for the next export. Unchanged
+/// media (textures, glbs, the skybox) thus uploads ONCE per server lifetime.
+async fn upload_bundle_file(origin: &str, id_and_path: &str, bytes: Vec<u8>) -> Result<(), String> {
+    if bytes.len() < UPLOAD_CACHE_MIN_BYTES {
+        return upload_bytes(origin, "bundle", id_and_path, bytes).await;
+    }
+    let sha = {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(&bytes);
+        format!("{:x}", hasher.finalize())
+    };
+    let base = format!(
+        "{}/bundle/{id_and_path}?sha256={sha}",
+        http_base(origin, tls().get())
+    );
+    // Probe (empty body). 200 = server copied from cache; 412 = miss.
+    let probe = gloo_net::http::Request::post(&base)
+        .header("content-type", "application/octet-stream")
+        .send()
+        .await
+        .map_err(|e| format!("probe send: {e}"))?;
+    if probe.ok() {
+        return Ok(());
+    }
+    if probe.status() != 412 {
+        return Err(format!("cache probe returned HTTP {}", probe.status()));
+    }
+    let body = js_sys::Uint8Array::from(bytes.as_slice());
+    let resp = gloo_net::http::Request::post(&base)
+        .header("content-type", "application/octet-stream")
+        .body(body)
+        .map_err(|e| format!("build request: {e}"))?
+        .send()
+        .await
+        .map_err(|e| format!("send: {e}"))?;
+    if !resp.ok() {
+        return Err(format!("server returned HTTP {}", resp.status()));
+    }
+    Ok(())
 }
 
 /// Turn an optional `data:image/png;base64,…` URL into a [`Response::Png`] handle

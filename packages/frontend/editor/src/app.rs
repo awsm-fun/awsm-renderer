@@ -565,6 +565,9 @@ fn open_export_player_bundle() {
                                 "off" => TextureCompression::Off,
                                 _ => TextureCompression::Ktx2,
                             },
+                            // Not surfaced in this modal (yet) — carry the
+                            // persisted values through unchanged.
+                            ..controller().scene.bundle_options.get()
                         };
                         // Persist for next time (no-ops when unchanged); the
                         // bake below carries `options` directly.
@@ -606,6 +609,7 @@ fn export_player_bundle(options: awsm_renderer_editor_protocol::BundleOptions) {
                 let bundle = match crate::controller::export::bake_player_bundle(
                     &controller(),
                     Some(options),
+                    &|_| {},
                 )
                 .await
                 {

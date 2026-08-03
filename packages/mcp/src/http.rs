@@ -313,12 +313,38 @@ async fn glb_download(Path(id): Path<String>) -> impl IntoResponse {
     }
 }
 
+/// On-disk content-addressed cache of previously-uploaded bundle-file bytes,
+/// keyed by their sha256 hex. Lets a repeat export skip re-uploading unchanged
+/// media: the editor first POSTs an EMPTY body with `?sha256=<hex>`; a cache
+/// hit copies server-side (fast, loopback disk), a miss answers 412 and the
+/// editor re-POSTs the real bytes (which then populate the cache).
+fn upload_cache_path(sha256: &str) -> Option<PathBuf> {
+    // Strict hex validation — the hash becomes a filename.
+    if sha256.len() != 64 || !sha256.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let dir = std::env::temp_dir().join("awsm-renderer-scene-mcp-upload-cache");
+    Some(dir.join(sha256.to_ascii_lowercase()))
+}
+
+#[derive(serde::Deserialize, Default)]
+struct BundleUploadQuery {
+    /// sha256 hex of the file's bytes (see [`upload_cache_path`]).
+    sha256: Option<String>,
+}
+
 /// `POST /bundle/{id}/{*path}` — the editor uploads one baked bundle file here
 /// (off the control link), under its bundle-relative path. We write it into the
 /// bundle's temp directory and remember the id for LRU eviction.
+///
+/// With `?sha256=<hex>`: an EMPTY body is a cache probe — 200 when the bytes
+/// were copied from the upload cache, 412 (Precondition Failed) when absent
+/// (re-POST with the body); a non-empty body is written normally AND recorded
+/// in the cache for future probes.
 async fn bundle_upload(
     State(s): State<AppState>,
     Path((id, rel)): Path<(String, String)>,
+    axum::extract::Query(q): axum::extract::Query<BundleUploadQuery>,
     body: Bytes,
 ) -> StatusCode {
     let Some(path) = bundle_file_path(&id, &rel) else {
@@ -331,13 +357,45 @@ async fn bundle_upload(
             return StatusCode::INTERNAL_SERVER_ERROR;
         }
     }
+    let cache = q.sha256.as_deref().and_then(upload_cache_path);
+    if body.is_empty() && q.sha256.is_some() {
+        // Cache probe. (A legitimately empty file also lands here; copying a
+        // cached empty file and writing an empty one are equivalent, and a
+        // miss falls through to the re-POST which writes it plainly.)
+        let Some(cache) = cache else {
+            tracing::warn!("bundle upload: malformed sha256 for {rel}");
+            return StatusCode::BAD_REQUEST;
+        };
+        return match std::fs::copy(&cache, &path) {
+            Ok(n) => {
+                tracing::debug!("bundle {id}: {rel} ← upload cache ({n} bytes)");
+                track_bundle_for_eviction(&s, id);
+                StatusCode::OK
+            }
+            Err(_) => StatusCode::PRECONDITION_FAILED,
+        };
+    }
     if let Err(e) = std::fs::write(&path, &body) {
         tracing::warn!("bundle upload write failed ({}): {e}", path.display());
         return StatusCode::INTERNAL_SERVER_ERROR;
     }
+    // Populate the content cache (best-effort; never fails the upload). Trust
+    // the editor's hash — it's the same trusted loopback peer that sent the
+    // bytes, and a wrong hash only poisons its own future skip.
+    if let Some(cache) = cache {
+        if let Some(dir) = cache.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(&cache, &body);
+    }
     tracing::debug!("bundle {id}: {} bytes → {}", body.len(), path.display());
-    // Track for eviction on the bundle's FIRST file; drop the oldest beyond the
-    // cap (whole directories — a bundle is one unit).
+    track_bundle_for_eviction(&s, id);
+    StatusCode::OK
+}
+
+/// Track a bundle id for LRU eviction on its FIRST file; drop the oldest
+/// beyond the cap (whole directories — a bundle is one unit).
+fn track_bundle_for_eviction(s: &AppState, id: String) {
     let mut q = s.bundles.lock().unwrap();
     if !q.contains(&id) {
         q.push_back(id);
@@ -347,7 +405,6 @@ async fn bundle_upload(
             }
         }
     }
-    StatusCode::OK
 }
 
 /// `GET /bundle/{id}/{*path}` — serve a previously-uploaded bundle file (for

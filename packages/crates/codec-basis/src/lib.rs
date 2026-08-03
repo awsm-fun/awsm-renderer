@@ -28,6 +28,13 @@ use web_sys::{MessageEvent, Worker};
 /// Must match `PROTOCOL_VERSION` in `web/workers/basis-worker.js`.
 pub const PROTOCOL_VERSION: u32 = 1;
 
+/// The vendored WASM encoder's hard cap on source texels per encode
+/// (`BASISU_ENCODER_MAX_SOURCE_IMAGE_PIXELS` in basis_universal's
+/// `basis_wrappers.cpp` — 4096×3072). `BasisEncoder.encode` returns 0 bytes
+/// the moment `width * height` exceeds it, so callers must downscale first;
+/// a 4096×4096 source fails instantly without this.
+pub const MAX_ENCODE_SOURCE_PIXELS: u32 = 12_582_912;
+
 /// Transcode target formats, matching the worker's target-name table
 /// (which resolves them against the transcoder's embind enum at runtime).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

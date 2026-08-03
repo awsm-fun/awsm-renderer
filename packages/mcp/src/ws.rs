@@ -43,6 +43,9 @@ pub async fn handle_socket(socket: WebSocket, link: EditorLink) {
         match msg {
             Message::Text(txt) => match serde_json::from_str::<WsClientMsg>(txt.as_str()) {
                 Ok(WsClientMsg::Response { id, resp }) => conn.complete(id, resp),
+                Ok(WsClientMsg::Progress { id, note }) => {
+                    conn.note_progress(id, note.as_deref());
+                }
                 Ok(WsClientMsg::Event(ev)) => {
                     // Visibility pushes update the per-connection state that
                     // drives fast-fail timeouts + the `ping` report (and are
