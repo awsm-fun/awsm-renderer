@@ -6,6 +6,36 @@ skybox = "built_in_default"
 specular = "built_in_default"
 irradiance = "built_in_default"
 
+[environment.probe]
+enabled = false
+center = [
+    0.0,
+    0.0,
+    0.0,
+]
+half_extents = [
+    10.0,
+    10.0,
+    10.0,
+]
+
+[environment.rotation]
+skybox = [
+    0.0,
+    0.0,
+    0.0,
+]
+specular = [
+    0.0,
+    0.0,
+    0.0,
+]
+irradiance = [
+    0.0,
+    0.0,
+    0.0,
+]
+
 [shadows]
 sscs_enabled = false
 sscs_step_count = 16
@@ -38,10 +68,42 @@ max_distance = 100.0
 thickness = 1.0
 max_steps = 96
 spread_cutoff = 0.6000000238418579
-edge_fade = 0.10000000149011612
+edge_fade = 0.03999999910593033
 resolution_scale = 0.5
 temporal = false
 temporal_weight = 0.8999999761581421
+bvh_reflections = false
+
+[post_process.atmosphere]
+mode = "off"
+color = [
+    0.5,
+    0.6000000238418579,
+    0.699999988079071,
+]
+density = 0.019999999552965164
+base_height = 0.0
+height_falloff = 0.0
+scattering_anisotropy = 0.30000001192092896
+volumetric_distance = 80.0
+volumetric_temporal = false
+
+[assets.a9dd0c60-644d-4b07-95a6-ac56eb1a12ff]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = "35d278c7b7b0b9e22881b2c435e41ce8659f230c776ef8780b4a5087abbefaa1"
+
+[assets.a9dd0c60-644d-4b07-95a6-ac56eb1a12ff.source.texture.raster]
+display_name = "Cesium_Man-effect · base color.jpg"
+color_kind = "albedo"
+
+[assets.23b6598b-aed1-4abd-90de-7d049977c19a]
+gltf_material_asset_ids = ["e6dadc24-382a-4546-a0b5-8eb60fc20b26"]
+gltf_image_asset_ids = ["a9dd0c60-644d-4b07-95a6-ac56eb1a12ff"]
+content_hash = ""
+
+[assets.23b6598b-aed1-4abd-90de-7d049977c19a.source]
+filename = "CesiumMan.gltf"
 
 [assets.00000000-0000-4000-8000-000000000001]
 gltf_material_asset_ids = []
@@ -74,23 +136,6 @@ segments_z = 1
 [assets.00000000-0000-4000-8000-000000000001.source.mesh.overrides.normals]
 
 [assets.00000000-0000-4000-8000-000000000001.source.mesh.overrides.uvs]
-
-[assets.5e106405-4089-4a2f-bb8d-821ee0280c9a]
-gltf_material_asset_ids = ["294c160d-565c-43de-8599-77ca7837f6c7"]
-gltf_image_asset_ids = ["aed58a46-5264-4f85-b769-117b8a7c9a51"]
-content_hash = ""
-
-[assets.5e106405-4089-4a2f-bb8d-821ee0280c9a.source]
-filename = "CesiumMan.gltf"
-
-[assets.aed58a46-5264-4f85-b769-117b8a7c9a51]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = "35d278c7b7b0b9e22881b2c435e41ce8659f230c776ef8780b4a5087abbefaa1"
-
-[assets.aed58a46-5264-4f85-b769-117b8a7c9a51.source.texture.raster]
-display_name = "Cesium_Man-effect · base color.jpg"
-color_kind = "albedo"
 
 [[editor_materials]]
 id = "00000000-0000-4000-8000-000000000002"
@@ -141,6 +186,7 @@ emissive = [
 ]
 normal_scale = 1.0
 occlusion_strength = 1.0
+ssr_mask = 1.0
 double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
@@ -149,7 +195,7 @@ shading = "pbr"
 [editor_materials.builtin.extensions]
 
 [[editor_materials]]
-id = "294c160d-565c-43de-8599-77ca7837f6c7"
+id = "e6dadc24-382a-4546-a0b5-8eb60fc20b26"
 name = "Cesium_Man-effect"
 wgsl = """
 // Opaque material. Inputs arrive as fields on `input` (declare them in Pass
@@ -197,13 +243,14 @@ emissive = [
 ]
 normal_scale = 1.0
 occlusion_strength = 1.0
+ssr_mask = 1.0
 double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
 shading = "pbr"
 
 [editor_materials.builtin.base_color_texture]
-asset = "aed58a46-5264-4f85-b769-117b8a7c9a51"
+asset = "a9dd0c60-644d-4b07-95a6-ac56eb1a12ff"
 
 [editor_materials.builtin.base_color_texture.sampler]
 wrap_u = "repeat"
@@ -216,10 +263,10 @@ mipmap_filter = "linear"
 
 [[custom_animations]]
 name = "CesiumMan"
-file = "assets/animations/animation-cesiumman-9e3931ff-bbe4-46cb-b263-d4d32715d454.toml"
+file = "assets/animations/animation-cesiumman-d0f66f99-355b-4f9b-8370-5b3b430e5e1b.toml"
 
 [[editor_animations]]
-id = "9e3931ff-bbe4-46cb-b263-d4d32715d454"
+id = "d0f66f99-355b-4f9b-8370-5b3b430e5e1b"
 name = "CesiumMan"
 duration = 1.9583333805203438
 loop_style = "loop"
@@ -285,7 +332,7 @@ times = [
 
 [editor_animations.tracks.target]
 target = "transform"
-node = "564bb7e4-f25d-459c-88db-b82d36697c06"
+node = "ca694ffc-e6b8-42d0-aa0f-41b8a8114525"
 prop = "translation"
 
 [[editor_animations.tracks.keys]]
@@ -1642,7 +1689,7 @@ times = [
 
 [editor_animations.tracks.target]
 target = "transform"
-node = "564bb7e4-f25d-459c-88db-b82d36697c06"
+node = "ca694ffc-e6b8-42d0-aa0f-41b8a8114525"
 prop = "rotation"
 
 [[editor_animations.tracks.keys]]
@@ -3143,7 +3190,7 @@ times = [
 
 [editor_animations.tracks.target]
 target = "transform"
-node = "564bb7e4-f25d-459c-88db-b82d36697c06"
+node = "ca694ffc-e6b8-42d0-aa0f-41b8a8114525"
 prop = "scale"
 
 [[editor_animations.tracks.keys]]
@@ -4500,7 +4547,7 @@ times = [
 
 [editor_animations.tracks.target]
 target = "transform"
-node = "619de8ec-cbf5-4497-9206-ebbffe54f3c1"
+node = "d8e447cf-0204-49ab-8e79-263105bb7895"
 prop = "translation"
 
 [[editor_animations.tracks.keys]]
@@ -5857,7 +5904,7 @@ times = [
 
 [editor_animations.tracks.target]
 target = "transform"
-node = "619de8ec-cbf5-4497-9206-ebbffe54f3c1"
+node = "d8e447cf-0204-49ab-8e79-263105bb7895"
 prop = "rotation"
 
 [[editor_animations.tracks.keys]]
@@ -7358,7 +7405,7 @@ times = [
 
 [editor_animations.tracks.target]
 target = "transform"
-node = "619de8ec-cbf5-4497-9206-ebbffe54f3c1"
+node = "d8e447cf-0204-49ab-8e79-263105bb7895"
 prop = "scale"
 
 [[editor_animations.tracks.keys]]
@@ -8715,7 +8762,7 @@ times = [
 
 [editor_animations.tracks.target]
 target = "transform"
-node = "f3817f3d-ee8e-4132-a216-0f0206182fbc"
+node = "a97b0e41-dc28-4675-ac57-3f6878232d95"
 prop = "translation"
 
 [[editor_animations.tracks.keys]]
@@ -10072,7 +10119,7 @@ times = [
 
 [editor_animations.tracks.target]
 target = "transform"
-node = "f3817f3d-ee8e-4132-a216-0f0206182fbc"
+node = "a97b0e41-dc28-4675-ac57-3f6878232d95"
 prop = "rotation"
 
 [[editor_animations.tracks.keys]]
@@ -11573,7 +11620,7 @@ times = [
 
 [editor_animations.tracks.target]
 target = "transform"
-node = "f3817f3d-ee8e-4132-a216-0f0206182fbc"
+node = "a97b0e41-dc28-4675-ac57-3f6878232d95"
 prop = "scale"
 
 [[editor_animations.tracks.keys]]
@@ -12930,7 +12977,7 @@ times = [
 
 [editor_animations.tracks.target]
 target = "transform"
-node = "bcffa81d-77bb-4f68-9d1a-b5834d2bbc87"
+node = "2765ed29-6dd5-4cd4-8637-2f780333044a"
 prop = "translation"
 
 [[editor_animations.tracks.keys]]
@@ -14287,7 +14334,7 @@ times = [
 
 [editor_animations.tracks.target]
 target = "transform"
-node = "bcffa81d-77bb-4f68-9d1a-b5834d2bbc87"
+node = "2765ed29-6dd5-4cd4-8637-2f780333044a"
 prop = "rotation"
 
 [[editor_animations.tracks.keys]]
@@ -15788,7 +15835,7 @@ times = [
 
 [editor_animations.tracks.target]
 target = "transform"
-node = "bcffa81d-77bb-4f68-9d1a-b5834d2bbc87"
+node = "2765ed29-6dd5-4cd4-8637-2f780333044a"
 prop = "scale"
 
 [[editor_animations.tracks.keys]]
@@ -17145,7 +17192,7 @@ times = [
 
 [editor_animations.tracks.target]
 target = "transform"
-node = "e1531d38-a140-4df7-9253-57c285b6f48d"
+node = "82c6a553-70c3-4b1b-8911-4ee2612264df"
 prop = "translation"
 
 [[editor_animations.tracks.keys]]
@@ -18502,7 +18549,7 @@ times = [
 
 [editor_animations.tracks.target]
 target = "transform"
-node = "e1531d38-a140-4df7-9253-57c285b6f48d"
+node = "82c6a553-70c3-4b1b-8911-4ee2612264df"
 prop = "rotation"
 
 [[editor_animations.tracks.keys]]
@@ -20003,7 +20050,7 @@ times = [
 
 [editor_animations.tracks.target]
 target = "transform"
-node = "e1531d38-a140-4df7-9253-57c285b6f48d"
+node = "82c6a553-70c3-4b1b-8911-4ee2612264df"
 prop = "scale"
 
 [[editor_animations.tracks.keys]]
@@ -21360,7 +21407,7 @@ times = [
 
 [editor_animations.tracks.target]
 target = "transform"
-node = "4d6ff1a6-4c43-4512-a05d-d2500391ea0c"
+node = "37cf984c-d2b6-40c0-a4d9-99406fee269a"
 prop = "translation"
 
 [[editor_animations.tracks.keys]]
@@ -22717,7 +22764,7 @@ times = [
 
 [editor_animations.tracks.target]
 target = "transform"
-node = "4d6ff1a6-4c43-4512-a05d-d2500391ea0c"
+node = "37cf984c-d2b6-40c0-a4d9-99406fee269a"
 prop = "rotation"
 
 [[editor_animations.tracks.keys]]
@@ -24218,7 +24265,7 @@ times = [
 
 [editor_animations.tracks.target]
 target = "transform"
-node = "4d6ff1a6-4c43-4512-a05d-d2500391ea0c"
+node = "37cf984c-d2b6-40c0-a4d9-99406fee269a"
 prop = "scale"
 
 [[editor_animations.tracks.keys]]
@@ -25575,7 +25622,7 @@ times = [
 
 [editor_animations.tracks.target]
 target = "transform"
-node = "2af91b61-526b-4785-adac-1ea38de9202f"
+node = "02ecad73-e71c-4a81-adc6-984475ec51e0"
 prop = "translation"
 
 [[editor_animations.tracks.keys]]
@@ -26932,7 +26979,7 @@ times = [
 
 [editor_animations.tracks.target]
 target = "transform"
-node = "2af91b61-526b-4785-adac-1ea38de9202f"
+node = "02ecad73-e71c-4a81-adc6-984475ec51e0"
 prop = "rotation"
 
 [[editor_animations.tracks.keys]]
@@ -28433,7 +28480,7 @@ times = [
 
 [editor_animations.tracks.target]
 target = "transform"
-node = "2af91b61-526b-4785-adac-1ea38de9202f"
+node = "02ecad73-e71c-4a81-adc6-984475ec51e0"
 prop = "scale"
 
 [[editor_animations.tracks.keys]]
@@ -29790,7 +29837,7 @@ times = [
 
 [editor_animations.tracks.target]
 target = "transform"
-node = "6d843f01-8f6d-47c7-b65b-f26d8e81fb17"
+node = "6a7b312a-00e3-413f-8c47-ec7806bca97d"
 prop = "translation"
 
 [[editor_animations.tracks.keys]]
@@ -31147,7 +31194,7 @@ times = [
 
 [editor_animations.tracks.target]
 target = "transform"
-node = "6d843f01-8f6d-47c7-b65b-f26d8e81fb17"
+node = "6a7b312a-00e3-413f-8c47-ec7806bca97d"
 prop = "rotation"
 
 [[editor_animations.tracks.keys]]
@@ -32648,7 +32695,7 @@ times = [
 
 [editor_animations.tracks.target]
 target = "transform"
-node = "6d843f01-8f6d-47c7-b65b-f26d8e81fb17"
+node = "6a7b312a-00e3-413f-8c47-ec7806bca97d"
 prop = "scale"
 
 [[editor_animations.tracks.keys]]
@@ -34005,7 +34052,7 @@ times = [
 
 [editor_animations.tracks.target]
 target = "transform"
-node = "8f1c7f6c-e42e-4933-bee4-984a8b15e2db"
+node = "a93ffda2-0b31-4208-b27a-74a18f884d5d"
 prop = "translation"
 
 [[editor_animations.tracks.keys]]
@@ -35362,7 +35409,7 @@ times = [
 
 [editor_animations.tracks.target]
 target = "transform"
-node = "8f1c7f6c-e42e-4933-bee4-984a8b15e2db"
+node = "a93ffda2-0b31-4208-b27a-74a18f884d5d"
 prop = "rotation"
 
 [[editor_animations.tracks.keys]]
@@ -36863,7 +36910,7 @@ times = [
 
 [editor_animations.tracks.target]
 target = "transform"
-node = "8f1c7f6c-e42e-4933-bee4-984a8b15e2db"
+node = "a93ffda2-0b31-4208-b27a-74a18f884d5d"
 prop = "scale"
 
 [[editor_animations.tracks.keys]]
@@ -38220,7 +38267,7 @@ times = [
 
 [editor_animations.tracks.target]
 target = "transform"
-node = "afceb0e8-e524-4780-afa9-ef5cedeb2c29"
+node = "08fea528-f561-4d77-872d-082d53b300b1"
 prop = "translation"
 
 [[editor_animations.tracks.keys]]
@@ -39577,7 +39624,7 @@ times = [
 
 [editor_animations.tracks.target]
 target = "transform"
-node = "afceb0e8-e524-4780-afa9-ef5cedeb2c29"
+node = "08fea528-f561-4d77-872d-082d53b300b1"
 prop = "rotation"
 
 [[editor_animations.tracks.keys]]
@@ -41078,7 +41125,7 @@ times = [
 
 [editor_animations.tracks.target]
 target = "transform"
-node = "afceb0e8-e524-4780-afa9-ef5cedeb2c29"
+node = "08fea528-f561-4d77-872d-082d53b300b1"
 prop = "scale"
 
 [[editor_animations.tracks.keys]]
@@ -42435,7 +42482,7 @@ times = [
 
 [editor_animations.tracks.target]
 target = "transform"
-node = "c12e0732-66ed-495a-b84b-954dd1e60f4e"
+node = "1ee1a10e-dad3-40ad-a37f-5930e4a56b38"
 prop = "translation"
 
 [[editor_animations.tracks.keys]]
@@ -43792,7 +43839,7 @@ times = [
 
 [editor_animations.tracks.target]
 target = "transform"
-node = "c12e0732-66ed-495a-b84b-954dd1e60f4e"
+node = "1ee1a10e-dad3-40ad-a37f-5930e4a56b38"
 prop = "rotation"
 
 [[editor_animations.tracks.keys]]
@@ -45293,7 +45340,7 @@ times = [
 
 [editor_animations.tracks.target]
 target = "transform"
-node = "c12e0732-66ed-495a-b84b-954dd1e60f4e"
+node = "1ee1a10e-dad3-40ad-a37f-5930e4a56b38"
 prop = "scale"
 
 [[editor_animations.tracks.keys]]
@@ -46650,7 +46697,7 @@ times = [
 
 [editor_animations.tracks.target]
 target = "transform"
-node = "40777160-0375-480c-a4c0-f0a82e9333dc"
+node = "4ac66ec5-328b-4e76-95c7-451d232306b4"
 prop = "translation"
 
 [[editor_animations.tracks.keys]]
@@ -48007,7 +48054,7 @@ times = [
 
 [editor_animations.tracks.target]
 target = "transform"
-node = "40777160-0375-480c-a4c0-f0a82e9333dc"
+node = "4ac66ec5-328b-4e76-95c7-451d232306b4"
 prop = "rotation"
 
 [[editor_animations.tracks.keys]]
@@ -49508,7 +49555,7 @@ times = [
 
 [editor_animations.tracks.target]
 target = "transform"
-node = "40777160-0375-480c-a4c0-f0a82e9333dc"
+node = "4ac66ec5-328b-4e76-95c7-451d232306b4"
 prop = "scale"
 
 [[editor_animations.tracks.keys]]
@@ -50865,7 +50912,7 @@ times = [
 
 [editor_animations.tracks.target]
 target = "transform"
-node = "16d73f29-0688-471b-be98-4555c8128a2d"
+node = "5266e566-2491-4931-bac4-b7ed4b38320c"
 prop = "translation"
 
 [[editor_animations.tracks.keys]]
@@ -52222,7 +52269,7 @@ times = [
 
 [editor_animations.tracks.target]
 target = "transform"
-node = "16d73f29-0688-471b-be98-4555c8128a2d"
+node = "5266e566-2491-4931-bac4-b7ed4b38320c"
 prop = "rotation"
 
 [[editor_animations.tracks.keys]]
@@ -53723,7 +53770,7 @@ times = [
 
 [editor_animations.tracks.target]
 target = "transform"
-node = "16d73f29-0688-471b-be98-4555c8128a2d"
+node = "5266e566-2491-4931-bac4-b7ed4b38320c"
 prop = "scale"
 
 [[editor_animations.tracks.keys]]
@@ -55080,7 +55127,7 @@ times = [
 
 [editor_animations.tracks.target]
 target = "transform"
-node = "13d2307c-b1d9-4499-95b9-ca34da772dff"
+node = "22ab72fc-b92e-45ba-afee-51ee7af9935a"
 prop = "translation"
 
 [[editor_animations.tracks.keys]]
@@ -56437,7 +56484,7 @@ times = [
 
 [editor_animations.tracks.target]
 target = "transform"
-node = "13d2307c-b1d9-4499-95b9-ca34da772dff"
+node = "22ab72fc-b92e-45ba-afee-51ee7af9935a"
 prop = "rotation"
 
 [[editor_animations.tracks.keys]]
@@ -57938,7 +57985,7 @@ times = [
 
 [editor_animations.tracks.target]
 target = "transform"
-node = "13d2307c-b1d9-4499-95b9-ca34da772dff"
+node = "22ab72fc-b92e-45ba-afee-51ee7af9935a"
 prop = "scale"
 
 [[editor_animations.tracks.keys]]
@@ -59295,7 +59342,7 @@ times = [
 
 [editor_animations.tracks.target]
 target = "transform"
-node = "a9781b70-21f9-43d5-a03f-37cf8d83bd2c"
+node = "fd33df05-0626-4f10-a6bd-ba891d28b23a"
 prop = "translation"
 
 [[editor_animations.tracks.keys]]
@@ -60652,7 +60699,7 @@ times = [
 
 [editor_animations.tracks.target]
 target = "transform"
-node = "a9781b70-21f9-43d5-a03f-37cf8d83bd2c"
+node = "fd33df05-0626-4f10-a6bd-ba891d28b23a"
 prop = "rotation"
 
 [[editor_animations.tracks.keys]]
@@ -62153,7 +62200,7 @@ times = [
 
 [editor_animations.tracks.target]
 target = "transform"
-node = "a9781b70-21f9-43d5-a03f-37cf8d83bd2c"
+node = "fd33df05-0626-4f10-a6bd-ba891d28b23a"
 prop = "scale"
 
 [[editor_animations.tracks.keys]]
@@ -63510,7 +63557,7 @@ times = [
 
 [editor_animations.tracks.target]
 target = "transform"
-node = "32561a60-83eb-430b-9b31-dcda94f939c7"
+node = "06adc796-ebc4-47c8-9dd8-4df501f69c01"
 prop = "translation"
 
 [[editor_animations.tracks.keys]]
@@ -64867,7 +64914,7 @@ times = [
 
 [editor_animations.tracks.target]
 target = "transform"
-node = "32561a60-83eb-430b-9b31-dcda94f939c7"
+node = "06adc796-ebc4-47c8-9dd8-4df501f69c01"
 prop = "rotation"
 
 [[editor_animations.tracks.keys]]
@@ -66368,7 +66415,7 @@ times = [
 
 [editor_animations.tracks.target]
 target = "transform"
-node = "32561a60-83eb-430b-9b31-dcda94f939c7"
+node = "06adc796-ebc4-47c8-9dd8-4df501f69c01"
 prop = "scale"
 
 [[editor_animations.tracks.keys]]
@@ -67725,7 +67772,7 @@ times = [
 
 [editor_animations.tracks.target]
 target = "transform"
-node = "98ad1ca5-014f-48d8-a992-24261947e82e"
+node = "c32132e6-1a8e-4f55-9105-6302d20d7de8"
 prop = "translation"
 
 [[editor_animations.tracks.keys]]
@@ -69082,7 +69129,7 @@ times = [
 
 [editor_animations.tracks.target]
 target = "transform"
-node = "98ad1ca5-014f-48d8-a992-24261947e82e"
+node = "c32132e6-1a8e-4f55-9105-6302d20d7de8"
 prop = "rotation"
 
 [[editor_animations.tracks.keys]]
@@ -70583,7 +70630,7 @@ times = [
 
 [editor_animations.tracks.target]
 target = "transform"
-node = "98ad1ca5-014f-48d8-a992-24261947e82e"
+node = "c32132e6-1a8e-4f55-9105-6302d20d7de8"
 prop = "scale"
 
 [[editor_animations.tracks.keys]]
@@ -71940,7 +71987,7 @@ times = [
 
 [editor_animations.tracks.target]
 target = "transform"
-node = "096b60f0-1492-471e-acb5-7e667f2b60e0"
+node = "311990db-d7ce-4441-89ea-9d46d15ac22f"
 prop = "translation"
 
 [[editor_animations.tracks.keys]]
@@ -73297,7 +73344,7 @@ times = [
 
 [editor_animations.tracks.target]
 target = "transform"
-node = "096b60f0-1492-471e-acb5-7e667f2b60e0"
+node = "311990db-d7ce-4441-89ea-9d46d15ac22f"
 prop = "rotation"
 
 [[editor_animations.tracks.keys]]
@@ -74798,7 +74845,7 @@ times = [
 
 [editor_animations.tracks.target]
 target = "transform"
-node = "096b60f0-1492-471e-acb5-7e667f2b60e0"
+node = "311990db-d7ce-4441-89ea-9d46d15ac22f"
 prop = "scale"
 
 [[editor_animations.tracks.keys]]
@@ -76155,7 +76202,7 @@ times = [
 
 [editor_animations.tracks.target]
 target = "transform"
-node = "50344573-cd1a-435a-a594-97cff11fe3a9"
+node = "e22e2e1e-101e-47b0-9ffb-6023ba56c63d"
 prop = "translation"
 
 [[editor_animations.tracks.keys]]
@@ -77512,7 +77559,7 @@ times = [
 
 [editor_animations.tracks.target]
 target = "transform"
-node = "50344573-cd1a-435a-a594-97cff11fe3a9"
+node = "e22e2e1e-101e-47b0-9ffb-6023ba56c63d"
 prop = "rotation"
 
 [[editor_animations.tracks.keys]]
@@ -79013,7 +79060,7 @@ times = [
 
 [editor_animations.tracks.target]
 target = "transform"
-node = "50344573-cd1a-435a-a594-97cff11fe3a9"
+node = "e22e2e1e-101e-47b0-9ffb-6023ba56c63d"
 prop = "scale"
 
 [[editor_animations.tracks.keys]]
@@ -80315,8 +80362,14 @@ value = [
 [anim_mixer]
 layers = []
 
+[bundle_options]
+mesh_compression = "meshopt"
+mesh_quantization = "smart"
+smart_threshold_mm = 0.10000000149011612
+texture_compression = "ktx2"
+
 [[nodes]]
-id = "462bc2c5-a507-4f7d-a383-e982c8897ed2"
+id = "e9c21abd-d33b-4e20-8f2e-bed3f0eff59b"
 name = "Directional Light"
 locked = false
 visible = true
@@ -80348,6 +80401,7 @@ color = [
     1.0,
 ]
 intensity = 4.0
+volumetric_intensity = 1.0
 
 [nodes.kind.light.directional.shadow]
 cast = true
@@ -80419,6 +80473,7 @@ emissive = [
 ]
 normal_scale = 1.0
 occlusion_strength = 1.0
+ssr_mask = 1.0
 double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
@@ -80437,10 +80492,10 @@ cast = true
 receive = true
 
 [nodes.kind.mesh.lod]
-enabled = true
+kind = "none"
 
 [[nodes]]
-id = "c9c28731-7ddf-43c8-ab41-0acfd69542d5"
+id = "97d9d604-2295-4688-a715-ff68ba2679e2"
 name = "Z_UP"
 kind = "group"
 locked = false
@@ -80466,7 +80521,7 @@ scale = [
 ]
 
 [[nodes.children]]
-id = "787d66bb-d7e4-48b9-bf92-f9329035da21"
+id = "52c952a6-a519-4c4e-8f14-1eac2441b1d3"
 name = "Armature"
 kind = "group"
 locked = false
@@ -80492,7 +80547,7 @@ scale = [
 ]
 
 [[nodes.children.children]]
-id = "564bb7e4-f25d-459c-88db-b82d36697c06"
+id = "ca694ffc-e6b8-42d0-aa0f-41b8a8114525"
 name = "Skeleton_torso_joint_1"
 kind = "group"
 locked = false
@@ -80518,7 +80573,7 @@ scale = [
 ]
 
 [[nodes.children.children.children]]
-id = "619de8ec-cbf5-4497-9206-ebbffe54f3c1"
+id = "d8e447cf-0204-49ab-8e79-263105bb7895"
 name = "Skeleton_torso_joint_2"
 kind = "group"
 locked = false
@@ -80544,7 +80599,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children]]
-id = "f3817f3d-ee8e-4132-a216-0f0206182fbc"
+id = "a97b0e41-dc28-4675-ac57-3f6878232d95"
 name = "torso_joint_3"
 kind = "group"
 locked = false
@@ -80570,7 +80625,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children]]
-id = "bcffa81d-77bb-4f68-9d1a-b5834d2bbc87"
+id = "2765ed29-6dd5-4cd4-8637-2f780333044a"
 name = "Skeleton_neck_joint_1"
 kind = "group"
 locked = false
@@ -80596,7 +80651,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children.children]]
-id = "e1531d38-a140-4df7-9253-57c285b6f48d"
+id = "82c6a553-70c3-4b1b-8911-4ee2612264df"
 name = "Skeleton_neck_joint_2"
 kind = "group"
 locked = false
@@ -80623,7 +80678,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children]]
-id = "4d6ff1a6-4c43-4512-a05d-d2500391ea0c"
+id = "37cf984c-d2b6-40c0-a4d9-99406fee269a"
 name = "Skeleton_arm_joint_L__4_"
 kind = "group"
 locked = false
@@ -80649,7 +80704,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children.children]]
-id = "2af91b61-526b-4785-adac-1ea38de9202f"
+id = "02ecad73-e71c-4a81-adc6-984475ec51e0"
 name = "Skeleton_arm_joint_L__3_"
 kind = "group"
 locked = false
@@ -80675,7 +80730,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children.children.children]]
-id = "6d843f01-8f6d-47c7-b65b-f26d8e81fb17"
+id = "6a7b312a-00e3-413f-8c47-ec7806bca97d"
 name = "Skeleton_arm_joint_L__2_"
 kind = "group"
 locked = false
@@ -80702,7 +80757,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children]]
-id = "8f1c7f6c-e42e-4933-bee4-984a8b15e2db"
+id = "a93ffda2-0b31-4208-b27a-74a18f884d5d"
 name = "Skeleton_arm_joint_R"
 kind = "group"
 locked = false
@@ -80728,7 +80783,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children.children]]
-id = "afceb0e8-e524-4780-afa9-ef5cedeb2c29"
+id = "08fea528-f561-4d77-872d-082d53b300b1"
 name = "Skeleton_arm_joint_R__2_"
 kind = "group"
 locked = false
@@ -80754,7 +80809,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children.children.children]]
-id = "c12e0732-66ed-495a-b84b-954dd1e60f4e"
+id = "1ee1a10e-dad3-40ad-a37f-5930e4a56b38"
 name = "Skeleton_arm_joint_R__3_"
 kind = "group"
 locked = false
@@ -80781,7 +80836,7 @@ scale = [
 ]
 
 [[nodes.children.children.children]]
-id = "40777160-0375-480c-a4c0-f0a82e9333dc"
+id = "4ac66ec5-328b-4e76-95c7-451d232306b4"
 name = "leg_joint_L_1"
 kind = "group"
 locked = false
@@ -80807,7 +80862,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children]]
-id = "16d73f29-0688-471b-be98-4555c8128a2d"
+id = "5266e566-2491-4931-bac4-b7ed4b38320c"
 name = "leg_joint_L_2"
 kind = "group"
 locked = false
@@ -80833,7 +80888,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children]]
-id = "13d2307c-b1d9-4499-95b9-ca34da772dff"
+id = "22ab72fc-b92e-45ba-afee-51ee7af9935a"
 name = "leg_joint_L_3"
 kind = "group"
 locked = false
@@ -80859,7 +80914,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children.children]]
-id = "a9781b70-21f9-43d5-a03f-37cf8d83bd2c"
+id = "fd33df05-0626-4f10-a6bd-ba891d28b23a"
 name = "leg_joint_L_5"
 kind = "group"
 locked = false
@@ -80886,7 +80941,7 @@ scale = [
 ]
 
 [[nodes.children.children.children]]
-id = "32561a60-83eb-430b-9b31-dcda94f939c7"
+id = "06adc796-ebc4-47c8-9dd8-4df501f69c01"
 name = "leg_joint_R_1"
 kind = "group"
 locked = false
@@ -80912,7 +80967,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children]]
-id = "98ad1ca5-014f-48d8-a992-24261947e82e"
+id = "c32132e6-1a8e-4f55-9105-6302d20d7de8"
 name = "leg_joint_R_2"
 kind = "group"
 locked = false
@@ -80938,7 +80993,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children]]
-id = "096b60f0-1492-471e-acb5-7e667f2b60e0"
+id = "311990db-d7ce-4441-89ea-9d46d15ac22f"
 name = "leg_joint_R_3"
 kind = "group"
 locked = false
@@ -80964,7 +81019,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children.children]]
-id = "50344573-cd1a-435a-a594-97cff11fe3a9"
+id = "e22e2e1e-101e-47b0-9ffb-6023ba56c63d"
 name = "leg_joint_R_5"
 kind = "group"
 locked = false
@@ -80991,7 +81046,7 @@ scale = [
 ]
 
 [[nodes.children.children]]
-id = "4147eb6c-0c87-4c04-869c-30b417964ad2"
+id = "42fbe86c-469f-42be-be8c-12c39e09baa5"
 name = "Cesium_Man"
 locked = false
 visible = true
@@ -81017,95 +81072,95 @@ scale = [
 ]
 
 [nodes.children.children.kind.skinned_mesh]
-selected_variant = "77555de9-5ea5-4598-9862-84e63650c0af"
+selected_variant = "e48f8ebe-c7e5-48e2-ba12-c4af549f8b0b"
 
 [nodes.children.children.kind.skinned_mesh.skin]
-source = "5e106405-4089-4a2f-bb8d-821ee0280c9a"
+source = "23b6598b-aed1-4abd-90de-7d049977c19a"
 node_index = 2
 rig_node_index = 21
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "564bb7e4-f25d-459c-88db-b82d36697c06"
+node = "ca694ffc-e6b8-42d0-aa0f-41b8a8114525"
 index = 2
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "619de8ec-cbf5-4497-9206-ebbffe54f3c1"
+node = "d8e447cf-0204-49ab-8e79-263105bb7895"
 index = 3
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "f3817f3d-ee8e-4132-a216-0f0206182fbc"
+node = "a97b0e41-dc28-4675-ac57-3f6878232d95"
 index = 4
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "bcffa81d-77bb-4f68-9d1a-b5834d2bbc87"
+node = "2765ed29-6dd5-4cd4-8637-2f780333044a"
 index = 5
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "e1531d38-a140-4df7-9253-57c285b6f48d"
+node = "82c6a553-70c3-4b1b-8911-4ee2612264df"
 index = 6
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "4d6ff1a6-4c43-4512-a05d-d2500391ea0c"
+node = "37cf984c-d2b6-40c0-a4d9-99406fee269a"
 index = 7
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "2af91b61-526b-4785-adac-1ea38de9202f"
+node = "02ecad73-e71c-4a81-adc6-984475ec51e0"
 index = 8
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "6d843f01-8f6d-47c7-b65b-f26d8e81fb17"
+node = "6a7b312a-00e3-413f-8c47-ec7806bca97d"
 index = 9
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "8f1c7f6c-e42e-4933-bee4-984a8b15e2db"
+node = "a93ffda2-0b31-4208-b27a-74a18f884d5d"
 index = 10
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "afceb0e8-e524-4780-afa9-ef5cedeb2c29"
+node = "08fea528-f561-4d77-872d-082d53b300b1"
 index = 11
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "c12e0732-66ed-495a-b84b-954dd1e60f4e"
+node = "1ee1a10e-dad3-40ad-a37f-5930e4a56b38"
 index = 12
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "40777160-0375-480c-a4c0-f0a82e9333dc"
+node = "4ac66ec5-328b-4e76-95c7-451d232306b4"
 index = 13
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "16d73f29-0688-471b-be98-4555c8128a2d"
+node = "5266e566-2491-4931-bac4-b7ed4b38320c"
 index = 14
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "13d2307c-b1d9-4499-95b9-ca34da772dff"
+node = "22ab72fc-b92e-45ba-afee-51ee7af9935a"
 index = 15
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "a9781b70-21f9-43d5-a03f-37cf8d83bd2c"
+node = "fd33df05-0626-4f10-a6bd-ba891d28b23a"
 index = 16
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "32561a60-83eb-430b-9b31-dcda94f939c7"
+node = "06adc796-ebc4-47c8-9dd8-4df501f69c01"
 index = 17
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "98ad1ca5-014f-48d8-a992-24261947e82e"
+node = "c32132e6-1a8e-4f55-9105-6302d20d7de8"
 index = 18
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "096b60f0-1492-471e-acb5-7e667f2b60e0"
+node = "311990db-d7ce-4441-89ea-9d46d15ac22f"
 index = 19
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "50344573-cd1a-435a-a594-97cff11fe3a9"
+node = "e22e2e1e-101e-47b0-9ffb-6023ba56c63d"
 index = 20
 
 [[nodes.children.children.kind.skinned_mesh.material_variants]]
-id = "77555de9-5ea5-4598-9862-84e63650c0af"
+id = "e48f8ebe-c7e5-48e2-ba12-c4af549f8b0b"
 name = "Cesium_Man-effect"
 
 [nodes.children.children.kind.skinned_mesh.material_variants.instance]
-asset = "294c160d-565c-43de-8599-77ca7837f6c7"
+asset = "e6dadc24-382a-4546-a0b5-8eb60fc20b26"
 
 [nodes.children.children.kind.skinned_mesh.material_variants.instance.inline]
 label = "Cesium_Man-effect"
@@ -81124,13 +81179,14 @@ emissive = [
 ]
 normal_scale = 1.0
 occlusion_strength = 1.0
+ssr_mask = 1.0
 double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
 shading = "pbr"
 
 [nodes.children.children.kind.skinned_mesh.material_variants.instance.inline.base_color_texture]
-asset = "aed58a46-5264-4f85-b769-117b8a7c9a51"
+asset = "a9dd0c60-644d-4b07-95a6-ac56eb1a12ff"
 
 [nodes.children.children.kind.skinned_mesh.material_variants.instance.inline.base_color_texture.sampler]
 wrap_u = "repeat"
@@ -81152,4 +81208,4 @@ cast = true
 receive = true
 
 [nodes.children.children.kind.skinned_mesh.lod]
-enabled = true
+kind = "none"

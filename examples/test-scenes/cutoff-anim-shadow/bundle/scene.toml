@@ -18,6 +18,23 @@ half_extents = [
     10.0,
 ]
 
+[environment.rotation]
+skybox = [
+    0.0,
+    0.0,
+    0.0,
+]
+specular = [
+    0.0,
+    0.0,
+    0.0,
+]
+irradiance = [
+    0.0,
+    0.0,
+    0.0,
+]
+
 [shadows]
 sscs_enabled = false
 sscs_step_count = 16
@@ -56,10 +73,25 @@ temporal = false
 temporal_weight = 0.8999999761581421
 bvh_reflections = false
 
+[post_process.atmosphere]
+mode = "off"
+color = [
+    0.5,
+    0.6000000238418579,
+    0.699999988079071,
+]
+density = 0.019999999552965164
+base_height = 0.0
+height_falloff = 0.0
+scattering_anisotropy = 0.30000001192092896
+volumetric_distance = 80.0
+volumetric_temporal = false
+
 [assets.00000000-0000-4000-8000-000000000010]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
+lod = "none"
 
 [assets.00000000-0000-4000-8000-000000000010.source.mesh.primitive.box]
 dims = [
@@ -72,6 +104,7 @@ dims = [
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
+lod = "none"
 
 [assets.00000000-0000-4000-8000-000000000001.source.mesh.primitive.plane]
 width = 12.0
@@ -265,7 +298,7 @@ value = [
 layers = []
 
 [[nodes]]
-id = "0c11c560-5567-407e-b487-c1731398cdc3"
+id = "916edc61-aba3-4522-8896-95d049b26688"
 name = "Directional Light"
 locked = false
 visible = true
@@ -297,6 +330,7 @@ color = [
     1.0,
 ]
 intensity = 4.0
+volumetric_intensity = 1.0
 
 [nodes.kind.light.directional.shadow]
 cast = true
@@ -387,7 +421,7 @@ cast = true
 receive = true
 
 [nodes.kind.mesh.lod]
-enabled = true
+kind = "none"
 
 [[nodes]]
 id = "00000000-0000-4000-8000-000000000010"
@@ -462,4 +496,4 @@ cast = true
 receive = true
 
 [nodes.kind.mesh.lod]
-enabled = true
+kind = "none"

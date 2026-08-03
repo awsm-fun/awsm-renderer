@@ -90,6 +90,10 @@ pub async fn export_scene_glb(ctrl: &super::EditorController) -> Result<Vec<u8>,
 pub async fn bake_player_bundle(
     ctrl: &super::EditorController,
     options_override: Option<awsm_renderer_editor_protocol::BundleOptions>,
+    // Ticked once per bake step (mesh compressed, texture encoded, rig baked,
+    // …) so a caller can keep a transport idle-timeout armed / narrate
+    // progress. Pass `&|_| {}` when nobody is watching.
+    progress: &dyn Fn(&str),
 ) -> Result<Vec<awsm_renderer_editor_protocol::BundleFile>, String> {
     use awsm_renderer_editor_protocol::{
         assemble_bundle, mesh_glb_filename, BundleFile, RuntimeMesh,
@@ -246,6 +250,7 @@ pub async fn bake_player_bundle(
         };
         files.push(BundleFile::asset(mesh_glb_filename(canon.id), mesh_glb));
         files.extend(lod_files);
+        progress(&format!("baked mesh {}", canon.id));
     }
     if !mesh_remap.is_empty() {
         remap_mesh_refs(&mut scene.nodes, &mesh_remap);
@@ -492,6 +497,51 @@ pub async fn bake_player_bundle(
             // `encoding` against the source mime, because a lossless-WebP
             // re-encode of a WebP source changes the bytes while leaving the
             // encoding equal.
+            //
+            // Session-scoped ENCODE CACHE: identical (source bytes, encode
+            // params) pairs across repeated bakes skip the multi-second
+            // KTX2/WebP re-encode entirely (hashing a 10 MB source is
+            // milliseconds; re-encoding it is seconds). Keyed by content, so
+            // edits to a texture naturally miss.
+            let cache_key = {
+                use sha2::{Digest, Sha256};
+                let mut hasher = Sha256::new();
+                hasher.update(&bytes);
+                let params = match &encode {
+                    ArtifactEncode::Ktx2 {
+                        uastc,
+                        srgb,
+                        packed,
+                    } => format!(
+                        "ktx2-u{}-s{}-p{}-dim{:?}",
+                        *uastc as u8, *srgb as u8, *packed as u8, bundle_options.texture_max_dim
+                    ),
+                    ArtifactEncode::Asset(pref) => format!("asset-{pref:?}"),
+                };
+                format!("{:x}|{params}", hasher.finalize())
+            };
+            let cached = texture_encode_cache::get(&cache_key);
+            if let Some((encoding, cached_bytes, two_channel, verbatim)) = &cached {
+                tracing::info!(
+                    "bundle texture {artifact_id}: encode cache hit ({} bytes)",
+                    cached_bytes.len()
+                );
+                let bytes = cached_bytes.as_ref().clone();
+                files.push(BundleFile::asset(
+                    format!("{artifact_id}.{}", encoding.ext()),
+                    bytes,
+                ));
+                progress(&format!("texture {artifact_id} (cached)"));
+                finalize_texture_entry(
+                    &mut scene,
+                    artifact_id,
+                    source_id,
+                    *encoding,
+                    *two_channel,
+                    *verbatim,
+                );
+                continue;
+            }
             let (encoding, bytes, two_channel, verbatim) = match encode {
                 ArtifactEncode::Asset(TextureExport::Source) => {
                     (texture_encoding_from_mime(mime), bytes, false, true)
@@ -556,7 +606,28 @@ pub async fn bake_player_bundle(
                             true,
                         )
                     } else {
-                        match decode_rgba(&bytes, mime) {
+                        // Downscale to the WASM encoder's hard source-pixel
+                        // limit (a 4096×4096 exceeds it and encodes to 0 bytes)
+                        // and to any authored `texture_max_dim` cap, BEFORE the
+                        // %4 block-compression guard.
+                        let decoded = decode_rgba(&bytes, mime).map(|(rgba, w, h)| {
+                            let (rgba, w2, h2) = downscale_to_limits(
+                                rgba,
+                                w,
+                                h,
+                                bundle_options.texture_max_dim,
+                                awsm_renderer_codec_basis::MAX_ENCODE_SOURCE_PIXELS,
+                            );
+                            if (w2, h2) != (w, h) {
+                                tracing::info!(
+                                    "bundle texture {artifact_id}: downscaled {w}x{h} → \
+                                     {w2}x{h2} for KTX2 encode (encoder pixel limit / \
+                                     texture_max_dim)"
+                                );
+                            }
+                            (rgba, w2, h2)
+                        });
+                        match decoded {
                             Some((mut rgba, w, h)) if w % 4 == 0 && h % 4 == 0 => {
                                 // Two-channel normal packing (F3): X replicated
                                 // into RGB, Y into A — the layout the Basis
@@ -667,48 +738,24 @@ pub async fn bake_player_bundle(
                     }
                 }
             };
+            // Cache real encode work (skip verbatim passthroughs — the output
+            // IS the source; caching it would just duplicate big sources).
+            if !verbatim {
+                texture_encode_cache::put(cache_key, encoding, &bytes, two_channel, verbatim);
+            }
             files.push(BundleFile::asset(
                 format!("{artifact_id}.{}", encoding.ext()),
                 bytes,
             ));
-            if artifact_id == source_id {
-                if let Some(entry) = scene.assets.entries.get_mut(&artifact_id) {
-                    entry.texture_encoding = Some(encoding);
-                    entry.texture_two_channel_normal = two_channel;
-                    // Re-encoded in place: the file we just pushed is
-                    // `<artifact_id>.<encoding.ext()>`, NOT the source bytes the
-                    // entry's `content_hash` was taken over (the project save
-                    // writes `assets/<hash>.<source-ext>`). Leaving the hash
-                    // makes the entry claim a digest for bytes it does not
-                    // describe — path and hash disagree by construction, and any
-                    // consumer that trusts the hash to locate or validate the
-                    // artifact is wrong about both. Same reasoning as the
-                    // variant branch below, which has always cleared it.
-                    if !verbatim {
-                        entry.content_hash = String::new();
-                    }
-                }
-            } else {
-                // Mint the variant's baked asset-table entry: same source
-                // (provenance/labels), no content hash (the bytes differ from
-                // the original's), the encoding that actually shipped.
-                let mut entry = scene
-                    .assets
-                    .entries
-                    .get(&source_id)
-                    .cloned()
-                    .unwrap_or_else(|| {
-                        awsm_renderer_scene::AssetEntry::new(
-                            awsm_renderer_scene::AssetSource::Filename(format!("{source_id}")),
-                        )
-                    });
-                entry.content_hash = String::new();
-                entry.gltf_material_asset_ids = Vec::new();
-                entry.gltf_image_asset_ids = Vec::new();
-                entry.texture_encoding = Some(encoding);
-                entry.texture_two_channel_normal = two_channel;
-                scene.assets.entries.insert(artifact_id, entry);
-            }
+            progress(&format!("encoded texture {artifact_id}"));
+            finalize_texture_entry(
+                &mut scene,
+                artifact_id,
+                source_id,
+                encoding,
+                two_channel,
+                verbatim,
+            );
         }
     }
 
@@ -798,6 +845,7 @@ pub async fn bake_player_bundle(
                 bundle_rig,
             ));
             files.extend(lod_files);
+            progress(&format!("baked rig {src}"));
         }
     }
 
@@ -872,7 +920,9 @@ pub async fn bake_player_bundle(
     //    can't be resolved FAILS the export instead of silently baking a bundle
     //    that plays with the built-in default environment. A gradient / built-in
     //    environment references no KTX and emits nothing here.
-    files.extend(env_ktx_bundle_files(ctrl).await?);
+    progress("bundling environment cubemaps");
+    files.extend(env_ktx_bundle_files(ctrl, bundle_options.env_max_face_size).await?);
+    progress("assembling scene.toml");
 
     // 8. Completeness guard — "editor has it ⇒ the bundle ships it". Every
     //    texture the baked scene references (materials AND sprite/decal/particle)
@@ -1045,6 +1095,7 @@ fn flatten_builtin_materials(nodes: &mut [awsm_renderer_editor_protocol::EditorN
 /// is a hard error: the export must not silently drop the authored environment.
 async fn env_ktx_bundle_files(
     ctrl: &super::EditorController,
+    max_face_size: Option<u32>,
 ) -> Result<Vec<awsm_renderer_editor_protocol::BundleFile>, String> {
     use awsm_renderer_editor_protocol::{env_ktx_path, BundleFile};
     let env = ctrl.scene.environment.get_cloned();
@@ -1078,6 +1129,36 @@ async fn env_ktx_bundle_files(
                 crate::engine::bridge::env_sync::stash_ktx(id, bytes.clone());
                 bytes
             }
+        };
+        // Apply the bundle face-size cap by dropping the cubemap's largest
+        // mip levels (container surgery, no re-encode — a 4k-face BC6H
+        // skybox is ~128 MB; from mip 2 down the SAME file is ~8 MB). Any
+        // parse refusal (BasisLZ, unexpected layout) ships verbatim.
+        let bytes = match max_face_size {
+            Some(cap) => {
+                match crate::controller::ktx2_shrink::truncate_ktx2_to_max_size(&bytes, cap) {
+                    Some(crate::controller::ktx2_shrink::Shrink::Truncated {
+                        bytes: b,
+                        new_size,
+                    }) => {
+                        tracing::info!(
+                            "bundle env {id}: mip-truncated to {new_size}px faces \
+                         (env_max_face_size {cap}) — {} bytes",
+                            b.len()
+                        );
+                        b
+                    }
+                    Some(crate::controller::ktx2_shrink::Shrink::Unchanged) => bytes,
+                    None => {
+                        tracing::warn!(
+                            "bundle env {id}: can't mip-truncate this KTX2 (BasisLZ / unexpected \
+                         layout) — shipping verbatim"
+                        );
+                        bytes
+                    }
+                }
+            }
+            None => bytes,
         };
         out.push(BundleFile::new(env_ktx_path(id), bytes));
     }
@@ -1577,6 +1658,144 @@ fn decode_rgba(
         .into_rgba8();
     let (w, h) = rgba.dimensions();
     Some((rgba.into_raw(), w, h))
+}
+
+/// Record the encoding a shipped texture artifact actually got onto the baked
+/// asset table — on the artifact's own entry when it kept the source id, or by
+/// minting a variant entry otherwise.
+fn finalize_texture_entry(
+    scene: &mut awsm_renderer_scene::Scene,
+    artifact_id: AssetId,
+    source_id: AssetId,
+    encoding: awsm_renderer_scene::TextureEncoding,
+    two_channel: bool,
+    verbatim: bool,
+) {
+    if artifact_id == source_id {
+        if let Some(entry) = scene.assets.entries.get_mut(&artifact_id) {
+            entry.texture_encoding = Some(encoding);
+            entry.texture_two_channel_normal = two_channel;
+            // Re-encoded in place: the file we just pushed is
+            // `<artifact_id>.<encoding.ext()>`, NOT the source bytes the
+            // entry's `content_hash` was taken over (the project save
+            // writes `assets/<hash>.<source-ext>`). Leaving the hash
+            // makes the entry claim a digest for bytes it does not
+            // describe — path and hash disagree by construction, and any
+            // consumer that trusts the hash to locate or validate the
+            // artifact is wrong about both. Same reasoning as the
+            // variant branch below, which has always cleared it.
+            if !verbatim {
+                entry.content_hash = String::new();
+            }
+        }
+    } else {
+        // Mint the variant's baked asset-table entry: same source
+        // (provenance/labels), no content hash (the bytes differ from
+        // the original's), the encoding that actually shipped.
+        let mut entry = scene
+            .assets
+            .entries
+            .get(&source_id)
+            .cloned()
+            .unwrap_or_else(|| {
+                awsm_renderer_scene::AssetEntry::new(awsm_renderer_scene::AssetSource::Filename(
+                    format!("{source_id}"),
+                ))
+            });
+        entry.content_hash = String::new();
+        entry.gltf_material_asset_ids = Vec::new();
+        entry.gltf_image_asset_ids = Vec::new();
+        entry.texture_encoding = Some(encoding);
+        entry.texture_two_channel_normal = two_channel;
+        scene.assets.entries.insert(artifact_id, entry);
+    }
+}
+
+/// Session-scoped cache of bundle-texture ENCODE results, keyed by
+/// (source-content sha256, encode params): repeated exports of an unchanged
+/// scene skip every multi-second KTX2/WebP re-encode (hashing a 10 MB source
+/// is milliseconds). Content-keyed, so an edited texture naturally misses.
+/// Lives for the editor session; entries are the encoded outputs (small —
+/// that's the point of encoding).
+mod texture_encode_cache {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::rc::Rc;
+
+    use awsm_renderer_scene::TextureEncoding;
+
+    /// (encoding, encoded bytes, two_channel_normal, verbatim).
+    type Entry = (TextureEncoding, Rc<Vec<u8>>, bool, bool);
+
+    thread_local! {
+        static CACHE: RefCell<HashMap<String, Entry>> = RefCell::new(HashMap::new());
+    }
+
+    pub fn get(key: &str) -> Option<Entry> {
+        CACHE.with(|c| c.borrow().get(key).cloned())
+    }
+
+    pub fn put(
+        key: String,
+        encoding: TextureEncoding,
+        bytes: &[u8],
+        two_channel: bool,
+        verbatim: bool,
+    ) {
+        CACHE.with(|c| {
+            c.borrow_mut().insert(
+                key,
+                (encoding, Rc::new(bytes.to_vec()), two_channel, verbatim),
+            );
+        });
+    }
+}
+
+/// Box-filter halve `rgba` (2×2 average per channel) until it fits both
+/// limits: `w * h <= max_pixels` and, when set, `max(w, h) <= max_dim`.
+/// Returns the (possibly reduced) buffer + dimensions.
+///
+/// Exists because the vendored WASM Basis encoder hard-fails (0 bytes,
+/// instantly) past `BASISU_ENCODER_MAX_SOURCE_IMAGE_PIXELS` — see
+/// [`awsm_renderer_codec_basis::MAX_ENCODE_SOURCE_PIXELS`] — so a 4096×4096
+/// atlas MUST shrink to encode at all; and because bundles want an authored
+/// size cap (`BundleOptions::texture_max_dim`) anyway. Halving a
+/// multiple-of-4 dimension can produce a non-multiple (e.g. 2500 → 1250);
+/// the caller's existing %4 guard then routes to the WebP fallback.
+fn downscale_to_limits(
+    mut rgba: Vec<u8>,
+    mut w: u32,
+    mut h: u32,
+    max_dim: Option<u32>,
+    max_pixels: u32,
+) -> (Vec<u8>, u32, u32) {
+    let over = |w: u32, h: u32| {
+        (w as u64) * (h as u64) > max_pixels as u64
+            || max_dim.is_some_and(|cap| w.max(h) > cap.max(1))
+    };
+    while over(w, h) && w >= 2 && h >= 2 {
+        let (w2, h2) = (w / 2, h / 2);
+        let mut out = vec![0u8; (w2 as usize) * (h2 as usize) * 4];
+        for y in 0..h2 as usize {
+            for x in 0..w2 as usize {
+                let (sx, sy) = (x * 2, y * 2);
+                let row0 = (sy * w as usize + sx) * 4;
+                let row1 = ((sy + 1) * w as usize + sx) * 4;
+                let dst = (y * w2 as usize + x) * 4;
+                for c in 0..4 {
+                    let sum = rgba[row0 + c] as u32
+                        + rgba[row0 + 4 + c] as u32
+                        + rgba[row1 + c] as u32
+                        + rgba[row1 + 4 + c] as u32;
+                    out[dst + c] = ((sum + 2) / 4) as u8;
+                }
+            }
+        }
+        rgba = out;
+        w = w2;
+        h = h2;
+    }
+    (rgba, w, h)
 }
 
 /// Re-encode a source image to LOSSLESS WebP via the pure-Rust `image` crate

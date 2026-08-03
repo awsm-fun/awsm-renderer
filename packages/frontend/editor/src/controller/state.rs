@@ -1389,7 +1389,7 @@ impl EditorController {
                 // populate are still running. RAII — drops on every exit path.
                 let _load_guard = CompileGuard::new();
                 // 1. Bake the CURRENT project — must read it before we clear.
-                let files = crate::controller::export::bake_player_bundle(self, None)
+                let files = crate::controller::export::bake_player_bundle(self, None, &|_| {})
                     .await
                     .map_err(|e| crate::error::EditorError::msg(format!("bake: {e}")))?;
                 // 2. Split scene.toml out; the rest is the asset map

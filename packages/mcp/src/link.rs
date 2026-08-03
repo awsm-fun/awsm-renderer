@@ -26,9 +26,18 @@ use tokio::sync::{broadcast, mpsc, oneshot};
 
 use awsm_renderer_editor_protocol::{EditorEvent, Request, Response, WsServerMsg};
 
-/// Upper bound on one request's round-trip (an offline render / settle is the
-/// slow case).
+/// Upper bound on one request's round-trip **while silent** (an offline
+/// render / settle is the slow case). This is an IDLE timeout: a
+/// [`WsClientMsg::Progress`](awsm_renderer_editor_protocol::WsClientMsg)
+/// keep-alive from the editor re-arms it, so long operations that report
+/// progress (player-bundle bakes encode textures + upload files for many
+/// minutes on a big scene) run to completion instead of dying at a fixed cap
+/// while demonstrably working.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Absolute ceiling on one request's lifetime, progress or not — the backstop
+/// against a buggy ticker keeping a wedged request alive forever.
+const REQUEST_MAX_LIFETIME: Duration = Duration::from_secs(60 * 60);
 
 /// Request timeout while the tab reports itself HIDDEN: the browser has paused
 /// `requestAnimationFrame`, so anything frame-bound (screenshots, settles,
@@ -44,11 +53,19 @@ pub enum LinkError {
     Transport(String),
 }
 
+/// One in-flight request: its response channel + a monotonically increasing
+/// progress counter ([`WsClientMsg::Progress`] frames bump it; the waiter
+/// re-arms its idle timeout whenever it has advanced).
+struct PendingRequest {
+    tx: oneshot::Sender<Response>,
+    progress: Arc<AtomicU64>,
+}
+
 /// One attached editor tab.
 pub struct Connection {
     pub id: u64,
     tx: mpsc::UnboundedSender<WsServerMsg>,
-    pending: Mutex<HashMap<u64, oneshot::Sender<Response>>>,
+    pending: Mutex<HashMap<u64, PendingRequest>>,
     next_req_id: AtomicU64,
     /// Latest tab visibility the editor pushed (`kind: "visibility"` event):
     /// `true` ⇒ the tab is hidden and rAF is paused, so frame-bound requests
@@ -70,8 +87,15 @@ impl Connection {
     /// Send one request to this tab and await its response.
     async fn request(&self, req: &Request) -> Result<Response, String> {
         let id = self.next_req_id.fetch_add(1, Ordering::Relaxed);
-        let (tx, rx) = oneshot::channel();
-        self.pending.lock().unwrap().insert(id, tx);
+        let (tx, mut rx) = oneshot::channel();
+        let progress = Arc::new(AtomicU64::new(0));
+        self.pending.lock().unwrap().insert(
+            id,
+            PendingRequest {
+                tx,
+                progress: progress.clone(),
+            },
+        );
         self.tx
             .send(WsServerMsg::Request {
                 id,
@@ -86,31 +110,50 @@ impl Connection {
         } else {
             (REQUEST_TIMEOUT, false)
         };
-        match tokio::time::timeout(limit, rx).await {
-            Ok(Ok(resp)) => Ok(resp),
-            Ok(Err(_)) => {
-                self.pending.lock().unwrap().remove(&id);
-                Err("editor dropped the request".into())
-            }
-            Err(_) => {
-                self.pending.lock().unwrap().remove(&id);
-                if hidden_at_send || self.is_hidden() {
-                    Err("editor tab is HIDDEN — the browser has paused rendering \
-                         (requestAnimationFrame), so frame-bound operations \
-                         (screenshots, render settles, material re-materialization) \
-                         cannot complete until the tab is visible again. Make the \
-                         tab visible (foreground it / wake the display) and retry. \
-                         JS-only queries (get_snapshot, get_mode, …) still work \
-                         while hidden."
-                        .into())
-                } else {
-                    Err(
+        // Idle-timeout loop: each expiry only fails the request if NO
+        // Progress frame arrived during that window (the editor ticks one per
+        // bake step of a long operation). An absolute lifetime cap backstops
+        // a wedged-but-ticking request.
+        let started = std::time::Instant::now();
+        let mut seen = 0u64;
+        loop {
+            match tokio::time::timeout(limit, &mut rx).await {
+                Ok(Ok(resp)) => return Ok(resp),
+                Ok(Err(_)) => {
+                    self.pending.lock().unwrap().remove(&id);
+                    return Err("editor dropped the request".into());
+                }
+                Err(_) => {
+                    let now = progress.load(Ordering::Relaxed);
+                    if now != seen && started.elapsed() < REQUEST_MAX_LIFETIME {
+                        seen = now;
+                        continue;
+                    }
+                    self.pending.lock().unwrap().remove(&id);
+                    if started.elapsed() >= REQUEST_MAX_LIFETIME {
+                        return Err(format!(
+                            "editor request exceeded the {}-minute lifetime cap (still \
+                             reporting progress, but something is likely wedged)",
+                            REQUEST_MAX_LIFETIME.as_secs() / 60
+                        ));
+                    }
+                    if hidden_at_send || self.is_hidden() {
+                        return Err("editor tab is HIDDEN — the browser has paused rendering \
+                             (requestAnimationFrame), so frame-bound operations \
+                             (screenshots, render settles, material re-materialization) \
+                             cannot complete until the tab is visible again. Make the \
+                             tab visible (foreground it / wake the display) and retry. \
+                             JS-only queries (get_snapshot, get_mode, …) still work \
+                             while hidden."
+                            .into());
+                    }
+                    return Err(
                         "editor request timed out — is the editor tab foregrounded? \
                          A screenshot/render needs a live requestAnimationFrame frame, \
                          which browsers throttle or pause in a backgrounded/hidden tab. \
                          Foreground the tab (or keep it visible) and retry."
                             .into(),
-                    )
+                    );
                 }
             }
         }
@@ -118,8 +161,20 @@ impl Connection {
 
     /// Complete a pending request from an incoming `Response` frame.
     pub fn complete(&self, id: u64, resp: Response) {
-        if let Some(tx) = self.pending.lock().unwrap().remove(&id) {
-            let _ = tx.send(resp);
+        if let Some(entry) = self.pending.lock().unwrap().remove(&id) {
+            let _ = entry.tx.send(resp);
+        }
+    }
+
+    /// Record a progress keep-alive for an in-flight request: re-arms its idle
+    /// timeout (see [`Connection::request`]). Unknown ids are ignored (the
+    /// request may have just completed or timed out — racing is fine).
+    pub fn note_progress(&self, id: u64, note: Option<&str>) {
+        if let Some(entry) = self.pending.lock().unwrap().get(&id) {
+            entry.progress.fetch_add(1, Ordering::Relaxed);
+            if let Some(note) = note {
+                tracing::info!("request {id} progress: {note}");
+            }
         }
     }
 

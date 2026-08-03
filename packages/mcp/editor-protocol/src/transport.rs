@@ -118,6 +118,13 @@ pub enum WsClientMsg {
     Response { id: u64, resp: Response },
     /// An unsolicited editor push event.
     Event(EditorEvent),
+    /// Keep-alive for a LONG-RUNNING request: "request `id` is still making
+    /// progress". The server treats its request timeout as an IDLE timeout —
+    /// each `Progress` frame re-arms it — so a multi-minute bake (player
+    /// bundle: per-mesh meshopt, per-texture KTX2 encodes, per-file uploads)
+    /// no longer dies at the fixed cap while demonstrably working. `note` is
+    /// a short human-readable phase label, surfaced in server tracing only.
+    Progress { id: u64, note: Option<String> },
 }
 
 /// A reference to a PNG the editor uploaded out-of-band. The image bytes do
@@ -611,6 +618,19 @@ mod wire_roundtrip_tests {
             hidden: None,
         });
         let j = serde_json::to_string(&event).unwrap();
+        let back: WsClientMsg = serde_json::from_str(&j).unwrap();
+        assert_eq!(j, serde_json::to_string(&back).unwrap());
+
+        // Long-request keep-alive frame round-trips (with and without a note).
+        let progress = WsClientMsg::Progress {
+            id: 11,
+            note: Some("encoding textures (3/12)".to_string()),
+        };
+        let j = serde_json::to_string(&progress).unwrap();
+        let back: WsClientMsg = serde_json::from_str(&j).unwrap();
+        assert_eq!(j, serde_json::to_string(&back).unwrap());
+        let progress = WsClientMsg::Progress { id: 12, note: None };
+        let j = serde_json::to_string(&progress).unwrap();
         let back: WsClientMsg = serde_json::from_str(&j).unwrap();
         assert_eq!(j, serde_json::to_string(&back).unwrap());
 

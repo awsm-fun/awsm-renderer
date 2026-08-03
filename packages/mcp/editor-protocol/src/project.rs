@@ -25,6 +25,21 @@ pub struct BundleOptions {
     pub smart_threshold_mm: f32,
     #[serde(default)]
     pub texture_compression: TextureCompression,
+    /// Cap on a bundled texture's largest dimension: sources above it are
+    /// downscaled (box-filtered halving) before encoding. `None` = no
+    /// authored cap — but KTX2 encodes still downscale to the vendored
+    /// encoder's hard source-pixel limit
+    /// (`BASISU_ENCODER_MAX_SOURCE_IMAGE_PIXELS` = 4096×3072), which a
+    /// 4096×4096 source exceeds (the encoder returns 0 bytes instantly).
+    #[serde(default)]
+    pub texture_max_dim: Option<u32>,
+    /// Cap on an environment cubemap's face size in the bundle: KTX2 cubemaps
+    /// whose faces exceed it ship with their largest mip levels dropped (pure
+    /// container surgery — no re-encode, the smaller mips are already in the
+    /// file). `None` = ship verbatim. A 4k-face BC6H skybox is ~128 MB;
+    /// capped at 1024 the same content is ~8 MB.
+    #[serde(default)]
+    pub env_max_face_size: Option<u32>,
 }
 
 fn default_smart_threshold_mm() -> f32 {
@@ -38,6 +53,8 @@ impl Default for BundleOptions {
             mesh_quantization: MeshQuantization::default(),
             smart_threshold_mm: default_smart_threshold_mm(),
             texture_compression: TextureCompression::default(),
+            texture_max_dim: None,
+            env_max_face_size: None,
         }
     }
 }
@@ -98,6 +115,41 @@ pub struct BundleOptionsPatch {
     pub smart_threshold_mm: Option<f32>,
     #[serde(default)]
     pub texture_compression: Option<TextureCompression>,
+    /// Double-`Option`: outer = "does this patch touch the field", inner = the
+    /// new value (`Some(None)` clears an authored cap back to "no cap").
+    #[serde(default, with = "double_option")]
+    #[cfg_attr(feature = "schemars", schemars(with = "Option<u32>"))]
+    pub texture_max_dim: Option<Option<u32>>,
+    #[serde(default, with = "double_option")]
+    #[cfg_attr(feature = "schemars", schemars(with = "Option<u32>"))]
+    pub env_max_face_size: Option<Option<u32>>,
+}
+
+/// Serde helper for `Option<Option<T>>` patch fields: an ABSENT field is
+/// "don't touch" (outer `None`), an explicit `null` is "clear" (`Some(None)`),
+/// a value is "set" (`Some(Some(v))`).
+mod double_option {
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<T: Serialize, S: Serializer>(
+        v: &Option<Option<T>>,
+        s: S,
+    ) -> Result<S::Ok, S::Error> {
+        match v {
+            Some(inner) => inner.serialize(s),
+            // Absent-vs-null is a `skip_serializing_if` concern; a bare
+            // `None` outer serializes as null, which round-trips as "clear".
+            // Patches are built fresh per call, so this asymmetry is benign,
+            // but keep patches minimal by only setting fields you mean.
+            None => s.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, T: Deserialize<'de>, D: Deserializer<'de>>(
+        d: D,
+    ) -> Result<Option<Option<T>>, D::Error> {
+        Ok(Some(Option::<T>::deserialize(d)?))
+    }
 }
 
 impl BundleOptionsPatch {
@@ -111,6 +163,8 @@ impl BundleOptionsPatch {
                 .unwrap_or(base.smart_threshold_mm)
                 .max(0.0),
             texture_compression: self.texture_compression.unwrap_or(base.texture_compression),
+            texture_max_dim: self.texture_max_dim.unwrap_or(base.texture_max_dim),
+            env_max_face_size: self.env_max_face_size.unwrap_or(base.env_max_face_size),
         }
     }
 
@@ -121,6 +175,8 @@ impl BundleOptionsPatch {
             mesh_quantization: Some(options.mesh_quantization),
             smart_threshold_mm: Some(options.smart_threshold_mm),
             texture_compression: Some(options.texture_compression),
+            texture_max_dim: Some(options.texture_max_dim),
+            env_max_face_size: Some(options.env_max_face_size),
         }
     }
 }
@@ -315,12 +371,44 @@ mod bundle_options_tests {
                 mesh_quantization: MeshQuantization::Always,
                 smart_threshold_mm: 0.5,
                 texture_compression: TextureCompression::Off,
+                texture_max_dim: Some(2048),
+                env_max_face_size: Some(1024),
             },
             ..Default::default()
         };
         let toml_str = toml::to_string_pretty(&project).unwrap();
         let back: EditorProject = toml::from_str(&toml_str).unwrap();
         assert_eq!(back.bundle_options, project.bundle_options);
+    }
+
+    /// The size-cap patch fields distinguish "don't touch" (absent) from
+    /// "clear" (explicit null / `Some(None)`) — and both survive JSON, the
+    /// wire form `set_bundle_options` / export overrides arrive in.
+    #[test]
+    fn size_cap_patch_set_clear_preserve() {
+        let base = BundleOptions {
+            texture_max_dim: Some(2048),
+            env_max_face_size: Some(1024),
+            ..Default::default()
+        };
+        // Absent → preserved.
+        let p: BundleOptionsPatch = serde_json::from_str("{}").unwrap();
+        assert_eq!(p.apply(base), base);
+        // Explicit null → cleared.
+        let p: BundleOptionsPatch =
+            serde_json::from_str(r#"{"texture_max_dim": null, "env_max_face_size": null}"#)
+                .unwrap();
+        let cleared = p.apply(base);
+        assert_eq!(cleared.texture_max_dim, None);
+        assert_eq!(cleared.env_max_face_size, None);
+        // Value → set.
+        let p: BundleOptionsPatch =
+            serde_json::from_str(r#"{"texture_max_dim": 512, "env_max_face_size": 256}"#).unwrap();
+        let set = p.apply(base);
+        assert_eq!(set.texture_max_dim, Some(512));
+        assert_eq!(set.env_max_face_size, Some(256));
+        // Replace round-trips wholesale.
+        assert_eq!(BundleOptionsPatch::replace(&set).apply(base), set);
     }
 }
 

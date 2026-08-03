@@ -20,6 +20,23 @@ half_extents = [
     10.0,
 ]
 
+[environment.rotation]
+skybox = [
+    0.0,
+    0.0,
+    0.0,
+]
+specular = [
+    0.0,
+    0.0,
+    0.0,
+]
+irradiance = [
+    0.0,
+    0.0,
+    0.0,
+]
+
 [shadows]
 sscs_enabled = false
 sscs_step_count = 16
@@ -58,6 +75,20 @@ temporal = false
 temporal_weight = 0.8999999761581421
 bvh_reflections = false
 
+[post_process.atmosphere]
+mode = "off"
+color = [
+    0.5,
+    0.6000000238418579,
+    0.699999988079071,
+]
+density = 0.019999999552965164
+base_height = 0.0
+height_falloff = 0.0
+scattering_anisotropy = 0.30000001192092896
+volumetric_distance = 80.0
+volumetric_temporal = false
+
 [assets.00000000-0000-4000-8000-000000000001]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
@@ -70,18 +101,16 @@ depth = 20.0
 segments_x = 1
 segments_z = 1
 
-[assets.00000000-0000-4000-8000-000000000004]
+[assets.00000000-0000-4000-8000-000000000003]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
 lod = "none"
 
-[assets.00000000-0000-4000-8000-000000000004.source.mesh.primitive.box]
-dims = [
-    0.800000011920929,
-    2.4000000953674316,
-    0.800000011920929,
-]
+[assets.00000000-0000-4000-8000-000000000003.source.mesh.primitive.sphere]
+radius = 0.800000011920929
+segments_long = 32
+segments_lat = 20
 
 [assets.00000000-0000-4000-8000-000000000002]
 gltf_material_asset_ids = []
@@ -109,22 +138,24 @@ dims = [
     0.6000000238418579,
 ]
 
-[assets.00000000-0000-4000-8000-000000000003]
+[assets.00000000-0000-4000-8000-000000000004]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
 lod = "none"
 
-[assets.00000000-0000-4000-8000-000000000003.source.mesh.primitive.sphere]
-radius = 0.800000011920929
-segments_long = 32
-segments_lat = 20
+[assets.00000000-0000-4000-8000-000000000004.source.mesh.primitive.box]
+dims = [
+    0.800000011920929,
+    2.4000000953674316,
+    0.800000011920929,
+]
 
 [mixer]
 layers = []
 
 [[nodes]]
-id = "4f478f3e-2bcc-45e4-a739-5a8f9b2928df"
+id = "d9f52ac0-d670-401d-af2d-7c636b9b3e90"
 name = "Directional Light"
 locked = false
 visible = true
@@ -156,6 +187,7 @@ color = [
     1.0,
 ]
 intensity = 4.0
+volumetric_intensity = 1.0
 
 [nodes.kind.light.directional.shadow]
 cast = true

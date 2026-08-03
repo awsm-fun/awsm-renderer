@@ -7,6 +7,36 @@ skybox = "built_in_default"
 specular = "built_in_default"
 irradiance = "built_in_default"
 
+[environment.probe]
+enabled = false
+center = [
+    0.0,
+    0.0,
+    0.0,
+]
+half_extents = [
+    10.0,
+    10.0,
+    10.0,
+]
+
+[environment.rotation]
+skybox = [
+    0.0,
+    0.0,
+    0.0,
+]
+specular = [
+    0.0,
+    0.0,
+    0.0,
+]
+irradiance = [
+    0.0,
+    0.0,
+    0.0,
+]
+
 [shadows]
 sscs_enabled = false
 sscs_step_count = 16
@@ -39,16 +69,44 @@ max_distance = 100.0
 thickness = 1.0
 max_steps = 96
 spread_cutoff = 0.6000000238418579
-edge_fade = 0.10000000149011612
+edge_fade = 0.03999999910593033
 resolution_scale = 0.5
 temporal = false
 temporal_weight = 0.8999999761581421
+bvh_reflections = false
+
+[post_process.atmosphere]
+mode = "off"
+color = [
+    0.5,
+    0.6000000238418579,
+    0.699999988079071,
+]
+density = 0.019999999552965164
+base_height = 0.0
+height_falloff = 0.0
+scattering_anisotropy = 0.30000001192092896
+volumetric_distance = 80.0
+volumetric_temporal = false
+
+[assets.00000000-0000-4000-8000-000000000001]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.00000000-0000-4000-8000-000000000001.source.mesh.primitive.plane]
+width = 14.0
+depth = 14.0
+segments_x = 1
+segments_z = 1
 
 [assets.00000000-0000-4000-8000-0000000000f1]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
-texture_encoding = "webp"
+texture_encoding = "ktx2"
+lod = "none"
 
 [assets.00000000-0000-4000-8000-0000000000f1.source.texture.procedural.checker]
 width = 512
@@ -72,6 +130,7 @@ color_b = [
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
+lod = "none"
 
 [assets.00000000-0000-4000-8000-000000000010.source.mesh.primitive.box]
 dims = [
@@ -80,22 +139,11 @@ dims = [
     1.399999976158142,
 ]
 
-[assets.00000000-0000-4000-8000-000000000001]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-
-[assets.00000000-0000-4000-8000-000000000001.source.mesh.primitive.plane]
-width = 14.0
-depth = 14.0
-segments_x = 1
-segments_z = 1
-
 [mixer]
 layers = []
 
 [[nodes]]
-id = "1009116f-8657-4337-a88b-1ff4ea6225ea"
+id = "38c34b23-c9da-4d84-ba62-8c94c2ebf54a"
 name = "Directional Light"
 locked = false
 visible = true
@@ -127,6 +175,7 @@ color = [
     1.0,
 ]
 intensity = 4.0
+volumetric_intensity = 1.0
 
 [nodes.kind.light.directional.shadow]
 cast = true
@@ -198,6 +247,7 @@ emissive = [
 ]
 normal_scale = 1.0
 occlusion_strength = 1.0
+ssr_mask = 1.0
 double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
@@ -216,7 +266,7 @@ cast = true
 receive = true
 
 [nodes.kind.mesh.lod]
-enabled = true
+kind = "none"
 
 [[nodes]]
 id = "00000000-0000-4000-8000-000000000010"
@@ -272,6 +322,7 @@ emissive = [
 ]
 normal_scale = 1.0
 occlusion_strength = 1.0
+ssr_mask = 1.0
 double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
@@ -293,10 +344,10 @@ cast = true
 receive = true
 
 [nodes.kind.mesh.lod]
-enabled = true
+kind = "none"
 
 [[nodes]]
-id = "79eb7ff6-8055-4915-8798-06374a2cddd7"
+id = "30ddac9d-c833-42b3-aea1-b59c275409a0"
 name = "source-box"
 locked = false
 visible = true
@@ -349,6 +400,7 @@ emissive = [
 ]
 normal_scale = 1.0
 occlusion_strength = 1.0
+ssr_mask = 1.0
 double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
@@ -370,10 +422,10 @@ cast = true
 receive = true
 
 [nodes.kind.mesh.lod]
-enabled = true
+kind = "none"
 
 [[nodes]]
-id = "dcba6ad1-9391-46ac-aeca-d5f7c5ce8128"
+id = "0c94bf87-ed37-4ffc-9d5b-b71a0ca2496b"
 name = "source-box"
 locked = false
 visible = true
@@ -426,6 +478,7 @@ emissive = [
 ]
 normal_scale = 1.0
 occlusion_strength = 1.0
+ssr_mask = 1.0
 double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
@@ -447,10 +500,10 @@ cast = true
 receive = true
 
 [nodes.kind.mesh.lod]
-enabled = true
+kind = "none"
 
 [[nodes]]
-id = "45dbf4f9-af47-4f17-aebd-a939cf72fe9c"
+id = "0d009d2a-732c-4a59-acfa-fc9702922e97"
 name = "source-box"
 locked = false
 visible = true
@@ -461,7 +514,7 @@ children = []
 translation = [
     -1.5,
     0.699999988079071,
-    0.0,
+    0.5,
 ]
 rotation = [
     0.0,
@@ -503,6 +556,7 @@ emissive = [
 ]
 normal_scale = 1.0
 occlusion_strength = 1.0
+ssr_mask = 1.0
 double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
@@ -524,10 +578,10 @@ cast = true
 receive = true
 
 [nodes.kind.mesh.lod]
-enabled = true
+kind = "none"
 
 [[nodes]]
-id = "68f268ac-8c67-4047-8ca8-73c65c91345c"
+id = "b0666495-c04d-498f-9567-83e4dff6b5b8"
 name = "source-box"
 locked = false
 visible = true
@@ -538,7 +592,7 @@ children = []
 translation = [
     1.5,
     0.699999988079071,
-    0.0,
+    0.5,
 ]
 rotation = [
     0.0,
@@ -580,6 +634,7 @@ emissive = [
 ]
 normal_scale = 1.0
 occlusion_strength = 1.0
+ssr_mask = 1.0
 double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
@@ -601,4 +656,4 @@ cast = true
 receive = true
 
 [nodes.kind.mesh.lod]
-enabled = true
+kind = "none"

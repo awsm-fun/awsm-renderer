@@ -216,6 +216,17 @@ pub struct ExportBundleParams {
     /// | ktx2.
     #[serde(default)]
     pub texture_compression: Option<String>,
+    /// Per-call override of the bundled-texture size cap: sources whose largest
+    /// dimension exceeds this are box-filter downscaled before encoding.
+    /// 0 clears an authored cap (no cap). Omit to use the project setting.
+    #[serde(default)]
+    pub texture_max_dim: Option<u32>,
+    /// Per-call override of the environment-cubemap face-size cap: KTX2
+    /// cubemaps with larger faces ship with their largest mip levels dropped
+    /// (no re-encode). 0 clears an authored cap (ship verbatim). Omit to use
+    /// the project setting.
+    #[serde(default)]
+    pub env_max_face_size: Option<u32>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -250,6 +261,18 @@ pub struct SetBundleOptionsParams {
     /// Per-texture prefs (set_texture_export) override this either way.
     #[serde(default)]
     pub texture_compression: Option<String>,
+    /// Cap on a bundled texture's largest dimension: sources above it are
+    /// box-filter downscaled before encoding. 0 clears the cap. (KTX2 encodes
+    /// always downscale to the WASM encoder's hard 12.58-Mpixel source limit
+    /// regardless — a 4096×4096 exceeds it.)
+    #[serde(default)]
+    pub texture_max_dim: Option<u32>,
+    /// Cap on an environment cubemap's face size in bundles: larger KTX2
+    /// cubemaps ship with their largest mip levels dropped (container-level,
+    /// no re-encode — e.g. a 4k-face 128 MB BC6H skybox capped at 1024 ships
+    /// ~8 MB). 0 clears the cap (ship verbatim).
+    #[serde(default)]
+    pub env_max_face_size: Option<u32>,
 }
 
 /// Parse the shared optional bundle-options fields (used by both
@@ -259,6 +282,8 @@ fn bundle_options_patch(
     mesh_quantization: Option<&str>,
     smart_threshold_mm: Option<f64>,
     texture_compression: Option<&str>,
+    texture_max_dim: Option<u32>,
+    env_max_face_size: Option<u32>,
 ) -> Result<awsm_renderer_editor_protocol::BundleOptionsPatch, McpError> {
     use awsm_renderer_editor_protocol::{MeshCompression, MeshQuantization, TextureCompression};
     let bad = |field: &str, got: &str, expected: &str| {
@@ -291,6 +316,9 @@ fn bundle_options_patch(
                 other => Err(bad("texture_compression", other, "off | ktx2")),
             })
             .transpose()?,
+        // 0 = explicit "clear the cap" (patch to None); omitted = untouched.
+        texture_max_dim: texture_max_dim.map(|v| (v > 0).then_some(v)),
+        env_max_face_size: env_max_face_size.map(|v| (v > 0).then_some(v)),
     })
 }
 
@@ -2185,7 +2213,7 @@ impl EditorMcp {
 
     #[tool(
         annotations(read_only_hint = true),
-        description = "Bake the whole project to a player runtime bundle DIRECTORY on disk: a `scene.toml` (the runtime scene — node hierarchy + transforms + material instances + lights/cameras + our animation clips + environment, meshes referenced by id) plus an `assets/` directory: one geometry-only `assets/<id>.glb` per non-primitive mesh (bare primitives stay procedural in scene.toml), custom-material wgsl folders, and referenced textures. Materials + animations are NOT in the glbs (they're ours, applied by the player from scene.toml + clips). A read; the files ride the `/bundle/<id>/<path>` side-channel and land in a temp directory — NEVER inlined in this result. Returns `{name, bundle_dir, files:[{path, byte_len}], total_bytes, url_base}`: read/copy the bundle from `bundle_dir`, or fetch files over HTTP at `<server>/<url_base>/<path>`. Optional per-call bundle-option overrides (mesh_compression/mesh_quantization/smart_threshold_mm/texture_compression — same vocabulary as set_bundle_options) apply to THIS export only; the project-persisted options are not modified."
+        description = "Bake the whole project to a player runtime bundle DIRECTORY on disk: a `scene.toml` (the runtime scene — node hierarchy + transforms + material instances + lights/cameras + our animation clips + environment, meshes referenced by id) plus an `assets/` directory: one geometry-only `assets/<id>.glb` per non-primitive mesh (bare primitives stay procedural in scene.toml), custom-material wgsl folders, and referenced textures. Materials + animations are NOT in the glbs (they're ours, applied by the player from scene.toml + clips). A read; the files ride the `/bundle/<id>/<path>` side-channel and land in a temp directory — NEVER inlined in this result. Returns `{name, bundle_dir, files:[{path, byte_len}], total_bytes, url_base}`: read/copy the bundle from `bundle_dir`, or fetch files over HTTP at `<server>/<url_base>/<path>`. Optional per-call bundle-option overrides (mesh_compression/mesh_quantization/smart_threshold_mm/texture_compression/texture_max_dim/env_max_face_size — same vocabulary as set_bundle_options) apply to THIS export only; the project-persisted options are not modified. Long bakes stream keep-alive progress, so this request does not hit the 2-minute link timeout while working."
     )]
     async fn export_player_bundle(
         &self,
@@ -2196,6 +2224,8 @@ impl EditorMcp {
             p.mesh_quantization.as_deref(),
             p.smart_threshold_mm,
             p.texture_compression.as_deref(),
+            p.texture_max_dim,
+            p.env_max_face_size,
         )?;
         let overrides = (patch != Default::default()).then_some(patch);
         match self.req(Request::ExportPlayerBundle { overrides }).await? {
@@ -3944,7 +3974,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Patch the project's PLAYER-BUNDLE export options (persisted in project.toml; consulted by every export_player_bundle). Omitted fields keep their current value. mesh_compression: off | meshopt (EXT_meshopt_compression stream encoding, default meshopt). mesh_quantization: off | always | smart (KHR_mesh_quantization; default smart = quantize only when the position grid step max-half-extent/32767 stays at or under smart_threshold_mm, default 0.1). Structural guards (morph targets, multi-skin/mixed-use meshes, IBM-less skins, out-of-[0,1] UVs) always apply, even under `always` — they are correctness, not policy. The two mesh knobs are independent: quantization without meshopt emits plain quantized bufferViews. texture_compression: ktx2 (default) | off (= lossless WebP, pixel-exact — never raw source dumps); per-texture prefs (set_texture_export) override the global either way. Applies to base mesh glbs, bundle rig copies, and coarse LOD chain glbs. Undoable. For a one-off export with different options, use export_player_bundle's per-call overrides instead."
+        description = "Patch the project's PLAYER-BUNDLE export options (persisted in project.toml; consulted by every export_player_bundle). Omitted fields keep their current value. mesh_compression: off | meshopt (EXT_meshopt_compression stream encoding, default meshopt). mesh_quantization: off | always | smart (KHR_mesh_quantization; default smart = quantize only when the position grid step max-half-extent/32767 stays at or under smart_threshold_mm, default 0.1). Structural guards (morph targets, multi-skin/mixed-use meshes, IBM-less skins, out-of-[0,1] UVs) always apply, even under `always` — they are correctness, not policy. The two mesh knobs are independent: quantization without meshopt emits plain quantized bufferViews. texture_compression: ktx2 (default) | off (= lossless WebP, pixel-exact — never raw source dumps); per-texture prefs (set_texture_export) override the global either way. texture_max_dim: cap on a bundled texture's largest dimension — bigger sources are box-filter downscaled before encoding (0 clears the cap; KTX2 encodes ALWAYS downscale to the WASM encoder's hard 12.58-Mpixel source limit regardless, which a 4096x4096 exceeds). env_max_face_size: cap on environment-cubemap face size — larger KTX2 cubemaps ship with their biggest mip levels dropped, container-level, no re-encode (a 4k-face 128 MB BC6H skybox capped at 1024 ships ~8 MB; 0 clears the cap). Applies to base mesh glbs, bundle rig copies, and coarse LOD chain glbs. Undoable. For a one-off export with different options, use export_player_bundle's per-call overrides instead."
     )]
     async fn set_bundle_options(
         &self,
@@ -3955,11 +3985,13 @@ impl EditorMcp {
             p.mesh_quantization.as_deref(),
             p.smart_threshold_mm,
             p.texture_compression.as_deref(),
+            p.texture_max_dim,
+            p.env_max_face_size,
         )?;
         if patch == Default::default() {
             return Err(McpError::invalid_params(
                 "no fields given — pass at least one of mesh_compression | mesh_quantization | \
-                 smart_threshold_mm | texture_compression",
+                 smart_threshold_mm | texture_compression | texture_max_dim | env_max_face_size",
                 None,
             ));
         }

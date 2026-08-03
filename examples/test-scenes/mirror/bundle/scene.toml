@@ -7,6 +7,36 @@ skybox = "built_in_default"
 specular = "built_in_default"
 irradiance = "built_in_default"
 
+[environment.probe]
+enabled = false
+center = [
+    0.0,
+    0.0,
+    0.0,
+]
+half_extents = [
+    10.0,
+    10.0,
+    10.0,
+]
+
+[environment.rotation]
+skybox = [
+    0.0,
+    0.0,
+    0.0,
+]
+specular = [
+    0.0,
+    0.0,
+    0.0,
+]
+irradiance = [
+    0.0,
+    0.0,
+    0.0,
+]
+
 [shadows]
 sscs_enabled = false
 sscs_step_count = 16
@@ -43,22 +73,27 @@ edge_fade = 0.03999999910593033
 resolution_scale = 1.0
 temporal = false
 temporal_weight = 0.8999999761581421
+bvh_reflections = false
 
-[assets.00000000-0000-4000-8000-000000000001]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-
-[assets.00000000-0000-4000-8000-000000000001.source.mesh.primitive.plane]
-width = 400.0
-depth = 400.0
-segments_x = 1
-segments_z = 1
+[post_process.atmosphere]
+mode = "off"
+color = [
+    0.5,
+    0.6000000238418579,
+    0.699999988079071,
+]
+density = 0.019999999552965164
+base_height = 0.0
+height_falloff = 0.0
+scattering_anisotropy = 0.30000001192092896
+volumetric_distance = 80.0
+volumetric_temporal = false
 
 [assets.00000000-0000-4000-8000-000000000013]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
+lod = "none"
 
 [assets.00000000-0000-4000-8000-000000000013.source.mesh.primitive.sphere]
 radius = 0.800000011920929
@@ -69,27 +104,18 @@ segments_lat = 32
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
+lod = "none"
 
 [assets.00000000-0000-4000-8000-000000000010.source.mesh.primitive.sphere]
 radius = 0.800000011920929
 segments_long = 48
 segments_lat = 32
 
-[assets.00000000-0000-4000-8000-000000000012]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-
-[assets.00000000-0000-4000-8000-000000000012.source.mesh.primitive.torus]
-radius = 1.0
-thickness = 0.05999999865889549
-segments_major = 64
-segments_minor = 16
-
 [assets.00000000-0000-4000-8000-000000000011]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
+lod = "none"
 
 [assets.00000000-0000-4000-8000-000000000011.source.mesh.primitive.box]
 dims = [
@@ -98,11 +124,35 @@ dims = [
     1.0,
 ]
 
+[assets.00000000-0000-4000-8000-000000000001]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.00000000-0000-4000-8000-000000000001.source.mesh.primitive.plane]
+width = 400.0
+depth = 400.0
+segments_x = 1
+segments_z = 1
+
+[assets.00000000-0000-4000-8000-000000000012]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.00000000-0000-4000-8000-000000000012.source.mesh.primitive.torus]
+radius = 1.0
+thickness = 0.05999999865889549
+segments_major = 64
+segments_minor = 16
+
 [mixer]
 layers = []
 
 [[nodes]]
-id = "bf1b9e77-433f-406c-92e2-c19d3817f00d"
+id = "3b093fef-f028-43f4-a55f-a0fbe44f8b2e"
 name = "Directional Light"
 locked = false
 visible = true
@@ -134,6 +184,7 @@ color = [
     1.0,
 ]
 intensity = 1.0
+volumetric_intensity = 1.0
 
 [nodes.kind.light.directional.shadow]
 cast = true
@@ -205,6 +256,7 @@ emissive = [
 ]
 normal_scale = 1.0
 occlusion_strength = 1.0
+ssr_mask = 1.0
 double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
@@ -223,7 +275,7 @@ cast = true
 receive = true
 
 [nodes.kind.mesh.lod]
-enabled = true
+kind = "none"
 
 [[nodes]]
 id = "00000000-0000-4000-8000-000000000010"
@@ -279,6 +331,7 @@ emissive = [
 ]
 normal_scale = 1.0
 occlusion_strength = 1.0
+ssr_mask = 1.0
 double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
@@ -297,7 +350,7 @@ cast = true
 receive = true
 
 [nodes.kind.mesh.lod]
-enabled = true
+kind = "none"
 
 [[nodes]]
 id = "00000000-0000-4000-8000-000000000011"
@@ -353,6 +406,7 @@ emissive = [
 ]
 normal_scale = 1.0
 occlusion_strength = 1.0
+ssr_mask = 1.0
 double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
@@ -371,7 +425,7 @@ cast = true
 receive = true
 
 [nodes.kind.mesh.lod]
-enabled = true
+kind = "none"
 
 [[nodes]]
 id = "00000000-0000-4000-8000-000000000012"
@@ -427,6 +481,7 @@ emissive = [
 ]
 normal_scale = 1.0
 occlusion_strength = 1.0
+ssr_mask = 1.0
 double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
@@ -445,7 +500,7 @@ cast = true
 receive = true
 
 [nodes.kind.mesh.lod]
-enabled = true
+kind = "none"
 
 [[nodes]]
 id = "00000000-0000-4000-8000-000000000013"
@@ -501,6 +556,7 @@ emissive = [
 ]
 normal_scale = 1.0
 occlusion_strength = 1.0
+ssr_mask = 1.0
 double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
@@ -519,4 +575,4 @@ cast = true
 receive = true
 
 [nodes.kind.mesh.lod]
-enabled = true
+kind = "none"

@@ -19,6 +19,23 @@ half_extents = [
     10.0,
 ]
 
+[environment.rotation]
+skybox = [
+    0.0,
+    0.0,
+    0.0,
+]
+specular = [
+    0.0,
+    0.0,
+    0.0,
+]
+irradiance = [
+    0.0,
+    0.0,
+    0.0,
+]
+
 [shadows]
 sscs_enabled = false
 sscs_step_count = 16
@@ -51,34 +68,48 @@ max_distance = 100.0
 thickness = 1.0
 max_steps = 96
 spread_cutoff = 0.6000000238418579
-edge_fade = 0.10000000149011612
+edge_fade = 0.03999999910593033
 resolution_scale = 0.5
 temporal = false
 temporal_weight = 0.8999999761581421
 bvh_reflections = false
 
-[assets.b60ad975-240a-4224-b17e-82e50b3ccce2]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = "35d278c7b7b0b9e22881b2c435e41ce8659f230c776ef8780b4a5087abbefaa1"
-texture_encoding = "ktx2"
-lod = "none"
+[post_process.atmosphere]
+mode = "off"
+color = [
+    0.5,
+    0.6000000238418579,
+    0.699999988079071,
+]
+density = 0.019999999552965164
+base_height = 0.0
+height_falloff = 0.0
+scattering_anisotropy = 0.30000001192092896
+volumetric_distance = 80.0
+volumetric_temporal = false
 
-[assets.b60ad975-240a-4224-b17e-82e50b3ccce2.source.texture.raster]
-display_name = "Cesium_Man-effect · base color.jpg"
-color_kind = "albedo"
-
-[assets.51e84d77-5f84-48c2-a27a-cef01d05066a]
-gltf_material_asset_ids = ["91ed60f5-0bc0-4ace-9b97-9f1f5cac19c8"]
-gltf_image_asset_ids = ["b60ad975-240a-4224-b17e-82e50b3ccce2"]
+[assets.8314e35d-6bc4-4291-bf19-a771745db6ed]
+gltf_material_asset_ids = ["f84aab23-cecd-470b-a939-e15c3fd91520"]
+gltf_image_asset_ids = ["1f17bdf9-19ab-4fc3-a786-36b2ff77d4cd"]
 content_hash = ""
 lod = "none"
 
-[assets.51e84d77-5f84-48c2-a27a-cef01d05066a.source]
-filename = "51e84d77-5f84-48c2-a27a-cef01d05066a.glb"
+[assets.8314e35d-6bc4-4291-bf19-a771745db6ed.source]
+filename = "8314e35d-6bc4-4291-bf19-a771745db6ed.glb"
+
+[assets.1f17bdf9-19ab-4fc3-a786-36b2ff77d4cd]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+texture_encoding = "ktx2"
+lod = "none"
+
+[assets.1f17bdf9-19ab-4fc3-a786-36b2ff77d4cd.source.texture.raster]
+display_name = "Cesium_Man-effect · base color.jpg"
+color_kind = "albedo"
 
 [[animations]]
-id = "723e120c-e5a0-4ffe-8f91-81819a83b760"
+id = "8522c756-4a41-4e85-a481-fb3824ab0143"
 name = "CesiumMan"
 duration = 1.9583333805203438
 loop_style = "loop"
@@ -144,7 +175,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "1b693187-8a5e-46ed-8fc1-9e3e3d747347"
+node = "31ea1d5a-72d3-4880-b079-69e6493b32ab"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -1501,7 +1532,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "1b693187-8a5e-46ed-8fc1-9e3e3d747347"
+node = "31ea1d5a-72d3-4880-b079-69e6493b32ab"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -3002,7 +3033,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "1b693187-8a5e-46ed-8fc1-9e3e3d747347"
+node = "31ea1d5a-72d3-4880-b079-69e6493b32ab"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -4359,7 +4390,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "0b6f6aa0-1a11-488e-88eb-3b26c11b7461"
+node = "0e62ef3f-a77d-4b51-9683-2d7c9ace7a70"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -5716,7 +5747,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "0b6f6aa0-1a11-488e-88eb-3b26c11b7461"
+node = "0e62ef3f-a77d-4b51-9683-2d7c9ace7a70"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -7217,7 +7248,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "0b6f6aa0-1a11-488e-88eb-3b26c11b7461"
+node = "0e62ef3f-a77d-4b51-9683-2d7c9ace7a70"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -8574,7 +8605,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "6b16b828-5314-4bb1-b6b9-390a9dc4aed7"
+node = "0299a0b6-ac83-4a0a-976c-8b74ff4aea64"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -9931,7 +9962,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "6b16b828-5314-4bb1-b6b9-390a9dc4aed7"
+node = "0299a0b6-ac83-4a0a-976c-8b74ff4aea64"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -11432,7 +11463,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "6b16b828-5314-4bb1-b6b9-390a9dc4aed7"
+node = "0299a0b6-ac83-4a0a-976c-8b74ff4aea64"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -12789,7 +12820,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "a8330a7b-2266-4ba4-8639-67268649e7b3"
+node = "21a92167-6f1f-4cfe-8528-ea6d76b137d7"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -14146,7 +14177,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "a8330a7b-2266-4ba4-8639-67268649e7b3"
+node = "21a92167-6f1f-4cfe-8528-ea6d76b137d7"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -15647,7 +15678,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "a8330a7b-2266-4ba4-8639-67268649e7b3"
+node = "21a92167-6f1f-4cfe-8528-ea6d76b137d7"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -17004,7 +17035,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "09b4051e-fc48-4b46-92fc-7f613cc2dca6"
+node = "80ab09f9-31e8-4754-8ab9-7232e61ea30a"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -18361,7 +18392,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "09b4051e-fc48-4b46-92fc-7f613cc2dca6"
+node = "80ab09f9-31e8-4754-8ab9-7232e61ea30a"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -19862,7 +19893,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "09b4051e-fc48-4b46-92fc-7f613cc2dca6"
+node = "80ab09f9-31e8-4754-8ab9-7232e61ea30a"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -21219,7 +21250,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "3a2231fb-0ddb-4f34-95a7-5f1ec9cb9511"
+node = "8b8caaa4-fece-4d63-a70d-3c58ba12084e"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -22576,7 +22607,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "3a2231fb-0ddb-4f34-95a7-5f1ec9cb9511"
+node = "8b8caaa4-fece-4d63-a70d-3c58ba12084e"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -24077,7 +24108,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "3a2231fb-0ddb-4f34-95a7-5f1ec9cb9511"
+node = "8b8caaa4-fece-4d63-a70d-3c58ba12084e"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -25434,7 +25465,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "878c589c-f0bd-4ed3-aacc-bd45c2a71cf4"
+node = "2919a9ac-68da-4784-8d35-f824575bdc5b"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -26791,7 +26822,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "878c589c-f0bd-4ed3-aacc-bd45c2a71cf4"
+node = "2919a9ac-68da-4784-8d35-f824575bdc5b"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -28292,7 +28323,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "878c589c-f0bd-4ed3-aacc-bd45c2a71cf4"
+node = "2919a9ac-68da-4784-8d35-f824575bdc5b"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -29649,7 +29680,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "380b79b7-b1bf-4488-a3a4-6bc01bfafdb2"
+node = "c74106fa-1ff0-42ac-966c-829c0d3ad322"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -31006,7 +31037,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "380b79b7-b1bf-4488-a3a4-6bc01bfafdb2"
+node = "c74106fa-1ff0-42ac-966c-829c0d3ad322"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -32507,7 +32538,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "380b79b7-b1bf-4488-a3a4-6bc01bfafdb2"
+node = "c74106fa-1ff0-42ac-966c-829c0d3ad322"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -33864,7 +33895,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "ab71c9dd-2ddd-47b7-8368-a918cd1e0989"
+node = "7df7b410-f18c-4f86-9482-9863eed5691c"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -35221,7 +35252,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "ab71c9dd-2ddd-47b7-8368-a918cd1e0989"
+node = "7df7b410-f18c-4f86-9482-9863eed5691c"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -36722,7 +36753,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "ab71c9dd-2ddd-47b7-8368-a918cd1e0989"
+node = "7df7b410-f18c-4f86-9482-9863eed5691c"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -38079,7 +38110,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "2ac9f580-7d9f-43fa-bc65-76d2227ff48b"
+node = "3723bca0-6738-44b8-8176-d4a455b9fc54"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -39436,7 +39467,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "2ac9f580-7d9f-43fa-bc65-76d2227ff48b"
+node = "3723bca0-6738-44b8-8176-d4a455b9fc54"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -40937,7 +40968,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "2ac9f580-7d9f-43fa-bc65-76d2227ff48b"
+node = "3723bca0-6738-44b8-8176-d4a455b9fc54"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -42294,7 +42325,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "a22494a3-1197-4c91-a0da-aa6dceda115f"
+node = "108d48c4-5a9f-47c1-9476-4e8a66f1f32a"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -43651,7 +43682,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "a22494a3-1197-4c91-a0da-aa6dceda115f"
+node = "108d48c4-5a9f-47c1-9476-4e8a66f1f32a"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -45152,7 +45183,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "a22494a3-1197-4c91-a0da-aa6dceda115f"
+node = "108d48c4-5a9f-47c1-9476-4e8a66f1f32a"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -46509,7 +46540,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "78ba43f9-4fdd-430f-ae1d-b1e3456abb60"
+node = "7950df80-cfcf-457e-9167-875f67ec0fe1"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -47866,7 +47897,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "78ba43f9-4fdd-430f-ae1d-b1e3456abb60"
+node = "7950df80-cfcf-457e-9167-875f67ec0fe1"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -49367,7 +49398,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "78ba43f9-4fdd-430f-ae1d-b1e3456abb60"
+node = "7950df80-cfcf-457e-9167-875f67ec0fe1"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -50724,7 +50755,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "a464312c-b4b2-41fe-b577-3701ab0062e7"
+node = "af7e541f-edf1-495f-9b4f-c5e2d621a90b"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -52081,7 +52112,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "a464312c-b4b2-41fe-b577-3701ab0062e7"
+node = "af7e541f-edf1-495f-9b4f-c5e2d621a90b"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -53582,7 +53613,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "a464312c-b4b2-41fe-b577-3701ab0062e7"
+node = "af7e541f-edf1-495f-9b4f-c5e2d621a90b"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -54939,7 +54970,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "5ede7b4b-d009-4d5f-9e3e-85979d38679d"
+node = "64778dea-311b-4cbe-8364-9623b540e311"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -56296,7 +56327,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "5ede7b4b-d009-4d5f-9e3e-85979d38679d"
+node = "64778dea-311b-4cbe-8364-9623b540e311"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -57797,7 +57828,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "5ede7b4b-d009-4d5f-9e3e-85979d38679d"
+node = "64778dea-311b-4cbe-8364-9623b540e311"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -59154,7 +59185,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "81c94b6d-d466-4d1a-b9b1-6984b618a6ed"
+node = "50c85330-65b4-47b8-8e3f-f614b65081bd"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -60511,7 +60542,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "81c94b6d-d466-4d1a-b9b1-6984b618a6ed"
+node = "50c85330-65b4-47b8-8e3f-f614b65081bd"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -62012,7 +62043,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "81c94b6d-d466-4d1a-b9b1-6984b618a6ed"
+node = "50c85330-65b4-47b8-8e3f-f614b65081bd"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -63369,7 +63400,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "8be8588a-59f9-4a1a-8975-671e5d88966d"
+node = "86c804dc-f844-44ca-a511-3d39f6e159ab"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -64726,7 +64757,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "8be8588a-59f9-4a1a-8975-671e5d88966d"
+node = "86c804dc-f844-44ca-a511-3d39f6e159ab"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -66227,7 +66258,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "8be8588a-59f9-4a1a-8975-671e5d88966d"
+node = "86c804dc-f844-44ca-a511-3d39f6e159ab"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -67584,7 +67615,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "5dd50c78-2c90-4e53-ac4b-cec81ede63ea"
+node = "2d4de569-48ae-4e89-b372-3842b3caa55a"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -68941,7 +68972,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "5dd50c78-2c90-4e53-ac4b-cec81ede63ea"
+node = "2d4de569-48ae-4e89-b372-3842b3caa55a"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -70442,7 +70473,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "5dd50c78-2c90-4e53-ac4b-cec81ede63ea"
+node = "2d4de569-48ae-4e89-b372-3842b3caa55a"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -71799,7 +71830,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "6648f632-2aa4-413c-98f6-26fea9954f5b"
+node = "7a96b75a-43dd-429e-a582-ac6e3ed43357"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -73156,7 +73187,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "6648f632-2aa4-413c-98f6-26fea9954f5b"
+node = "7a96b75a-43dd-429e-a582-ac6e3ed43357"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -74657,7 +74688,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "6648f632-2aa4-413c-98f6-26fea9954f5b"
+node = "7a96b75a-43dd-429e-a582-ac6e3ed43357"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -76014,7 +76045,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "188c3495-dd51-448e-b5e6-207566e81481"
+node = "a2ffef32-b5f2-4379-b7a6-e01682b23473"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -77371,7 +77402,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "188c3495-dd51-448e-b5e6-207566e81481"
+node = "a2ffef32-b5f2-4379-b7a6-e01682b23473"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -78872,7 +78903,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "188c3495-dd51-448e-b5e6-207566e81481"
+node = "a2ffef32-b5f2-4379-b7a6-e01682b23473"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -80229,7 +80260,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "f726ad33-f664-49c3-890c-6e0f222c3557"
+node = "1e4f8b0f-0be5-4281-9302-07654e83194c"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -81586,7 +81617,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "f726ad33-f664-49c3-890c-6e0f222c3557"
+node = "1e4f8b0f-0be5-4281-9302-07654e83194c"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -83087,7 +83118,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "f726ad33-f664-49c3-890c-6e0f222c3557"
+node = "1e4f8b0f-0be5-4281-9302-07654e83194c"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -84444,7 +84475,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "74fa209f-6894-4d11-9a10-59f1708a25cf"
+node = "d9e01ddc-4d72-4f52-95b1-eef3ddf82751"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -85801,7 +85832,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "74fa209f-6894-4d11-9a10-59f1708a25cf"
+node = "d9e01ddc-4d72-4f52-95b1-eef3ddf82751"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -87302,7 +87333,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "74fa209f-6894-4d11-9a10-59f1708a25cf"
+node = "d9e01ddc-4d72-4f52-95b1-eef3ddf82751"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -88659,7 +88690,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "225ee30f-57e2-49d1-9d22-35edcdd3687d"
+node = "b3ef03a3-eaaf-4b11-94e7-637b773d09a4"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -90016,7 +90047,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "225ee30f-57e2-49d1-9d22-35edcdd3687d"
+node = "b3ef03a3-eaaf-4b11-94e7-637b773d09a4"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -91517,7 +91548,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "225ee30f-57e2-49d1-9d22-35edcdd3687d"
+node = "b3ef03a3-eaaf-4b11-94e7-637b773d09a4"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -92874,7 +92905,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "89d9aad7-981a-4f48-8032-5170b35d9dda"
+node = "0c10ff99-2b4f-48d8-9088-09099291b914"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -94231,7 +94262,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "89d9aad7-981a-4f48-8032-5170b35d9dda"
+node = "0c10ff99-2b4f-48d8-9088-09099291b914"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -95732,7 +95763,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "89d9aad7-981a-4f48-8032-5170b35d9dda"
+node = "0c10ff99-2b4f-48d8-9088-09099291b914"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -97089,7 +97120,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "3f40b341-e5f6-451f-b088-3c73aca38e5a"
+node = "7d56d425-6230-425e-b00a-67376544351e"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -98446,7 +98477,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "3f40b341-e5f6-451f-b088-3c73aca38e5a"
+node = "7d56d425-6230-425e-b00a-67376544351e"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -99947,7 +99978,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "3f40b341-e5f6-451f-b088-3c73aca38e5a"
+node = "7d56d425-6230-425e-b00a-67376544351e"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -101304,7 +101335,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "676a9ffe-ee11-4db5-be6b-36c8da8737ac"
+node = "dd4b387f-7c49-416e-b757-9a231caf5ce9"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -102661,7 +102692,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "676a9ffe-ee11-4db5-be6b-36c8da8737ac"
+node = "dd4b387f-7c49-416e-b757-9a231caf5ce9"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -104162,7 +104193,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "676a9ffe-ee11-4db5-be6b-36c8da8737ac"
+node = "dd4b387f-7c49-416e-b757-9a231caf5ce9"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -105519,7 +105550,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "a2ea941c-839e-4ebb-ba41-1d0be82cdd3f"
+node = "833089e8-ba9a-4546-849f-e0e70d655e57"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -106876,7 +106907,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "a2ea941c-839e-4ebb-ba41-1d0be82cdd3f"
+node = "833089e8-ba9a-4546-849f-e0e70d655e57"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -108377,7 +108408,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "a2ea941c-839e-4ebb-ba41-1d0be82cdd3f"
+node = "833089e8-ba9a-4546-849f-e0e70d655e57"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -109734,7 +109765,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "38bd4f43-54cc-4ad8-8681-9832827af648"
+node = "bc7b9c20-43ce-4239-94ac-c40116c35fca"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -111091,7 +111122,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "38bd4f43-54cc-4ad8-8681-9832827af648"
+node = "bc7b9c20-43ce-4239-94ac-c40116c35fca"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -112592,7 +112623,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "38bd4f43-54cc-4ad8-8681-9832827af648"
+node = "bc7b9c20-43ce-4239-94ac-c40116c35fca"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -113949,7 +113980,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "319a826b-5d7b-4fd3-a0fc-e0de5bb71446"
+node = "c72130ed-4703-4c19-acd0-1c79dd01d7cc"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -115306,7 +115337,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "319a826b-5d7b-4fd3-a0fc-e0de5bb71446"
+node = "c72130ed-4703-4c19-acd0-1c79dd01d7cc"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -116807,7 +116838,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "319a826b-5d7b-4fd3-a0fc-e0de5bb71446"
+node = "c72130ed-4703-4c19-acd0-1c79dd01d7cc"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -118164,7 +118195,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "ccb12b27-6ffb-4e96-8c8b-32da15119c0e"
+node = "1ae0cc14-d6c5-49c5-b663-c11a69cd57a4"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -119521,7 +119552,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "ccb12b27-6ffb-4e96-8c8b-32da15119c0e"
+node = "1ae0cc14-d6c5-49c5-b663-c11a69cd57a4"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -121022,7 +121053,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "ccb12b27-6ffb-4e96-8c8b-32da15119c0e"
+node = "1ae0cc14-d6c5-49c5-b663-c11a69cd57a4"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -122379,7 +122410,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "d019de54-e051-4ab1-87f1-c1c7ef11c6fa"
+node = "240ff0f9-fd2a-40b4-a7fb-544c2e23f560"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -123736,7 +123767,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "d019de54-e051-4ab1-87f1-c1c7ef11c6fa"
+node = "240ff0f9-fd2a-40b4-a7fb-544c2e23f560"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -125237,7 +125268,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "d019de54-e051-4ab1-87f1-c1c7ef11c6fa"
+node = "240ff0f9-fd2a-40b4-a7fb-544c2e23f560"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -126594,7 +126625,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "e380455a-d27c-4b64-9e9a-f026c7ae56e6"
+node = "3d58a397-7d7a-45dc-9bc1-c91867081db0"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -127951,7 +127982,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "e380455a-d27c-4b64-9e9a-f026c7ae56e6"
+node = "3d58a397-7d7a-45dc-9bc1-c91867081db0"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -129452,7 +129483,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "e380455a-d27c-4b64-9e9a-f026c7ae56e6"
+node = "3d58a397-7d7a-45dc-9bc1-c91867081db0"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -130809,7 +130840,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "f8498a22-548d-4a6e-b556-124b311a6b45"
+node = "35830814-2701-4fdb-ac5a-f1fe9fa5976a"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -132166,7 +132197,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "f8498a22-548d-4a6e-b556-124b311a6b45"
+node = "35830814-2701-4fdb-ac5a-f1fe9fa5976a"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -133667,7 +133698,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "f8498a22-548d-4a6e-b556-124b311a6b45"
+node = "35830814-2701-4fdb-ac5a-f1fe9fa5976a"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -135024,7 +135055,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "84bf55d6-ada7-40be-8a9a-bdc1244b3ab2"
+node = "f560ed8d-8d6a-42f3-b364-152b9b344971"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -136381,7 +136412,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "84bf55d6-ada7-40be-8a9a-bdc1244b3ab2"
+node = "f560ed8d-8d6a-42f3-b364-152b9b344971"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -137882,7 +137913,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "84bf55d6-ada7-40be-8a9a-bdc1244b3ab2"
+node = "f560ed8d-8d6a-42f3-b364-152b9b344971"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -139239,7 +139270,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "dca6ddd2-8acd-4b24-a441-cdea824b488a"
+node = "f1b643c9-4916-41be-830d-5a656081ff2d"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -140596,7 +140627,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "dca6ddd2-8acd-4b24-a441-cdea824b488a"
+node = "f1b643c9-4916-41be-830d-5a656081ff2d"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -142097,7 +142128,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "dca6ddd2-8acd-4b24-a441-cdea824b488a"
+node = "f1b643c9-4916-41be-830d-5a656081ff2d"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -143454,7 +143485,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "1d5c7627-6958-4645-ad39-7bb476777ae0"
+node = "4dedc058-b1c2-47a7-ba83-c21176b9791d"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -144811,7 +144842,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "1d5c7627-6958-4645-ad39-7bb476777ae0"
+node = "4dedc058-b1c2-47a7-ba83-c21176b9791d"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -146312,7 +146343,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "1d5c7627-6958-4645-ad39-7bb476777ae0"
+node = "4dedc058-b1c2-47a7-ba83-c21176b9791d"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -147669,7 +147700,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "08630d5a-61cd-416e-881e-cc999b500d4a"
+node = "e59dea63-dd7b-4b50-93ce-be7c2f4e7956"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -149026,7 +149057,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "08630d5a-61cd-416e-881e-cc999b500d4a"
+node = "e59dea63-dd7b-4b50-93ce-be7c2f4e7956"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -150527,7 +150558,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "08630d5a-61cd-416e-881e-cc999b500d4a"
+node = "e59dea63-dd7b-4b50-93ce-be7c2f4e7956"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -151884,7 +151915,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "8341438b-d79f-4126-a976-d6b92fb33606"
+node = "6a757076-b055-4933-a5b4-16c00b645bef"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -153241,7 +153272,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "8341438b-d79f-4126-a976-d6b92fb33606"
+node = "6a757076-b055-4933-a5b4-16c00b645bef"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -154742,7 +154773,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "8341438b-d79f-4126-a976-d6b92fb33606"
+node = "6a757076-b055-4933-a5b4-16c00b645bef"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -156099,7 +156130,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "e929d7a3-20c2-4104-9a7b-a7fdc11aafa5"
+node = "4dba2d7c-00cd-4169-b8bb-fbea7fb42c78"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -157456,7 +157487,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "e929d7a3-20c2-4104-9a7b-a7fdc11aafa5"
+node = "4dba2d7c-00cd-4169-b8bb-fbea7fb42c78"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -158957,7 +158988,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "e929d7a3-20c2-4104-9a7b-a7fdc11aafa5"
+node = "4dba2d7c-00cd-4169-b8bb-fbea7fb42c78"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -160314,7 +160345,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "c765a1b2-b593-4553-b7b3-c27a92f88227"
+node = "00389c82-2824-47ff-a2fe-dba5b12505a3"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -161671,7 +161702,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "c765a1b2-b593-4553-b7b3-c27a92f88227"
+node = "00389c82-2824-47ff-a2fe-dba5b12505a3"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -163172,7 +163203,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "c765a1b2-b593-4553-b7b3-c27a92f88227"
+node = "00389c82-2824-47ff-a2fe-dba5b12505a3"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -164529,7 +164560,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "7b70d8a5-c1a5-445d-a93c-ae12625366a2"
+node = "117ac312-97c5-4e83-b8e1-e447f6d9ae59"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -165886,7 +165917,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "7b70d8a5-c1a5-445d-a93c-ae12625366a2"
+node = "117ac312-97c5-4e83-b8e1-e447f6d9ae59"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -167387,7 +167418,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "7b70d8a5-c1a5-445d-a93c-ae12625366a2"
+node = "117ac312-97c5-4e83-b8e1-e447f6d9ae59"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -168744,7 +168775,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "1fcccf84-db27-4827-b111-4cbaaae61ee6"
+node = "ad89d4ac-4d0d-4556-b884-fe09828094d9"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -170101,7 +170132,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "1fcccf84-db27-4827-b111-4cbaaae61ee6"
+node = "ad89d4ac-4d0d-4556-b884-fe09828094d9"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -171602,7 +171633,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "1fcccf84-db27-4827-b111-4cbaaae61ee6"
+node = "ad89d4ac-4d0d-4556-b884-fe09828094d9"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -172959,7 +172990,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "ad135e0a-8141-4fe1-a3fd-917bba48a1b9"
+node = "52aa1e46-f4e8-4286-820f-45dba7a8cee7"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -174316,7 +174347,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "ad135e0a-8141-4fe1-a3fd-917bba48a1b9"
+node = "52aa1e46-f4e8-4286-820f-45dba7a8cee7"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -175817,7 +175848,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "ad135e0a-8141-4fe1-a3fd-917bba48a1b9"
+node = "52aa1e46-f4e8-4286-820f-45dba7a8cee7"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -177174,7 +177205,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "81d4f7e4-c2b2-4391-a8b3-91065d372e4f"
+node = "d1588976-37e8-46b1-beb8-501242f0ae7d"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -178531,7 +178562,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "81d4f7e4-c2b2-4391-a8b3-91065d372e4f"
+node = "d1588976-37e8-46b1-beb8-501242f0ae7d"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -180032,7 +180063,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "81d4f7e4-c2b2-4391-a8b3-91065d372e4f"
+node = "d1588976-37e8-46b1-beb8-501242f0ae7d"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -181389,7 +181420,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "bb84808b-460e-44c1-8210-efff9b8de6b7"
+node = "2bbc0e86-6455-41f9-8d7e-28cb34824487"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -182746,7 +182777,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "bb84808b-460e-44c1-8210-efff9b8de6b7"
+node = "2bbc0e86-6455-41f9-8d7e-28cb34824487"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -184247,7 +184278,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "bb84808b-460e-44c1-8210-efff9b8de6b7"
+node = "2bbc0e86-6455-41f9-8d7e-28cb34824487"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -185604,7 +185635,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "5226d009-0e61-4d46-b17b-927da5d1e6bb"
+node = "5fda926b-1235-46a4-bf98-3a7f663b7125"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -186961,7 +186992,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "5226d009-0e61-4d46-b17b-927da5d1e6bb"
+node = "5fda926b-1235-46a4-bf98-3a7f663b7125"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -188462,7 +188493,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "5226d009-0e61-4d46-b17b-927da5d1e6bb"
+node = "5fda926b-1235-46a4-bf98-3a7f663b7125"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -189819,7 +189850,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "ebb2f69b-1e3a-4c9e-b25d-ca959958afb6"
+node = "5ffe6bfd-3b84-4d9f-9ec0-b69a2ffa05c6"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -191176,7 +191207,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "ebb2f69b-1e3a-4c9e-b25d-ca959958afb6"
+node = "5ffe6bfd-3b84-4d9f-9ec0-b69a2ffa05c6"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -192677,7 +192708,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "ebb2f69b-1e3a-4c9e-b25d-ca959958afb6"
+node = "5ffe6bfd-3b84-4d9f-9ec0-b69a2ffa05c6"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -194034,7 +194065,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "87f3654a-1d70-4a83-b310-159266f4fe86"
+node = "f58f8a0a-2571-4f18-9471-c04b1ecc41ec"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -195391,7 +195422,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "87f3654a-1d70-4a83-b310-159266f4fe86"
+node = "f58f8a0a-2571-4f18-9471-c04b1ecc41ec"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -196892,7 +196923,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "87f3654a-1d70-4a83-b310-159266f4fe86"
+node = "f58f8a0a-2571-4f18-9471-c04b1ecc41ec"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -198249,7 +198280,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "f6e14719-bf5d-4e65-a2cc-e9945274ccc5"
+node = "593f9631-9431-4bae-824f-2001a5cbe718"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -199606,7 +199637,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "f6e14719-bf5d-4e65-a2cc-e9945274ccc5"
+node = "593f9631-9431-4bae-824f-2001a5cbe718"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -201107,7 +201138,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "f6e14719-bf5d-4e65-a2cc-e9945274ccc5"
+node = "593f9631-9431-4bae-824f-2001a5cbe718"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -202464,7 +202495,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "436215a3-3d61-4c74-8938-c620bb431e31"
+node = "10368db0-a7a3-4739-af30-e256401ac418"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -203821,7 +203852,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "436215a3-3d61-4c74-8938-c620bb431e31"
+node = "10368db0-a7a3-4739-af30-e256401ac418"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -205322,7 +205353,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "436215a3-3d61-4c74-8938-c620bb431e31"
+node = "10368db0-a7a3-4739-af30-e256401ac418"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -206679,7 +206710,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "c82e4e5e-dceb-4266-9d74-3916ef91f3b0"
+node = "83b4f2e8-5055-43f7-bf87-73ddea864ce8"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -208036,7 +208067,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "c82e4e5e-dceb-4266-9d74-3916ef91f3b0"
+node = "83b4f2e8-5055-43f7-bf87-73ddea864ce8"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -209537,7 +209568,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "c82e4e5e-dceb-4266-9d74-3916ef91f3b0"
+node = "83b4f2e8-5055-43f7-bf87-73ddea864ce8"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -210894,7 +210925,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "39c57864-808a-474a-9bbf-c9ddafb3866f"
+node = "fb271146-b714-4dca-b820-d1447a232107"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -212251,7 +212282,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "39c57864-808a-474a-9bbf-c9ddafb3866f"
+node = "fb271146-b714-4dca-b820-d1447a232107"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -213752,7 +213783,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "39c57864-808a-474a-9bbf-c9ddafb3866f"
+node = "fb271146-b714-4dca-b820-d1447a232107"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -215109,7 +215140,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "0b5f8a2e-3c88-4bb2-a6ce-8a45d85451f5"
+node = "2506353b-4726-4e84-b1d4-c48b5e32ef6d"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -216466,7 +216497,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "0b5f8a2e-3c88-4bb2-a6ce-8a45d85451f5"
+node = "2506353b-4726-4e84-b1d4-c48b5e32ef6d"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -217967,7 +217998,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "0b5f8a2e-3c88-4bb2-a6ce-8a45d85451f5"
+node = "2506353b-4726-4e84-b1d4-c48b5e32ef6d"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -219324,7 +219355,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "61faab59-c8d4-4ada-8f34-6261cd3634b9"
+node = "9c3af345-75c2-4dea-a10e-1f75ff14088c"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -220681,7 +220712,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "61faab59-c8d4-4ada-8f34-6261cd3634b9"
+node = "9c3af345-75c2-4dea-a10e-1f75ff14088c"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -222182,7 +222213,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "61faab59-c8d4-4ada-8f34-6261cd3634b9"
+node = "9c3af345-75c2-4dea-a10e-1f75ff14088c"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -223539,7 +223570,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "9af72aed-7d41-4775-b5d7-79b9e5b296cf"
+node = "b44c62b9-e62d-4f99-8959-50db457f75ee"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -224896,7 +224927,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "9af72aed-7d41-4775-b5d7-79b9e5b296cf"
+node = "b44c62b9-e62d-4f99-8959-50db457f75ee"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -226397,7 +226428,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "9af72aed-7d41-4775-b5d7-79b9e5b296cf"
+node = "b44c62b9-e62d-4f99-8959-50db457f75ee"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -227754,7 +227785,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "ae01871a-eb2a-4e60-b25e-7dbee256f34b"
+node = "df99a30c-e88a-4bf4-b54f-331267ef2361"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -229111,7 +229142,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "ae01871a-eb2a-4e60-b25e-7dbee256f34b"
+node = "df99a30c-e88a-4bf4-b54f-331267ef2361"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -230612,7 +230643,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "ae01871a-eb2a-4e60-b25e-7dbee256f34b"
+node = "df99a30c-e88a-4bf4-b54f-331267ef2361"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -231969,7 +232000,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "9d38bfda-f74a-4664-a217-5a7208c1e680"
+node = "42ae32e4-c7f9-4e51-a413-0ed732de9049"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -233326,7 +233357,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "9d38bfda-f74a-4664-a217-5a7208c1e680"
+node = "42ae32e4-c7f9-4e51-a413-0ed732de9049"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -234827,7 +234858,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "9d38bfda-f74a-4664-a217-5a7208c1e680"
+node = "42ae32e4-c7f9-4e51-a413-0ed732de9049"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -236184,7 +236215,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "737b31ef-b2fd-4ad4-8310-2be539bf4a14"
+node = "adcf14a8-1281-4a92-a2c7-9b55978fe1ef"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -237541,7 +237572,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "737b31ef-b2fd-4ad4-8310-2be539bf4a14"
+node = "adcf14a8-1281-4a92-a2c7-9b55978fe1ef"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -239042,7 +239073,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "737b31ef-b2fd-4ad4-8310-2be539bf4a14"
+node = "adcf14a8-1281-4a92-a2c7-9b55978fe1ef"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -240399,7 +240430,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "3498b81b-affb-4915-aeee-ada52057c8df"
+node = "eba8e49b-88da-40de-ba0d-45a2c9ff9cc4"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -241756,7 +241787,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "3498b81b-affb-4915-aeee-ada52057c8df"
+node = "eba8e49b-88da-40de-ba0d-45a2c9ff9cc4"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -243257,7 +243288,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "3498b81b-affb-4915-aeee-ada52057c8df"
+node = "eba8e49b-88da-40de-ba0d-45a2c9ff9cc4"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -244614,7 +244645,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "88ee9565-e1c3-4d6e-a419-935c968d2de8"
+node = "c1b9eeef-b471-434c-b4d1-bae94b5c7ac2"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -245971,7 +246002,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "88ee9565-e1c3-4d6e-a419-935c968d2de8"
+node = "c1b9eeef-b471-434c-b4d1-bae94b5c7ac2"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -247472,7 +247503,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "88ee9565-e1c3-4d6e-a419-935c968d2de8"
+node = "c1b9eeef-b471-434c-b4d1-bae94b5c7ac2"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -248829,7 +248860,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "a8dd5238-a397-4162-bca4-9b3d4ba8c8e3"
+node = "0fe81231-b48f-4576-9269-e1ff558d8caa"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -250186,7 +250217,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "a8dd5238-a397-4162-bca4-9b3d4ba8c8e3"
+node = "0fe81231-b48f-4576-9269-e1ff558d8caa"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -251687,7 +251718,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "a8dd5238-a397-4162-bca4-9b3d4ba8c8e3"
+node = "0fe81231-b48f-4576-9269-e1ff558d8caa"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -253044,7 +253075,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "b877e32f-7424-4a49-b610-727b4cd60587"
+node = "3f82f8ca-8f3d-4f39-8fd2-d4cefc93396a"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -254401,7 +254432,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "b877e32f-7424-4a49-b610-727b4cd60587"
+node = "3f82f8ca-8f3d-4f39-8fd2-d4cefc93396a"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -255902,7 +255933,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "b877e32f-7424-4a49-b610-727b4cd60587"
+node = "3f82f8ca-8f3d-4f39-8fd2-d4cefc93396a"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -257259,7 +257290,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "1be8ca07-ec08-4fa4-8e92-4ba692cf9a0e"
+node = "64e40ba4-3556-4360-8493-3e98af620865"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -258616,7 +258647,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "1be8ca07-ec08-4fa4-8e92-4ba692cf9a0e"
+node = "64e40ba4-3556-4360-8493-3e98af620865"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -260117,7 +260148,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "1be8ca07-ec08-4fa4-8e92-4ba692cf9a0e"
+node = "64e40ba4-3556-4360-8493-3e98af620865"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -261474,7 +261505,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "ba78e173-4106-44f6-a764-04ad552ee6b7"
+node = "7da52a3e-8758-427c-8f3c-55597cb70a5a"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -262831,7 +262862,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "ba78e173-4106-44f6-a764-04ad552ee6b7"
+node = "7da52a3e-8758-427c-8f3c-55597cb70a5a"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -264332,7 +264363,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "ba78e173-4106-44f6-a764-04ad552ee6b7"
+node = "7da52a3e-8758-427c-8f3c-55597cb70a5a"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -265689,7 +265720,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "e17ed10d-7a96-4193-a3b0-5d83d518655f"
+node = "87b38ba2-7131-4fc2-beb8-385dfc9777d3"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -267046,7 +267077,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "e17ed10d-7a96-4193-a3b0-5d83d518655f"
+node = "87b38ba2-7131-4fc2-beb8-385dfc9777d3"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -268547,7 +268578,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "e17ed10d-7a96-4193-a3b0-5d83d518655f"
+node = "87b38ba2-7131-4fc2-beb8-385dfc9777d3"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -269904,7 +269935,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "9e2f3e50-826f-471b-8505-8c5579295110"
+node = "9ad1c1d9-653f-4268-b3b2-c8cd4da5093a"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -271261,7 +271292,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "9e2f3e50-826f-471b-8505-8c5579295110"
+node = "9ad1c1d9-653f-4268-b3b2-c8cd4da5093a"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -272762,7 +272793,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "9e2f3e50-826f-471b-8505-8c5579295110"
+node = "9ad1c1d9-653f-4268-b3b2-c8cd4da5093a"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -274119,7 +274150,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "85d34479-cbd4-4b2b-a0a0-8a30a99b7e8c"
+node = "38e62efd-9627-448f-ba4b-4e279413c9e4"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -275476,7 +275507,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "85d34479-cbd4-4b2b-a0a0-8a30a99b7e8c"
+node = "38e62efd-9627-448f-ba4b-4e279413c9e4"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -276977,7 +277008,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "85d34479-cbd4-4b2b-a0a0-8a30a99b7e8c"
+node = "38e62efd-9627-448f-ba4b-4e279413c9e4"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -278334,7 +278365,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "e5b14264-9f16-419e-87ce-e6d828ca00e1"
+node = "30aa52cc-ed58-40b7-8038-76d61da3f49d"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -279691,7 +279722,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "e5b14264-9f16-419e-87ce-e6d828ca00e1"
+node = "30aa52cc-ed58-40b7-8038-76d61da3f49d"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -281192,7 +281223,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "e5b14264-9f16-419e-87ce-e6d828ca00e1"
+node = "30aa52cc-ed58-40b7-8038-76d61da3f49d"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -282549,7 +282580,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "bcc3fedb-34c6-4631-a2f6-3429c14c91a5"
+node = "faad8666-0054-4e8d-92cc-3d91a340100e"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -283906,7 +283937,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "bcc3fedb-34c6-4631-a2f6-3429c14c91a5"
+node = "faad8666-0054-4e8d-92cc-3d91a340100e"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -285407,7 +285438,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "bcc3fedb-34c6-4631-a2f6-3429c14c91a5"
+node = "faad8666-0054-4e8d-92cc-3d91a340100e"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -286764,7 +286795,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "af0c5a50-6861-4fb1-ac67-0b23fcf7bbbe"
+node = "28f1eae8-c7ad-43a0-957d-e3fd17d187aa"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -288121,7 +288152,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "af0c5a50-6861-4fb1-ac67-0b23fcf7bbbe"
+node = "28f1eae8-c7ad-43a0-957d-e3fd17d187aa"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -289622,7 +289653,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "af0c5a50-6861-4fb1-ac67-0b23fcf7bbbe"
+node = "28f1eae8-c7ad-43a0-957d-e3fd17d187aa"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -290979,7 +291010,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "91073760-542e-4b02-9d5a-fdb5efbff9e8"
+node = "af0fdf11-94d5-4a40-afb2-65ae98524d0f"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -292336,7 +292367,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "91073760-542e-4b02-9d5a-fdb5efbff9e8"
+node = "af0fdf11-94d5-4a40-afb2-65ae98524d0f"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -293837,7 +293868,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "91073760-542e-4b02-9d5a-fdb5efbff9e8"
+node = "af0fdf11-94d5-4a40-afb2-65ae98524d0f"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -295194,7 +295225,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "ada45d41-026a-4f94-b4a9-20d02a0b6e4d"
+node = "8a177387-48f2-4909-b294-3d02e33c7714"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -296551,7 +296582,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "ada45d41-026a-4f94-b4a9-20d02a0b6e4d"
+node = "8a177387-48f2-4909-b294-3d02e33c7714"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -298052,7 +298083,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "ada45d41-026a-4f94-b4a9-20d02a0b6e4d"
+node = "8a177387-48f2-4909-b294-3d02e33c7714"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -299409,7 +299440,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "8a2b3165-c899-48a1-94c1-892605993070"
+node = "38d0ba88-cd0f-44d1-9077-9f782a6eb6dc"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -300766,7 +300797,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "8a2b3165-c899-48a1-94c1-892605993070"
+node = "38d0ba88-cd0f-44d1-9077-9f782a6eb6dc"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -302267,7 +302298,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "8a2b3165-c899-48a1-94c1-892605993070"
+node = "38d0ba88-cd0f-44d1-9077-9f782a6eb6dc"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -303624,7 +303655,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "70d9fa56-f0d7-4db3-b89c-ae753f5c3330"
+node = "9fd8dff3-9428-43ae-a249-01064b04ff93"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -304981,7 +305012,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "70d9fa56-f0d7-4db3-b89c-ae753f5c3330"
+node = "9fd8dff3-9428-43ae-a249-01064b04ff93"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -306482,7 +306513,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "70d9fa56-f0d7-4db3-b89c-ae753f5c3330"
+node = "9fd8dff3-9428-43ae-a249-01064b04ff93"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -307839,7 +307870,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "e7c7a109-de56-48b2-bcaa-dedfd0f6ac46"
+node = "e0d7f0ee-9e4f-476b-bb65-ec4513d90b03"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -309196,7 +309227,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "e7c7a109-de56-48b2-bcaa-dedfd0f6ac46"
+node = "e0d7f0ee-9e4f-476b-bb65-ec4513d90b03"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -310697,7 +310728,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "e7c7a109-de56-48b2-bcaa-dedfd0f6ac46"
+node = "e0d7f0ee-9e4f-476b-bb65-ec4513d90b03"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -312054,7 +312085,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "8c76bdc4-9346-4eb4-862b-c3b69de18a7b"
+node = "29c3dbfc-dc69-40ec-9405-c8cc473bcd67"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -313411,7 +313442,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "8c76bdc4-9346-4eb4-862b-c3b69de18a7b"
+node = "29c3dbfc-dc69-40ec-9405-c8cc473bcd67"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -314912,7 +314943,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "8c76bdc4-9346-4eb4-862b-c3b69de18a7b"
+node = "29c3dbfc-dc69-40ec-9405-c8cc473bcd67"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -316269,7 +316300,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "7db241a1-354b-4644-a43f-3258b4e3e62c"
+node = "b89b21c7-ee21-4b58-89e2-a89725ddca4f"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -317626,7 +317657,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "7db241a1-354b-4644-a43f-3258b4e3e62c"
+node = "b89b21c7-ee21-4b58-89e2-a89725ddca4f"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -319127,7 +319158,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "7db241a1-354b-4644-a43f-3258b4e3e62c"
+node = "b89b21c7-ee21-4b58-89e2-a89725ddca4f"
 prop = "scale"
 
 [[animations.tracks.keys]]
@@ -320430,7 +320461,7 @@ value = [
 layers = []
 
 [[nodes]]
-id = "497388d3-309c-4c3a-aa82-fc8ece492fe0"
+id = "75558ebd-77be-4252-9a51-64aa8c697ec4"
 name = "Directional Light"
 locked = false
 visible = true
@@ -320462,6 +320493,7 @@ color = [
     1.0,
 ]
 intensity = 4.0
+volumetric_intensity = 1.0
 
 [nodes.kind.light.directional.shadow]
 cast = true
@@ -320480,7 +320512,7 @@ far_cascade_update_rate = "every4_frames"
 cube_face_update_rate = "every_frame"
 
 [[nodes]]
-id = "f18ec434-e5bc-4670-a070-cbf461fcf11a"
+id = "da7fdea1-a514-4fb5-bff4-1eba18f48723"
 name = "Z_UP"
 kind = "group"
 locked = false
@@ -320506,7 +320538,7 @@ scale = [
 ]
 
 [[nodes.children]]
-id = "8de1494a-88d4-4262-9aa7-d20ed675f0b7"
+id = "a0b5b3eb-e37f-4b4e-8bae-da0eb1214312"
 name = "Armature"
 kind = "group"
 locked = false
@@ -320532,7 +320564,7 @@ scale = [
 ]
 
 [[nodes.children.children]]
-id = "1b693187-8a5e-46ed-8fc1-9e3e3d747347"
+id = "31ea1d5a-72d3-4880-b079-69e6493b32ab"
 name = "Skeleton_torso_joint_1"
 kind = "group"
 locked = false
@@ -320558,7 +320590,7 @@ scale = [
 ]
 
 [[nodes.children.children.children]]
-id = "0b6f6aa0-1a11-488e-88eb-3b26c11b7461"
+id = "0e62ef3f-a77d-4b51-9683-2d7c9ace7a70"
 name = "Skeleton_torso_joint_2"
 kind = "group"
 locked = false
@@ -320584,7 +320616,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children]]
-id = "6b16b828-5314-4bb1-b6b9-390a9dc4aed7"
+id = "0299a0b6-ac83-4a0a-976c-8b74ff4aea64"
 name = "torso_joint_3"
 kind = "group"
 locked = false
@@ -320610,7 +320642,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children]]
-id = "a8330a7b-2266-4ba4-8639-67268649e7b3"
+id = "21a92167-6f1f-4cfe-8528-ea6d76b137d7"
 name = "Skeleton_neck_joint_1"
 kind = "group"
 locked = false
@@ -320636,7 +320668,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children.children]]
-id = "09b4051e-fc48-4b46-92fc-7f613cc2dca6"
+id = "80ab09f9-31e8-4754-8ab9-7232e61ea30a"
 name = "Skeleton_neck_joint_2"
 kind = "group"
 locked = false
@@ -320663,7 +320695,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children]]
-id = "3a2231fb-0ddb-4f34-95a7-5f1ec9cb9511"
+id = "8b8caaa4-fece-4d63-a70d-3c58ba12084e"
 name = "Skeleton_arm_joint_L__4_"
 kind = "group"
 locked = false
@@ -320689,7 +320721,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children.children]]
-id = "878c589c-f0bd-4ed3-aacc-bd45c2a71cf4"
+id = "2919a9ac-68da-4784-8d35-f824575bdc5b"
 name = "Skeleton_arm_joint_L__3_"
 kind = "group"
 locked = false
@@ -320715,7 +320747,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children.children.children]]
-id = "380b79b7-b1bf-4488-a3a4-6bc01bfafdb2"
+id = "c74106fa-1ff0-42ac-966c-829c0d3ad322"
 name = "Skeleton_arm_joint_L__2_"
 kind = "group"
 locked = false
@@ -320742,7 +320774,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children]]
-id = "ab71c9dd-2ddd-47b7-8368-a918cd1e0989"
+id = "7df7b410-f18c-4f86-9482-9863eed5691c"
 name = "Skeleton_arm_joint_R"
 kind = "group"
 locked = false
@@ -320768,7 +320800,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children.children]]
-id = "2ac9f580-7d9f-43fa-bc65-76d2227ff48b"
+id = "3723bca0-6738-44b8-8176-d4a455b9fc54"
 name = "Skeleton_arm_joint_R__2_"
 kind = "group"
 locked = false
@@ -320794,7 +320826,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children.children.children]]
-id = "a22494a3-1197-4c91-a0da-aa6dceda115f"
+id = "108d48c4-5a9f-47c1-9476-4e8a66f1f32a"
 name = "Skeleton_arm_joint_R__3_"
 kind = "group"
 locked = false
@@ -320821,7 +320853,7 @@ scale = [
 ]
 
 [[nodes.children.children.children]]
-id = "78ba43f9-4fdd-430f-ae1d-b1e3456abb60"
+id = "7950df80-cfcf-457e-9167-875f67ec0fe1"
 name = "leg_joint_L_1"
 kind = "group"
 locked = false
@@ -320847,7 +320879,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children]]
-id = "a464312c-b4b2-41fe-b577-3701ab0062e7"
+id = "af7e541f-edf1-495f-9b4f-c5e2d621a90b"
 name = "leg_joint_L_2"
 kind = "group"
 locked = false
@@ -320873,7 +320905,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children]]
-id = "5ede7b4b-d009-4d5f-9e3e-85979d38679d"
+id = "64778dea-311b-4cbe-8364-9623b540e311"
 name = "leg_joint_L_3"
 kind = "group"
 locked = false
@@ -320899,7 +320931,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children.children]]
-id = "81c94b6d-d466-4d1a-b9b1-6984b618a6ed"
+id = "50c85330-65b4-47b8-8e3f-f614b65081bd"
 name = "leg_joint_L_5"
 kind = "group"
 locked = false
@@ -320926,7 +320958,7 @@ scale = [
 ]
 
 [[nodes.children.children.children]]
-id = "8be8588a-59f9-4a1a-8975-671e5d88966d"
+id = "86c804dc-f844-44ca-a511-3d39f6e159ab"
 name = "leg_joint_R_1"
 kind = "group"
 locked = false
@@ -320952,7 +320984,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children]]
-id = "5dd50c78-2c90-4e53-ac4b-cec81ede63ea"
+id = "2d4de569-48ae-4e89-b372-3842b3caa55a"
 name = "leg_joint_R_2"
 kind = "group"
 locked = false
@@ -320978,7 +321010,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children]]
-id = "6648f632-2aa4-413c-98f6-26fea9954f5b"
+id = "7a96b75a-43dd-429e-a582-ac6e3ed43357"
 name = "leg_joint_R_3"
 kind = "group"
 locked = false
@@ -321004,7 +321036,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children.children]]
-id = "188c3495-dd51-448e-b5e6-207566e81481"
+id = "a2ffef32-b5f2-4379-b7a6-e01682b23473"
 name = "leg_joint_R_5"
 kind = "group"
 locked = false
@@ -321031,7 +321063,7 @@ scale = [
 ]
 
 [[nodes.children.children]]
-id = "8086fdbc-467a-47b6-8d9d-5f6a3e785727"
+id = "6dfd7122-dd1b-43fc-9f1b-b6983556151c"
 name = "Cesium_Man"
 locked = false
 visible = true
@@ -321057,95 +321089,95 @@ scale = [
 ]
 
 [nodes.children.children.kind.skinned_mesh]
-selected_variant = "8d89c450-10d9-4663-a0a6-630f15ef6175"
+selected_variant = "a178799e-1f0a-44ba-b278-cca5ed570bd1"
 
 [nodes.children.children.kind.skinned_mesh.skin]
-source = "51e84d77-5f84-48c2-a27a-cef01d05066a"
+source = "8314e35d-6bc4-4291-bf19-a771745db6ed"
 node_index = 2
 rig_node_index = 21
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "1b693187-8a5e-46ed-8fc1-9e3e3d747347"
+node = "31ea1d5a-72d3-4880-b079-69e6493b32ab"
 index = 2
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "0b6f6aa0-1a11-488e-88eb-3b26c11b7461"
+node = "0e62ef3f-a77d-4b51-9683-2d7c9ace7a70"
 index = 3
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "6b16b828-5314-4bb1-b6b9-390a9dc4aed7"
+node = "0299a0b6-ac83-4a0a-976c-8b74ff4aea64"
 index = 4
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "a8330a7b-2266-4ba4-8639-67268649e7b3"
+node = "21a92167-6f1f-4cfe-8528-ea6d76b137d7"
 index = 5
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "09b4051e-fc48-4b46-92fc-7f613cc2dca6"
+node = "80ab09f9-31e8-4754-8ab9-7232e61ea30a"
 index = 6
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "3a2231fb-0ddb-4f34-95a7-5f1ec9cb9511"
+node = "8b8caaa4-fece-4d63-a70d-3c58ba12084e"
 index = 7
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "878c589c-f0bd-4ed3-aacc-bd45c2a71cf4"
+node = "2919a9ac-68da-4784-8d35-f824575bdc5b"
 index = 8
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "380b79b7-b1bf-4488-a3a4-6bc01bfafdb2"
+node = "c74106fa-1ff0-42ac-966c-829c0d3ad322"
 index = 9
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "ab71c9dd-2ddd-47b7-8368-a918cd1e0989"
+node = "7df7b410-f18c-4f86-9482-9863eed5691c"
 index = 10
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "2ac9f580-7d9f-43fa-bc65-76d2227ff48b"
+node = "3723bca0-6738-44b8-8176-d4a455b9fc54"
 index = 11
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "a22494a3-1197-4c91-a0da-aa6dceda115f"
+node = "108d48c4-5a9f-47c1-9476-4e8a66f1f32a"
 index = 12
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "78ba43f9-4fdd-430f-ae1d-b1e3456abb60"
+node = "7950df80-cfcf-457e-9167-875f67ec0fe1"
 index = 13
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "a464312c-b4b2-41fe-b577-3701ab0062e7"
+node = "af7e541f-edf1-495f-9b4f-c5e2d621a90b"
 index = 14
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "5ede7b4b-d009-4d5f-9e3e-85979d38679d"
+node = "64778dea-311b-4cbe-8364-9623b540e311"
 index = 15
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "81c94b6d-d466-4d1a-b9b1-6984b618a6ed"
+node = "50c85330-65b4-47b8-8e3f-f614b65081bd"
 index = 16
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "8be8588a-59f9-4a1a-8975-671e5d88966d"
+node = "86c804dc-f844-44ca-a511-3d39f6e159ab"
 index = 17
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "5dd50c78-2c90-4e53-ac4b-cec81ede63ea"
+node = "2d4de569-48ae-4e89-b372-3842b3caa55a"
 index = 18
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "6648f632-2aa4-413c-98f6-26fea9954f5b"
+node = "7a96b75a-43dd-429e-a582-ac6e3ed43357"
 index = 19
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "188c3495-dd51-448e-b5e6-207566e81481"
+node = "a2ffef32-b5f2-4379-b7a6-e01682b23473"
 index = 20
 
 [[nodes.children.children.kind.skinned_mesh.material_variants]]
-id = "8d89c450-10d9-4663-a0a6-630f15ef6175"
+id = "a178799e-1f0a-44ba-b278-cca5ed570bd1"
 name = "Cesium_Man-effect"
 
 [nodes.children.children.kind.skinned_mesh.material_variants.instance]
-asset = "91ed60f5-0bc0-4ace-9b97-9f1f5cac19c8"
+asset = "f84aab23-cecd-470b-a939-e15c3fd91520"
 
 [nodes.children.children.kind.skinned_mesh.material_variants.instance.inline]
 label = "Cesium_Man-effect"
@@ -321171,7 +321203,7 @@ alpha_mode = "opaque"
 shading = "pbr"
 
 [nodes.children.children.kind.skinned_mesh.material_variants.instance.inline.base_color_texture]
-asset = "b60ad975-240a-4224-b17e-82e50b3ccce2"
+asset = "1f17bdf9-19ab-4fc3-a786-36b2ff77d4cd"
 
 [nodes.children.children.kind.skinned_mesh.material_variants.instance.inline.base_color_texture.sampler]
 wrap_u = "repeat"
@@ -321196,7 +321228,7 @@ receive = true
 kind = "none"
 
 [[nodes]]
-id = "9ab6bc22-b42c-476d-8408-65d0d91b8898"
+id = "029f1a80-f02f-4ec9-8499-33ea09a30901"
 name = "Z_UP"
 kind = "group"
 locked = false
@@ -321222,7 +321254,7 @@ scale = [
 ]
 
 [[nodes.children]]
-id = "952a42ac-cdd8-4240-84a9-8e8ec170953d"
+id = "ce8652b1-1b23-446a-b9d6-70c5d1e60e55"
 name = "Armature"
 kind = "group"
 locked = false
@@ -321248,7 +321280,7 @@ scale = [
 ]
 
 [[nodes.children.children]]
-id = "3498b81b-affb-4915-aeee-ada52057c8df"
+id = "eba8e49b-88da-40de-ba0d-45a2c9ff9cc4"
 name = "Skeleton_torso_joint_1"
 kind = "group"
 locked = false
@@ -321274,7 +321306,7 @@ scale = [
 ]
 
 [[nodes.children.children.children]]
-id = "88ee9565-e1c3-4d6e-a419-935c968d2de8"
+id = "c1b9eeef-b471-434c-b4d1-bae94b5c7ac2"
 name = "Skeleton_torso_joint_2"
 kind = "group"
 locked = false
@@ -321300,7 +321332,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children]]
-id = "a8dd5238-a397-4162-bca4-9b3d4ba8c8e3"
+id = "0fe81231-b48f-4576-9269-e1ff558d8caa"
 name = "torso_joint_3"
 kind = "group"
 locked = false
@@ -321326,7 +321358,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children]]
-id = "b877e32f-7424-4a49-b610-727b4cd60587"
+id = "3f82f8ca-8f3d-4f39-8fd2-d4cefc93396a"
 name = "Skeleton_neck_joint_1"
 kind = "group"
 locked = false
@@ -321352,7 +321384,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children.children]]
-id = "1be8ca07-ec08-4fa4-8e92-4ba692cf9a0e"
+id = "64e40ba4-3556-4360-8493-3e98af620865"
 name = "Skeleton_neck_joint_2"
 kind = "group"
 locked = false
@@ -321379,7 +321411,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children]]
-id = "ba78e173-4106-44f6-a764-04ad552ee6b7"
+id = "7da52a3e-8758-427c-8f3c-55597cb70a5a"
 name = "Skeleton_arm_joint_L__4_"
 kind = "group"
 locked = false
@@ -321405,7 +321437,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children.children]]
-id = "e17ed10d-7a96-4193-a3b0-5d83d518655f"
+id = "87b38ba2-7131-4fc2-beb8-385dfc9777d3"
 name = "Skeleton_arm_joint_L__3_"
 kind = "group"
 locked = false
@@ -321431,7 +321463,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children.children.children]]
-id = "9e2f3e50-826f-471b-8505-8c5579295110"
+id = "9ad1c1d9-653f-4268-b3b2-c8cd4da5093a"
 name = "Skeleton_arm_joint_L__2_"
 kind = "group"
 locked = false
@@ -321458,7 +321490,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children]]
-id = "85d34479-cbd4-4b2b-a0a0-8a30a99b7e8c"
+id = "38e62efd-9627-448f-ba4b-4e279413c9e4"
 name = "Skeleton_arm_joint_R"
 kind = "group"
 locked = false
@@ -321484,7 +321516,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children.children]]
-id = "e5b14264-9f16-419e-87ce-e6d828ca00e1"
+id = "30aa52cc-ed58-40b7-8038-76d61da3f49d"
 name = "Skeleton_arm_joint_R__2_"
 kind = "group"
 locked = false
@@ -321510,7 +321542,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children.children.children]]
-id = "bcc3fedb-34c6-4631-a2f6-3429c14c91a5"
+id = "faad8666-0054-4e8d-92cc-3d91a340100e"
 name = "Skeleton_arm_joint_R__3_"
 kind = "group"
 locked = false
@@ -321537,7 +321569,7 @@ scale = [
 ]
 
 [[nodes.children.children.children]]
-id = "af0c5a50-6861-4fb1-ac67-0b23fcf7bbbe"
+id = "28f1eae8-c7ad-43a0-957d-e3fd17d187aa"
 name = "leg_joint_L_1"
 kind = "group"
 locked = false
@@ -321563,7 +321595,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children]]
-id = "91073760-542e-4b02-9d5a-fdb5efbff9e8"
+id = "af0fdf11-94d5-4a40-afb2-65ae98524d0f"
 name = "leg_joint_L_2"
 kind = "group"
 locked = false
@@ -321589,7 +321621,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children]]
-id = "ada45d41-026a-4f94-b4a9-20d02a0b6e4d"
+id = "8a177387-48f2-4909-b294-3d02e33c7714"
 name = "leg_joint_L_3"
 kind = "group"
 locked = false
@@ -321615,7 +321647,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children.children]]
-id = "8a2b3165-c899-48a1-94c1-892605993070"
+id = "38d0ba88-cd0f-44d1-9077-9f782a6eb6dc"
 name = "leg_joint_L_5"
 kind = "group"
 locked = false
@@ -321642,7 +321674,7 @@ scale = [
 ]
 
 [[nodes.children.children.children]]
-id = "70d9fa56-f0d7-4db3-b89c-ae753f5c3330"
+id = "9fd8dff3-9428-43ae-a249-01064b04ff93"
 name = "leg_joint_R_1"
 kind = "group"
 locked = false
@@ -321668,7 +321700,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children]]
-id = "e7c7a109-de56-48b2-bcaa-dedfd0f6ac46"
+id = "e0d7f0ee-9e4f-476b-bb65-ec4513d90b03"
 name = "leg_joint_R_2"
 kind = "group"
 locked = false
@@ -321694,7 +321726,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children]]
-id = "8c76bdc4-9346-4eb4-862b-c3b69de18a7b"
+id = "29c3dbfc-dc69-40ec-9405-c8cc473bcd67"
 name = "leg_joint_R_3"
 kind = "group"
 locked = false
@@ -321720,7 +321752,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children.children]]
-id = "7db241a1-354b-4644-a43f-3258b4e3e62c"
+id = "b89b21c7-ee21-4b58-89e2-a89725ddca4f"
 name = "leg_joint_R_5"
 kind = "group"
 locked = false
@@ -321747,7 +321779,7 @@ scale = [
 ]
 
 [[nodes.children.children]]
-id = "d51cb370-ab63-424f-93aa-9f8a72cbf0b7"
+id = "99256e4e-3ca5-4001-9e2b-5f24351592a7"
 name = "Cesium_Man"
 locked = false
 visible = true
@@ -321773,95 +321805,95 @@ scale = [
 ]
 
 [nodes.children.children.kind.skinned_mesh]
-selected_variant = "8d89c450-10d9-4663-a0a6-630f15ef6175"
+selected_variant = "a178799e-1f0a-44ba-b278-cca5ed570bd1"
 
 [nodes.children.children.kind.skinned_mesh.skin]
-source = "51e84d77-5f84-48c2-a27a-cef01d05066a"
+source = "8314e35d-6bc4-4291-bf19-a771745db6ed"
 node_index = 2
 rig_node_index = 21
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "3498b81b-affb-4915-aeee-ada52057c8df"
+node = "eba8e49b-88da-40de-ba0d-45a2c9ff9cc4"
 index = 2
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "88ee9565-e1c3-4d6e-a419-935c968d2de8"
+node = "c1b9eeef-b471-434c-b4d1-bae94b5c7ac2"
 index = 3
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "a8dd5238-a397-4162-bca4-9b3d4ba8c8e3"
+node = "0fe81231-b48f-4576-9269-e1ff558d8caa"
 index = 4
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "b877e32f-7424-4a49-b610-727b4cd60587"
+node = "3f82f8ca-8f3d-4f39-8fd2-d4cefc93396a"
 index = 5
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "1be8ca07-ec08-4fa4-8e92-4ba692cf9a0e"
+node = "64e40ba4-3556-4360-8493-3e98af620865"
 index = 6
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "ba78e173-4106-44f6-a764-04ad552ee6b7"
+node = "7da52a3e-8758-427c-8f3c-55597cb70a5a"
 index = 7
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "e17ed10d-7a96-4193-a3b0-5d83d518655f"
+node = "87b38ba2-7131-4fc2-beb8-385dfc9777d3"
 index = 8
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "9e2f3e50-826f-471b-8505-8c5579295110"
+node = "9ad1c1d9-653f-4268-b3b2-c8cd4da5093a"
 index = 9
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "85d34479-cbd4-4b2b-a0a0-8a30a99b7e8c"
+node = "38e62efd-9627-448f-ba4b-4e279413c9e4"
 index = 10
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "e5b14264-9f16-419e-87ce-e6d828ca00e1"
+node = "30aa52cc-ed58-40b7-8038-76d61da3f49d"
 index = 11
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "bcc3fedb-34c6-4631-a2f6-3429c14c91a5"
+node = "faad8666-0054-4e8d-92cc-3d91a340100e"
 index = 12
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "af0c5a50-6861-4fb1-ac67-0b23fcf7bbbe"
+node = "28f1eae8-c7ad-43a0-957d-e3fd17d187aa"
 index = 13
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "91073760-542e-4b02-9d5a-fdb5efbff9e8"
+node = "af0fdf11-94d5-4a40-afb2-65ae98524d0f"
 index = 14
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "ada45d41-026a-4f94-b4a9-20d02a0b6e4d"
+node = "8a177387-48f2-4909-b294-3d02e33c7714"
 index = 15
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "8a2b3165-c899-48a1-94c1-892605993070"
+node = "38d0ba88-cd0f-44d1-9077-9f782a6eb6dc"
 index = 16
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "70d9fa56-f0d7-4db3-b89c-ae753f5c3330"
+node = "9fd8dff3-9428-43ae-a249-01064b04ff93"
 index = 17
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "e7c7a109-de56-48b2-bcaa-dedfd0f6ac46"
+node = "e0d7f0ee-9e4f-476b-bb65-ec4513d90b03"
 index = 18
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "8c76bdc4-9346-4eb4-862b-c3b69de18a7b"
+node = "29c3dbfc-dc69-40ec-9405-c8cc473bcd67"
 index = 19
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "7db241a1-354b-4644-a43f-3258b4e3e62c"
+node = "b89b21c7-ee21-4b58-89e2-a89725ddca4f"
 index = 20
 
 [[nodes.children.children.kind.skinned_mesh.material_variants]]
-id = "8d89c450-10d9-4663-a0a6-630f15ef6175"
+id = "a178799e-1f0a-44ba-b278-cca5ed570bd1"
 name = "Cesium_Man-effect"
 
 [nodes.children.children.kind.skinned_mesh.material_variants.instance]
-asset = "91ed60f5-0bc0-4ace-9b97-9f1f5cac19c8"
+asset = "f84aab23-cecd-470b-a939-e15c3fd91520"
 
 [nodes.children.children.kind.skinned_mesh.material_variants.instance.inline]
 label = "Cesium_Man-effect"
@@ -321887,7 +321919,7 @@ alpha_mode = "opaque"
 shading = "pbr"
 
 [nodes.children.children.kind.skinned_mesh.material_variants.instance.inline.base_color_texture]
-asset = "b60ad975-240a-4224-b17e-82e50b3ccce2"
+asset = "1f17bdf9-19ab-4fc3-a786-36b2ff77d4cd"
 
 [nodes.children.children.kind.skinned_mesh.material_variants.instance.inline.base_color_texture.sampler]
 wrap_u = "repeat"
@@ -321912,7 +321944,7 @@ receive = true
 kind = "none"
 
 [[nodes]]
-id = "64cc71c4-dfa9-4a39-b144-e54716afc7ed"
+id = "e933a68e-16cf-4e38-8e8c-5b1747e62911"
 name = "Z_UP"
 kind = "group"
 locked = false
@@ -321938,7 +321970,7 @@ scale = [
 ]
 
 [[nodes.children]]
-id = "99eb86a9-222c-4148-86c4-d7779c6d64d6"
+id = "3055271c-44f4-47aa-b5f8-da6f5050b92a"
 name = "Armature"
 kind = "group"
 locked = false
@@ -321964,7 +321996,7 @@ scale = [
 ]
 
 [[nodes.children.children]]
-id = "c765a1b2-b593-4553-b7b3-c27a92f88227"
+id = "00389c82-2824-47ff-a2fe-dba5b12505a3"
 name = "Skeleton_torso_joint_1"
 kind = "group"
 locked = false
@@ -321990,7 +322022,7 @@ scale = [
 ]
 
 [[nodes.children.children.children]]
-id = "7b70d8a5-c1a5-445d-a93c-ae12625366a2"
+id = "117ac312-97c5-4e83-b8e1-e447f6d9ae59"
 name = "Skeleton_torso_joint_2"
 kind = "group"
 locked = false
@@ -322016,7 +322048,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children]]
-id = "1fcccf84-db27-4827-b111-4cbaaae61ee6"
+id = "ad89d4ac-4d0d-4556-b884-fe09828094d9"
 name = "torso_joint_3"
 kind = "group"
 locked = false
@@ -322042,7 +322074,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children]]
-id = "ad135e0a-8141-4fe1-a3fd-917bba48a1b9"
+id = "52aa1e46-f4e8-4286-820f-45dba7a8cee7"
 name = "Skeleton_neck_joint_1"
 kind = "group"
 locked = false
@@ -322068,7 +322100,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children.children]]
-id = "81d4f7e4-c2b2-4391-a8b3-91065d372e4f"
+id = "d1588976-37e8-46b1-beb8-501242f0ae7d"
 name = "Skeleton_neck_joint_2"
 kind = "group"
 locked = false
@@ -322095,7 +322127,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children]]
-id = "bb84808b-460e-44c1-8210-efff9b8de6b7"
+id = "2bbc0e86-6455-41f9-8d7e-28cb34824487"
 name = "Skeleton_arm_joint_L__4_"
 kind = "group"
 locked = false
@@ -322121,7 +322153,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children.children]]
-id = "5226d009-0e61-4d46-b17b-927da5d1e6bb"
+id = "5fda926b-1235-46a4-bf98-3a7f663b7125"
 name = "Skeleton_arm_joint_L__3_"
 kind = "group"
 locked = false
@@ -322147,7 +322179,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children.children.children]]
-id = "ebb2f69b-1e3a-4c9e-b25d-ca959958afb6"
+id = "5ffe6bfd-3b84-4d9f-9ec0-b69a2ffa05c6"
 name = "Skeleton_arm_joint_L__2_"
 kind = "group"
 locked = false
@@ -322174,7 +322206,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children]]
-id = "87f3654a-1d70-4a83-b310-159266f4fe86"
+id = "f58f8a0a-2571-4f18-9471-c04b1ecc41ec"
 name = "Skeleton_arm_joint_R"
 kind = "group"
 locked = false
@@ -322200,7 +322232,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children.children]]
-id = "f6e14719-bf5d-4e65-a2cc-e9945274ccc5"
+id = "593f9631-9431-4bae-824f-2001a5cbe718"
 name = "Skeleton_arm_joint_R__2_"
 kind = "group"
 locked = false
@@ -322226,7 +322258,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children.children.children]]
-id = "436215a3-3d61-4c74-8938-c620bb431e31"
+id = "10368db0-a7a3-4739-af30-e256401ac418"
 name = "Skeleton_arm_joint_R__3_"
 kind = "group"
 locked = false
@@ -322253,7 +322285,7 @@ scale = [
 ]
 
 [[nodes.children.children.children]]
-id = "c82e4e5e-dceb-4266-9d74-3916ef91f3b0"
+id = "83b4f2e8-5055-43f7-bf87-73ddea864ce8"
 name = "leg_joint_L_1"
 kind = "group"
 locked = false
@@ -322279,7 +322311,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children]]
-id = "39c57864-808a-474a-9bbf-c9ddafb3866f"
+id = "fb271146-b714-4dca-b820-d1447a232107"
 name = "leg_joint_L_2"
 kind = "group"
 locked = false
@@ -322305,7 +322337,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children]]
-id = "0b5f8a2e-3c88-4bb2-a6ce-8a45d85451f5"
+id = "2506353b-4726-4e84-b1d4-c48b5e32ef6d"
 name = "leg_joint_L_3"
 kind = "group"
 locked = false
@@ -322331,7 +322363,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children.children]]
-id = "61faab59-c8d4-4ada-8f34-6261cd3634b9"
+id = "9c3af345-75c2-4dea-a10e-1f75ff14088c"
 name = "leg_joint_L_5"
 kind = "group"
 locked = false
@@ -322358,7 +322390,7 @@ scale = [
 ]
 
 [[nodes.children.children.children]]
-id = "9af72aed-7d41-4775-b5d7-79b9e5b296cf"
+id = "b44c62b9-e62d-4f99-8959-50db457f75ee"
 name = "leg_joint_R_1"
 kind = "group"
 locked = false
@@ -322384,7 +322416,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children]]
-id = "ae01871a-eb2a-4e60-b25e-7dbee256f34b"
+id = "df99a30c-e88a-4bf4-b54f-331267ef2361"
 name = "leg_joint_R_2"
 kind = "group"
 locked = false
@@ -322410,7 +322442,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children]]
-id = "9d38bfda-f74a-4664-a217-5a7208c1e680"
+id = "42ae32e4-c7f9-4e51-a413-0ed732de9049"
 name = "leg_joint_R_3"
 kind = "group"
 locked = false
@@ -322436,7 +322468,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children.children]]
-id = "737b31ef-b2fd-4ad4-8310-2be539bf4a14"
+id = "adcf14a8-1281-4a92-a2c7-9b55978fe1ef"
 name = "leg_joint_R_5"
 kind = "group"
 locked = false
@@ -322463,7 +322495,7 @@ scale = [
 ]
 
 [[nodes.children.children]]
-id = "6101b9c8-c8a0-409d-a18d-5ffde201ae55"
+id = "b3d8602d-5448-42fc-8319-a4239b63d2f0"
 name = "Cesium_Man"
 locked = false
 visible = true
@@ -322489,95 +322521,95 @@ scale = [
 ]
 
 [nodes.children.children.kind.skinned_mesh]
-selected_variant = "8d89c450-10d9-4663-a0a6-630f15ef6175"
+selected_variant = "a178799e-1f0a-44ba-b278-cca5ed570bd1"
 
 [nodes.children.children.kind.skinned_mesh.skin]
-source = "51e84d77-5f84-48c2-a27a-cef01d05066a"
+source = "8314e35d-6bc4-4291-bf19-a771745db6ed"
 node_index = 2
 rig_node_index = 21
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "c765a1b2-b593-4553-b7b3-c27a92f88227"
+node = "00389c82-2824-47ff-a2fe-dba5b12505a3"
 index = 2
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "7b70d8a5-c1a5-445d-a93c-ae12625366a2"
+node = "117ac312-97c5-4e83-b8e1-e447f6d9ae59"
 index = 3
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "1fcccf84-db27-4827-b111-4cbaaae61ee6"
+node = "ad89d4ac-4d0d-4556-b884-fe09828094d9"
 index = 4
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "ad135e0a-8141-4fe1-a3fd-917bba48a1b9"
+node = "52aa1e46-f4e8-4286-820f-45dba7a8cee7"
 index = 5
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "81d4f7e4-c2b2-4391-a8b3-91065d372e4f"
+node = "d1588976-37e8-46b1-beb8-501242f0ae7d"
 index = 6
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "bb84808b-460e-44c1-8210-efff9b8de6b7"
+node = "2bbc0e86-6455-41f9-8d7e-28cb34824487"
 index = 7
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "5226d009-0e61-4d46-b17b-927da5d1e6bb"
+node = "5fda926b-1235-46a4-bf98-3a7f663b7125"
 index = 8
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "ebb2f69b-1e3a-4c9e-b25d-ca959958afb6"
+node = "5ffe6bfd-3b84-4d9f-9ec0-b69a2ffa05c6"
 index = 9
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "87f3654a-1d70-4a83-b310-159266f4fe86"
+node = "f58f8a0a-2571-4f18-9471-c04b1ecc41ec"
 index = 10
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "f6e14719-bf5d-4e65-a2cc-e9945274ccc5"
+node = "593f9631-9431-4bae-824f-2001a5cbe718"
 index = 11
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "436215a3-3d61-4c74-8938-c620bb431e31"
+node = "10368db0-a7a3-4739-af30-e256401ac418"
 index = 12
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "c82e4e5e-dceb-4266-9d74-3916ef91f3b0"
+node = "83b4f2e8-5055-43f7-bf87-73ddea864ce8"
 index = 13
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "39c57864-808a-474a-9bbf-c9ddafb3866f"
+node = "fb271146-b714-4dca-b820-d1447a232107"
 index = 14
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "0b5f8a2e-3c88-4bb2-a6ce-8a45d85451f5"
+node = "2506353b-4726-4e84-b1d4-c48b5e32ef6d"
 index = 15
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "61faab59-c8d4-4ada-8f34-6261cd3634b9"
+node = "9c3af345-75c2-4dea-a10e-1f75ff14088c"
 index = 16
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "9af72aed-7d41-4775-b5d7-79b9e5b296cf"
+node = "b44c62b9-e62d-4f99-8959-50db457f75ee"
 index = 17
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "ae01871a-eb2a-4e60-b25e-7dbee256f34b"
+node = "df99a30c-e88a-4bf4-b54f-331267ef2361"
 index = 18
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "9d38bfda-f74a-4664-a217-5a7208c1e680"
+node = "42ae32e4-c7f9-4e51-a413-0ed732de9049"
 index = 19
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "737b31ef-b2fd-4ad4-8310-2be539bf4a14"
+node = "adcf14a8-1281-4a92-a2c7-9b55978fe1ef"
 index = 20
 
 [[nodes.children.children.kind.skinned_mesh.material_variants]]
-id = "8d89c450-10d9-4663-a0a6-630f15ef6175"
+id = "a178799e-1f0a-44ba-b278-cca5ed570bd1"
 name = "Cesium_Man-effect"
 
 [nodes.children.children.kind.skinned_mesh.material_variants.instance]
-asset = "91ed60f5-0bc0-4ace-9b97-9f1f5cac19c8"
+asset = "f84aab23-cecd-470b-a939-e15c3fd91520"
 
 [nodes.children.children.kind.skinned_mesh.material_variants.instance.inline]
 label = "Cesium_Man-effect"
@@ -322603,7 +322635,7 @@ alpha_mode = "opaque"
 shading = "pbr"
 
 [nodes.children.children.kind.skinned_mesh.material_variants.instance.inline.base_color_texture]
-asset = "b60ad975-240a-4224-b17e-82e50b3ccce2"
+asset = "1f17bdf9-19ab-4fc3-a786-36b2ff77d4cd"
 
 [nodes.children.children.kind.skinned_mesh.material_variants.instance.inline.base_color_texture.sampler]
 wrap_u = "repeat"
@@ -322628,7 +322660,7 @@ receive = true
 kind = "none"
 
 [[nodes]]
-id = "ed2e3763-0124-4ee4-9f37-0e3a4875022f"
+id = "5bf8e260-8f61-4712-9457-7a9f7f4f7f06"
 name = "Z_UP"
 kind = "group"
 locked = false
@@ -322654,7 +322686,7 @@ scale = [
 ]
 
 [[nodes.children]]
-id = "e6f92718-ed05-47b8-9f2d-017108522aa9"
+id = "0a5138eb-c4f3-4d2a-8ca4-5f43168733f5"
 name = "Armature"
 kind = "group"
 locked = false
@@ -322680,7 +322712,7 @@ scale = [
 ]
 
 [[nodes.children.children]]
-id = "f726ad33-f664-49c3-890c-6e0f222c3557"
+id = "1e4f8b0f-0be5-4281-9302-07654e83194c"
 name = "Skeleton_torso_joint_1"
 kind = "group"
 locked = false
@@ -322706,7 +322738,7 @@ scale = [
 ]
 
 [[nodes.children.children.children]]
-id = "74fa209f-6894-4d11-9a10-59f1708a25cf"
+id = "d9e01ddc-4d72-4f52-95b1-eef3ddf82751"
 name = "Skeleton_torso_joint_2"
 kind = "group"
 locked = false
@@ -322732,7 +322764,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children]]
-id = "225ee30f-57e2-49d1-9d22-35edcdd3687d"
+id = "b3ef03a3-eaaf-4b11-94e7-637b773d09a4"
 name = "torso_joint_3"
 kind = "group"
 locked = false
@@ -322758,7 +322790,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children]]
-id = "89d9aad7-981a-4f48-8032-5170b35d9dda"
+id = "0c10ff99-2b4f-48d8-9088-09099291b914"
 name = "Skeleton_neck_joint_1"
 kind = "group"
 locked = false
@@ -322784,7 +322816,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children.children]]
-id = "3f40b341-e5f6-451f-b088-3c73aca38e5a"
+id = "7d56d425-6230-425e-b00a-67376544351e"
 name = "Skeleton_neck_joint_2"
 kind = "group"
 locked = false
@@ -322811,7 +322843,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children]]
-id = "676a9ffe-ee11-4db5-be6b-36c8da8737ac"
+id = "dd4b387f-7c49-416e-b757-9a231caf5ce9"
 name = "Skeleton_arm_joint_L__4_"
 kind = "group"
 locked = false
@@ -322837,7 +322869,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children.children]]
-id = "a2ea941c-839e-4ebb-ba41-1d0be82cdd3f"
+id = "833089e8-ba9a-4546-849f-e0e70d655e57"
 name = "Skeleton_arm_joint_L__3_"
 kind = "group"
 locked = false
@@ -322863,7 +322895,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children.children.children]]
-id = "38bd4f43-54cc-4ad8-8681-9832827af648"
+id = "bc7b9c20-43ce-4239-94ac-c40116c35fca"
 name = "Skeleton_arm_joint_L__2_"
 kind = "group"
 locked = false
@@ -322890,7 +322922,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children]]
-id = "319a826b-5d7b-4fd3-a0fc-e0de5bb71446"
+id = "c72130ed-4703-4c19-acd0-1c79dd01d7cc"
 name = "Skeleton_arm_joint_R"
 kind = "group"
 locked = false
@@ -322916,7 +322948,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children.children]]
-id = "ccb12b27-6ffb-4e96-8c8b-32da15119c0e"
+id = "1ae0cc14-d6c5-49c5-b663-c11a69cd57a4"
 name = "Skeleton_arm_joint_R__2_"
 kind = "group"
 locked = false
@@ -322942,7 +322974,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children.children.children]]
-id = "d019de54-e051-4ab1-87f1-c1c7ef11c6fa"
+id = "240ff0f9-fd2a-40b4-a7fb-544c2e23f560"
 name = "Skeleton_arm_joint_R__3_"
 kind = "group"
 locked = false
@@ -322969,7 +323001,7 @@ scale = [
 ]
 
 [[nodes.children.children.children]]
-id = "e380455a-d27c-4b64-9e9a-f026c7ae56e6"
+id = "3d58a397-7d7a-45dc-9bc1-c91867081db0"
 name = "leg_joint_L_1"
 kind = "group"
 locked = false
@@ -322995,7 +323027,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children]]
-id = "f8498a22-548d-4a6e-b556-124b311a6b45"
+id = "35830814-2701-4fdb-ac5a-f1fe9fa5976a"
 name = "leg_joint_L_2"
 kind = "group"
 locked = false
@@ -323021,7 +323053,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children]]
-id = "84bf55d6-ada7-40be-8a9a-bdc1244b3ab2"
+id = "f560ed8d-8d6a-42f3-b364-152b9b344971"
 name = "leg_joint_L_3"
 kind = "group"
 locked = false
@@ -323047,7 +323079,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children.children]]
-id = "dca6ddd2-8acd-4b24-a441-cdea824b488a"
+id = "f1b643c9-4916-41be-830d-5a656081ff2d"
 name = "leg_joint_L_5"
 kind = "group"
 locked = false
@@ -323074,7 +323106,7 @@ scale = [
 ]
 
 [[nodes.children.children.children]]
-id = "1d5c7627-6958-4645-ad39-7bb476777ae0"
+id = "4dedc058-b1c2-47a7-ba83-c21176b9791d"
 name = "leg_joint_R_1"
 kind = "group"
 locked = false
@@ -323100,7 +323132,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children]]
-id = "08630d5a-61cd-416e-881e-cc999b500d4a"
+id = "e59dea63-dd7b-4b50-93ce-be7c2f4e7956"
 name = "leg_joint_R_2"
 kind = "group"
 locked = false
@@ -323126,7 +323158,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children]]
-id = "8341438b-d79f-4126-a976-d6b92fb33606"
+id = "6a757076-b055-4933-a5b4-16c00b645bef"
 name = "leg_joint_R_3"
 kind = "group"
 locked = false
@@ -323152,7 +323184,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children.children]]
-id = "e929d7a3-20c2-4104-9a7b-a7fdc11aafa5"
+id = "4dba2d7c-00cd-4169-b8bb-fbea7fb42c78"
 name = "leg_joint_R_5"
 kind = "group"
 locked = false
@@ -323179,7 +323211,7 @@ scale = [
 ]
 
 [[nodes.children.children]]
-id = "420e5a7a-1953-43fa-97d7-6bc096e7f5e7"
+id = "7900a377-3772-40f8-b75c-9336d391a870"
 name = "Cesium_Man"
 locked = false
 visible = true
@@ -323205,95 +323237,95 @@ scale = [
 ]
 
 [nodes.children.children.kind.skinned_mesh]
-selected_variant = "8d89c450-10d9-4663-a0a6-630f15ef6175"
+selected_variant = "a178799e-1f0a-44ba-b278-cca5ed570bd1"
 
 [nodes.children.children.kind.skinned_mesh.skin]
-source = "51e84d77-5f84-48c2-a27a-cef01d05066a"
+source = "8314e35d-6bc4-4291-bf19-a771745db6ed"
 node_index = 2
 rig_node_index = 21
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "f726ad33-f664-49c3-890c-6e0f222c3557"
+node = "1e4f8b0f-0be5-4281-9302-07654e83194c"
 index = 2
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "74fa209f-6894-4d11-9a10-59f1708a25cf"
+node = "d9e01ddc-4d72-4f52-95b1-eef3ddf82751"
 index = 3
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "225ee30f-57e2-49d1-9d22-35edcdd3687d"
+node = "b3ef03a3-eaaf-4b11-94e7-637b773d09a4"
 index = 4
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "89d9aad7-981a-4f48-8032-5170b35d9dda"
+node = "0c10ff99-2b4f-48d8-9088-09099291b914"
 index = 5
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "3f40b341-e5f6-451f-b088-3c73aca38e5a"
+node = "7d56d425-6230-425e-b00a-67376544351e"
 index = 6
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "676a9ffe-ee11-4db5-be6b-36c8da8737ac"
+node = "dd4b387f-7c49-416e-b757-9a231caf5ce9"
 index = 7
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "a2ea941c-839e-4ebb-ba41-1d0be82cdd3f"
+node = "833089e8-ba9a-4546-849f-e0e70d655e57"
 index = 8
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "38bd4f43-54cc-4ad8-8681-9832827af648"
+node = "bc7b9c20-43ce-4239-94ac-c40116c35fca"
 index = 9
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "319a826b-5d7b-4fd3-a0fc-e0de5bb71446"
+node = "c72130ed-4703-4c19-acd0-1c79dd01d7cc"
 index = 10
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "ccb12b27-6ffb-4e96-8c8b-32da15119c0e"
+node = "1ae0cc14-d6c5-49c5-b663-c11a69cd57a4"
 index = 11
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "d019de54-e051-4ab1-87f1-c1c7ef11c6fa"
+node = "240ff0f9-fd2a-40b4-a7fb-544c2e23f560"
 index = 12
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "e380455a-d27c-4b64-9e9a-f026c7ae56e6"
+node = "3d58a397-7d7a-45dc-9bc1-c91867081db0"
 index = 13
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "f8498a22-548d-4a6e-b556-124b311a6b45"
+node = "35830814-2701-4fdb-ac5a-f1fe9fa5976a"
 index = 14
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "84bf55d6-ada7-40be-8a9a-bdc1244b3ab2"
+node = "f560ed8d-8d6a-42f3-b364-152b9b344971"
 index = 15
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "dca6ddd2-8acd-4b24-a441-cdea824b488a"
+node = "f1b643c9-4916-41be-830d-5a656081ff2d"
 index = 16
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "1d5c7627-6958-4645-ad39-7bb476777ae0"
+node = "4dedc058-b1c2-47a7-ba83-c21176b9791d"
 index = 17
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "08630d5a-61cd-416e-881e-cc999b500d4a"
+node = "e59dea63-dd7b-4b50-93ce-be7c2f4e7956"
 index = 18
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "8341438b-d79f-4126-a976-d6b92fb33606"
+node = "6a757076-b055-4933-a5b4-16c00b645bef"
 index = 19
 
 [[nodes.children.children.kind.skinned_mesh.skin.joints]]
-node = "e929d7a3-20c2-4104-9a7b-a7fdc11aafa5"
+node = "4dba2d7c-00cd-4169-b8bb-fbea7fb42c78"
 index = 20
 
 [[nodes.children.children.kind.skinned_mesh.material_variants]]
-id = "8d89c450-10d9-4663-a0a6-630f15ef6175"
+id = "a178799e-1f0a-44ba-b278-cca5ed570bd1"
 name = "Cesium_Man-effect"
 
 [nodes.children.children.kind.skinned_mesh.material_variants.instance]
-asset = "91ed60f5-0bc0-4ace-9b97-9f1f5cac19c8"
+asset = "f84aab23-cecd-470b-a939-e15c3fd91520"
 
 [nodes.children.children.kind.skinned_mesh.material_variants.instance.inline]
 label = "Cesium_Man-effect"
@@ -323319,7 +323351,7 @@ alpha_mode = "opaque"
 shading = "pbr"
 
 [nodes.children.children.kind.skinned_mesh.material_variants.instance.inline.base_color_texture]
-asset = "b60ad975-240a-4224-b17e-82e50b3ccce2"
+asset = "1f17bdf9-19ab-4fc3-a786-36b2ff77d4cd"
 
 [nodes.children.children.kind.skinned_mesh.material_variants.instance.inline.base_color_texture.sampler]
 wrap_u = "repeat"

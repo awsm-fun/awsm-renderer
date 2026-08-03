@@ -6,6 +6,36 @@ skybox = "built_in_default"
 specular = "built_in_default"
 irradiance = "built_in_default"
 
+[environment.probe]
+enabled = false
+center = [
+    0.0,
+    0.0,
+    0.0,
+]
+half_extents = [
+    10.0,
+    10.0,
+    10.0,
+]
+
+[environment.rotation]
+skybox = [
+    0.0,
+    0.0,
+    0.0,
+]
+specular = [
+    0.0,
+    0.0,
+    0.0,
+]
+irradiance = [
+    0.0,
+    0.0,
+    0.0,
+]
+
 [shadows]
 sscs_enabled = false
 sscs_step_count = 16
@@ -38,21 +68,36 @@ max_distance = 100.0
 thickness = 1.0
 max_steps = 96
 spread_cutoff = 0.6000000238418579
-edge_fade = 0.10000000149011612
+edge_fade = 0.03999999910593033
 resolution_scale = 0.5
 temporal = false
 temporal_weight = 0.8999999761581421
+bvh_reflections = false
 
-[assets.566ae682-160f-40f9-b188-2aabce926a55]
-gltf_material_asset_ids = ["7124cb8b-aef6-421d-848b-e9296fb797cf"]
+[post_process.atmosphere]
+mode = "off"
+color = [
+    0.5,
+    0.6000000238418579,
+    0.699999988079071,
+]
+density = 0.019999999552965164
+base_height = 0.0
+height_falloff = 0.0
+scattering_anisotropy = 0.30000001192092896
+volumetric_distance = 80.0
+volumetric_temporal = false
+
+[assets.8e58b73e-250b-4fd7-9827-5bd403644ee6]
+gltf_material_asset_ids = ["751849de-e447-48bb-8a7e-6dc669b3ebbe"]
 gltf_image_asset_ids = []
 content_hash = ""
 
-[assets.566ae682-160f-40f9-b188-2aabce926a55.source]
+[assets.8e58b73e-250b-4fd7-9827-5bd403644ee6.source]
 filename = "AnimatedMorphCube.gltf"
 
 [[editor_materials]]
-id = "7124cb8b-aef6-421d-848b-e9296fb797cf"
+id = "751849de-e447-48bb-8a7e-6dc669b3ebbe"
 name = "Material"
 wgsl = """
 // Opaque material. Inputs arrive as fields on `input` (declare them in Pass
@@ -100,6 +145,7 @@ emissive = [
 ]
 normal_scale = 1.0
 occlusion_strength = 1.0
+ssr_mask = 1.0
 double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
@@ -109,14 +155,14 @@ shading = "pbr"
 
 [[custom_animations]]
 name = "Square"
-file = "assets/animations/animation-square-bd82215e-bc34-4cfa-8c9e-73dca5d584c4.toml"
+file = "assets/animations/animation-square-cfe6dee0-ef98-4c15-8ef8-fb5c98acb7b1.toml"
 
 [[custom_animations]]
 name = "two-morphs"
 file = "assets/animations/animation-two-morphs-00000000-0000-4000-8000-0000000000a0.toml"
 
 [[editor_animations]]
-id = "bd82215e-bc34-4cfa-8c9e-73dca5d584c4"
+id = "cfe6dee0-ef98-4c15-8ef8-fb5c98acb7b1"
 name = "Square"
 duration = 4.199997425079346
 loop_style = "loop"
@@ -261,7 +307,7 @@ times = [
 
 [editor_animations.tracks.target]
 target = "morph"
-node = "c8a4fd4a-f71a-47b7-a261-00b181e72306"
+node = "3276cc2a-9f8c-443f-bc1e-9e78b522fe4c"
 index = 0
 
 [[editor_animations.tracks.keys]]
@@ -2190,7 +2236,7 @@ times = [
 
 [editor_animations.tracks.target]
 target = "morph"
-node = "c8a4fd4a-f71a-47b7-a261-00b181e72306"
+node = "3276cc2a-9f8c-443f-bc1e-9e78b522fe4c"
 index = 0
 
 [[editor_animations.tracks.keys]]
@@ -2235,7 +2281,7 @@ times = [
 
 [editor_animations.tracks.target]
 target = "morph"
-node = "c8a4fd4a-f71a-47b7-a261-00b181e72306"
+node = "3276cc2a-9f8c-443f-bc1e-9e78b522fe4c"
 index = 1
 
 [[editor_animations.tracks.keys]]
@@ -2271,8 +2317,14 @@ value = 0.0
 [anim_mixer]
 layers = []
 
+[bundle_options]
+mesh_compression = "meshopt"
+mesh_quantization = "smart"
+smart_threshold_mm = 0.10000000149011612
+texture_compression = "ktx2"
+
 [[nodes]]
-id = "b6162ac2-017d-4003-96b6-3581f0a8bf29"
+id = "98e0d0a9-cb91-4c36-9ded-b3e5f40be761"
 name = "Directional Light"
 locked = false
 visible = true
@@ -2304,6 +2356,7 @@ color = [
     1.0,
 ]
 intensity = 4.0
+volumetric_intensity = 1.0
 
 [nodes.kind.light.directional.shadow]
 cast = true
@@ -2322,7 +2375,7 @@ far_cascade_update_rate = "every4_frames"
 cube_face_update_rate = "every_frame"
 
 [[nodes]]
-id = "c8a4fd4a-f71a-47b7-a261-00b181e72306"
+id = "3276cc2a-9f8c-443f-bc1e-9e78b522fe4c"
 name = "AnimatedMorphCube"
 locked = false
 visible = true
@@ -2348,20 +2401,20 @@ scale = [
 ]
 
 [nodes.kind.skinned_mesh]
-selected_variant = "abb7f0d0-e87a-4917-96c9-d1d9ea0f4e85"
+selected_variant = "e157acfe-b06e-435d-ae2e-5793d33be345"
 
 [nodes.kind.skinned_mesh.skin]
-source = "566ae682-160f-40f9-b188-2aabce926a55"
+source = "8e58b73e-250b-4fd7-9827-5bd403644ee6"
 node_index = 0
 rig_node_index = 0
 joints = []
 
 [[nodes.kind.skinned_mesh.material_variants]]
-id = "abb7f0d0-e87a-4917-96c9-d1d9ea0f4e85"
+id = "e157acfe-b06e-435d-ae2e-5793d33be345"
 name = "Material"
 
 [nodes.kind.skinned_mesh.material_variants.instance]
-asset = "7124cb8b-aef6-421d-848b-e9296fb797cf"
+asset = "751849de-e447-48bb-8a7e-6dc669b3ebbe"
 
 [nodes.kind.skinned_mesh.material_variants.instance.inline]
 label = "Material"
@@ -2380,6 +2433,7 @@ emissive = [
 ]
 normal_scale = 1.0
 occlusion_strength = 1.0
+ssr_mask = 1.0
 double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
@@ -2398,4 +2452,4 @@ cast = true
 receive = true
 
 [nodes.kind.skinned_mesh.lod]
-enabled = true
+kind = "none"

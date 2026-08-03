@@ -34,8 +34,42 @@ fn depth_edge_mask(
   center_normal: vec3<f32>,
   center_triangle_id: u32
 ) -> bool {
-  return edge_mask_depth_msaa(camera, coords, pixel_center, screen_dims_f32)
+  return edge_mask_material_msaa(coords)
+      || edge_mask_depth_msaa(camera, coords, pixel_center, screen_dims_f32)
       || edge_mask_neighbors(camera, coords, pixel_center, screen_dims_f32, center_normal, center_triangle_id);
+}
+
+// Detect CROSS-MATERIAL edges within a pixel: two covered MSAA samples that
+// resolve to different mesh/material metas. Depth and normal tests both miss
+// the COPLANAR case — a seam plate lying millimetres above a floor (or a trim
+// strip flush with a wall) has near-identical sample depths and identical
+// normals, so the pixel classifies as interior, shades ONCE, and the material
+// boundary renders as hard per-pixel stairs even at MSAA 4×. The visibility
+// buffer already stores the material meta offset per sample (z/w words), so
+// this is one compare per covered sample — and intra-mesh tessellation seams
+// (same meta both sides) can never false-positive, unlike a raw triangle-id
+// compare, which would flag every interior wireframe edge and blow the edge
+// budget on pixels whose samples shade identically anyway.
+fn edge_mask_material_msaa(coords: vec2<i32>) -> bool {
+  if (MSAA_SAMPLES == 0u) {
+    return false;
+  }
+  var have_first = false;
+  var first_meta = 0u;
+  for (var s = 0u; s < {{ msaa_sample_count }}u; s++) {
+    let v = loadVisSampleU(coords, s);
+    if (join32(v.x, v.y) == U32_MAX) {
+      continue; // uncovered / sky sample
+    }
+    let sample_meta = join32(v.z, v.w);
+    if (!have_first) {
+      have_first = true;
+      first_meta = sample_meta;
+    } else if (sample_meta != first_meta) {
+      return true;
+    }
+  }
+  return false;
 }
 
 fn edge_mask_neighbors(
@@ -155,8 +189,9 @@ fn sampleCovered(coords: vec2<i32>, s: i32) -> bool {
   return sampleTriangleId(coords, s) != U32_MAX;
 }
 
-// Version that takes u32 sample index and uses switch for texture load
-fn sampleTriangleIdU(coords: vec2<i32>, s: u32) -> u32 {
+// Full per-sample visibility word (u32 sample index; switch keeps the sample
+// operand a constant, as textureLoad on multisampled textures requires).
+fn loadVisSampleU(coords: vec2<i32>, s: u32) -> vec4<u32> {
   var v: vec4<u32>;
   switch(s) {
     case 0u: { v = textureLoad(visibility_data_tex, coords, 0); }
@@ -164,6 +199,12 @@ fn sampleTriangleIdU(coords: vec2<i32>, s: u32) -> u32 {
     case 2u: { v = textureLoad(visibility_data_tex, coords, 2); }
     case 3u, default: { v = textureLoad(visibility_data_tex, coords, 3); }
   }
+  return v;
+}
+
+// Version that takes u32 sample index and uses switch for texture load
+fn sampleTriangleIdU(coords: vec2<i32>, s: u32) -> u32 {
+  let v = loadVisSampleU(coords, s);
   return join32(v.x, v.y);
 }
 

@@ -263,6 +263,7 @@ fn cs_opaque(
                     color_sets_index,
                     tbn,
                     bary_derivs,
+                    coords,
                 );
             {% when MipmapMode::None %}
                 let material_color = compute_material_color(
@@ -681,6 +682,7 @@ fn shade_sample(
                     sample_color_sets_idx,
                     sample_tbn,
                     textures.bary_derivs,
+                    coords,
                 );
             {% when MipmapMode::None %}
                 let material_color = compute_material_color(
@@ -1025,6 +1027,7 @@ fn cs_shade(
                         color_sets_index,
                         tbn,
                         bary_derivs,
+                        coords,
                     );
                 {% when MipmapMode::None %}
                     let material_color = compute_material_color(

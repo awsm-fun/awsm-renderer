@@ -76,6 +76,49 @@ fn msaa_load_sample_textures(coords: vec2<i32>, sample_index: u32) -> MsaaSample
 {% if inc.material_color_calc %}
 {% match mipmap %}
     {% when MipmapMode::Gradient %}
+        // ── Geometric specular AA (Kaplanyan '13 / Tokuyoshi '19, G-buffer
+        // form) ─────────────────────────────────────────────────────────────
+        // Widen GGX roughness by the pixel's screen-space GEOMETRY-normal
+        // variance. Sub-pixel normal detail — plate bevels between coplanar
+        // floor tiles, tight rim curvature — collapses to one shade per
+        // pixel and fires HDR glints under punctual lights that crawl with
+        // the camera ("shimmering dots"). The edge classifier can't help:
+        // shallow bevels sit under its 18° normal threshold, same mesh, no
+        // depth step. Estimating dN from the geometry normal G-buffer's
+        // 4-neighborhood (cache-hot: edge classification just read them)
+        // and folding it into alpha widens exactly those highlights into
+        // stable bands; smooth interiors measure ~zero variance and are
+        // untouched. Uses the min of forward/backward differences per axis
+        // so an unrelated surface across a silhouette can't inflate the
+        // estimate — a real crease shows on both sides.
+        const SPEC_AA_NORMAL_STRENGTH: f32 = 0.25;
+        const SPEC_AA_NORMAL_MAX_KERNEL: f32 = 0.18;
+
+        fn spec_aa_widen_roughness(
+            perceptual_roughness: f32,
+            coords: vec2<i32>,
+            center_n: vec3<f32>,
+        ) -> f32 {
+            let n_r = unpack_normal_tangent(textureLoad(normal_tangent_tex, coords + vec2<i32>(1, 0), 0)).N;
+            let n_l = unpack_normal_tangent(textureLoad(normal_tangent_tex, coords - vec2<i32>(1, 0), 0)).N;
+            let n_d = unpack_normal_tangent(textureLoad(normal_tangent_tex, coords + vec2<i32>(0, 1), 0)).N;
+            let n_u = unpack_normal_tangent(textureLoad(normal_tangent_tex, coords - vec2<i32>(0, 1), 0)).N;
+            let dr = n_r - center_n;
+            let dl = n_l - center_n;
+            let dd = n_d - center_n;
+            let du = n_u - center_n;
+            let dx2 = min(dot(dr, dr), dot(dl, dl));
+            let dy2 = min(dot(dd, dd), dot(du, du));
+            let kernel2 = min(
+                2.0 * SPEC_AA_NORMAL_STRENGTH * (dx2 + dy2),
+                SPEC_AA_NORMAL_MAX_KERNEL,
+            );
+            let alpha = perceptual_roughness * perceptual_roughness;
+            let alpha2 = min(alpha * alpha + kernel2, 1.0);
+            // alpha² → alpha → perceptual.
+            return sqrt(sqrt(alpha2));
+        }
+
         // Compute material color with gradient-based mipmapping
         fn compute_material_color(
             camera: Camera,
@@ -89,6 +132,7 @@ fn msaa_load_sample_textures(coords: vec2<i32>, sample_index: u32) -> MsaaSample
             color_sets_index: u32,
             geometry_tbn: TBN,
             bary_derivs: vec4<f32>,
+            screen_coords: vec2<i32>,
         ) -> PbrMaterialColor {
             let gradients = pbr_get_gradients(
                 barycentric,
@@ -102,7 +146,7 @@ fn msaa_load_sample_textures(coords: vec2<i32>, sample_index: u32) -> MsaaSample
                 camera.view
             );
 
-            return pbr_get_material_color_grad(
+            var color = pbr_get_material_color_grad(
                 triangle_indices,
                 attribute_data_offset,
                 triangle_index,
@@ -114,6 +158,12 @@ fn msaa_load_sample_textures(coords: vec2<i32>, sample_index: u32) -> MsaaSample
                 gradients,
                 geometry_tbn,
             );
+            color.metallic_roughness.y = spec_aa_widen_roughness(
+                color.metallic_roughness.y,
+                screen_coords,
+                geometry_tbn.N,
+            );
+            return color;
         }
     {% when MipmapMode::None %}
         // Compute material color without mipmapping

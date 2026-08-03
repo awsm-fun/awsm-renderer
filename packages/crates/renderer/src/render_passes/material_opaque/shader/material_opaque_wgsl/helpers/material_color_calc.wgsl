@@ -5,6 +5,17 @@
    further down is ungated. #}
 {% if inc.material_color_calc %}
 {% if mipmap.is_gradient() %}
+// ── Specular anti-shimmer tuning (see the roughness-floor block below) ──────
+// The floor stays ZERO until the MR texture is minified past
+// SPEC_AA_FLOOR_START_LOD mips (close-ups are untouched), then rises
+// SPEC_AA_FLOOR_PER_LOD of perceptual roughness per mip, capped at
+// SPEC_AA_FLOOR_MAX so intentionally-mirrory distant surfaces still read as
+// such. At the jetpack-joust floor's shimmer distance (mr LOD ≈ 3–4) the
+// floor lands around 0.25–0.35 — wide enough to stop the dot crawl.
+const SPEC_AA_FLOOR_START_LOD: f32 = 1.0;
+const SPEC_AA_FLOOR_PER_LOD: f32 = 0.12;
+const SPEC_AA_FLOOR_MAX: f32 = 0.45;
+
 struct PbrMaterialGradients {
     base_color: UvDerivs,
     metallic_roughness: UvDerivs,
@@ -126,18 +137,48 @@ fn pbr_get_material_color{{ mipmap.suffix() }}(
     }
     {% endif %}
 
+    let metallic_roughness_uv = texture_uv(
+        attribute_data_offset,
+        triangle_indices,
+        barycentric,
+        material.metallic_roughness_tex_info,
+        vertex_attribute_stride,
+        uv_sets_index,
+    );
     var metallic_roughness = _pbr_material_metallic_roughness_color{{ mipmap.suffix() }}(
         material,
-        texture_uv(
-            attribute_data_offset,
-            triangle_indices,
-            barycentric,
-            material.metallic_roughness_tex_info,
-            vertex_attribute_stride,
-            uv_sets_index,
-        ),
+        metallic_roughness_uv,
         {% if mipmap.is_gradient() %}gradients.metallic_roughness,{% endif %}
     );
+
+    {% if mipmap.is_gradient() %}
+    // Specular anti-shimmer (LOD roughness floor). Minified metal/rough
+    // detail produces sub-pixel HDR glints under punctual lights — SHADING
+    // aliasing that no coverage AA can integrate (the "shimmering dots"
+    // along baked panel lines at distance). Color filtering is already
+    // correct here (textureSampleGrad); what aliases is the specular
+    // RESPONSE across the footprint. So as the MR texture minifies past
+    // one texel per pixel, raise a roughness floor: full-res pixels are
+    // untouched, distant pixels converge to a stable, wider highlight.
+    // ALU-only — no extra fetches. Pairs with the variance-preserving MR
+    // mip generation (mipmap_pbr / texture pipeline), which reduces how
+    // often this floor has to engage at all.
+    if (material.metallic_roughness_tex_info.exists) {
+        let mr_lod = texture_pool_grad_lod(
+            material.metallic_roughness_tex_info,
+            metallic_roughness_uv,
+            gradients.metallic_roughness,
+        );
+        let rough_floor = min(
+            SPEC_AA_FLOOR_PER_LOD * max(mr_lod - SPEC_AA_FLOOR_START_LOD, 0.0),
+            SPEC_AA_FLOOR_MAX,
+        );
+        metallic_roughness = vec2<f32>(
+            metallic_roughness.x,
+            max(metallic_roughness.y, rough_floor),
+        );
+    }
+    {% endif %}
 
     {% if pbr_features.secondary_maps %}
     // Secondary metallic-roughness: roughness (G) overlay-blends
