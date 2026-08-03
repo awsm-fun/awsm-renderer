@@ -142,6 +142,35 @@ fn _texture_uv_per_vertex(attribute_data_offset: u32, set_index: u32, vertex_ind
         }
 
 
+        // Estimated mip LOD the gradient sample above resolves to (0 = one
+        // texel per pixel, rising as the footprint grows). Major-axis metric
+        // ON PURPOSE: this feeds the specular anti-shimmer roughness floor in
+        // material_color_calc, and even perfect anisotropic COLOR filtering
+        // cannot integrate a specular RESPONSE across the texels a grazing
+        // footprint spans — the glints track the major axis. ALU + one
+        // textureDimensions; no fetches.
+        fn texture_pool_grad_lod(info: TextureInfo, attribute_uv: vec2<f32>, uv_derivs: UvDerivs) -> f32 {
+            let transformed_uvs = apply_texture_transform(
+                attribute_uv,
+                uv_derivs,
+                info,
+            );
+            var dims = vec2<u32>(0u, 0u);
+            switch info.array_index {
+                {% for i in 0..texture_pool_arrays_len %}
+                    case {{ i }}u: { dims = textureDimensions(pool_tex_{{ i }}).xy; }
+                {% endfor %}
+                default: {
+                    return 0.0;
+                }
+            }
+            let d = vec2<f32>(f32(dims.x), f32(dims.y));
+            let dx = transformed_uvs.derivs.ddx * d;
+            let dy = transformed_uvs.derivs.ddy * d;
+            let rho2 = max(dot(dx, dx), dot(dy, dy));
+            return max(0.5 * log2(max(rho2, 1e-12)), 0.0);
+        }
+
         fn _texture_pool_sample_grad(
             info: TextureInfo,
             tex: texture_2d_array<f32>,

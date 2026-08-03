@@ -163,26 +163,51 @@ fn shader_source(format: TextureFormat, is_array: bool) -> Result<String> {
                 return vec4<f32>(renormalized, avg.a);
             }}
 
-            // Metallic/Roughness: roughness in G channel needs perceptual averaging (r²)
+            // Metallic/Roughness: roughness (G) filters in GGX-alpha space
+            // (alpha = r²) with a VARIANCE bias toward the rougher side.
+            //
+            // Mean-alpha alone under-filters mixed footprints: on a FLAT
+            // surface, a 2x2 block mixing shiny and rough texels responds
+            // like a MIXTURE of specular lobes — dominated by its shiniest
+            // members — not like one lobe at the averaged alpha, so minified
+            // shiny detail (baked panel lines) still fires sub-pixel glints
+            // under punctual lights ("shimmering dots" that crawl with the
+            // camera). Biasing by the footprint's alpha spread errs toward a
+            // wider, dimmer highlight — a soft blur reads fine where sparkle
+            // reads broken. Pairs with the shading-side LOD roughness floor
+            // (material_color_calc), which covers what the mip chain cannot
+            // know (footprints spanning many texels via anisotropy).
+            const ROUGHNESS_VARIANCE_BIAS: f32 = 0.75;
+
             fn filter_metallic_roughness(samples: array<vec4<f32>, 4>) -> vec4<f32> {{
                 var metallic_sum = 0.0;
-                var roughness_squared_sum = 0.0;
+                var alpha_lin_sum = 0.0;   // sum of alpha    (alpha = roughness²)
+                var alpha_sq_sum = 0.0;    // sum of alpha²   (for the variance)
                 var b_sum = 0.0;
-                var alpha_sum = 0.0;
+                var a_sum = 0.0;
 
                 for (var i = 0; i < 4; i++) {{
                     metallic_sum += samples[i].r;
-                    let roughness = samples[i].g;
-                    roughness_squared_sum += roughness * roughness;  // Perceptual r² averaging
+                    let alpha = samples[i].g * samples[i].g;
+                    alpha_lin_sum += alpha;
+                    alpha_sq_sum += alpha * alpha;
                     b_sum += samples[i].b;
-                    alpha_sum += samples[i].a;
+                    a_sum += samples[i].a;
                 }}
+
+                let alpha_mean = alpha_lin_sum * 0.25;
+                let alpha_var = max(alpha_sq_sum * 0.25 - alpha_mean * alpha_mean, 0.0);
+                let alpha_out = clamp(
+                    alpha_mean + ROUGHNESS_VARIANCE_BIAS * sqrt(alpha_var),
+                    0.0,
+                    1.0,
+                );
 
                 return vec4<f32>(
                     metallic_sum * 0.25,
-                    sqrt(roughness_squared_sum * 0.25),
+                    sqrt(alpha_out),
                     b_sum * 0.25,
-                    alpha_sum * 0.25
+                    a_sum * 0.25
                 );
             }}
 
