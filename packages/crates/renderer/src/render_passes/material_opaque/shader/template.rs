@@ -1191,8 +1191,18 @@ mod size_regression {
     // empty / 135.8 KB all; +~0.8 KB when the cross-material sub-pixel edge
     // test landed in helpers/msaa.wgsl (edge_mask_material_msaa — coplanar
     // seam-over-floor pixels were classifying as interior and stair-stepping).
-    const CEIL_EMPTY_MSAA4_MIPS: usize = 96_500;
-    const CEIL_ALL_MSAA4_MIPS: usize = 138_500;
+    // **Specular anti-aliasing (geometric normal-variance widen + MR
+    // safeguards):** the roughness fed to the specular lobe is widened by the
+    // screen-space variance of the interpolated normal (Kaplanyan-style) with
+    // metallic-roughness sampling safeguards — a permanent, intended +1.26 KB
+    // that lives entirely in the opt-in shading helpers, so only the ALL size
+    // moved (empty unchanged at 96.1 KB). NOTE: these ceilings are measured
+    // against `--all-features` (what CI runs) — `debug-views` alone adds
+    // ~0.8 KB to BOTH variants vs a default-features local run, so always
+    // re-measure with `--all-features` before blessing a new ceiling.
+    // Measured 96.1 KB empty / 138.7 KB all.
+    const CEIL_EMPTY_MSAA4_MIPS: usize = 97_500;
+    const CEIL_ALL_MSAA4_MIPS: usize = 140_000;
 
     #[test]
     fn custom_shader_sizes_within_ceiling() {
