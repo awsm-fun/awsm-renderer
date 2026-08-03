@@ -15,9 +15,6 @@
 const SPEC_AA_FLOOR_START_LOD: f32 = 1.0;
 const SPEC_AA_FLOOR_PER_LOD: f32 = 0.12;
 const SPEC_AA_FLOOR_MAX: f32 = 0.45;
-// Magnification arm: how much of the per-pixel roughness gradient widens the
-// roughness (1.0 ≈ spread a one-pixel ramp across ~two pixels of highlight).
-const SPEC_AA_GRAD_WIDEN: f32 = 1.0;
 
 struct PbrMaterialGradients {
     base_color: UvDerivs,
@@ -176,34 +173,9 @@ fn pbr_get_material_color{{ mipmap.suffix() }}(
             SPEC_AA_FLOOR_PER_LOD * max(mr_lod - SPEC_AA_FLOOR_START_LOD, 0.0),
             SPEC_AA_FLOOR_MAX,
         );
-        // MAGNIFICATION arm: at LOD ≈ 0 the mip chain and the floor above are
-        // both inert, but a roughness RAMP crossing the pixel (bilinear
-        // magnification of a shiny/rough texel border) still collapses to a
-        // sub-pixel specular ridge — the dotted crawl along baked panel
-        // lines. Widen roughness by its own screen-space gradient (the same
-        // one-pixel UV steps the mip path uses): the ridge spreads into a
-        // smooth band exactly where roughness varies within a pixel, and
-        // uniform-roughness pixels are untouched. Two extra fetches of an
-        // already-hot texture.
-        let mr_dx = _pbr_material_metallic_roughness_color{{ mipmap.suffix() }}(
-            material,
-            metallic_roughness_uv + gradients.metallic_roughness.ddx,
-            gradients.metallic_roughness,
-        );
-        let mr_dy = _pbr_material_metallic_roughness_color{{ mipmap.suffix() }}(
-            material,
-            metallic_roughness_uv + gradients.metallic_roughness.ddy,
-            gradients.metallic_roughness,
-        );
-        let rough_grad = abs(mr_dx.y - metallic_roughness.y)
-            + abs(mr_dy.y - metallic_roughness.y);
-        let widened = min(
-            metallic_roughness.y + SPEC_AA_GRAD_WIDEN * rough_grad,
-            1.0,
-        );
         metallic_roughness = vec2<f32>(
             metallic_roughness.x,
-            max(widened, rough_floor),
+            max(metallic_roughness.y, rough_floor),
         );
     }
     {% endif %}

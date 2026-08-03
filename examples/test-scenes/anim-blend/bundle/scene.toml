@@ -19,6 +19,23 @@ half_extents = [
     10.0,
 ]
 
+[environment.rotation]
+skybox = [
+    0.0,
+    0.0,
+    0.0,
+]
+specular = [
+    0.0,
+    0.0,
+    0.0,
+]
+irradiance = [
+    0.0,
+    0.0,
+    0.0,
+]
+
 [shadows]
 sscs_enabled = false
 sscs_step_count = 16
@@ -51,34 +68,48 @@ max_distance = 100.0
 thickness = 1.0
 max_steps = 96
 spread_cutoff = 0.6000000238418579
-edge_fade = 0.10000000149011612
+edge_fade = 0.03999999910593033
 resolution_scale = 0.5
 temporal = false
 temporal_weight = 0.8999999761581421
 bvh_reflections = false
 
-[assets.9493a3f9-432f-4fc5-9158-235ca6beed56]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = "61c8b109ee7f8bf262791933380fafb1465f7b51cbe6472c2d21eff0b31f83a1"
-texture_encoding = "ktx2"
-lod = "none"
+[post_process.atmosphere]
+mode = "off"
+color = [
+    0.5,
+    0.6000000238418579,
+    0.699999988079071,
+]
+density = 0.019999999552965164
+base_height = 0.0
+height_falloff = 0.0
+scattering_anisotropy = 0.30000001192092896
+volumetric_distance = 80.0
+volumetric_temporal = false
 
-[assets.9493a3f9-432f-4fc5-9158-235ca6beed56.source.texture.raster]
-display_name = "fox_material · base color.png"
-color_kind = "albedo"
-
-[assets.d272761e-5db0-4a38-8af6-79cd209dc2e9]
-gltf_material_asset_ids = ["f8c021bb-def8-42a5-b588-e3a89d7c16eb"]
-gltf_image_asset_ids = ["9493a3f9-432f-4fc5-9158-235ca6beed56"]
+[assets.596f9db0-b74b-43f2-ad7c-cc5da9822673]
+gltf_material_asset_ids = ["87f1d79d-733b-4694-b181-0f165447181b"]
+gltf_image_asset_ids = ["287517ae-4704-4d4a-8166-1844d52b36fa"]
 content_hash = ""
 lod = "none"
 
-[assets.d272761e-5db0-4a38-8af6-79cd209dc2e9.source]
-filename = "d272761e-5db0-4a38-8af6-79cd209dc2e9.glb"
+[assets.596f9db0-b74b-43f2-ad7c-cc5da9822673.source]
+filename = "596f9db0-b74b-43f2-ad7c-cc5da9822673.glb"
+
+[assets.287517ae-4704-4d4a-8166-1844d52b36fa]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+texture_encoding = "ktx2"
+lod = "none"
+
+[assets.287517ae-4704-4d4a-8166-1844d52b36fa.source.texture.raster]
+display_name = "fox_material · base color.png"
+color_kind = "albedo"
 
 [[animations]]
-id = "88c2064f-d06f-45f9-bc99-3124481149ca"
+id = "346d78af-2f42-4e03-ac72-a8a1b5c833b5"
 name = "Survey"
 duration = 3.4166667461395264
 loop_style = "loop"
@@ -179,7 +210,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "5012e2ea-3087-49ef-a057-92f5e45f30a1"
+node = "eca4543e-118d-440d-91f5-61bf4dcbe6dd"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -2765,7 +2796,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "fbc3f8b2-b187-4108-af8f-157b6645baee"
+node = "2bdcc5b4-a316-4409-8c75-fa93399d976f"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -5351,7 +5382,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "fd518193-e302-473a-98b4-48d6bffce73d"
+node = "5dd7fff6-0338-47fd-b527-c930254c389f"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -7937,7 +7968,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "5b1f2ec5-f964-4f23-8345-023d22559318"
+node = "70ebdd79-ab47-405b-80a8-dd1b81ec8cc8"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -10523,7 +10554,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "6bcaac8b-84ae-4810-a41c-51b59cbc0129"
+node = "56dd500c-98eb-4672-9e3c-8ccfbfefdca7"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -13109,7 +13140,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "f17462f9-6719-498d-aa68-44c6934b783b"
+node = "137dfc61-93fe-42b1-9453-82c208538e2e"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -15695,7 +15726,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "49683b2e-cc4d-4473-a451-bee8537d29d1"
+node = "73e9983a-0dc7-475d-9aa0-7f16dea975a8"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -18281,7 +18312,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "8b4158f0-140a-4a15-a320-92269614a751"
+node = "c6043b56-0a9d-4c7f-b5ef-da3cca81bb89"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -20867,7 +20898,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "b064bb02-cacc-473a-b664-a7166ecd3fec"
+node = "ed3cdb63-251b-4ef0-baf6-6304cf5ee3f5"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -23453,7 +23484,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "6c31a2ad-869a-45c9-899b-af041eee1dc9"
+node = "2fc39024-aa40-442e-a515-60d6089ecf29"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -26039,7 +26070,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "88271fd1-a60d-4ab5-88a9-6dc495de53e1"
+node = "8489fd22-48bf-457a-a59e-108d322c854f"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -28625,7 +28656,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "6e8d7fe4-02cb-4031-a868-4b46b37f2fef"
+node = "dfc01008-93fd-42e3-8730-942e349478eb"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -31211,7 +31242,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "c6e38d8e-b507-432d-a216-17fa05125923"
+node = "b393724b-86b8-495a-8f7c-39904cbbb4b0"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -33797,7 +33828,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "c174f7fa-43b1-423c-ac95-306501e3cbfa"
+node = "0c54cac4-1004-4db9-aa9b-be0c83427978"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -36383,7 +36414,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "35d9bd74-8b57-491a-b4d5-2489271f191e"
+node = "76de7719-b333-4b71-b2ee-e24053cf67c4"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -38969,7 +39000,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "1f0f000d-5cf2-49e6-bb2e-87ca7abff60a"
+node = "7dc58357-50cb-4294-bbf4-96cbdb9716f3"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -41555,7 +41586,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "3195fc04-ccb1-4704-98b9-9e2e34438eef"
+node = "cabe371c-bb50-4202-9e0c-b243371252b4"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -44141,7 +44172,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "2e65f7a7-1f09-4920-ae4e-700523985dc1"
+node = "5370efef-0cdd-4c64-9ea4-9c264a38b81e"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -46727,7 +46758,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "17b8253c-feaf-4ec5-a05a-e9af18444273"
+node = "6079db40-6760-4260-813d-92c1e6d5bd96"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -49313,7 +49344,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "fea523ff-083f-456a-b9b3-922db54c7b33"
+node = "c712682c-0fef-4b1d-8836-f14af26101c5"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -51650,7 +51681,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "fea523ff-083f-456a-b9b3-922db54c7b33"
+node = "c712682c-0fef-4b1d-8836-f14af26101c5"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -54144,7 +54175,7 @@ value = [
 ]
 
 [[animations]]
-id = "c76ccd91-ed72-4999-b716-67b8c377665f"
+id = "0e847372-c82b-4791-b364-2c6154d2f338"
 name = "Walk"
 duration = 0.7083333134651184
 loop_style = "loop"
@@ -54180,7 +54211,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "5012e2ea-3087-49ef-a057-92f5e45f30a1"
+node = "eca4543e-118d-440d-91f5-61bf4dcbe6dd"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -54751,7 +54782,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "fbc3f8b2-b187-4108-af8f-157b6645baee"
+node = "2bdcc5b4-a316-4409-8c75-fa93399d976f"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -55322,7 +55353,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "fd518193-e302-473a-98b4-48d6bffce73d"
+node = "5dd7fff6-0338-47fd-b527-c930254c389f"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -55893,7 +55924,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "5b1f2ec5-f964-4f23-8345-023d22559318"
+node = "70ebdd79-ab47-405b-80a8-dd1b81ec8cc8"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -56464,7 +56495,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "6bcaac8b-84ae-4810-a41c-51b59cbc0129"
+node = "56dd500c-98eb-4672-9e3c-8ccfbfefdca7"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -57035,7 +57066,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "f17462f9-6719-498d-aa68-44c6934b783b"
+node = "137dfc61-93fe-42b1-9453-82c208538e2e"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -57606,7 +57637,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "49683b2e-cc4d-4473-a451-bee8537d29d1"
+node = "73e9983a-0dc7-475d-9aa0-7f16dea975a8"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -58177,7 +58208,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "8b4158f0-140a-4a15-a320-92269614a751"
+node = "c6043b56-0a9d-4c7f-b5ef-da3cca81bb89"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -58748,7 +58779,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "b064bb02-cacc-473a-b664-a7166ecd3fec"
+node = "ed3cdb63-251b-4ef0-baf6-6304cf5ee3f5"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -59319,7 +59350,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "6c31a2ad-869a-45c9-899b-af041eee1dc9"
+node = "2fc39024-aa40-442e-a515-60d6089ecf29"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -59890,7 +59921,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "88271fd1-a60d-4ab5-88a9-6dc495de53e1"
+node = "8489fd22-48bf-457a-a59e-108d322c854f"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -60461,7 +60492,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "6e8d7fe4-02cb-4031-a868-4b46b37f2fef"
+node = "dfc01008-93fd-42e3-8730-942e349478eb"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -61032,7 +61063,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "c6e38d8e-b507-432d-a216-17fa05125923"
+node = "b393724b-86b8-495a-8f7c-39904cbbb4b0"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -61603,7 +61634,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "c174f7fa-43b1-423c-ac95-306501e3cbfa"
+node = "0c54cac4-1004-4db9-aa9b-be0c83427978"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -62174,7 +62205,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "35d9bd74-8b57-491a-b4d5-2489271f191e"
+node = "76de7719-b333-4b71-b2ee-e24053cf67c4"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -62745,7 +62776,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "1f0f000d-5cf2-49e6-bb2e-87ca7abff60a"
+node = "7dc58357-50cb-4294-bbf4-96cbdb9716f3"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -63316,7 +63347,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "3195fc04-ccb1-4704-98b9-9e2e34438eef"
+node = "cabe371c-bb50-4202-9e0c-b243371252b4"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -63887,7 +63918,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "2e65f7a7-1f09-4920-ae4e-700523985dc1"
+node = "5370efef-0cdd-4c64-9ea4-9c264a38b81e"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -64458,7 +64489,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "17b8253c-feaf-4ec5-a05a-e9af18444273"
+node = "6079db40-6760-4260-813d-92c1e6d5bd96"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -65029,7 +65060,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "fea523ff-083f-456a-b9b3-922db54c7b33"
+node = "c712682c-0fef-4b1d-8836-f14af26101c5"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -65546,7 +65577,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "fea523ff-083f-456a-b9b3-922db54c7b33"
+node = "c712682c-0fef-4b1d-8836-f14af26101c5"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -66090,7 +66121,7 @@ value = [
 ]
 
 [[animations]]
-id = "6b644963-12f7-4a04-9adf-ab2c7b85edd1"
+id = "80504ce0-cd91-434d-b48a-80b272285cb2"
 name = "Run"
 duration = 1.1583333015441895
 loop_style = "loop"
@@ -66133,7 +66164,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "5012e2ea-3087-49ef-a057-92f5e45f30a1"
+node = "eca4543e-118d-440d-91f5-61bf4dcbe6dd"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -66921,7 +66952,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "fbc3f8b2-b187-4108-af8f-157b6645baee"
+node = "2bdcc5b4-a316-4409-8c75-fa93399d976f"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -67709,7 +67740,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "fd518193-e302-473a-98b4-48d6bffce73d"
+node = "5dd7fff6-0338-47fd-b527-c930254c389f"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -68497,7 +68528,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "5b1f2ec5-f964-4f23-8345-023d22559318"
+node = "70ebdd79-ab47-405b-80a8-dd1b81ec8cc8"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -69285,7 +69316,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "6bcaac8b-84ae-4810-a41c-51b59cbc0129"
+node = "56dd500c-98eb-4672-9e3c-8ccfbfefdca7"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -70073,7 +70104,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "f17462f9-6719-498d-aa68-44c6934b783b"
+node = "137dfc61-93fe-42b1-9453-82c208538e2e"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -70861,7 +70892,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "49683b2e-cc4d-4473-a451-bee8537d29d1"
+node = "73e9983a-0dc7-475d-9aa0-7f16dea975a8"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -71649,7 +71680,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "8b4158f0-140a-4a15-a320-92269614a751"
+node = "c6043b56-0a9d-4c7f-b5ef-da3cca81bb89"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -72437,7 +72468,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "b064bb02-cacc-473a-b664-a7166ecd3fec"
+node = "ed3cdb63-251b-4ef0-baf6-6304cf5ee3f5"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -73225,7 +73256,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "6c31a2ad-869a-45c9-899b-af041eee1dc9"
+node = "2fc39024-aa40-442e-a515-60d6089ecf29"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -74013,7 +74044,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "88271fd1-a60d-4ab5-88a9-6dc495de53e1"
+node = "8489fd22-48bf-457a-a59e-108d322c854f"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -74801,7 +74832,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "6e8d7fe4-02cb-4031-a868-4b46b37f2fef"
+node = "dfc01008-93fd-42e3-8730-942e349478eb"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -75589,7 +75620,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "c6e38d8e-b507-432d-a216-17fa05125923"
+node = "b393724b-86b8-495a-8f7c-39904cbbb4b0"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -76377,7 +76408,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "c174f7fa-43b1-423c-ac95-306501e3cbfa"
+node = "0c54cac4-1004-4db9-aa9b-be0c83427978"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -77165,7 +77196,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "35d9bd74-8b57-491a-b4d5-2489271f191e"
+node = "76de7719-b333-4b71-b2ee-e24053cf67c4"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -77953,7 +77984,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "1f0f000d-5cf2-49e6-bb2e-87ca7abff60a"
+node = "7dc58357-50cb-4294-bbf4-96cbdb9716f3"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -78741,7 +78772,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "3195fc04-ccb1-4704-98b9-9e2e34438eef"
+node = "cabe371c-bb50-4202-9e0c-b243371252b4"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -79529,7 +79560,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "2e65f7a7-1f09-4920-ae4e-700523985dc1"
+node = "5370efef-0cdd-4c64-9ea4-9c264a38b81e"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -80317,7 +80348,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "17b8253c-feaf-4ec5-a05a-e9af18444273"
+node = "6079db40-6760-4260-813d-92c1e6d5bd96"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -81105,7 +81136,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "fea523ff-083f-456a-b9b3-922db54c7b33"
+node = "c712682c-0fef-4b1d-8836-f14af26101c5"
 prop = "translation"
 
 [[animations.tracks.keys]]
@@ -81818,7 +81849,7 @@ times = [
 
 [animations.tracks.target]
 target = "transform"
-node = "fea523ff-083f-456a-b9b3-922db54c7b33"
+node = "c712682c-0fef-4b1d-8836-f14af26101c5"
 prop = "rotation"
 
 [[animations.tracks.keys]]
@@ -82580,7 +82611,7 @@ include_descendants = false
 mode = "replace"
 
 [[mixer.layers.strips]]
-clip = "c76ccd91-ed72-4999-b716-67b8c377665f"
+clip = "0e847372-c82b-4791-b364-2c6154d2f338"
 start = 0.0
 len = 2.0
 scale = 1.0
@@ -82595,14 +82626,14 @@ include_descendants = false
 mode = "replace"
 
 [[mixer.layers.strips]]
-clip = "6b644963-12f7-4a04-9adf-ab2c7b85edd1"
+clip = "80504ce0-cd91-434d-b48a-80b272285cb2"
 start = 0.0
 len = 2.0
 scale = 1.0
 repeat = false
 
 [[nodes]]
-id = "ac5b7f27-95bf-4533-95bb-35f394afbe3d"
+id = "eae6f2d8-f9d1-456d-9c1f-d3644d52be33"
 name = "Directional Light"
 locked = false
 visible = true
@@ -82634,6 +82665,7 @@ color = [
     1.0,
 ]
 intensity = 4.0
+volumetric_intensity = 1.0
 
 [nodes.kind.light.directional.shadow]
 cast = true
@@ -82652,7 +82684,7 @@ far_cascade_update_rate = "every4_frames"
 cube_face_update_rate = "every_frame"
 
 [[nodes]]
-id = "4c4e5e88-4626-4524-a338-856d584d61c4"
+id = "918cda4e-3484-41d9-8d4c-a9e300c3e9b2"
 name = "root"
 kind = "group"
 locked = false
@@ -82678,7 +82710,7 @@ scale = [
 ]
 
 [[nodes.children]]
-id = "fa10f03b-a415-4350-8ebd-25bf3031d702"
+id = "a619521d-51fb-4b4e-844d-631160cc3dbb"
 name = "_rootJoint"
 kind = "group"
 locked = false
@@ -82704,7 +82736,7 @@ scale = [
 ]
 
 [[nodes.children.children]]
-id = "57593ab7-63a7-4f19-ab74-6e939bd829ee"
+id = "ad1f0eb2-5ff5-4bef-ab03-1d23f7efedf7"
 name = "b_Root_00"
 kind = "group"
 locked = false
@@ -82730,7 +82762,7 @@ scale = [
 ]
 
 [[nodes.children.children.children]]
-id = "fea523ff-083f-456a-b9b3-922db54c7b33"
+id = "c712682c-0fef-4b1d-8836-f14af26101c5"
 name = "b_Hip_01"
 kind = "group"
 locked = false
@@ -82756,7 +82788,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children]]
-id = "6c31a2ad-869a-45c9-899b-af041eee1dc9"
+id = "2fc39024-aa40-442e-a515-60d6089ecf29"
 name = "b_Spine01_02"
 kind = "group"
 locked = false
@@ -82782,7 +82814,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children]]
-id = "b064bb02-cacc-473a-b664-a7166ecd3fec"
+id = "ed3cdb63-251b-4ef0-baf6-6304cf5ee3f5"
 name = "b_Spine02_03"
 kind = "group"
 locked = false
@@ -82808,7 +82840,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children.children]]
-id = "fbc3f8b2-b187-4108-af8f-157b6645baee"
+id = "2bdcc5b4-a316-4409-8c75-fa93399d976f"
 name = "b_Neck_04"
 kind = "group"
 locked = false
@@ -82834,7 +82866,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children.children.children]]
-id = "5012e2ea-3087-49ef-a057-92f5e45f30a1"
+id = "eca4543e-118d-440d-91f5-61bf4dcbe6dd"
 name = "b_Head_05"
 kind = "group"
 locked = false
@@ -82861,7 +82893,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children.children]]
-id = "6bcaac8b-84ae-4810-a41c-51b59cbc0129"
+id = "56dd500c-98eb-4672-9e3c-8ccfbfefdca7"
 name = "b_RightUpperArm_06"
 kind = "group"
 locked = false
@@ -82887,7 +82919,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children.children.children]]
-id = "5b1f2ec5-f964-4f23-8345-023d22559318"
+id = "70ebdd79-ab47-405b-80a8-dd1b81ec8cc8"
 name = "b_RightForeArm_07"
 kind = "group"
 locked = false
@@ -82913,7 +82945,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children.children.children.children]]
-id = "fd518193-e302-473a-98b4-48d6bffce73d"
+id = "5dd7fff6-0338-47fd-b527-c930254c389f"
 name = "b_RightHand_08"
 kind = "group"
 locked = false
@@ -82940,7 +82972,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children.children]]
-id = "8b4158f0-140a-4a15-a320-92269614a751"
+id = "c6043b56-0a9d-4c7f-b5ef-da3cca81bb89"
 name = "b_LeftUpperArm_09"
 kind = "group"
 locked = false
@@ -82966,7 +82998,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children.children.children]]
-id = "49683b2e-cc4d-4473-a451-bee8537d29d1"
+id = "73e9983a-0dc7-475d-9aa0-7f16dea975a8"
 name = "b_LeftForeArm_010"
 kind = "group"
 locked = false
@@ -82992,7 +83024,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children.children.children.children]]
-id = "f17462f9-6719-498d-aa68-44c6934b783b"
+id = "137dfc61-93fe-42b1-9453-82c208538e2e"
 name = "b_LeftHand_011"
 kind = "group"
 locked = false
@@ -83019,7 +83051,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children]]
-id = "c6e38d8e-b507-432d-a216-17fa05125923"
+id = "b393724b-86b8-495a-8f7c-39904cbbb4b0"
 name = "b_Tail01_012"
 kind = "group"
 locked = false
@@ -83045,7 +83077,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children]]
-id = "6e8d7fe4-02cb-4031-a868-4b46b37f2fef"
+id = "dfc01008-93fd-42e3-8730-942e349478eb"
 name = "b_Tail02_013"
 kind = "group"
 locked = false
@@ -83071,7 +83103,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children.children]]
-id = "88271fd1-a60d-4ab5-88a9-6dc495de53e1"
+id = "8489fd22-48bf-457a-a59e-108d322c854f"
 name = "b_Tail03_014"
 kind = "group"
 locked = false
@@ -83098,7 +83130,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children]]
-id = "1f0f000d-5cf2-49e6-bb2e-87ca7abff60a"
+id = "7dc58357-50cb-4294-bbf4-96cbdb9716f3"
 name = "b_LeftLeg01_015"
 kind = "group"
 locked = false
@@ -83124,7 +83156,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children]]
-id = "35d9bd74-8b57-491a-b4d5-2489271f191e"
+id = "76de7719-b333-4b71-b2ee-e24053cf67c4"
 name = "b_LeftLeg02_016"
 kind = "group"
 locked = false
@@ -83150,7 +83182,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children.children]]
-id = "c174f7fa-43b1-423c-ac95-306501e3cbfa"
+id = "0c54cac4-1004-4db9-aa9b-be0c83427978"
 name = "b_LeftFoot01_017"
 kind = "group"
 locked = false
@@ -83176,7 +83208,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children.children.children]]
-id = "a59ac37e-7c30-4702-abed-9a971229ae7b"
+id = "82ee6331-f491-4e21-8032-417030581422"
 name = "b_LeftFoot02_018"
 kind = "group"
 locked = false
@@ -83203,7 +83235,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children]]
-id = "17b8253c-feaf-4ec5-a05a-e9af18444273"
+id = "6079db40-6760-4260-813d-92c1e6d5bd96"
 name = "b_RightLeg01_019"
 kind = "group"
 locked = false
@@ -83229,7 +83261,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children]]
-id = "2e65f7a7-1f09-4920-ae4e-700523985dc1"
+id = "5370efef-0cdd-4c64-9ea4-9c264a38b81e"
 name = "b_RightLeg02_020"
 kind = "group"
 locked = false
@@ -83255,7 +83287,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children.children]]
-id = "3195fc04-ccb1-4704-98b9-9e2e34438eef"
+id = "cabe371c-bb50-4202-9e0c-b243371252b4"
 name = "b_RightFoot01_021"
 kind = "group"
 locked = false
@@ -83281,7 +83313,7 @@ scale = [
 ]
 
 [[nodes.children.children.children.children.children.children.children]]
-id = "7f10b108-80c2-4b29-bc44-4079b8c72013"
+id = "d3ecd52f-0cd5-4f67-9cc1-6fc3fd9d7a31"
 name = "b_RightFoot02_022"
 kind = "group"
 locked = false
@@ -83308,7 +83340,7 @@ scale = [
 ]
 
 [[nodes]]
-id = "bdb5d225-c994-4a4e-a714-c7756f358f77"
+id = "519e6b6e-dbbd-4fe3-9a23-50b22de3cce9"
 name = "fox"
 locked = false
 visible = true
@@ -83334,115 +83366,115 @@ scale = [
 ]
 
 [nodes.kind.skinned_mesh]
-selected_variant = "0c0b60fe-5937-4e25-8f6c-70ea4172cadf"
+selected_variant = "8c401c0a-24a0-4720-bcdb-e9b2f2b1f771"
 
 [nodes.kind.skinned_mesh.skin]
-source = "d272761e-5db0-4a38-8af6-79cd209dc2e9"
+source = "596f9db0-b74b-43f2-ad7c-cc5da9822673"
 node_index = 1
 rig_node_index = 25
 
 [[nodes.kind.skinned_mesh.skin.joints]]
-node = "fa10f03b-a415-4350-8ebd-25bf3031d702"
+node = "a619521d-51fb-4b4e-844d-631160cc3dbb"
 index = 1
 
 [[nodes.kind.skinned_mesh.skin.joints]]
-node = "57593ab7-63a7-4f19-ab74-6e939bd829ee"
+node = "ad1f0eb2-5ff5-4bef-ab03-1d23f7efedf7"
 index = 2
 
 [[nodes.kind.skinned_mesh.skin.joints]]
-node = "fea523ff-083f-456a-b9b3-922db54c7b33"
+node = "c712682c-0fef-4b1d-8836-f14af26101c5"
 index = 3
 
 [[nodes.kind.skinned_mesh.skin.joints]]
-node = "6c31a2ad-869a-45c9-899b-af041eee1dc9"
+node = "2fc39024-aa40-442e-a515-60d6089ecf29"
 index = 4
 
 [[nodes.kind.skinned_mesh.skin.joints]]
-node = "b064bb02-cacc-473a-b664-a7166ecd3fec"
+node = "ed3cdb63-251b-4ef0-baf6-6304cf5ee3f5"
 index = 5
 
 [[nodes.kind.skinned_mesh.skin.joints]]
-node = "fbc3f8b2-b187-4108-af8f-157b6645baee"
+node = "2bdcc5b4-a316-4409-8c75-fa93399d976f"
 index = 6
 
 [[nodes.kind.skinned_mesh.skin.joints]]
-node = "5012e2ea-3087-49ef-a057-92f5e45f30a1"
+node = "eca4543e-118d-440d-91f5-61bf4dcbe6dd"
 index = 7
 
 [[nodes.kind.skinned_mesh.skin.joints]]
-node = "6bcaac8b-84ae-4810-a41c-51b59cbc0129"
+node = "56dd500c-98eb-4672-9e3c-8ccfbfefdca7"
 index = 8
 
 [[nodes.kind.skinned_mesh.skin.joints]]
-node = "5b1f2ec5-f964-4f23-8345-023d22559318"
+node = "70ebdd79-ab47-405b-80a8-dd1b81ec8cc8"
 index = 9
 
 [[nodes.kind.skinned_mesh.skin.joints]]
-node = "fd518193-e302-473a-98b4-48d6bffce73d"
+node = "5dd7fff6-0338-47fd-b527-c930254c389f"
 index = 10
 
 [[nodes.kind.skinned_mesh.skin.joints]]
-node = "8b4158f0-140a-4a15-a320-92269614a751"
+node = "c6043b56-0a9d-4c7f-b5ef-da3cca81bb89"
 index = 11
 
 [[nodes.kind.skinned_mesh.skin.joints]]
-node = "49683b2e-cc4d-4473-a451-bee8537d29d1"
+node = "73e9983a-0dc7-475d-9aa0-7f16dea975a8"
 index = 12
 
 [[nodes.kind.skinned_mesh.skin.joints]]
-node = "f17462f9-6719-498d-aa68-44c6934b783b"
+node = "137dfc61-93fe-42b1-9453-82c208538e2e"
 index = 13
 
 [[nodes.kind.skinned_mesh.skin.joints]]
-node = "c6e38d8e-b507-432d-a216-17fa05125923"
+node = "b393724b-86b8-495a-8f7c-39904cbbb4b0"
 index = 14
 
 [[nodes.kind.skinned_mesh.skin.joints]]
-node = "6e8d7fe4-02cb-4031-a868-4b46b37f2fef"
+node = "dfc01008-93fd-42e3-8730-942e349478eb"
 index = 15
 
 [[nodes.kind.skinned_mesh.skin.joints]]
-node = "88271fd1-a60d-4ab5-88a9-6dc495de53e1"
+node = "8489fd22-48bf-457a-a59e-108d322c854f"
 index = 16
 
 [[nodes.kind.skinned_mesh.skin.joints]]
-node = "1f0f000d-5cf2-49e6-bb2e-87ca7abff60a"
+node = "7dc58357-50cb-4294-bbf4-96cbdb9716f3"
 index = 17
 
 [[nodes.kind.skinned_mesh.skin.joints]]
-node = "35d9bd74-8b57-491a-b4d5-2489271f191e"
+node = "76de7719-b333-4b71-b2ee-e24053cf67c4"
 index = 18
 
 [[nodes.kind.skinned_mesh.skin.joints]]
-node = "c174f7fa-43b1-423c-ac95-306501e3cbfa"
+node = "0c54cac4-1004-4db9-aa9b-be0c83427978"
 index = 19
 
 [[nodes.kind.skinned_mesh.skin.joints]]
-node = "a59ac37e-7c30-4702-abed-9a971229ae7b"
+node = "82ee6331-f491-4e21-8032-417030581422"
 index = 20
 
 [[nodes.kind.skinned_mesh.skin.joints]]
-node = "17b8253c-feaf-4ec5-a05a-e9af18444273"
+node = "6079db40-6760-4260-813d-92c1e6d5bd96"
 index = 21
 
 [[nodes.kind.skinned_mesh.skin.joints]]
-node = "2e65f7a7-1f09-4920-ae4e-700523985dc1"
+node = "5370efef-0cdd-4c64-9ea4-9c264a38b81e"
 index = 22
 
 [[nodes.kind.skinned_mesh.skin.joints]]
-node = "3195fc04-ccb1-4704-98b9-9e2e34438eef"
+node = "cabe371c-bb50-4202-9e0c-b243371252b4"
 index = 23
 
 [[nodes.kind.skinned_mesh.skin.joints]]
-node = "7f10b108-80c2-4b29-bc44-4079b8c72013"
+node = "d3ecd52f-0cd5-4f67-9cc1-6fc3fd9d7a31"
 index = 24
 
 [[nodes.kind.skinned_mesh.material_variants]]
-id = "0c0b60fe-5937-4e25-8f6c-70ea4172cadf"
+id = "8c401c0a-24a0-4720-bcdb-e9b2f2b1f771"
 name = "fox_material"
 
 [nodes.kind.skinned_mesh.material_variants.instance]
-asset = "f8c021bb-def8-42a5-b588-e3a89d7c16eb"
+asset = "87f1d79d-733b-4694-b181-0f165447181b"
 
 [nodes.kind.skinned_mesh.material_variants.instance.inline]
 label = "fox_material"
@@ -83468,7 +83500,7 @@ alpha_mode = "opaque"
 shading = "pbr"
 
 [nodes.kind.skinned_mesh.material_variants.instance.inline.base_color_texture]
-asset = "9493a3f9-432f-4fc5-9158-235ca6beed56"
+asset = "287517ae-4704-4d4a-8166-1844d52b36fa"
 
 [nodes.kind.skinned_mesh.material_variants.instance.inline.extensions]
 

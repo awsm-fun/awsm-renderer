@@ -496,6 +496,12 @@ fn open_export_player_bundle() {
             }
             .to_string(),
         );
+        // Size caps (docs/plans/compression.md follow-ons): 0 in the UI means
+        // "no cap" (persisted as None). KTX2 encodes always downscale to the
+        // WASM encoder's hard 12.58-Mpixel source limit regardless of the
+        // texture cap; the env cap mip-truncates KTX2 cubemaps container-level.
+        let texture_max_dim = Mutable::new(current.texture_max_dim.unwrap_or(0) as f64);
+        let env_max_face = Mutable::new(current.env_max_face_size.unwrap_or(0) as f64);
 
         let options_row = |label: &str, control: Dom| {
             html!("div", {
@@ -544,12 +550,24 @@ fn open_export_player_bundle() {
                     ("ktx2".to_string(), "KTX2 (GPU compressed)".to_string()),
                     ("off".to_string(), "Lossless WebP".to_string()),
                 ])))
+                .child(options_row("Max texture size (0 = off)", NumField::new(texture_max_dim.get())
+                    .min(0.0)
+                    .step(256.0)
+                    .suffix("px")
+                    .on_change(clone!(texture_max_dim => move |v| texture_max_dim.set(v)))
+                    .render()))
+                .child(options_row("Max sky face size (0 = off)", NumField::new(env_max_face.get())
+                    .min(0.0)
+                    .step(256.0)
+                    .suffix("px")
+                    .on_change(clone!(env_max_face => move |v| env_max_face.set(v)))
+                    .render()))
             }))
             .footer(html!("div", {
                 .style("display", "flex").style("gap", "8px")
                 .child(Btn::new().label("Cancel").variant(BtnVariant::Ghost).on_click(Modal::close).render())
                 .child(Btn::new().label("Export\u{2026}").icon("mesh").variant(BtnVariant::Primary)
-                    .on_click(clone!(mesh_compression, quantization, threshold, textures => move || {
+                    .on_click(clone!(mesh_compression, quantization, threshold, textures, texture_max_dim, env_max_face => move || {
                         let options = BundleOptions {
                             mesh_compression: match mesh_compression.get_cloned().as_str() {
                                 "off" => MeshCompression::Off,
@@ -565,9 +583,14 @@ fn open_export_player_bundle() {
                                 "off" => TextureCompression::Off,
                                 _ => TextureCompression::Ktx2,
                             },
-                            // Not surfaced in this modal (yet) — carry the
-                            // persisted values through unchanged.
-                            ..controller().scene.bundle_options.get()
+                            texture_max_dim: {
+                                let v = texture_max_dim.get().max(0.0) as u32;
+                                (v > 0).then_some(v)
+                            },
+                            env_max_face_size: {
+                                let v = env_max_face.get().max(0.0) as u32;
+                                (v > 0).then_some(v)
+                            },
                         };
                         // Persist for next time (no-ops when unchanged); the
                         // bake below carries `options` directly.

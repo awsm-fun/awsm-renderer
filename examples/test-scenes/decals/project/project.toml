@@ -21,6 +21,23 @@ half_extents = [
     10.0,
 ]
 
+[environment.rotation]
+skybox = [
+    0.0,
+    0.0,
+    0.0,
+]
+specular = [
+    0.0,
+    0.0,
+    0.0,
+]
+irradiance = [
+    0.0,
+    0.0,
+    0.0,
+]
+
 [shadows]
 sscs_enabled = false
 sscs_step_count = 16
@@ -59,39 +76,28 @@ temporal = false
 temporal_weight = 0.8999999761581421
 bvh_reflections = false
 
-[assets.00000000-0000-4000-8000-00000000000a]
+[post_process.atmosphere]
+mode = "off"
+color = [
+    0.5,
+    0.6000000238418579,
+    0.699999988079071,
+]
+density = 0.019999999552965164
+base_height = 0.0
+height_falloff = 0.0
+scattering_anisotropy = 0.30000001192092896
+volumetric_distance = 80.0
+volumetric_temporal = false
+
+[assets.00000000-0000-4000-8000-0000000000f2]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
-content_hash = ""
+content_hash = "19c705f7e207384ca1ab01e0665601c051ca33c5848c03ce4fffad625b416b53"
 
-[assets.00000000-0000-4000-8000-00000000000a.source.mesh]
-label = "Box"
-editable = true
-
-[assets.00000000-0000-4000-8000-00000000000a.source.mesh.source.primitive.box]
-dims = [
-    1.7999999523162842,
-    1.2000000476837158,
-    1.7999999523162842,
-]
-
-[assets.00000000-0000-4000-8000-00000000000a.source.mesh.stack]
-modifiers = []
-
-[assets.00000000-0000-4000-8000-00000000000a.source.mesh.stack.base.primitive.box]
-dims = [
-    1.7999999523162842,
-    1.2000000476837158,
-    1.7999999523162842,
-]
-
-[assets.00000000-0000-4000-8000-00000000000a.source.mesh.overrides.positions]
-
-[assets.00000000-0000-4000-8000-00000000000a.source.mesh.overrides.colors]
-
-[assets.00000000-0000-4000-8000-00000000000a.source.mesh.overrides.normals]
-
-[assets.00000000-0000-4000-8000-00000000000a.source.mesh.overrides.uvs]
+[assets.00000000-0000-4000-8000-0000000000f2.source.texture.raster]
+display_name = "AlphaBlendLabels.png"
+color_kind = "albedo"
 
 [assets.00000000-0000-4000-8000-000000000001]
 gltf_material_asset_ids = []
@@ -125,14 +131,39 @@ segments_z = 1
 
 [assets.00000000-0000-4000-8000-000000000001.source.mesh.overrides.uvs]
 
-[assets.00000000-0000-4000-8000-0000000000f2]
+[assets.00000000-0000-4000-8000-00000000000a]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
-content_hash = "19c705f7e207384ca1ab01e0665601c051ca33c5848c03ce4fffad625b416b53"
+content_hash = ""
 
-[assets.00000000-0000-4000-8000-0000000000f2.source.texture.raster]
-display_name = "AlphaBlendLabels.png"
-color_kind = "albedo"
+[assets.00000000-0000-4000-8000-00000000000a.source.mesh]
+label = "Box"
+editable = true
+
+[assets.00000000-0000-4000-8000-00000000000a.source.mesh.source.primitive.box]
+dims = [
+    1.7999999523162842,
+    1.2000000476837158,
+    1.7999999523162842,
+]
+
+[assets.00000000-0000-4000-8000-00000000000a.source.mesh.stack]
+modifiers = []
+
+[assets.00000000-0000-4000-8000-00000000000a.source.mesh.stack.base.primitive.box]
+dims = [
+    1.7999999523162842,
+    1.2000000476837158,
+    1.7999999523162842,
+]
+
+[assets.00000000-0000-4000-8000-00000000000a.source.mesh.overrides.positions]
+
+[assets.00000000-0000-4000-8000-00000000000a.source.mesh.overrides.colors]
+
+[assets.00000000-0000-4000-8000-00000000000a.source.mesh.overrides.normals]
+
+[assets.00000000-0000-4000-8000-00000000000a.source.mesh.overrides.uvs]
 
 [[editor_materials]]
 id = "00000000-0000-4000-8000-000000000002"
@@ -258,7 +289,7 @@ smart_threshold_mm = 0.10000000149011612
 texture_compression = "ktx2"
 
 [[nodes]]
-id = "d4921d04-8240-4b0a-9632-2b15a442e892"
+id = "ea259e1c-6d83-48aa-aa64-52c4ddd16163"
 name = "Directional Light"
 locked = false
 visible = true
@@ -290,6 +321,7 @@ color = [
     1.0,
 ]
 intensity = 4.0
+volumetric_intensity = 1.0
 
 [nodes.kind.light.directional.shadow]
 cast = true
@@ -380,7 +412,7 @@ cast = true
 receive = true
 
 [nodes.kind.mesh.lod]
-enabled = true
+kind = "none"
 
 [[nodes]]
 id = "00000000-0000-4000-8000-00000000000a"
@@ -455,7 +487,7 @@ cast = true
 receive = true
 
 [nodes.kind.mesh.lod]
-enabled = true
+kind = "none"
 
 [[nodes]]
 id = "00000000-0000-4000-8000-000000000060"

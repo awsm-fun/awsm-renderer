@@ -20,6 +20,23 @@ half_extents = [
     10.0,
 ]
 
+[environment.rotation]
+skybox = [
+    0.0,
+    0.0,
+    0.0,
+]
+specular = [
+    0.0,
+    0.0,
+    0.0,
+]
+irradiance = [
+    0.0,
+    0.0,
+    0.0,
+]
+
 [shadows]
 sscs_enabled = true
 sscs_step_count = 24
@@ -58,20 +75,25 @@ temporal = false
 temporal_weight = 0.8999999761581421
 bvh_reflections = false
 
-[assets.00000000-0000-4000-8000-000000000011]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-
-[assets.00000000-0000-4000-8000-000000000011.source.mesh.primitive.sphere]
-radius = 0.699999988079071
-segments_long = 32
-segments_lat = 24
+[post_process.atmosphere]
+mode = "off"
+color = [
+    0.5,
+    0.6000000238418579,
+    0.699999988079071,
+]
+density = 0.019999999552965164
+base_height = 0.0
+height_falloff = 0.0
+scattering_anisotropy = 0.30000001192092896
+volumetric_distance = 80.0
+volumetric_temporal = false
 
 [assets.00000000-0000-4000-8000-000000000010]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
+lod = "none"
 
 [assets.00000000-0000-4000-8000-000000000010.source.mesh.primitive.box]
 dims = [
@@ -80,10 +102,22 @@ dims = [
     0.3499999940395355,
 ]
 
+[assets.00000000-0000-4000-8000-000000000011]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.00000000-0000-4000-8000-000000000011.source.mesh.primitive.sphere]
+radius = 0.699999988079071
+segments_long = 32
+segments_lat = 24
+
 [assets.00000000-0000-4000-8000-000000000001]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
+lod = "none"
 
 [assets.00000000-0000-4000-8000-000000000001.source.mesh.primitive.plane]
 width = 16.0
@@ -167,7 +201,7 @@ cast = true
 receive = true
 
 [nodes.kind.mesh.lod]
-enabled = true
+kind = "none"
 
 [[nodes]]
 id = "00000000-0000-4000-8000-000000000010"
@@ -242,7 +276,7 @@ cast = true
 receive = true
 
 [nodes.kind.mesh.lod]
-enabled = true
+kind = "none"
 
 [[nodes]]
 id = "00000000-0000-4000-8000-000000000011"
@@ -317,7 +351,7 @@ cast = true
 receive = true
 
 [nodes.kind.mesh.lod]
-enabled = true
+kind = "none"
 
 [[nodes]]
 id = "00000000-0000-4000-8000-000000000050"
@@ -355,6 +389,7 @@ intensity = 9000.0
 range = 40.0
 inner_angle = 0.5
 outer_angle = 0.8999999761581421
+volumetric_intensity = 1.0
 
 [nodes.kind.light.spot.shadow]
 cast = true

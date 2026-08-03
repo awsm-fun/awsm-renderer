@@ -7,6 +7,36 @@ skybox = "built_in_default"
 specular = "built_in_default"
 irradiance = "built_in_default"
 
+[environment.probe]
+enabled = false
+center = [
+    0.0,
+    0.0,
+    0.0,
+]
+half_extents = [
+    10.0,
+    10.0,
+    10.0,
+]
+
+[environment.rotation]
+skybox = [
+    0.0,
+    0.0,
+    0.0,
+]
+specular = [
+    0.0,
+    0.0,
+    0.0,
+]
+irradiance = [
+    0.0,
+    0.0,
+    0.0,
+]
+
 [shadows]
 sscs_enabled = false
 sscs_step_count = 16
@@ -39,49 +69,42 @@ max_distance = 100.0
 thickness = 1.0
 max_steps = 96
 spread_cutoff = 0.6000000238418579
-edge_fade = 0.10000000149011612
+edge_fade = 0.03999999910593033
 resolution_scale = 0.5
 temporal = false
 temporal_weight = 0.8999999761581421
+bvh_reflections = false
+
+[post_process.atmosphere]
+mode = "off"
+color = [
+    0.5,
+    0.6000000238418579,
+    0.699999988079071,
+]
+density = 0.019999999552965164
+base_height = 0.0
+height_falloff = 0.0
+scattering_anisotropy = 0.30000001192092896
+volumetric_distance = 80.0
+volumetric_temporal = false
 
 [assets.00000000-0000-4000-8000-0000000000f0]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
-content_hash = "19c705f7e207384ca1ab01e0665601c051ca33c5848c03ce4fffad625b416b53"
-texture_encoding = "webp"
+content_hash = ""
+texture_encoding = "ktx2"
+lod = "none"
 
 [assets.00000000-0000-4000-8000-0000000000f0.source.texture.raster]
 display_name = "AlphaBlendLabels.png"
 color_kind = "albedo"
 
-[assets.00000000-0000-4000-8000-00000000000b]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-
-[assets.00000000-0000-4000-8000-00000000000b.source.mesh.primitive.box]
-dims = [
-    3.200000047683716,
-    2.4000000953674316,
-    0.05000000074505806,
-]
-
-[assets.00000000-0000-4000-8000-00000000000c]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-
-[assets.00000000-0000-4000-8000-00000000000c.source.mesh.primitive.box]
-dims = [
-    3.200000047683716,
-    2.4000000953674316,
-    0.05000000074505806,
-]
-
 [assets.00000000-0000-4000-8000-00000000000a]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
+lod = "none"
 
 [assets.00000000-0000-4000-8000-00000000000a.source.mesh.primitive.box]
 dims = [
@@ -94,6 +117,7 @@ dims = [
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
+lod = "none"
 
 [assets.00000000-0000-4000-8000-000000000001.source.mesh.primitive.plane]
 width = 12.0
@@ -101,11 +125,37 @@ depth = 12.0
 segments_x = 1
 segments_z = 1
 
+[assets.00000000-0000-4000-8000-00000000000b]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.00000000-0000-4000-8000-00000000000b.source.mesh.primitive.box]
+dims = [
+    3.200000047683716,
+    2.4000000953674316,
+    0.05000000074505806,
+]
+
+[assets.00000000-0000-4000-8000-00000000000c]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.00000000-0000-4000-8000-00000000000c.source.mesh.primitive.box]
+dims = [
+    3.200000047683716,
+    2.4000000953674316,
+    0.05000000074505806,
+]
+
 [mixer]
 layers = []
 
 [[nodes]]
-id = "14fa4fe0-19f2-4fdd-bfeb-2bb9b25feced"
+id = "0e228b4a-82b6-4ac8-9053-8514c378c7f5"
 name = "Directional Light"
 locked = false
 visible = true
@@ -137,6 +187,7 @@ color = [
     1.0,
 ]
 intensity = 4.0
+volumetric_intensity = 1.0
 
 [nodes.kind.light.directional.shadow]
 cast = true
@@ -208,6 +259,7 @@ emissive = [
 ]
 normal_scale = 1.0
 occlusion_strength = 1.0
+ssr_mask = 1.0
 double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
@@ -226,7 +278,7 @@ cast = true
 receive = true
 
 [nodes.kind.mesh.lod]
-enabled = true
+kind = "none"
 
 [[nodes]]
 id = "00000000-0000-4000-8000-00000000000a"
@@ -282,6 +334,7 @@ emissive = [
 ]
 normal_scale = 1.0
 occlusion_strength = 1.0
+ssr_mask = 1.0
 double_sided = false
 vertex_colors_enabled = false
 shading = "pbr"
@@ -305,7 +358,7 @@ cast = true
 receive = true
 
 [nodes.kind.mesh.lod]
-enabled = true
+kind = "none"
 
 [[nodes]]
 id = "00000000-0000-4000-8000-00000000000b"
@@ -361,6 +414,7 @@ emissive = [
 ]
 normal_scale = 1.0
 occlusion_strength = 1.0
+ssr_mask = 1.0
 double_sided = false
 vertex_colors_enabled = false
 shading = "pbr"
@@ -384,7 +438,7 @@ cast = true
 receive = true
 
 [nodes.kind.mesh.lod]
-enabled = true
+kind = "none"
 
 [[nodes]]
 id = "00000000-0000-4000-8000-00000000000c"
@@ -440,6 +494,7 @@ emissive = [
 ]
 normal_scale = 1.0
 occlusion_strength = 1.0
+ssr_mask = 1.0
 double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "blend"
@@ -461,4 +516,4 @@ cast = true
 receive = true
 
 [nodes.kind.mesh.lod]
-enabled = true
+kind = "none"
