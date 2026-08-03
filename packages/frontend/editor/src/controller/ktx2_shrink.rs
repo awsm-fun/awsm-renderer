@@ -26,7 +26,7 @@
 
 /// The 12-byte KTX2 identifier.
 const KTX2_MAGIC: [u8; 12] = [
-    0xAB, 0x4B, 0x54, 0x58, 0x20, 0x32, 0x30, 0xAB, 0x0D, 0x0A, 0x1A, 0x0A,
+    0xAB, 0x4B, 0x54, 0x58, 0x20, 0x32, 0x30, 0xBB, 0x0D, 0x0A, 0x1A, 0x0A,
 ];
 
 /// Result of a truncation attempt.
@@ -241,6 +241,17 @@ mod tests {
             out.extend_from_slice(&p);
         }
         out
+    }
+
+    /// The identifier from KTX2 spec §3.1 — spelled independently of the
+    /// constant (the guillemets differ: 0xAB opens, 0xBB closes; getting the
+    /// closing byte wrong once made the truncator refuse every real file).
+    #[test]
+    fn magic_matches_spec() {
+        assert_eq!(
+            KTX2_MAGIC,
+            [0xAB, b'K', b'T', b'X', b' ', b'2', b'0', 0xBB, b'\r', b'\n', 0x1A, b'\n']
+        );
     }
 
     #[test]
