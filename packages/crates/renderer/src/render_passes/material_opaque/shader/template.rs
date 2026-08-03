@@ -1188,9 +1188,11 @@ mod size_regression {
     // back into one. The ABI part lands in EVERY Custom shader, lean included —
     // hence both ceilings move. One builder function rather than three
     // accessors keeps that ABI cost as small as it can be. Measured 94.4 KB
-    // empty / 135.8 KB all.
-    const CEIL_EMPTY_MSAA4_MIPS: usize = 95_000;
-    const CEIL_ALL_MSAA4_MIPS: usize = 137_000;
+    // empty / 135.8 KB all; +~0.8 KB when the cross-material sub-pixel edge
+    // test landed in helpers/msaa.wgsl (edge_mask_material_msaa — coplanar
+    // seam-over-floor pixels were classifying as interior and stair-stepping).
+    const CEIL_EMPTY_MSAA4_MIPS: usize = 96_500;
+    const CEIL_ALL_MSAA4_MIPS: usize = 138_500;
 
     #[test]
     fn custom_shader_sizes_within_ceiling() {
