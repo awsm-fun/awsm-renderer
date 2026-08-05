@@ -418,6 +418,13 @@ pub enum EditorCommand {
         parent: Option<NodeId>,
         #[serde(default)]
         max_points: Option<u32>,
+        /// Subtrees under `source` to leave OUT of the fit (each id prunes
+        /// that node and everything below it). The escape hatch for rigs
+        /// whose subtree carries geometry that is not "the body" — socketed
+        /// equipment under hand bones, a telescoping segment stored at full
+        /// extension, editor-only markers.
+        #[serde(default)]
+        exclude: Vec<NodeId>,
     },
 
     /// Re-insert a captured node subtree at `index` under `parent` (preserving

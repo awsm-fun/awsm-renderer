@@ -23,6 +23,7 @@ fn fit_hull_from_selection() {
                 source,
                 parent: None,
                 max_points: None,
+                exclude: Vec::new(),
             })
             .await
         {

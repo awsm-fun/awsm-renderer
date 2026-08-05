@@ -780,7 +780,12 @@ impl EditorController {
     /// cloud with a growing cell, re-hulled until the budget holds — the
     /// budget exists because the physics host's Box3D hulls cap at 254
     /// vertices and lean hulls solve faster everywhere.
-    fn fit_hull_points(&self, source: NodeId, max_points: usize) -> Result<Vec<[f32; 3]>, String> {
+    fn fit_hull_points(
+        &self,
+        source: NodeId,
+        max_points: usize,
+        exclude: &[NodeId],
+    ) -> Result<Vec<[f32; 3]>, String> {
         use glam::{Mat4, Quat as GQuat, Vec3 as GVec3};
 
         let Some(src) = mutate::find_by_id(&self.scene, source) else {
@@ -792,7 +797,11 @@ impl EditorController {
             node: &Arc<crate::engine::scene::Node>,
             m: Mat4,
             cloud: &mut Vec<GVec3>,
+            exclude: &[NodeId],
         ) {
+            if exclude.contains(&node.id) {
+                return;
+            }
             let kind = node.kind.get_cloned();
             if let Some(md) = crate::controller::export::node_mesh(scene, &kind) {
                 cloud.extend(
@@ -808,13 +817,13 @@ impl EditorController {
                     GQuat::from_array(t.rotation).normalize(),
                     GVec3::from_array(t.translation),
                 );
-                gather(scene, child, cm, cloud);
+                gather(scene, child, cm, cloud, exclude);
             }
         }
 
         let src_scale = GVec3::from_array(src.transform.get_cloned().scale);
         let mut cloud: Vec<GVec3> = Vec::new();
-        gather(&self.scene, &src, Mat4::from_scale(src_scale), &mut cloud);
+        gather(&self.scene, &src, Mat4::from_scale(src_scale), &mut cloud, exclude);
         if cloud.len() < 4 {
             return Err(format!(
                 "fit hull: {} mesh vertices under the source — need at least 4 \
@@ -824,24 +833,35 @@ impl EditorController {
             ));
         }
 
-        let solve = |cloud: &[GVec3]| -> Option<Vec<GVec3>> {
+        // Box3D (the physics host) caps hull VERTICES at 254 — and, less
+        // famously, hull HALF-EDGES at 254 too, which a triangulated hull
+        // hits at ~44 vertices (half-edges ≈ 3 × triangles ≈ 6 × (V − 2)).
+        // A hull past either limit silently degrades to a bounding ball at
+        // attach time, which is exactly the imprecision this feature
+        // exists to kill — so the fit enforces the triangle budget here.
+        const MAX_HULL_TRIS: usize = 84;
+
+        let solve = |cloud: &[GVec3]| -> Option<(Vec<GVec3>, usize)> {
             let pts: Vec<parry3d::math::Vec3> = cloud
                 .iter()
                 .map(|v| parry3d::math::Vec3::new(v.x, v.y, v.z))
                 .collect();
             parry3d::transformation::try_convex_hull(pts.as_slice())
                 .ok()
-                .map(|(verts, _)| {
-                    verts.into_iter().map(|v| GVec3::new(v.x, v.y, v.z)).collect()
+                .map(|(verts, faces)| {
+                    (
+                        verts.into_iter().map(|v| GVec3::new(v.x, v.y, v.z)).collect(),
+                        faces.len(),
+                    )
                 })
         };
 
-        let mut verts =
+        let (mut verts, mut tris) =
             solve(&cloud).ok_or("fit hull: degenerate mesh cloud (coplanar?)")?;
 
         // Decimate: cluster the INPUT cloud (not the hull — clustering hull
         // vertices alone can collapse thin features) on a growing voxel grid.
-        if verts.len() > max_points {
+        if verts.len() > max_points || tris > MAX_HULL_TRIS {
             let (mut lo, mut hi) = (GVec3::splat(f32::MAX), GVec3::splat(f32::MIN));
             for p in &cloud {
                 lo = lo.min(*p);
@@ -864,20 +884,21 @@ impl EditorController {
                 }
                 let clustered: Vec<GVec3> =
                     bins.values().map(|(sum, n)| *sum / *n as f32).collect();
-                if let Some(v) = solve(&clustered) {
+                if let Some((v, t)) = solve(&clustered) {
                     if v.len() >= 4 {
                         verts = v;
+                        tris = t;
                     }
                 }
-                if verts.len() <= max_points {
+                if verts.len() <= max_points && tris <= MAX_HULL_TRIS {
                     break;
                 }
                 cell *= 1.5;
             }
-            if verts.len() > max_points {
+            if verts.len() > max_points || tris > MAX_HULL_TRIS {
                 return Err(format!(
-                    "fit hull: could not decimate below {max_points} vertices \
-                     (got {})",
+                    "fit hull: could not decimate below {max_points} vertices / \
+                     {MAX_HULL_TRIS} triangles (got {} / {tris})",
                     verts.len()
                 ));
             }
@@ -1727,6 +1748,7 @@ impl EditorController {
                 source,
                 parent,
                 max_points,
+                exclude,
             } => {
                 // Idempotent like Insert: replay/duplicate ids are a no-op.
                 if mutate::find_by_id(&self.scene, id).is_some() {
@@ -1734,7 +1756,7 @@ impl EditorController {
                 }
                 let max = max_points.unwrap_or(48).clamp(4, 254) as usize;
                 let points = self
-                    .fit_hull_points(source, max)
+                    .fit_hull_points(source, max, &exclude)
                     .map_err(crate::error::EditorError::msg)?;
                 let src = mutate::find_by_id(&self.scene, source)
                     .expect("fit_hull_points verified the source exists");
@@ -10359,6 +10381,7 @@ mod hull_fit_tests {
             source: awsm_renderer_editor_protocol::NodeId::new(),
             parent: None,
             max_points: None,
+            exclude: Vec::new(),
         }));
         assert!(err.is_err(), "bogus source must be a loud error");
     }
