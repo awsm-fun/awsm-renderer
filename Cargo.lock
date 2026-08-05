@@ -356,6 +356,7 @@ dependencies = [
  "image",
  "indexmap",
  "js-sys",
+ "parry3d",
  "serde",
  "serde-wasm-bindgen",
  "serde_json",

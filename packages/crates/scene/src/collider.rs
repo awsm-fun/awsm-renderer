@@ -52,6 +52,17 @@ pub enum ColliderShape {
     Ellipsoid {
         half_extents: [f32; 3],
     },
+    /// Convex hull over an arbitrary point cloud, collider-local.
+    ///
+    /// Points, not faces: the physics host recomputes the hull from the
+    /// same cloud (Box3D `b3CreateHull`), and the editor wireframe
+    /// re-solves it for edges — one source of truth, no face table to
+    /// drift. Authored by fitting to a source node's meshes (the editor's
+    /// "fit hull" flow); 4..=254 points (physics hull indices are 8-bit),
+    /// though fitted hulls aim far lower for solver health.
+    ConvexHull {
+        points: Vec<[f32; 3]>,
+    },
 }
 
 impl ColliderShape {
@@ -89,6 +100,19 @@ impl ColliderShape {
     pub fn default_ellipsoid() -> Self {
         Self::Ellipsoid {
             half_extents: [0.6, 0.4, 0.4],
+        }
+    }
+
+    /// A unit-ish tetrahedron — the smallest legal hull, as the blank-slate
+    /// default (real hulls come from the fit-to-mesh flow).
+    pub fn default_convex_hull() -> Self {
+        Self::ConvexHull {
+            points: vec![
+                [0.5, -0.35, 0.5],
+                [-0.5, -0.35, 0.5],
+                [0.0, -0.35, -0.5],
+                [0.0, 0.65, 0.0],
+            ],
         }
     }
 }
@@ -309,5 +333,35 @@ impl ColliderSpec {
             ),
             shape,
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The hull's point list must survive project.toml/scene.toml verbatim —
+    /// it IS the collision geometry (same pattern as the instancer's
+    /// transform list round-trip in tree.rs).
+    #[test]
+    fn convex_hull_toml_round_trips() {
+        #[derive(serde::Serialize, serde::Deserialize, PartialEq, Debug)]
+        struct Doc {
+            shape: ColliderShape,
+        }
+        let doc = Doc {
+            shape: ColliderShape::ConvexHull {
+                points: vec![
+                    [0.125, -1.5, 3.75],
+                    [-0.25, 0.0, 0.5],
+                    [1.0, 2.0, -3.0],
+                    [0.0, 0.75, 0.0],
+                    [0.5, -0.5, 0.5],
+                ],
+            },
+        };
+        let text = toml::to_string(&doc).expect("serialize");
+        let back: Doc = toml::from_str(&text).expect("deserialize");
+        assert_eq!(back, doc);
     }
 }

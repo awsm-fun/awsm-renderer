@@ -774,6 +774,118 @@ impl EditorController {
     /// safe) so cross-tab replays produce the same asset and the insert stays
     /// idempotent. Baking the stack now means the node renders the first time it
     /// materializes (a nil-curve Sweep bakes empty until its curve is picked).
+    /// Gather every mesh vertex under `source` (source-local space, the
+    /// source's own scale baked in) and fit a convex hull of at most
+    /// `max_points` vertices. Decimation is voxel clustering on the input
+    /// cloud with a growing cell, re-hulled until the budget holds — the
+    /// budget exists because the physics host's Box3D hulls cap at 254
+    /// vertices and lean hulls solve faster everywhere.
+    fn fit_hull_points(&self, source: NodeId, max_points: usize) -> Result<Vec<[f32; 3]>, String> {
+        use glam::{Mat4, Quat as GQuat, Vec3 as GVec3};
+
+        let Some(src) = mutate::find_by_id(&self.scene, source) else {
+            return Err(format!("fit hull: source node {source} not found"));
+        };
+
+        fn gather(
+            scene: &Arc<crate::engine::scene::Scene>,
+            node: &Arc<crate::engine::scene::Node>,
+            m: Mat4,
+            cloud: &mut Vec<GVec3>,
+        ) {
+            let kind = node.kind.get_cloned();
+            if let Some(md) = crate::controller::export::node_mesh(scene, &kind) {
+                cloud.extend(
+                    md.positions
+                        .iter()
+                        .map(|p| m.transform_point3(GVec3::from_array(*p))),
+                );
+            }
+            for child in node.children.lock_ref().iter() {
+                let t = child.transform.get_cloned();
+                let cm = m * Mat4::from_scale_rotation_translation(
+                    GVec3::from_array(t.scale),
+                    GQuat::from_array(t.rotation).normalize(),
+                    GVec3::from_array(t.translation),
+                );
+                gather(scene, child, cm, cloud);
+            }
+        }
+
+        let src_scale = GVec3::from_array(src.transform.get_cloned().scale);
+        let mut cloud: Vec<GVec3> = Vec::new();
+        gather(&self.scene, &src, Mat4::from_scale(src_scale), &mut cloud);
+        if cloud.len() < 4 {
+            return Err(format!(
+                "fit hull: {} mesh vertices under the source — need at least 4 \
+                 (skinned meshes need a warm bind-pose bake; groups need mesh \
+                 descendants)",
+                cloud.len()
+            ));
+        }
+
+        let solve = |cloud: &[GVec3]| -> Option<Vec<GVec3>> {
+            let pts: Vec<parry3d::math::Vec3> = cloud
+                .iter()
+                .map(|v| parry3d::math::Vec3::new(v.x, v.y, v.z))
+                .collect();
+            parry3d::transformation::try_convex_hull(pts.as_slice())
+                .ok()
+                .map(|(verts, _)| {
+                    verts.into_iter().map(|v| GVec3::new(v.x, v.y, v.z)).collect()
+                })
+        };
+
+        let mut verts =
+            solve(&cloud).ok_or("fit hull: degenerate mesh cloud (coplanar?)")?;
+
+        // Decimate: cluster the INPUT cloud (not the hull — clustering hull
+        // vertices alone can collapse thin features) on a growing voxel grid.
+        if verts.len() > max_points {
+            let (mut lo, mut hi) = (GVec3::splat(f32::MAX), GVec3::splat(f32::MIN));
+            for p in &cloud {
+                lo = lo.min(*p);
+                hi = hi.max(*p);
+            }
+            let diag = (hi - lo).length().max(1e-4);
+            let mut cell = diag / 48.0;
+            for _ in 0..16 {
+                let mut bins: std::collections::HashMap<(i32, i32, i32), (GVec3, u32)> =
+                    std::collections::HashMap::new();
+                for p in &cloud {
+                    let k = (
+                        ((p.x - lo.x) / cell) as i32,
+                        ((p.y - lo.y) / cell) as i32,
+                        ((p.z - lo.z) / cell) as i32,
+                    );
+                    let e = bins.entry(k).or_insert((GVec3::ZERO, 0));
+                    e.0 += *p;
+                    e.1 += 1;
+                }
+                let clustered: Vec<GVec3> =
+                    bins.values().map(|(sum, n)| *sum / *n as f32).collect();
+                if let Some(v) = solve(&clustered) {
+                    if v.len() >= 4 {
+                        verts = v;
+                    }
+                }
+                if verts.len() <= max_points {
+                    break;
+                }
+                cell *= 1.5;
+            }
+            if verts.len() > max_points {
+                return Err(format!(
+                    "fit hull: could not decimate below {max_points} vertices \
+                     (got {})",
+                    verts.len()
+                ));
+            }
+        }
+
+        Ok(verts.into_iter().map(|v| [v.x, v.y, v.z]).collect())
+    }
+
     fn build_mesh_insert(
         &self,
         node_id: NodeId,
@@ -1605,6 +1717,51 @@ impl EditorController {
                     .id = id;
                 if mutate::insert_under(&self.scene, parent, node) {
                     self.scene.bump_revision();
+                    Ok(Some(EditorCommand::Delete { id }))
+                } else {
+                    Ok(None)
+                }
+            }
+            EditorCommand::InsertHullFromNode {
+                id,
+                source,
+                parent,
+                max_points,
+            } => {
+                // Idempotent like Insert: replay/duplicate ids are a no-op.
+                if mutate::find_by_id(&self.scene, id).is_some() {
+                    return Ok(None);
+                }
+                let max = max_points.unwrap_or(48).clamp(4, 254) as usize;
+                let points = self
+                    .fit_hull_points(source, max)
+                    .map_err(crate::error::EditorError::msg)?;
+                let src = mutate::find_by_id(&self.scene, source)
+                    .expect("fit_hull_points verified the source exists");
+                let src_trs = src.transform.get_cloned();
+                let parent = parent.or_else(|| {
+                    mutate::find_parent(&self.scene, source).map(|n| n.id)
+                });
+
+                let count = points.len();
+                let mut node = crate::engine::scene::Node::new_collision_hull(
+                    format!("{}_hull", src.name.get_cloned()),
+                    points,
+                );
+                // The collider frame is the source's frame MINUS scale (the
+                // scale is baked into the points; collider node scale is
+                // locked to 1 at the SetTransform chokepoint).
+                node.transform.set(awsm_renderer_editor_protocol::Trs {
+                    translation: src_trs.translation,
+                    rotation: src_trs.rotation,
+                    scale: [1.0, 1.0, 1.0],
+                });
+                Arc::get_mut(&mut node)
+                    .expect("freshly built node is sole-owned")
+                    .id = id;
+                if mutate::insert_under(&self.scene, parent, node) {
+                    self.scene.bump_revision();
+                    tracing::info!("fit collision hull: {count} vertices");
                     Ok(Some(EditorCommand::Delete { id }))
                 } else {
                     Ok(None)
@@ -7604,6 +7761,22 @@ fn collider_local_aabb(shape: &ColliderShape) -> Aabb3 {
             half_height,
             radius,
         } => half(*radius, *half_height, *radius),
+        // The hull's own extremes; an empty cloud degenerates to a point.
+        ColliderShape::ConvexHull { points } => {
+            let mut lo = [f32::MAX; 3];
+            let mut hi = [f32::MIN; 3];
+            for p in points {
+                for i in 0..3 {
+                    lo[i] = lo[i].min(p[i]);
+                    hi[i] = hi[i].max(p[i]);
+                }
+            }
+            if points.is_empty() {
+                ([0.0; 3], [0.0; 3])
+            } else {
+                (lo, hi)
+            }
+        }
     }
 }
 
@@ -9905,6 +10078,21 @@ fn palette_from_import(
 fn structure_key(kind: &NodeKind) -> String {
     use awsm_renderer_editor_protocol::{CameraProjection, LightConfig, LodKind, MaterialShading};
     match kind {
+        // Collider rows vary by SHAPE (the hull arm renders read-only rows
+        // where the primitives render editors), so a SetKind that changes
+        // the shape must rebuild the inspector.
+        NodeKind::Collider(shape) => {
+            let tag = match shape {
+                ColliderShape::Box { .. } => "box",
+                ColliderShape::Sphere { .. } => "sphere",
+                ColliderShape::Capsule { .. } => "capsule",
+                ColliderShape::Cylinder { .. } => "cylinder",
+                ColliderShape::Cone { .. } => "cone",
+                ColliderShape::Ellipsoid { .. } => "ellipsoid",
+                ColliderShape::ConvexHull { .. } => "convex_hull",
+            };
+            format!("collider:{tag}")
+        }
         // The Mesh inspector rows depend on the assigned material's shading model
         // (its shared variant) — read it from the per-mesh inline store, which is
         // seeded from that variant. Unassigned → no material rows. (Geometry is no
@@ -10154,6 +10342,25 @@ mod unassigned_material_tests {
     #[test]
     fn non_geometry_is_none() {
         assert_eq!(unassigned_material_kind(&NodeKind::Group), "none");
+    }
+}
+
+#[cfg(test)]
+mod hull_fit_tests {
+    use super::*;
+
+    /// The command surfaces a legible error when the source has no meshes
+    /// (or doesn't exist) instead of inserting an empty collider.
+    #[test]
+    fn fit_hull_without_a_source_errors() {
+        let ctrl = EditorController::new();
+        let err = futures::executor::block_on(ctrl.apply(EditorCommand::InsertHullFromNode {
+            id: awsm_renderer_editor_protocol::NodeId::new(),
+            source: awsm_renderer_editor_protocol::NodeId::new(),
+            parent: None,
+            max_points: None,
+        }));
+        assert!(err.is_err(), "bogus source must be a loud error");
     }
 }
 

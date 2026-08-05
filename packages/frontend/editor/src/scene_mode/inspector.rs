@@ -1711,6 +1711,12 @@ fn collider_editor(node: &Arc<Node>, shape: &ColliderShape) -> Dom {
                 },
             );
         }
+        ColliderShape::ConvexHull { points } => {
+            // Fitted geometry: nothing hand-editable — the numbers ARE the
+            // mesh fit. Refit by re-running "fit hull" on the source node.
+            sec = sec.child(ro_row("Vertices", &format!("{} points", points.len())));
+            sec = sec.child(ro_row("Edit", "refit via Insert → Collision → Hull"));
+        }
     }
     sec.render()
 }
