@@ -264,9 +264,11 @@ fn push_hull(buf: &mut WireBuf, world: &Mat4, points: &[[f32; 3]], color: &[f32;
     use std::collections::HashMap;
     use std::rc::Rc;
 
+    /// A solved hull's unique edges, as world-ready endpoint pairs.
+    type HullEdges = Rc<Vec<([f32; 3], [f32; 3])>>;
+
     thread_local! {
-        static EDGE_CACHE: RefCell<HashMap<u64, Rc<Vec<([f32; 3], [f32; 3])>>>> =
-            RefCell::new(HashMap::new());
+        static EDGE_CACHE: RefCell<HashMap<u64, HullEdges>> = RefCell::new(HashMap::new());
     }
 
     fn cloud_hash(points: &[[f32; 3]]) -> u64 {
@@ -292,12 +294,7 @@ fn push_hull(buf: &mut WireBuf, world: &Mat4, points: &[[f32; 3]], color: &[f32;
             // cloud as tiny crosses so the broken collider is still visible.
             return points
                 .iter()
-                .map(|p| {
-                    (
-                        [p[0] - 0.02, p[1], p[2]],
-                        [p[0] + 0.02, p[1], p[2]],
-                    )
-                })
+                .map(|p| ([p[0] - 0.02, p[1], p[2]], [p[0] + 0.02, p[1], p[2]]))
                 .collect();
         };
         let mut edges = std::collections::BTreeSet::new();

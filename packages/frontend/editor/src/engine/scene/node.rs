@@ -120,9 +120,7 @@ impl Node {
     pub fn new_collision_hull(name: impl Into<String>, points: Vec<[f32; 3]>) -> Arc<Self> {
         Self::new_inner(
             name,
-            NodeKind::Collider(
-                crate::engine::scene::types::ColliderShape::ConvexHull { points },
-            ),
+            NodeKind::Collider(crate::engine::scene::types::ColliderShape::ConvexHull { points }),
         )
     }
 

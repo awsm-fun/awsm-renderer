@@ -823,7 +823,13 @@ impl EditorController {
 
         let src_scale = GVec3::from_array(src.transform.get_cloned().scale);
         let mut cloud: Vec<GVec3> = Vec::new();
-        gather(&self.scene, &src, Mat4::from_scale(src_scale), &mut cloud, exclude);
+        gather(
+            &self.scene,
+            &src,
+            Mat4::from_scale(src_scale),
+            &mut cloud,
+            exclude,
+        );
         if cloud.len() < 4 {
             return Err(format!(
                 "fit hull: {} mesh vertices under the source — need at least 4 \
@@ -850,7 +856,10 @@ impl EditorController {
                 .ok()
                 .map(|(verts, faces)| {
                     (
-                        verts.into_iter().map(|v| GVec3::new(v.x, v.y, v.z)).collect(),
+                        verts
+                            .into_iter()
+                            .map(|v| GVec3::new(v.x, v.y, v.z))
+                            .collect(),
                         faces.len(),
                     )
                 })
@@ -1761,9 +1770,8 @@ impl EditorController {
                 let src = mutate::find_by_id(&self.scene, source)
                     .expect("fit_hull_points verified the source exists");
                 let src_trs = src.transform.get_cloned();
-                let parent = parent.or_else(|| {
-                    mutate::find_parent(&self.scene, source).map(|n| n.id)
-                });
+                let parent =
+                    parent.or_else(|| mutate::find_parent(&self.scene, source).map(|n| n.id));
 
                 let count = points.len();
                 let mut node = crate::engine::scene::Node::new_collision_hull(
