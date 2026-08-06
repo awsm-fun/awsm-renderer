@@ -285,8 +285,7 @@ pub(crate) async fn build_emitter(
     renderer
         .enable_mesh_instancing(parts.handle.mesh, &parts.initial_transforms)
         .await?;
-    let _ = renderer
-        .set_mesh_instance_attrs(parts.handle.instance_transform, &parts.initial_attrs);
+    let _ = renderer.set_mesh_instance_attrs(parts.handle.instance_transform, &parts.initial_attrs);
     Ok(parts.handle)
 }
 
@@ -300,8 +299,7 @@ pub(crate) fn build_emitter_untextured(
 ) -> Result<EmitterHandle> {
     let parts = build_emitter_parts(renderer, def, tk, node_world, None)?;
     renderer.enable_mesh_instancing_opaque(parts.handle.mesh, &parts.initial_transforms)?;
-    let _ = renderer
-        .set_mesh_instance_attrs(parts.handle.instance_transform, &parts.initial_attrs);
+    let _ = renderer.set_mesh_instance_attrs(parts.handle.instance_transform, &parts.initial_attrs);
     Ok(parts.handle)
 }
 
