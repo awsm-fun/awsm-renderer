@@ -444,3 +444,40 @@ pinning the other half: a pure sign flip must NOT resurrect a static geom.
 sim instance (rejecting a fingerprint mismatch loudly), bake, and add the clip to
 the library. Then Phase 2's real exit criterion: scrubbing that clip in the
 browser and watching the humanoid fall.
+
+---
+
+## 2026-08-07 — Phase 2, increment 3: capture import + bake in the editor (ON-DEVICE VERIFIED)
+
+**Landed.** `EditorCommand::ImportMujocoCapture` + the `import_mujoco_capture`
+MCP tool (parity row + wire tag). Fetches a capture, checks its model
+fingerprint against the target instance, resolves the geom→node binding from the
+live tree, bakes, and adds the result to the clip library as an ordinary clip.
+
+**What the browser showed.** Imported the humanoid, then baked a 4 s / 267-frame
+capture into a clip named "ragdoll fall" (3.99 s, tracks reduced to 45–98 keys
+each from 267 frames). Scrubbing the playhead drives the scene:
+
+| t | torso world Y |
+|---|---|
+| 0.0 | 1.282 |
+| 0.8 | 1.040 |
+| 1.6 | 0.271 |
+| 3.9 | 0.261 |
+
+Screenshots confirm it visually — the humanoid **standing upright with arms out
+at t=0**, and **collapsed in a heap on the floor at t=3.9**, head sphere resting
+on the ground. That is a recorded MuJoCo simulation replayed from a baked
+animation clip, scrubbed in the editor. Phase 2's scrub/play criterion, met.
+
+Note the world Y values equal the capture's MuJoCo z — the convention root is
+doing its job, and the clip needed no conversion at all.
+
+**The fingerprint guard was exercised, not just written.** Baking a Go2 capture
+onto the humanoid instance is refused with `this capture is of a different
+model: it fingerprints go2.xml (50adb09a4365), but the instance was imported
+from humanoid.xml (acc9167550bf)` and adds no clip. The one console error in the
+session is that deliberate rejection.
+
+**Remaining in Phase 2:** the player bundle playing the baked clip, and a
+browser-test-suite scene + goldens replaying a checked-in fixture capture.

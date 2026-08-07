@@ -353,6 +353,11 @@ smaller/reversible option, per the settled decisions above.
   every schema round-trip test passed. Any future per-node field has to be added
   in four places — `EditorNode`, `NodeSpec`, both conversions, and the reactive
   `Node` — and only a browser round-trip catches missing any of them.
+- **The capture import rejects a fingerprint mismatch before baking anything.**
+  A capture of a different model bakes into poses that are individually plausible
+  and collectively nonsense — the wrong robot driven convincingly, which is close
+  to undiagnosable. One string comparison prevents it, and the error names both
+  models and both hashes.
 - **The bake lives in `awsm-renderer-scene`, as pure data in / pure data out** —
   a capture plus a geom_id→node map to a `StoredAnimation`. So it is natively
   unit-testable, the editor command on top is a thin wrapper, and nothing about
@@ -545,8 +550,19 @@ smaller/reversible option, per the settled decisions above.
    same real capture: the torso's baked translation track still falls 1.28 m →
    under 0.5 m, reduction keeps 2470 of 7638 keys (32%), the static floor plane
    contributes no track, and the clip round-trips through the project/bundle TOML
-   as ordinary animation data. Remaining: the editor command (import a capture,
-   bake, add to the clip library) and the on-device scrub/play.
+   as ordinary animation data.
+
+   Editor command ✅ + MCP tool ✅ (`import_mujoco_capture`, parity row added).
+   **Scrub/play verified on-device Aug 7 2026**: imported the humanoid, baked a
+   4 s / 267-frame capture into a "ragdoll fall" clip (tracks reduced to 45–98
+   keys each), and scrubbed it — the torso's world Y reads 1.282 → 1.040 →
+   0.271 → 0.261 at t = 0 / 0.8 / 1.6 / 3.9, and the screenshots show the
+   humanoid standing at t=0 and collapsed in a heap on the floor at t=3.9. The
+   fingerprint guard was exercised too: baking a Go2 capture onto the humanoid
+   instance is refused with both model names and hashes, and adds no clip.
+
+   Remaining in this phase: the player bundle playing the baked clip, and a
+   browser-test-suite scene + goldens replaying a checked-in fixture capture.
 3. **Pose sink + reference template.** Mapping layer in scene-loader (binding
    resolution + pose sink) on the player API — no networking in this repo; the
    stream convention (jitter buffer, reconnect, recording) lives in the

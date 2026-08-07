@@ -701,6 +701,25 @@ pub struct ImportMujocoParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ImportMujocoCaptureParams {
+    /// URL of a `<name>.capture.json` recorded by `awsm-renderer-mujoco-record`
+    /// (or by any harness writing the same documented format).
+    pub capture_url: String,
+    /// Node id of the sim instance root whose geoms the baked clip should drive.
+    pub instance: awsm_renderer_editor_protocol::NodeId,
+    /// Clip name. Defaults to the capture's source model filename.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Keyframe-reduction tolerance in METRES (default 0.001). Pass 0 to keep
+    /// every recorded frame.
+    #[serde(default)]
+    pub position_epsilon: Option<f32>,
+    /// Keyframe-reduction tolerance in RADIANS (default 0.002, about 0.1 degrees).
+    #[serde(default)]
+    pub rotation_epsilon: Option<f32>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ImportClusterParams {
     /// URL of a pre-baked cluster-LOD DAG file (`<id>.clusters.bin`) produced by the
     /// `awsm-renderer-lod-bake` CLI. The editor fetches + renders it as a view-only cluster mesh.
@@ -3011,6 +3030,29 @@ impl EditorMcp {
         self.dispatch(EditorCommand::ImportModelFromUrl { url: p.url })
             .await?;
         self.query(EditorQuery::LastImportReport).await
+    }
+
+    #[tool(
+        description = "Import a recorded MuJoCo CAPTURE and bake it into an ordinary animation \
+        clip driving a sim instance's geom nodes. The capture's model fingerprint must match the \
+        instance's or this fails loudly — baking a mismatch drives the wrong robot with \
+        individually plausible poses. After the bake the result is a NORMAL clip: scrub it, mix \
+        it, save it, ship it in a bundle; the capture file is disposable. Geoms that never move \
+        get no tracks, and keyframes are reduced (defaults 1mm / ~0.1deg). Same CORS requirement \
+        as the other import tools."
+    )]
+    async fn import_mujoco_capture(
+        &self,
+        Parameters(p): Parameters<ImportMujocoCaptureParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::ImportMujocoCapture {
+            capture_url: p.capture_url,
+            instance: p.instance,
+            name: p.name,
+            position_epsilon: p.position_epsilon,
+            rotation_epsilon: p.rotation_epsilon,
+        })
+        .await
     }
 
     #[tool(

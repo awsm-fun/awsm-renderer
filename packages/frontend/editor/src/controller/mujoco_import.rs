@@ -545,3 +545,84 @@ fn palette(id: AssetId) -> (Vec<MaterialVariant>, Option<VariantId>) {
     let vid = v.id;
     (vec![v], Some(vid))
 }
+
+/// Fetch a recorded capture and bake it into a clip driving `instance`'s geoms.
+///
+/// The fingerprint check is the point of failure worth being loud about: a
+/// capture of a *different* model would bake into poses that are individually
+/// plausible and collectively nonsense, driving the wrong robot. Catching it here
+/// costs one string comparison; not catching it costs a debugging session.
+pub async fn import_capture(
+    capture_url: &str,
+    instance: &Arc<Node>,
+    reduction: awsm_renderer_editor_protocol::mujoco::bake::Reduction,
+) -> Result<awsm_renderer_editor_protocol::StoredAnimation, String> {
+    use awsm_renderer_editor_protocol::mujoco::bake;
+
+    let Some(MujocoComponent::Instance(inst)) = instance.mujoco.get_cloned() else {
+        return Err("that node is not a MuJoCo sim instance".to_string());
+    };
+
+    let resp = gloo_net::http::Request::get(capture_url)
+        .send()
+        .await
+        .map_err(|e| format!("fetch {capture_url}: {e}"))?;
+    if !resp.ok() {
+        return Err(format!("fetch {capture_url}: HTTP {}", resp.status()));
+    }
+    let text = resp
+        .text()
+        .await
+        .map_err(|e| format!("read {capture_url}: {e}"))?;
+    let capture: awsm_renderer_editor_protocol::mujoco::Capture = serde_json::from_str(&text)
+        .map_err(|e| format!("parse {capture_url} as a MuJoCo capture: {e}"))?;
+    capture
+        .validate()
+        .map_err(|e| format!("{capture_url}: {e}"))?;
+
+    if capture.source.sha256 != inst.source.sha256 {
+        return Err(format!(
+            "this capture is of a different model: it fingerprints {} ({}), \
+             but the instance was imported from {} ({}). Re-record against the \
+             same model file, or re-import the instance.",
+            capture.source.filename,
+            &capture.source.sha256[..12.min(capture.source.sha256.len())],
+            inst.source.filename,
+            &inst.source.sha256[..12.min(inst.source.sha256.len())],
+        ));
+    }
+    if capture.geom_count != inst.geom_count {
+        return Err(format!(
+            "capture has {} geoms, the instance has {}",
+            capture.geom_count, inst.geom_count
+        ));
+    }
+
+    // The binding is derived from the live tree, not from a stored map.
+    let mut binding = std::collections::HashMap::new();
+    collect_geoms(instance, &mut binding);
+    if binding.is_empty() {
+        return Err("that instance has no geom nodes to drive".to_string());
+    }
+
+    let name = capture
+        .source
+        .filename
+        .rsplit('/')
+        .next()
+        .unwrap_or("capture")
+        .to_string();
+    bake::bake(&capture, &binding, name, reduction).map_err(|e| e.to_string())
+}
+
+fn collect_geoms(
+    node: &Arc<Node>,
+    out: &mut std::collections::HashMap<u32, awsm_renderer_editor_protocol::NodeId>,
+) {
+    for child in node.children.lock_ref().iter() {
+        if let Some(MujocoComponent::Geom(g)) = child.mujoco.get_cloned() {
+            out.insert(g.geom_id, child.id);
+        }
+        collect_geoms(child, out);
+    }
+}

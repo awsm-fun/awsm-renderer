@@ -4278,6 +4278,60 @@ impl EditorController {
                 Ok(Some(EditorCommand::DeleteAsset { id }))
             }
             // ───────────────────── Animation: clip lifecycle ─────────────────
+            // Import a recorded capture and bake it into an ordinary clip. After
+            // this the result is indistinguishable from a hand-authored clip —
+            // that is the point: "trajectory" is a bake step, not a concept the
+            // rest of the editor carries.
+            EditorCommand::ImportMujocoCapture {
+                capture_url,
+                instance,
+                name,
+                position_epsilon,
+                rotation_epsilon,
+            } => {
+                let _activity =
+                    crate::engine::activity::begin_activity("Importing MuJoCo capture…");
+                let node = mutate::find_by_id(&self.scene, instance).ok_or_else(|| {
+                    crate::error::EditorError::msg(
+                        "instance not found (check ids against get_snapshot)",
+                    )
+                })?;
+                let default = awsm_renderer_editor_protocol::mujoco::bake::Reduction::default();
+                let reduction = awsm_renderer_editor_protocol::mujoco::bake::Reduction {
+                    position: position_epsilon.unwrap_or(default.position),
+                    rotation: rotation_epsilon.unwrap_or(default.rotation),
+                };
+                let mut stored = crate::controller::mujoco_import::import_capture(
+                    &capture_url,
+                    &node,
+                    reduction,
+                )
+                .await
+                .map_err(|e| {
+                    let hint = if e.contains("Failed to fetch") {
+                        "\n(likely CORS: the editor is a browser app, so the file \
+                                 server must send `Access-Control-Allow-Origin`)"
+                    } else {
+                        ""
+                    };
+                    crate::error::EditorError::msg(format!("capture import failed: {e}{hint}"))
+                })?;
+                if let Some(n) = name.filter(|n| !n.trim().is_empty()) {
+                    stored.name = n;
+                }
+                let id = stored.id;
+                let clip = crate::controller::animation::stored_to_live(&stored);
+                self.custom_animations.lock_mut().push_cloned(clip);
+                self.current_clip.set(Some(id));
+                self.anim_revision.replace_with(|v| v.wrapping_add(1));
+                self.dirty.set_neq(true);
+                Toast::info(format!(
+                    "Baked {} tracks over {:.2}s",
+                    stored.tracks.len(),
+                    stored.duration
+                ));
+                Ok(Some(EditorCommand::DeleteClip { id }))
+            }
             EditorCommand::AddClip { id, name } => {
                 // Idempotent: a cross-tab relay replays this; if the clip id
                 // already exists (or a self-echo slips through) it's a no-op.

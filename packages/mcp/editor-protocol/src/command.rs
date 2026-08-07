@@ -1358,6 +1358,31 @@ pub enum EditorCommand {
         #[serde(default)]
         name: Option<String>,
     },
+    /// Import a recorded MuJoCo **capture** and bake it into an ordinary
+    /// animation clip driving a sim instance's geom nodes.
+    ///
+    /// The capture's model fingerprint must match the instance's, or this fails
+    /// loudly — baking a mismatch would drive the wrong robot with individually
+    /// plausible poses, which is close to undiagnosable. After the bake the
+    /// result is a normal clip: scrub, mix, save and bundle it like any other,
+    /// and the capture file is disposable.
+    ImportMujocoCapture {
+        /// URL of a `<name>.capture.json` (see `awsm-renderer-mujoco-record`).
+        capture_url: String,
+        /// The sim instance root whose geoms the clip should drive.
+        instance: NodeId,
+        /// Clip name; defaults to the capture's model name.
+        #[serde(default)]
+        name: Option<String>,
+        /// Keyframe-reduction tolerance in metres (default 0.001). `0` keeps
+        /// every recorded frame.
+        #[serde(default)]
+        position_epsilon: Option<f32>,
+        /// Keyframe-reduction tolerance in radians (default 0.002, ~0.1°).
+        #[serde(default)]
+        rotation_epsilon: Option<f32>,
+    },
+
     /// Delete a clip from the library. Lifecycle.
     DeleteClip { id: AssetId },
     /// Duplicate a clip (deep copy, fresh id) and select it. Lifecycle.
@@ -1632,6 +1657,7 @@ impl EditorCommand {
                 | EditorCommand::ImportMujocoFromUrl { .. }
                 // Active clip set + clip params that the group lowers.
                 | EditorCommand::AddClip { .. }
+                | EditorCommand::ImportMujocoCapture { .. }
                 | EditorCommand::DeleteClip { .. }
                 | EditorCommand::DuplicateClip { .. }
                 | EditorCommand::SetCurrentClip { .. }
@@ -1813,6 +1839,7 @@ impl EditorCommand {
             EditorCommand::SetMorphWeight { .. } => "Set morph weight",
             EditorCommand::SetSkinWeights { .. } => "Edit skin weights",
             EditorCommand::AddClip { .. } => "New clip",
+            EditorCommand::ImportMujocoCapture { .. } => "Import MuJoCo capture",
             EditorCommand::DeleteClip { .. } => "Delete clip",
             EditorCommand::DuplicateClip { .. } => "Duplicate clip",
             EditorCommand::SetCurrentClip { .. } => "Select clip",
