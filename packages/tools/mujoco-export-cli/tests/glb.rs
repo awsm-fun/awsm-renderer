@@ -151,3 +151,78 @@ fn de_indexing_shares_vertices_instead_of_exploding_them() {
         "de-indexing shared nothing: {verts} vertices for {tris} triangles"
     );
 }
+
+/// Pins down how MuJoCo frames mesh assets — the fact the whole geom-placement
+/// path rests on, and the reason the GLB's vertices must come from `mjModel` and
+/// never from the source OBJ.
+///
+/// The compiler recentres each mesh on its own frame and folds the difference
+/// into the geom's `pos`/`quat`. So every mesh in the library sits at its own
+/// origin (which is why they all pile up when rendered untransformed), and the
+/// geoms carry decimetre-scale offsets that put them back where the robot is.
+/// Mixing the two sources — original vertices with compiled geom poses, or the
+/// reverse — puts every visual part in the wrong place.
+#[test]
+fn meshes_are_recentred_and_geoms_carry_the_offset() {
+    let Some(Exported { doc, glb }) = export("unitree_go2/go2.xml") else {
+        return;
+    };
+    let (document, buffers, _) = gltf::import_slice(&glb).unwrap();
+    let mut total_verts = 0usize;
+    let mut total_tris = 0usize;
+    let mut worst_centroid = 0.0f64;
+    let mut biggest_geom_offset = 0.0f64;
+
+    for (i, node) in document.nodes().enumerate() {
+        let prim = node.mesh().unwrap().primitives().next().unwrap();
+        let reader = prim.reader(|b| Some(&buffers[b.index()]));
+        let ps: Vec<_> = reader.read_positions().unwrap().collect();
+        let mut c = [0.0f64; 3];
+        for p in &ps {
+            for a in 0..3 {
+                c[a] += p[a] as f64;
+            }
+        }
+        for v in &mut c {
+            *v /= ps.len() as f64;
+        }
+        let users: Vec<_> = doc
+            .geoms
+            .iter()
+            .filter(|g| g.mesh == Some(i))
+            .map(|g| g.pos)
+            .collect();
+        eprintln!(
+            "mesh {i:2} {:24} verts {:6} centroid [{:+.4} {:+.4} {:+.4}]  geom_pos {:?}",
+            doc.meshes[i].name.as_deref().unwrap_or("-"),
+            ps.len(),
+            c[0],
+            c[1],
+            c[2],
+            users.first()
+        );
+        total_verts += ps.len();
+        total_tris += reader.read_indices().unwrap().into_u32().count() / 3;
+        worst_centroid = worst_centroid.max(c.iter().fold(0.0f64, |m, v| m.max(v.abs())));
+        for p in &users {
+            biggest_geom_offset =
+                biggest_geom_offset.max(p.iter().fold(0.0f64, |m, v| m.max(v.abs())));
+        }
+    }
+    eprintln!(
+        "TOTAL {total_verts} verts, {total_tris} tris across {} meshes",
+        doc.meshes.len()
+    );
+
+    assert!(
+        worst_centroid < 0.10,
+        "a mesh is {worst_centroid:.3}m off its own origin — vertices do not look recentred"
+    );
+    assert!(
+        biggest_geom_offset > 0.10,
+        "no geom offset exceeds {biggest_geom_offset:.3}m — the compensating transform is missing, \
+         so these vertices are probably NOT the compiled ones"
+    );
+    // Not a decimated proxy: the full Go2 visual set.
+    assert!(total_tris > 100_000, "only {total_tris} triangles");
+}

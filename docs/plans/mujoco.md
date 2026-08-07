@@ -298,6 +298,23 @@ smaller/reversible option, per the settled decisions above.
 - **The exporter is not cargo-dist'd** (unlike `lod-bake-cli`/`env-bake-cli`): a
   prebuilt binary is useless without a matching local MuJoCo install, and shipping
   one would imply we redistribute MuJoCo. Users build it themselves.
+- **The GLB is a flat geometry *library*** — one root node per MuJoCo mesh, in mesh
+  order, identity transform, **no materials at all**. Not a scene: geoms are
+  instances of meshes (many geoms share one mesh), and materials are minted in our
+  system at import. Emitting glTF materials would mean a re-import silently
+  inherits them instead. The sidecar's `Mesh::node` names its GLB node explicitly
+  so a reader never reproduces our naming rule and a GLB that has been through
+  another tool still binds.
+- **De-indexing on export, not import.** MuJoCo stores meshes OBJ-style (separate
+  index arrays for position/normal/texcoord), so one triangle corner can pull from
+  three different slots; glTF has one index per vertex. Each distinct
+  `(pos, normal, uv)` triple becomes one vertex, so sharing survives. UV V is
+  flipped here too — the GLB is then a plain correct glTF any viewer opens right,
+  rather than one that needs our importer to look correct.
+- **Face indices are bounds-checked per corner.** MuJoCo's face indices being
+  mesh-relative rather than absolute into the shared pool is a convention read off
+  the library, not a header guarantee. Unchecked, a change there would read a
+  neighbouring mesh's vertices and produce geometry that looks *almost* right.
 
 ## Phases
 
