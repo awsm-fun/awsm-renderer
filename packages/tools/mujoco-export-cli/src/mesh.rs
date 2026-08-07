@@ -15,13 +15,17 @@ use std::collections::HashMap;
 
 use anyhow::{ensure, Result};
 use awsm_renderer_glb_export::{ExportNode, GlbScene, MeshData, Trs};
-use awsm_renderer_mujoco_sys::Model;
+use awsm_renderer_mujoco_sys::{Data, Model};
 
 /// Build the geometry library. Returns `None` when the model has no meshes at all
 /// (all-primitive models like the DeepMind humanoid) — there is no point writing
 /// an empty GLB, and the importer keys off the sidecar's mesh list anyway.
-pub fn build(model: &Model<'_>, names: &[Option<String>]) -> Result<Option<GlbScene>> {
-    if model.nmesh() == 0 && model.nhfield() == 0 {
+pub fn build(
+    model: &Model<'_>,
+    data: &Data<'_, '_>,
+    names: &[Option<String>],
+) -> Result<Option<GlbScene>> {
+    if model.nmesh() == 0 && model.nhfield() == 0 && model.nflex() == 0 {
         return Ok(None);
     }
     let mut scene = GlbScene::default();
@@ -59,7 +63,80 @@ pub fn build(model: &Model<'_>, names: &[Option<String>]) -> Result<Option<GlbSc
             ..Default::default()
         });
     }
+    // Flexes are baked at their INITIAL POSE and appended after the
+    // heightfields, so a deformable's surface downstream is just another mesh
+    // asset. Its vertices are world-space (a flex has no rigid frame of its
+    // own), so the node transform stays identity and the importer places it at
+    // the origin under the instance root.
+    for f in 0..model.nflex() {
+        let index = model.nmesh() + model.nhfield() + f;
+        scene.nodes.push(ExportNode {
+            name: node_name(index, names.get(index).and_then(|n| n.as_deref())),
+            transform: Trs::IDENTITY,
+            mesh: Some(flex_mesh(model, data, f)),
+            material: None,
+            ..Default::default()
+        });
+    }
     Ok(Some(scene))
+}
+
+/// Bake one flex's visible surface at the model's initial pose.
+///
+/// MuJoCo carries no normals for a flex — its own visualizer derives them every
+/// frame — so they are computed here. At the bind pose that is exactly right;
+/// once the surface deforms they go stale, which is a problem for whatever ends
+/// up streaming it, not for this file.
+fn flex_mesh(model: &Model<'_>, data: &Data<'_, '_>, f: usize) -> MeshData {
+    let dim = model.flex_dim()[f];
+    let vertadr = model.flex_vertadr()[f] as usize;
+    let vertnum = model.flex_vertnum()[f] as usize;
+
+    // A 2D flex's ELEMENTS are already triangles; a 3D flex's elements are
+    // tetrahedra whose visible boundary is the shell. A 1D flex (a rope) has no
+    // surface at all.
+    let (adr, count, pool) = match dim {
+        2 => (
+            model.flex_elemdataadr()[f] as usize,
+            model.flex_elemnum()[f] as usize,
+            model.flex_elem(),
+        ),
+        3 => (
+            model.flex_shelldataadr()[f] as usize,
+            model.flex_shellnum()[f] as usize,
+            model.flex_shell(),
+        ),
+        _ => (0, 0, model.flex_elem()),
+    };
+
+    // World positions from `mjData`, not `flex_vert`: the latter is each vertex
+    // in ITS OWN body's frame, which is only the shape once the bodies are
+    // placed. Same reason geoms record world poses.
+    let xpos = data.flexvert_xpos();
+    let mut mesh = MeshData {
+        positions: (0..vertnum)
+            .map(|v| {
+                let o = (vertadr + v) * 3;
+                [xpos[o] as f32, xpos[o + 1] as f32, xpos[o + 2] as f32]
+            })
+            .collect(),
+        indices: (0..count * 3).map(|i| pool[adr + i] as u32).collect(),
+        ..Default::default()
+    };
+    mesh.compute_vertex_normals();
+
+    if model.flex_texcoordadr()[f] >= 0 {
+        let tcadr = model.flex_texcoordadr()[f] as usize;
+        let tc = model.flex_texcoord();
+        mesh.uvs = vec![(0..vertnum)
+            .map(|v| {
+                let o = (tcadr + v) * 2;
+                // MuJoCo's V runs opposite ours, the same flip `extract` applies.
+                [tc[o], 1.0 - tc[o + 1]]
+            })
+            .collect()];
+    }
+    mesh
 }
 
 /// The GLB node name for mesh `i`. Recorded in the sidecar too, so the importer

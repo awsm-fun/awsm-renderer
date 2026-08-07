@@ -64,7 +64,12 @@ fn main() -> Result<()> {
     // Geometry first: an all-primitive model produces no GLB at all, and the
     // sidecar's mesh list is what says so.
     let mesh_names: Vec<_> = doc.meshes.iter().map(|m| m.name.clone()).collect();
-    let glb_path = match mesh::build(&model, &mesh_names)? {
+    // A flex is baked at its initial pose from `mjData`, so the geometry pass
+    // needs the same settled state the sidecar pass used. Deterministic from
+    // `qpos0`, so recomputing it here rather than threading it out of the
+    // sidecar builder costs one forward and no coupling.
+    let data = model.forward_at_initial_pose()?;
+    let glb_path = match mesh::build(&model, &data, &mesh_names)? {
         Some(scene) => {
             let bytes = awsm_renderer_glb_export::write_glb(&scene);
             let path = args.out_dir.join(format!("{name}.glb"));

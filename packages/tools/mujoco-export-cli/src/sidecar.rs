@@ -5,7 +5,7 @@
 
 use anyhow::{Context, Result};
 use awsm_renderer_mujoco_format::sidecar::{
-    Body, Geom, GeomKind, Material, Mesh, Sidecar, Site, Source, Tendon,
+    Body, Flex, Geom, GeomKind, Material, Mesh, Sidecar, Site, Source, Tendon,
 };
 use awsm_renderer_mujoco_sys::{mjtGeom, mjtObj, mjtWrap, Model};
 use sha2::{Digest, Sha256};
@@ -176,6 +176,45 @@ pub fn build(model: &Model<'_>, source: Source) -> Result<Sidecar> {
             rgba: read4f(model.tendon_rgba(), t),
             max_waypoints,
             world_waypoints,
+        });
+    }
+
+    for f in 0..model.nflex() {
+        let dim = model.flex_dim()[f];
+        let vertadr = model.flex_vertadr()[f] as usize;
+        let vertnum = model.flex_vertnum()[f] as usize;
+
+        // An interpolated flex drives its vertices from a cage of nodes, and
+        // MuJoCo reports -1 here. All-or-nothing: a partial list would let a
+        // consumer skin some vertices and leave the rest at the bind pose.
+        let ids = &model.flex_vertbodyid()[vertadr..vertadr + vertnum];
+        let vertex_bodies: Vec<usize> = if ids.iter().all(|b| *b >= 0) {
+            ids.iter().map(|b| *b as usize).collect()
+        } else {
+            Vec::new()
+        };
+        // One synthetic mesh entry per flex, appended after the real meshes and
+        // the heightfields — the same trick heightfields use, and in the same
+        // order the GLB writes them, so a flex surface is just a mesh asset
+        // downstream.
+        let mesh = out.meshes.len();
+        let name = model.name(mjtObj::mjOBJ_FLEX, f).map(str::to_string);
+        out.meshes.push(Mesh {
+            name: name.clone(),
+            node: Some(crate::mesh::node_name(mesh, name.as_deref())),
+        });
+        out.flexes.push(Flex {
+            name,
+            group: model.flex_group()[f],
+            dim,
+            radius: model.flex_radius()[f],
+            material: Some(model.flex_matid()[f])
+                .filter(|id| *id >= 0)
+                .map(|id| id as usize),
+            rgba: read4f(model.flex_rgba(), f),
+            vertex_bodies,
+            vertex_count: vertnum,
+            mesh,
         });
     }
 

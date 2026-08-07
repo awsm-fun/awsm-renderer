@@ -32,8 +32,8 @@ use awsm_renderer_editor_protocol::mujoco::segment_transform;
 use awsm_renderer_editor_protocol::mujoco::{GeomKind, MujocoMaterial, Sidecar};
 use awsm_renderer_editor_protocol::{
     AssetEntry, AssetId, AssetSource as SceneAssetSource, CapturedSource, MaterialDef,
-    MaterialVariant, MeshDef, MeshRef, MujocoComponent, MujocoGeom, MujocoInstance, MujocoSite,
-    MujocoTendonSegment, NodeKind, Trs, VariantId,
+    MaterialVariant, MeshDef, MeshRef, MujocoComponent, MujocoFlex, MujocoGeom, MujocoInstance,
+    MujocoSite, MujocoTendonSegment, NodeKind, Trs, VariantId,
 };
 
 use crate::engine::scene::node::Node;
@@ -471,6 +471,66 @@ fn build_subtree(
         root.children.lock_mut().push_cloned(node);
     }
 
+    // Flexes: one surface mesh node each, at the initial-pose shape. Its
+    // vertices are already world-space, so the node's transform is identity —
+    // a deformable has no rigid frame to place it by.
+    let mut flex_vertex_counts = vec![0u32; doc.flexes.len()];
+    for (flex_id, flex) in doc.flexes.iter().enumerate() {
+        flex_vertex_counts[flex_id] = flex.vertex_count as u32;
+        if !visible.contains(&flex.group) {
+            continue;
+        }
+        let Some(&mesh) = mesh_assets.get(&flex.mesh) else {
+            // dim == 1 (a rope) bakes no surface, so there is nothing to draw.
+            continue;
+        };
+        let material = match flex.material.and_then(|m| mat_assets.get(m)).copied() {
+            Some(id) => id,
+            None => {
+                let key = flex.rgba.map(|c| c.to_bits());
+                *rgba_materials.entry(key).or_insert_with(|| {
+                    mint_material(
+                        format!(
+                            "rgba {:.2} {:.2} {:.2}",
+                            flex.rgba[0], flex.rgba[1], flex.rgba[2]
+                        ),
+                        MaterialDef {
+                            base_color: flex.rgba,
+                            alpha_mode: alpha_mode(flex.rgba[3]),
+                            // A cloth is a zero-thickness surface: MuJoCo draws
+                            // it from both sides and so must we, or half the
+                            // flag disappears the moment it flips over.
+                            double_sided: true,
+                            ..MaterialDef::default()
+                        },
+                    )
+                })
+            }
+        };
+        let (material_variants, selected_variant) = palette(material);
+        let node = Node::new_with_transform_and_kind(
+            flex.name
+                .clone()
+                .unwrap_or_else(|| format!("flex {flex_id}")),
+            Trs::default(),
+            NodeKind::Mesh {
+                mesh,
+                material_variants,
+                selected_variant,
+                shadow: Default::default(),
+                lod: Default::default(),
+            },
+        );
+        node.mujoco.set(Some(MujocoComponent::Flex(MujocoFlex {
+            flex_id: flex_id as u32,
+            group: flex.group,
+            vertex_count: flex.vertex_count as u32,
+            body_attached: !flex.vertex_bodies.is_empty(),
+        })));
+        node.locked.set(true);
+        root.children.lock_mut().push_cloned(node);
+    }
+
     // Tendons: each is a chain of `max_waypoints - 1` cylinder segments, ALL of
     // them minted now. The waypoint count changes as the tendon wraps around
     // geometry mid-run, and a pose stream cannot create nodes — so the pool is
@@ -558,6 +618,7 @@ fn build_subtree(
     }
     if let Some(MujocoComponent::Instance(mut instance)) = root.mujoco.get_cloned() {
         instance.tendon_capacity = tendon_capacity;
+        instance.flex_vertex_counts = flex_vertex_counts;
         root.mujoco.set(Some(MujocoComponent::Instance(instance)));
     }
 

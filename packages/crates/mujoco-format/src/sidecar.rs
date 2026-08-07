@@ -70,6 +70,10 @@ pub struct Sidecar {
     /// sites.
     #[serde(default)]
     pub tendons: Vec<Tendon>,
+
+    /// Deformables. Index in this vec IS the MuJoCo flex id — a fourth id space.
+    #[serde(default)]
+    pub flexes: Vec<Flex>,
 }
 
 impl Sidecar {
@@ -87,6 +91,7 @@ impl Sidecar {
             meshes: Vec::new(),
             sites: Vec::new(),
             tendons: Vec::new(),
+            flexes: Vec::new(),
         }
     }
 
@@ -170,6 +175,46 @@ impl Sidecar {
                     index: i,
                     value: t.world_waypoints.len(),
                     len: t.max_waypoints as usize,
+                });
+            }
+        }
+        for (i, fx) in self.flexes.iter().enumerate() {
+            if let Some(m) = fx.material {
+                if m >= self.materials.len() {
+                    return Err(Error::BadIndex {
+                        what: "flex.material",
+                        index: i,
+                        value: m,
+                        len: self.materials.len(),
+                    });
+                }
+            }
+            for b in &fx.vertex_bodies {
+                if *b >= self.bodies.len() {
+                    return Err(Error::BadIndex {
+                        what: "flex.vertex_bodies",
+                        index: i,
+                        value: *b,
+                        len: self.bodies.len(),
+                    });
+                }
+            }
+            // Either every vertex names a body or none does — a partial list
+            // would silently mis-bind a skinned flex.
+            if !fx.vertex_bodies.is_empty() && fx.vertex_bodies.len() != fx.vertex_count {
+                return Err(Error::BadIndex {
+                    what: "flex.vertex_bodies length",
+                    index: i,
+                    value: fx.vertex_bodies.len(),
+                    len: fx.vertex_count,
+                });
+            }
+            if fx.mesh >= self.meshes.len() {
+                return Err(Error::BadIndex {
+                    what: "flex.mesh",
+                    index: i,
+                    value: fx.mesh,
+                    len: self.meshes.len(),
                 });
             }
         }
@@ -371,6 +416,53 @@ pub struct Site {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub material: Option<usize>,
     pub rgba: [f32; 4],
+}
+
+/// A **flex**: MuJoCo's deformable primitive — cloth, rope, soft solids.
+///
+/// A flex is a soup of vertices, each rigidly attached to its own body; it
+/// deforms because those bodies move independently. That is the whole model, and
+/// it is why the exported surface carries [`vertex_bodies`](Self::vertex_bodies):
+/// a renderer can deform this mesh either by streaming vertex positions or by
+/// skinning it to those bodies, and the choice is downstream of this file.
+///
+/// `mjSkin`, MuJoCo's older deformable, is deliberately NOT exported: no model
+/// shipped with MuJoCo 3.11 and no menagerie robot defines one.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub struct Flex {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Visibility group (MuJoCo's `flexgroup`); 0-2 visible by default.
+    pub group: i32,
+    /// 1 = a rope of edges, 2 = a cloth of triangles, 3 = a solid of tetrahedra.
+    /// Only the surface is exported, so 2 and 3 both arrive as triangles.
+    pub dim: i32,
+    /// Vertex radius, metres — the thickness MuJoCo inflates the surface by for
+    /// contact. A renderer may ignore it; a zero-thickness cloth still reads
+    /// correctly.
+    pub radius: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub material: Option<usize>,
+    pub rgba: [f32; 4],
+    /// The body each vertex is rigidly attached to, in flex-vertex order.
+    ///
+    /// **Empty when the flex is not body-attached.** A flex with interpolation
+    /// (`trilinear`, `quadratic`) drives its vertices from a smaller cage of
+    /// NODES instead, and MuJoCo reports no body per vertex. Such a flex can
+    /// only be deformed by streaming its vertex positions — it cannot be
+    /// skinned to bodies — so the two cases are collapsed into one checkable
+    /// predicate rather than a per-vertex option.
+    #[serde(default)]
+    pub vertex_bodies: Vec<usize>,
+    /// How many vertices the surface has. The positions themselves live in the
+    /// GLB, not here — a soft body has thousands of them and JSON is the wrong
+    /// place for that — but a stream frame is sized from this.
+    pub vertex_count: usize,
+    /// Index into [`Sidecar::meshes`] for the baked surface, at its initial-pose
+    /// shape. Appended after the real meshes and the heightfields, so a flex
+    /// surface downstream is just another mesh asset.
+    pub mesh: usize,
 }
 
 /// A spatial tendon: a cable drawn as a chain of capsule segments between

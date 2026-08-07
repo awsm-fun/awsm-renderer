@@ -41,6 +41,8 @@ pub enum MujocoComponent {
     /// count changes as it wraps and unwraps, so segments are created once and
     /// the unused tail is hidden — never created per frame.
     TendonSegment(MujocoTendonSegment),
+    /// A deformable's visible surface, imported at its initial-pose shape.
+    Flex(MujocoFlex),
 }
 
 /// The root of an imported MuJoCo model.
@@ -71,6 +73,10 @@ pub struct MujocoInstance {
     /// these, so a consumer never has to re-derive them from the tree.
     #[serde(default)]
     pub tendon_capacity: Vec<u32>,
+    /// Per-flex surface vertex counts, indexed by flex id — the same role
+    /// `tendon_capacity` plays, sizing a stream frame without walking the tree.
+    #[serde(default)]
+    pub flex_vertex_counts: Vec<u32>,
     /// Which MuJoCo visibility groups this instance renders. Defaults to
     /// MuJoCo's own convention (0–2 visible), which is what keeps a menagerie
     /// model showing its visual meshes rather than its collision capsules.
@@ -93,6 +99,7 @@ impl MujocoInstance {
             geom_count,
             site_count: 0,
             tendon_capacity: Vec::new(),
+            flex_vertex_counts: Vec::new(),
             visible_groups: default_visible_groups(),
         }
     }
@@ -166,6 +173,24 @@ pub fn segment_transform(a: [f32; 3], b: [f32; 3], width: f32) -> ([f32; 3], [f3
         rotation.to_array(),
         [width, width, len * 0.5],
     )
+}
+
+/// A flex — MuJoCo's deformable — as a single surface mesh node.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub struct MujocoFlex {
+    /// Index into the source model's FLEX array — a fourth id space.
+    pub flex_id: u32,
+    /// The flex's visibility group (MuJoCo's `flexgroup`).
+    pub group: i32,
+    /// How many vertices the surface has, so a consumer can size a vertex
+    /// frame without re-reading the mesh asset.
+    pub vertex_count: u32,
+    /// Whether every vertex is rigidly attached to a body. A flex that
+    /// interpolates its vertices from a cage of nodes is not, and can only be
+    /// deformed by streaming positions.
+    pub body_attached: bool,
 }
 
 /// One segment of a tendon's preallocated chain.

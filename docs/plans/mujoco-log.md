@@ -855,3 +855,48 @@ Also fixed in passing: the `WrongLength` message hardcoded a geom-channel
 explanation, which was wrong the moment a second channel existed.
 
 **Next in Phase 4:** skins (mjSkin → skinned meshes), then flex/deformables.
+
+---
+
+## 2026-08-08 — Phase 4: flex surfaces, and skins dropped on evidence (ON-DEVICE VERIFIED)
+
+**Skins are gone, and I checked rather than assumed.** Before building anything I
+probed `nskin` across MuJoCo 3.11's shipped models and the whole menagerie: it is
+**0 everywhere**. The single model in the tree with a `<skin>` element,
+`plugin/elasticity/belt.xml`, does not even compile — it needs an elasticity
+plugin dylib we do not load. `mjSkin` is the legacy deformable; **flex** is the
+one that exists, with 30-odd demo models in `model/flex/`. So I reordered: flex
+now, skins recorded as dropped with the evidence. Both are noted in the plan.
+
+**Landed.** The exporter half of flex: a sidecar `flexes` table, the surface
+baked into the geometry GLB, a `MujocoFlex` component, and importer nodes.
+
+Design calls, all in the plan. The surface goes into the GLB with a synthetic
+`meshes` entry appended after the meshes and heightfields — the heightfield trick
+again — so a flex is just another mesh asset and the importer needed no
+flex-specific plumbing. Only the *surface* is baked: a 2D flex's elements already
+are triangles, but a 3D flex's are tetrahedra whose visible boundary is
+`flex_shell`, and drawing the tets would fill the inside with invisible faces.
+Vertices come from `mjData` in world space, not from `flex_vert` (which is each
+vertex in its own body's frame), so the node transform is identity — a deformable
+has no rigid frame. Normals are computed at export because MuJoCo ships none.
+
+**One thing the models taught me.** `bunny.xml` failed validation on the first
+run with a vertex body id of −1: a flex with interpolation drives its vertices
+from a cage of NODES, not bodies. `vertex_bodies` is now all-or-nothing —
+populated only when every vertex has a body — because a partial list would let a
+consumer skin some vertices and strand the rest at the bind pose. The validator
+catching this before the browser did is exactly what it is for.
+
+**What the browser showed.** `flag.xml` imports as a flat 171-vertex /
+288-triangle cloth sheet at its qpos0 height. `bunny.xml` imports as a
+recognisable, smooth-shaded 2,503-vertex Stanford bunny — a wrong index rebase or
+the wrong element/shell choice would give a mess, not a bunny. `body_attached`
+reads `true` for the flag and `false` for the bunny. Console clean.
+
+**Next:** the flex vertex stream channel. It needs a renderer decision I have
+deliberately not pre-empted: a body-attached flex could be **skinned** to its
+vertex bodies (one joint per vertex, weight 1) through the existing GPU skinning
+path with no new renderer capability, while an interpolated one can only be
+driven by uploading vertex positions, which the renderer has no path for today.
+The exported data serves either route.

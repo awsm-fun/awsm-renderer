@@ -219,3 +219,62 @@ fn the_humanoids_fixed_tendons_export_as_undrawable() {
         .iter()
         .all(|t| t.max_waypoints == 0 && t.world_waypoints.is_empty()));
 }
+
+#[test]
+fn a_cloth_flex_exports_its_elements_as_the_surface() {
+    // MuJoCo's flag: a 2D flex, whose ELEMENTS already are the triangles.
+    let Some(path) = release_model("flex/flag.xml") else {
+        return;
+    };
+    let Some(s) = export(path) else { return };
+    assert_eq!(s.flexes.len(), 1);
+    let f = &s.flexes[0];
+    assert_eq!(f.dim, 2);
+    assert_eq!(f.vertex_count, 171);
+    // Every vertex of a plain cloth rides its own body, which is what makes the
+    // body-attached path available to a renderer at all.
+    assert_eq!(f.vertex_bodies.len(), f.vertex_count);
+    assert!(f.vertex_bodies.iter().all(|b| *b < s.bodies.len()));
+    assert_eq!(s.meshes[f.mesh].name.as_deref(), Some("flag"));
+}
+
+#[test]
+fn a_solid_flex_exports_its_shell_not_its_tetrahedra() {
+    // A 3D flex's elements are tetrahedra; drawing those would fill the inside
+    // with invisible faces. Only the shell is a surface.
+    let Some(path) = release_model("flex/floppy.xml") else {
+        return;
+    };
+    let Some(s) = export(path) else { return };
+    let f = &s.flexes[0];
+    assert_eq!(f.dim, 3);
+    assert!(f.vertex_count > 0);
+    assert_eq!(f.vertex_bodies.len(), f.vertex_count);
+}
+
+#[test]
+fn an_interpolated_flex_reports_no_vertex_bodies() {
+    // bunny.xml drives its surface from a cage of NODES, so MuJoCo has no body
+    // per vertex. All-or-nothing: a partial list would let a consumer skin some
+    // vertices and strand the rest at the bind pose.
+    let Some(path) = release_model("flex/bunny.xml") else {
+        return;
+    };
+    let Some(s) = export(path) else { return };
+    let f = &s.flexes[0];
+    assert!(f.vertex_count > 2000);
+    assert!(
+        f.vertex_bodies.is_empty(),
+        "{} bodies for an interpolated flex",
+        f.vertex_bodies.len()
+    );
+}
+
+#[test]
+fn a_model_without_flexes_exports_none() {
+    let Some(path) = release_model("humanoid/humanoid.xml") else {
+        return;
+    };
+    let Some(s) = export(path) else { return };
+    assert!(s.flexes.is_empty());
+}

@@ -311,6 +311,18 @@ impl Model<'_> {
     pub fn nflex(&self) -> usize {
         self.raw().nflex as usize
     }
+    pub fn nflexvert(&self) -> usize {
+        self.raw().nflexvert as usize
+    }
+    pub fn nflexelemdata(&self) -> usize {
+        self.raw().nflexelemdata as usize
+    }
+    pub fn nflexshelldata(&self) -> usize {
+        self.raw().nflexshelldata as usize
+    }
+    pub fn nflextexcoord(&self) -> usize {
+        self.raw().nflextexcoord as usize
+    }
     pub fn nhfield(&self) -> usize {
         self.raw().nhfield as usize
     }
@@ -406,6 +418,42 @@ impl Model<'_> {
     /// constraint with no path through space — which is why the exporter has to
     /// read this rather than assume every tendon is drawable.
     wrap_type: i32 = nwrap x 1,
+
+        // Flexes: MuJoCo's deformable primitive, and the only one that survives
+        // into 3.x — `mjSkin` is legacy and no shipped model or menagerie robot
+        // uses it. A flex is a soup of vertices (each rigidly attached to a
+        // body) plus elements: edges for `dim` 1, TRIANGLES for 2 (cloth),
+        // tetrahedra for 3 (solids, whose visible surface is `flex_shell`).
+        /// 1 = edges, 2 = triangles, 3 = tetrahedra.
+        flex_dim: i32 = nflex x 1,
+        flex_matid: i32 = nflex x 1,
+        flex_group: i32 = nflex x 1,
+        /// Vertex/contact radius, metres. A cloth is a zero-thickness surface
+        /// inflated by this.
+        flex_radius: f64 = nflex x 1,
+        flex_rgba: f32 = nflex x 4,
+        flex_vertadr: i32 = nflex x 1,
+        flex_vertnum: i32 = nflex x 1,
+        flex_elemadr: i32 = nflex x 1,
+        flex_elemnum: i32 = nflex x 1,
+        /// Where this flex's slice of the shared `flex_elem` pool starts —
+        /// SEPARATE from `flex_elemadr`, which counts elements rather than the
+        /// ints they occupy.
+        flex_elemdataadr: i32 = nflex x 1,
+        flex_shellnum: i32 = nflex x 1,
+        flex_shelldataadr: i32 = nflex x 1,
+        flex_texcoordadr: i32 = nflex x 1,
+        /// The BODY each flex vertex is rigidly attached to. This is the whole
+        /// deformation model: a flex deforms because its vertices belong to
+        /// different bodies that move independently.
+        flex_vertbodyid: i32 = nflexvert x 1,
+        /// Element vertex indices, `dim + 1` per element, relative to the
+        /// flex's own vertex range.
+        flex_elem: i32 = nflexelemdata x 1,
+        /// Surface fragment vertex indices, `dim` per fragment. For a 3D flex
+        /// this is the visible skin; for a 2D one the elements already are.
+        flex_shell: i32 = nflexshelldata x 1,
+        flex_texcoord: f32 = nflextexcoord x 2,
 
         // Heightfields: an nrow x ncol elevation grid, sliced out of one shared
         // pool by (adr, nrow*ncol) — same pattern as meshes.
@@ -611,6 +659,9 @@ impl Data<'_, '_> {
         /// (`ten_wrapadr`, `ten_wrapnum`); `nwrap x 6` because one wrap object
         /// can contribute two points.
         wrap_xpos: f64 = nwrap x 6,
+    /// Flex vertex positions in WORLD space, recomputed every step. This is the
+    /// flex stream channel: a deformable's entire visual state.
+    flexvert_xpos: f64 = nflexvert x 3,
     }
 
     /// A site's world orientation as a `[w, x, y, z]` quaternion.

@@ -40,7 +40,8 @@ fn export(rel: &str) -> Option<Exported> {
     let source = sidecar::fingerprint(&path, lib.version_string()).unwrap();
     let doc = sidecar::build(&model, source).unwrap();
     let names: Vec<_> = doc.meshes.iter().map(|m| m.name.clone()).collect();
-    let scene = mesh::build(&model, &names)
+    let data = model.forward_at_initial_pose().unwrap();
+    let scene = mesh::build(&model, &data, &names)
         .unwrap()
         .expect("go2 has meshes");
     let glb = awsm_renderer_glb_export::write_glb(&scene);
@@ -225,4 +226,67 @@ fn meshes_are_recentred_and_geoms_carry_the_offset() {
     );
     // Not a decimated proxy: the full Go2 visual set.
     assert!(total_tris > 100_000, "only {total_tris} triangles");
+}
+
+/// A model from MuJoCo's own release, not menagerie.
+fn export_release(rel: &str) -> Option<Exported> {
+    let path = PathBuf::from(std::env::var_os("MUJOCO_DIR")?)
+        .join("model")
+        .join(rel);
+    if !path.exists() {
+        eprintln!("SKIP: no model at {}", path.display());
+        return None;
+    }
+    let lib = awsm_renderer_mujoco_sys::Library::load().expect("MUJOCO_DIR is set");
+    let model = lib.load_model(&path).expect("model should compile");
+    let source = sidecar::fingerprint(&path, lib.version_string()).unwrap();
+    let doc = sidecar::build(&model, source).unwrap();
+    let names: Vec<_> = doc.meshes.iter().map(|m| m.name.clone()).collect();
+    let data = model.forward_at_initial_pose().unwrap();
+    let scene = mesh::build(&model, &data, &names)
+        .unwrap()
+        .expect("a flex model has a baked surface");
+    let glb = awsm_renderer_glb_export::write_glb(&scene);
+    Some(Exported { doc, glb })
+}
+
+#[test]
+fn the_flex_surface_reaches_the_glb_with_normals() {
+    // The flex surface is a real mesh asset in the geometry library, appended
+    // after the meshes and heightfields — so the importer needs no flex-specific
+    // GLB plumbing at all. MuJoCo ships no normals for a flex, so a missing
+    // normal set here means the whole surface renders unlit-flat.
+    let Some(Exported { doc, glb }) = export_release("flex/flag.xml") else {
+        return;
+    };
+    let f = &doc.flexes[0];
+    let node_name = doc.meshes[f.mesh].node.as_deref().unwrap();
+
+    let (document, buffers, _images) = gltf::import_slice(&glb).expect("emitted a loadable glTF");
+    let node = document
+        .nodes()
+        .find(|n| n.name() == Some(node_name))
+        .expect("the sidecar names the flex's GLB node");
+    let prim = node.mesh().unwrap().primitives().next().unwrap();
+    let reader = prim.reader(|b| Some(&buffers[b.index()]));
+    let positions: Vec<_> = reader.read_positions().unwrap().collect();
+    let normals: Vec<_> = reader.read_normals().unwrap().collect();
+    let indices: Vec<_> = reader.read_indices().unwrap().into_u32().collect();
+
+    assert_eq!(positions.len(), f.vertex_count);
+    assert_eq!(normals.len(), f.vertex_count);
+    assert_eq!(indices.len() % 3, 0);
+    assert!(indices.iter().all(|i| (*i as usize) < f.vertex_count));
+    assert!(
+        normals
+            .iter()
+            .all(|n| (n[0] * n[0] + n[1] * n[1] + n[2] * n[2] - 1.0).abs() < 1e-3),
+        "normals must be unit length"
+    );
+    // The flag hangs in the air, so a surface baked from body-local vertices
+    // instead of world positions would sit at the origin.
+    assert!(
+        positions.iter().any(|p| p[2].abs() > 0.1),
+        "the surface must be in WORLD space"
+    );
 }

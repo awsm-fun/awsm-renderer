@@ -565,6 +565,40 @@ Unlike the geom and site channels, a tendon frame is not a list of poses:
   channel uses for ellipsoid scale: a frame carries no width, so only the
   segment's Z scale (its length) comes from the stream.
 
+### A flex is a mesh asset, and how it deforms is a later decision (Aug 8 2026)
+
+MuJoCo's flex is a soup of vertices — each rigidly attached to a body — plus
+elements. The exporter reduces that to something the rest of the pipeline
+already understands:
+
+- **The surface is baked into the geometry GLB** and gets a synthetic
+  `Sidecar::meshes` entry, appended after the real meshes and the heightfields.
+  A flex is therefore just another mesh asset downstream, and the importer
+  needed no flex-specific GLB plumbing at all — the same trick heightfields use.
+- **Only the surface.** A 2D flex's ELEMENTS already are the triangles; a 3D
+  flex's elements are tetrahedra whose visible boundary is `flex_shell`. Drawing
+  a solid's tetrahedra would fill its inside with invisible faces. A 1D flex (a
+  rope) has no surface and bakes nothing.
+- **Vertices are world-space at the initial pose**, read from `mjData` rather
+  than `flex_vert` (which is each vertex in ITS OWN body's frame). So the node
+  transform is identity: a deformable has no rigid frame to place it by.
+- **Normals are computed here**, area-weighted, because MuJoCo carries none —
+  its own visualizer derives them every frame. They are correct at the bind pose
+  and go stale under deformation, which is the streaming half's problem.
+- **`vertex_bodies` is all-or-nothing.** A flex with interpolation (`trilinear`,
+  `quadratic`) drives its vertices from a smaller cage of nodes and MuJoCo
+  reports no body per vertex; a partial list would let a consumer skin some
+  vertices and strand the rest at the bind pose. Empty means "streaming is the
+  only way to deform this".
+
+That last field exists because the renderer route is genuinely open: a
+body-attached flex could be **skinned** to its vertex bodies (one joint per
+vertex, weight 1) using the existing GPU skinning path and the existing
+transform channels, with no new renderer capability at all; an interpolated one
+can only be driven by uploading vertex positions, which the renderer has no path
+for today. Deciding that is the next flex increment, and the exported data
+serves either way.
+
 ### Forward-compat fixtures need a name that is still hypothetical (Aug 8 2026)
 
 `sidecar.rs`'s "a later producer added fields" test has now been broken twice by
@@ -781,6 +815,25 @@ forward compatibility and starts testing the new table's schema.
    shrinking back to two waypoints collapses each tendon to one chord and
    re-hides the rest. Both error paths fire (`WrongLength`, `TooManyWaypoints`).
    Console clean.
+
+   Flex surfaces ✅ (Aug 8 2026, on-device): sidecar `flexes` table, the surface
+   baked into the geometry GLB as an ordinary mesh asset, `MujocoFlex`
+   component, and importer nodes. Verified with MuJoCo's own `model/flex/`
+   demos: `flag.xml` imports as a flat 171-vertex / 288-triangle cloth sheet
+   hanging at its qpos0 height, and `bunny.xml` imports as a recognisable
+   2,503-vertex Stanford bunny — a wrong index rebase or the wrong
+   element/shell choice would give a mess, not a bunny. `body_attached` reads
+   `true` for the flag and `false` for the interpolated bunny. Console clean.
+   Still open in this item: the flex vertex **stream channel**, which needs a
+   renderer decision (see the flex decision note).
+
+   **Skins: dropped, on evidence.** `mjSkin` is MuJoCo's older deformable and is
+   dead in 3.11 — `nskin == 0` for every model shipped with the release and for
+   every menagerie robot (checked, not assumed). The one model in the tree with
+   a `<skin>` element, `plugin/elasticity/belt.xml`, does not even compile
+   without a plugin dylib we do not load. Flex is the deformable path that
+   actually exists, and it is in scope below. If a skinned model ever turns up,
+   the flex surface path generalises to it.
 
    Original scope: Sites, spatial tendons (capsule chains from waypoint
    channel), skins. Heightfields baked to meshes at export (Phase 1 covers this in
