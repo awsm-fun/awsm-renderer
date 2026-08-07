@@ -863,7 +863,15 @@ forward compatibility and starts testing the new table's schema.
    and shrinking as it settles; forces read 20-175 N at rest and ~3600 N on
    landing impact. Templates commits `2c5a1e4` + `43634cd`.
 
-   Remaining: joint axes, inertia boxes — same channel, same pool shape.
+   Joint axes ✅ (Aug 8 2026, on-device): a blue bar through each hinge/slide
+   joint's world anchor along its world axis (`mjData`'s `xanchor`/`xaxis`),
+   opt-in with `?joints`. No pool needed — a model's joint count is fixed.
+   Ball and free joints get no bar, since neither has a single axis. Verified
+   on the humanoid alongside the contacts: bars at every shoulder, elbow, hip,
+   knee, ankle and abdomen hinge, each along its own axis (a knee's
+   perpendicular to its hip's). Templates commit `b596a45`.
+
+   Remaining: inertia boxes.
 6. **Permanent reference doc.** Write `docs/mujoco.md`: how the feature works —
    architecture, the seam formats (sidecar, capture, stream convention, pose
    sink API), the mujoco component + fingerprint binding, collider param

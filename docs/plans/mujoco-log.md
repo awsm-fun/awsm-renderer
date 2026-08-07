@@ -1050,3 +1050,31 @@ the scale mode, the stride, the constants and the build harness chasing a bug
 that was a pixel-size problem.
 
 **Next:** joint axes and inertia boxes, then Phase 6 (the permanent doc).
+
+---
+
+## 2026-08-08 — Phase 5: joint axes (ON-DEVICE VERIFIED)
+
+**Landed (templates repo, `b596a45`).** A blue bar through each hinge/slide
+joint's world anchor, along its world axis, opt-in with `?joints`. Blue rather
+than the contacts' red so the two read as different KINDS of annotation rather
+than different values of one.
+
+Much simpler than contacts, and worth saying why: a model's joint count is fixed,
+so there is no pool, no live count and no visibility toggling. `mjData`'s
+`xanchor`/`xaxis` are already world-space, so the render side does nothing but
+rotate `+Y` onto the axis. Ball and free joints get no bar at all — a free joint
+has six degrees of freedom and a ball three, and drawing one axis for either
+would be inventing information the model does not have.
+
+**What the browser showed.** Bars at every shoulder, elbow, hip, knee, ankle and
+abdomen hinge on the collapsed humanoid, each oriented along its OWN axis — a
+knee's perpendicular to its hip's, which is precisely the thing that would look
+wrong if the frames were being mishandled. Red contact spikes and blue joint bars
+render together cleanly. Console clean.
+
+Worth noting: the `parry3d` BVH panic from two iterations ago did not recur even
+with ~275 overlay meshes live (256 contact spikes + ~20 joint bars). Still no
+repro; still recorded.
+
+**Next:** inertia boxes finish Phase 5, then Phase 6 (the permanent doc).
