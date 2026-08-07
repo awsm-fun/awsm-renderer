@@ -856,7 +856,14 @@ forward compatibility and starts testing the new table's schema.
    spikes along the resting foot plus more at the hip, each standing along its
    `+Z` floor normal. Console clean. Templates commit `ac44524`.
 
-   Remaining: forces, joint axes, inertia boxes — same channel, same pool shape.
+   Contact FORCES ✅ (Aug 8 2026, on-device): the worker publishes each
+   contact's normal force alongside its position and normal, and the spike's
+   LENGTH is that force. Verified on the collapsed humanoid: 13 live contacts
+   with visibly different spike lengths at foot, hip, pelvis and arm, growing
+   and shrinking as it settles; forces read 20-175 N at rest and ~3600 N on
+   landing impact. Templates commits `2c5a1e4` + `43634cd`.
+
+   Remaining: joint axes, inertia boxes — same channel, same pool shape.
 6. **Permanent reference doc.** Write `docs/mujoco.md`: how the feature works —
    architecture, the seam formats (sidecar, capture, stream convention, pose
    sink API), the mujoco component + fingerprint binding, collider param

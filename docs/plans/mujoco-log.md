@@ -9,22 +9,8 @@ at the bottom. Deleted at Phase 6 along with the plan.
 
 ## OPEN (not blocked on you — scoped out with reasons)
 
-- **The template's dev server is currently broken.** `trunk serve` for
-  `physics-mujoco` stopped rebuilding partway through the night, and a
-  from-scratch restart now fails in wasm-bindgen with *"failed to prepare module
-  for threading"* (see `/tmp/tpl-dev.log`). `dist/` is serving the last good
-  build, which is why the page still runs. Everything committed was verified
-  BEFORE this started; the contact-force visual below is the one thing it
-  blocked. Worth a clean `task dev` from a fresh shell in the morning — my
-  hand-rolled RUSTFLAGS may simply not match the Taskfile's.
-
-- **Contact force → spike length.** The force is on the wire and verified
-  arriving (48.9 N first touch, 3581 N landing spike, 120-350 N at rest). What
-  is NOT verified is scaling the spike by it: the spikes stopped rendering when
-  I wired the scale, and I could not isolate why before the build harness went
-  down. The render side is therefore committed at the fixed length that WAS
-  watched working. `self.scratch[o + 6]` is the value; consuming it is a
-  one-function change.
+*(The dev-server breakage and the unverified force visual that were listed here
+are both RESOLVED — see the Aug 8 entries below.)*
 
 - **Flex deformation streaming.** The flex SURFACE ships and renders at its bind
   pose (flag, bunny, floppy all verified). Making it *move* needs one of two
@@ -1025,3 +1011,42 @@ trigger and worth remembering if it shows up again.
 
 **Next:** finish the force visual (one function), then joint axes and inertia
 boxes, then Phase 6.
+
+---
+
+## 2026-08-08 — Phase 5: contact forces, now actually on screen (ON-DEVICE VERIFIED)
+
+Both items I parked last iteration are closed.
+
+**The dev server.** `task dev` builds fine; my hand-rolled RUSTFLAGS was the
+problem. The threaded profile needs `-Z build-std` to recompile `std` with
+atomics, and I had also run plain `cargo check` against the same target dir in
+between, so the artifacts were mixed. Everything I "verified" in the previous
+iteration's second half was against a build that had silently stopped updating —
+the wasm hash never changed across what I thought were three rebuilds. **Use
+`task dev`; do not hand-roll the flags.**
+
+**The force visual.** Nothing was broken. Once the build actually updated, the
+render side reported `ncon=13 live=13 shown=13` with correct positions, normals
+and forces — the spikes were on screen the whole time, just too small to see.
+Two calibration lessons, both found by watching rather than reasoning:
+
+- **The radius must not scale with the force.** Scaling all three axes shrank a
+  25 N contact to roughly one pixel wide. That reads as a broken overlay, not as
+  a light touch. Only the length scales now.
+- **`FORCE_REF` is measured, not guessed.** I had referenced the humanoid's whole
+  body weight (400 N), but at rest its contacts carry 20-175 N *each*, so every
+  spike sat at the minimum. 150 N sits inside the resting band and lets the
+  ~3600 N landing impact saturate.
+
+**What the browser showed.** 13 live contacts on the collapsed humanoid, spikes
+of visibly different lengths at the foot, hip, pelvis and arm, growing and
+shrinking as the ragdoll settles. Console clean.
+
+**The lesson worth keeping** is the same one from the flex iteration, and it cost
+hours this time: when an overlay does not appear, instrument the data path before
+touching the drawing code. The render side was correct at every step; I changed
+the scale mode, the stride, the constants and the build harness chasing a bug
+that was a pixel-size problem.
+
+**Next:** joint axes and inertia boxes, then Phase 6 (the permanent doc).
