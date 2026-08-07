@@ -282,3 +282,41 @@ no capsule or ellipsoid, so the plan is: box/sphere/cylinder/plane map directly
 (with the axis fix — MuJoCo's cylinder/capsule run along local Z, our primitives
 along Y), ellipsoid = a sphere with per-axis node scale, capsule = the Z-axis
 capsule builder the Phase 0 template already wrote, ported to a captured mesh.
+
+---
+
+## 2026-08-07 — Phase 1, increment 7: primitive geoms (ON-DEVICE VERIFIED)
+
+**Landed.** `controller/mujoco_primitive.rs` — MuJoCo's primitive shapes as
+meshes, ported from the Phase-0 template (which worked them out against the live
+wasm build): plane, sphere, capsule, ellipsoid, cylinder, box.
+
+Decisions: they become **captured meshes, not `PrimitiveShape` recipes** —
+capsule and ellipsoid have no `PrimitiveShape` equivalent at all, and sim-bound
+geometry is stream-owned rather than edited, so one uniform path beats a split
+that would only make some geoms editable. Shapes dedupe by (kind, size), so the
+humanoid's 16 capsules mint a handful of assets. Ellipsoid is the exception to
+"geometry carries the size": a unit sphere with per-axis **node scale**, safe
+because a pose frame writes translation and rotation only.
+
+MuJoCo's axis conventions are honoured in the geometry rather than worked around:
+capsules/cylinders run along local Z (ours along Y) so those meshes are rotated
++90° about X — a proper rotation, so winding and normals stay valid. Planes have
+a +Z normal and are usually authored infinite (`0` half-extent), which falls back
+to a finite 10 m quad.
+
+**What the browser showed.** The DeepMind humanoid imports and renders as a
+humanoid: sphere head and hands, capsule torso/waist/limbs, both feet, arms out
+at its qpos0 pose, standing on its own MuJoCo ground plane (visible as the floor
+with a horizon). Outliner carries the real MJCF names — `torso`, `waist_upper`,
+`thigh_right`, `foot1_left`, … — 21 nodes / 20 meshes / 2 materials. **Console
+clean, zero errors.**
+
+One false alarm worth recording: an early camera angle made the arms look like a
+detached second figure floating above the body. Checking the exported world
+poses (arms at z≈1.25–1.34, torso 1.28, head 1.47) showed the data was right;
+re-framing the camera showed a perfectly normal humanoid. Read the numbers before
+believing a bad angle.
+
+**Next:** Phase 1's last follow-on — re-import in place, preserving user material
+overrides — then Phase 2 (capture-to-clip bake).

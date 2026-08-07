@@ -353,6 +353,20 @@ smaller/reversible option, per the settled decisions above.
   every schema round-trip test passed. Any future per-node field has to be added
   in four places — `EditorNode`, `NodeSpec`, both conversions, and the reactive
   `Node` — and only a browser round-trip catches missing any of them.
+- **Primitive geoms become captured meshes, not `PrimitiveShape` recipes.** Two of
+  MuJoCo's shapes — capsule and ellipsoid — have no `PrimitiveShape` equivalent at
+  all, and sim-bound geometry is stream-owned and not meant to be edited, so one
+  uniform captured path beats a recipe/capture split that would only make some
+  geoms editable. Shapes are deduped by (kind, size) so the humanoid's 16 capsules
+  mint a handful of assets, not 16. Ellipsoid is the one exception to "geometry
+  carries the size": it is a unit sphere with per-axis **node scale**, which is
+  safe because a pose frame writes translation and rotation only.
+- **MuJoCo axis conventions are honoured in the geometry, not worked around.**
+  MuJoCo capsules and cylinders run along local **Z** and our `meshgen` primitives
+  along Y, so those meshes are rotated +90° about X at build time — a proper
+  rotation, so winding and normals stay valid. MuJoCo planes have a +Z normal and
+  are often authored infinite (a `0` half-extent); those fall back to a finite
+  10 m quad, which is what MuJoCo's own viewer effectively shows.
 - **MuJoCo Phong → our PBR is a documented approximation**, tuned to look right
   on the menagerie models rather than to be theoretically pure: `rgba` → base
   colour (alpha < 1 turns on blending), `roughness = 1 - shininess` (MuJoCo's
@@ -432,11 +446,13 @@ smaller/reversible option, per the settled decisions above.
    skipped), materials mapped (metal/black/white/gray in the library, 4 buckets),
    fingerprint on the instance root, console clean.
 
-   Remaining follow-on inside this phase: primitive geoms
-   (plane/sphere/capsule/box/cylinder/ellipsoid — the DeepMind humanoid is all
-   primitives and currently imports as empty nodes; the Phase 0 template already
-   has a Z-axis capsule builder to port), and re-import-in-place preserving user
-   material overrides.
+   Primitive geoms ✅ (Aug 7 2026): the DeepMind humanoid imports and renders as
+   a humanoid — head/hand spheres, capsule limbs and torso, both feet, standing
+   on its MuJoCo ground plane, 21 nodes / 20 meshes, console clean.
+
+   Remaining follow-on inside this phase: re-import-in-place preserving user
+   material overrides. (Heightfield and SDF geoms still import as empty nodes
+   with correct geom ids — heightfields are explicitly Phase 4 in this plan.)
 
    Discovered while reading real models:
    - **MuJoCo re-frames mesh geoms at compile time.** A mesh geom's `geom_pos`/

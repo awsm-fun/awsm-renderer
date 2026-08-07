@@ -18,6 +18,7 @@ pub mod ktx2_shrink;
 pub mod lod_bake;
 pub mod mesh_eval;
 pub mod mujoco_import;
+pub mod mujoco_primitive;
 mod node_spec;
 pub mod persistence;
 pub mod query;

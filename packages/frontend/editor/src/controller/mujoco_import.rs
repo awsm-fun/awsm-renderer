@@ -197,6 +197,9 @@ fn build_subtree(
     // geoms, and plenty of hand-written MJCF). Deduped by colour so a model that
     // paints twenty geoms the same red gets one material, not twenty.
     let mut rgba_materials: HashMap<[u32; 4], AssetId> = HashMap::new();
+    // Primitive geoms sharing identical shape params share one mesh asset — the
+    // humanoid is 19 capsules drawn from a handful of distinct sizes.
+    let mut primitive_meshes: HashMap<(GeomKind, [u32; 3]), MeshRef> = HashMap::new();
 
     let visible = awsm_renderer_editor_protocol::mujoco::DEFAULT_VISIBLE_GROUPS;
     let mut skipped_kinds: Vec<GeomKind> = Vec::new();
@@ -215,7 +218,7 @@ fn build_subtree(
         // stack every limb on the origin instead of placing it. This is also
         // exactly the shape a pose-stream frame carries, so the simulation's first
         // frame continues from the initial render instead of jumping.
-        let trs = Trs {
+        let mut trs = Trs {
             translation: [
                 geom.world_pos[0] as f32,
                 geom.world_pos[1] as f32,
@@ -269,15 +272,32 @@ fn build_subtree(
                     continue;
                 }
             },
-            // Primitive geoms (plane/sphere/capsule/box/…) are the next
-            // increment. They still get a node — with its geom id — so the
-            // binding is complete and only the *rendering* is missing.
-            other => {
-                if !skipped_kinds.contains(&other) {
-                    skipped_kinds.push(other);
+            // Primitive geoms: box/sphere/capsule/cylinder/ellipsoid/plane.
+            other => match crate::controller::mujoco_primitive::build(other, geom.size) {
+                Some(prim) => {
+                    let key = (other, geom.size.map(|v| (v as f32).to_bits()));
+                    let mesh = *primitive_meshes
+                        .entry(key)
+                        .or_insert_with(|| mint_mesh(&prim.label, &prim.mesh));
+                    trs.scale = prim.scale;
+                    NodeKind::Mesh {
+                        mesh,
+                        material_variants,
+                        selected_variant,
+                        shadow: Default::default(),
+                        lod: Default::default(),
+                    }
                 }
-                NodeKind::Group
-            }
+                // Heightfields and SDF geoms have no primitive form. They still
+                // get a node, with its geom id, so the binding stays complete and
+                // only the rendering is missing.
+                None => {
+                    if !skipped_kinds.contains(&other) {
+                        skipped_kinds.push(other);
+                    }
+                    NodeKind::Group
+                }
+            },
         };
 
         let node = Node::new_with_transform_and_kind(name, trs, kind);
