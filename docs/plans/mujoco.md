@@ -353,6 +353,31 @@ smaller/reversible option, per the settled decisions above.
   every schema round-trip test passed. Any future per-node field has to be added
   in four places — `EditorNode`, `NodeSpec`, both conversions, and the reactive
   `Node` — and only a browser round-trip catches missing any of them.
+- **The bake lives in `awsm-renderer-scene`, as pure data in / pure data out** —
+  a capture plus a geom_id→node map to a `StoredAnimation`. So it is natively
+  unit-testable, the editor command on top is a thin wrapper, and nothing about
+  it needs a renderer or a filesystem. The binding is *derived* by walking the
+  instance subtree (`bake::binding_of`), never stored, for the same
+  no-second-copy reason as everywhere else.
+- **Static geoms get no tracks at all.** A robot's world is mostly static —
+  floors, fixtures, scenery — and keying those nodes flat every frame would both
+  bloat the bundle and quietly fight anything else animating them.
+- **Quaternions are made continuous before keying.** A simulator is free to emit
+  `q` on one frame and `-q` (the same rotation) on the next; interpolating across
+  that sign flip takes the long way round, so a limb visibly spins a full turn
+  between two nearly-identical keys. This is the single most likely way baked
+  physics *looks* broken, and it costs one dot product per frame to prevent. The
+  "did this geom move?" test runs after the flip, so a pure sign change is
+  correctly read as no motion rather than resurrecting a static geom.
+- **Keyframe reduction measures against the last KEPT key**, not the original
+  neighbours, so error cannot accumulate across a long run of dropped keys.
+  Position and rotation share one keep-mask because they share the clip's `times`
+  array — keeping a key for one and not the other would need two time bases per
+  geom. Defaults: 1 mm and ~0.1°, which on a real 3 s humanoid run keeps 32% of
+  the keys.
+- **Track order is sorted, not HashMap order**, so two bakes of the same capture
+  produce identical clips — otherwise golden comparison in the browser suite
+  would be defeated by iteration order alone.
 - **The capture format mirrors the live stream exactly** — a flat
   `7 * geom_count` `f32` array per frame, `[px,py,pz,qw,qx,qy,qz]` indexed by geom
   id, plus a time in seconds. A harness that can feed the pose sink records a
@@ -511,12 +536,17 @@ smaller/reversible option, per the settled decisions above.
    checked-in fixture capture — deterministic, no sim in CI.
 
    Progress: capture format ✅ (`mujoco-format::capture`) + reference recorder
-   ✅ (`awsm-renderer-mujoco-record`). Verified natively against real physics —
+   ✅ (`awsm-renderer-mujoco-record`) + the bake ✅
+   (`scene::mujoco::bake`, capture → `StoredAnimation`). Verified natively against real physics —
    the humanoid ragdoll's torso falls 1.28 m → 0.26 m over 3 s, every quaternion
    stays unit to 7e-8, two runs are byte-identical, and frame 0 matches the
    sidecar's `world_pos` to 1e-5 so the first simulated frame continues from the
-   imported pose rather than jumping. Remaining: the bake (capture → animation
-   clips), the editor command, and the on-device scrub/play.
+   imported pose rather than jumping. The bake was verified end-to-end on that
+   same real capture: the torso's baked translation track still falls 1.28 m →
+   under 0.5 m, reduction keeps 2470 of 7638 keys (32%), the static floor plane
+   contributes no track, and the clip round-trips through the project/bundle TOML
+   as ordinary animation data. Remaining: the editor command (import a capture,
+   bake, add to the clip library) and the on-device scrub/play.
 3. **Pose sink + reference template.** Mapping layer in scene-loader (binding
    resolution + pose sink) on the player API — no networking in this repo; the
    stream convention (jitter buffer, reconnect, recording) lives in the

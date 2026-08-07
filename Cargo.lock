@@ -556,10 +556,12 @@ dependencies = [
  "awsm-renderer-glb-export",
  "awsm-renderer-mujoco-format",
  "awsm-renderer-mujoco-sys",
+ "awsm-renderer-scene",
  "clap",
  "gltf",
  "serde_json",
  "sha2",
+ "toml",
 ]
 
 [[package]]

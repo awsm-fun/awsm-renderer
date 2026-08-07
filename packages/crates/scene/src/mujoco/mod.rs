@@ -10,6 +10,8 @@
 //! project and the baked runtime scene are built from — so the component reaches
 //! the bundle by construction rather than by a second implementation.
 
+pub mod bake;
+
 /// Re-exported so consumers of the component don't need a direct dependency on
 /// the interchange crate just to name the types the component is made of.
 pub use awsm_renderer_mujoco_format::sidecar::{

@@ -398,3 +398,49 @@ What was actually run: recorded the DeepMind humanoid for 3 s at 30 fps, and
 **Next:** the bake — capture → native animation clips (T+R track per bound geom
 node, keyframe-reduced), the editor command to import a capture, and then the
 on-device scrub/play that is Phase 2's real exit criterion.
+
+---
+
+## 2026-08-07 — Phase 2, increment 2: the capture→clip bake
+
+**Landed.** `scene::mujoco::bake` — a capture plus a geom_id→node map in, a
+`StoredAnimation` out. Pure data both ways, so it is natively unit-testable and
+the editor command on top will be a thin wrapper. After it runs there is no
+MuJoCo left in the result: translation and rotation tracks on scene nodes,
+indistinguishable from a hand-authored or glTF-imported clip.
+
+Decisions (all now in the plan):
+
+- **Static geoms get no tracks at all** — a robot's world is mostly floors and
+  fixtures, and keying those flat every frame would bloat the bundle and fight
+  anything else animating them.
+- **Quaternions are made continuous before keying.** A simulator may emit `q`
+  then `-q` (the same rotation); interpolating across that flip takes the long
+  way and a limb visibly spins a full turn between two near-identical keys. One
+  dot product per frame prevents it. The "did it move?" test runs *after* the
+  flip, so a pure sign change reads as no motion.
+- **Reduction measures against the last KEPT key**, not the original neighbours,
+  so error cannot accumulate across a long run of drops.
+- **Track order is sorted**, not HashMap order, so two bakes of one capture are
+  identical — otherwise golden comparison would be defeated by iteration order.
+
+**Verified — native, no browser surface yet** (the bake is a pure function; the
+browser part is the editor command, next). Beyond 12 unit tests on synthetic
+captures, the real end-to-end run on a recorded 3 s humanoid fall:
+
+- the baked torso track **still falls** — first key z > 1.0 m, last < 0.5 m;
+- **reduction keeps 2470 of 7638 keys (32%)** on real physics data;
+- the humanoid's floor plane contributes **no track**;
+- the clip **round-trips through TOML** as ordinary animation data, which is the
+  concrete proof it is a normal clip and not a special case.
+
+**A test I had to correct rather than the code.** My first sign-flip test fed a
+capture whose only change *was* the flip, then asserted a rotation track existed
+— but `q` and `-q` are the same rotation, so emitting nothing is right. Rewrote
+it to rotate for real (0°→60°→120°, last frame negated) and added a second test
+pinning the other half: a pure sign flip must NOT resurrect a static geom.
+
+**Next:** the editor command — import a capture, resolve the binding against a
+sim instance (rejecting a fingerprint mismatch loudly), bake, and add the clip to
+the library. Then Phase 2's real exit criterion: scrubbing that clip in the
+browser and watching the humanoid fall.

@@ -42,6 +42,10 @@ serde_json = { workspace = true }
 sha2 = "0.10.8"
 
 [dev-dependencies]
+# The capture->clip bake, so the recorder can be tested against the thing that
+# actually consumes its output rather than against its own output shape.
+awsm-renderer-scene = { workspace = true }
+toml = "0.8"
 # Read the emitted GLB back with the same reader the renderer imports with — the
 # only way to know the writer produced a real, loadable glTF and not just bytes.
 gltf = { workspace = true }
