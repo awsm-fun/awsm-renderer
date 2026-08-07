@@ -57,6 +57,13 @@ pub struct Sidecar {
     /// companion GLB.
     #[serde(default)]
     pub meshes: Vec<Mesh>,
+
+    /// Sites — massless, non-colliding marker frames (sensor mounts, tendon
+    /// waypoints, attachment points). Index in this vec IS the MuJoCo site id,
+    /// which is a **separate id space from geoms**: a pose frame carries sites
+    /// in their own channel.
+    #[serde(default)]
+    pub sites: Vec<Site>,
 }
 
 impl Sidecar {
@@ -72,6 +79,7 @@ impl Sidecar {
             geoms: Vec::new(),
             materials: Vec::new(),
             meshes: Vec::new(),
+            sites: Vec::new(),
         }
     }
 
@@ -112,6 +120,26 @@ impl Sidecar {
                         index: i,
                         value: m,
                         len: self.meshes.len(),
+                    });
+                }
+            }
+        }
+        for (i, st) in self.sites.iter().enumerate() {
+            if st.body >= self.bodies.len() {
+                return Err(Error::BadIndex {
+                    what: "site.body",
+                    index: i,
+                    value: st.body,
+                    len: self.bodies.len(),
+                });
+            }
+            if let Some(m) = st.material {
+                if m >= self.materials.len() {
+                    return Err(Error::BadIndex {
+                        what: "site.material",
+                        index: i,
+                        value: m,
+                        len: self.materials.len(),
                     });
                 }
             }
@@ -282,6 +310,40 @@ pub enum GeomKind {
     Sdf,
 }
 
+/// A site: a massless marker frame drawn as a small primitive.
+///
+/// Same shape as a [`Geom`] minus everything about collision and geometry
+/// reuse — a site never references a mesh and never collides. Kept as its own
+/// type rather than a flag on `Geom` because the id spaces are separate and
+/// conflating them would put a site's pose in a geom's slot.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub struct Site {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Index into `bodies`.
+    pub body: usize,
+    /// Site visibility group — a SEPARATE space from geom groups (MuJoCo has
+    /// `sitegroup` alongside `geomgroup`), though the 0-2 default is the same.
+    pub group: i32,
+    /// How the site is drawn. Only the primitive kinds occur.
+    #[serde(rename = "type")]
+    pub kind: GeomKind,
+    pub size: [f64; 3],
+    /// Offset from the owning body's frame.
+    pub pos: [f64; 3],
+    /// Rotation from the owning body's frame, `[w, x, y, z]`.
+    pub quat: [f64; 4],
+    /// Initial-configuration world pose, same meaning as [`Geom::world_pos`].
+    #[serde(default)]
+    pub world_pos: [f64; 3],
+    #[serde(default = "identity_quat")]
+    pub world_quat: [f64; 4],
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub material: Option<usize>,
+    pub rgba: [f32; 4],
+}
+
 /// MuJoCo materials are Phong-ish; mapping them onto our PBR materials happens at
 /// *import*, not here, so the sidecar stays a faithful record of the source.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -381,7 +443,7 @@ mod tests {
             "version": 1,
             "source": {"filename":"a.xml","sha256":"x","mujoco_version":"3.11.0"},
             "bodies": [{"parent":0,"pos":[0,0,0],"quat":[1,0,0,0],"future_field":42}],
-            "sites": [{"whatever": true}]
+            "tendons": [{"whatever": true}]
         }"#;
         let s: Sidecar = serde_json::from_str(json).unwrap();
         s.validate().unwrap();

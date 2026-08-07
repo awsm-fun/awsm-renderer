@@ -33,6 +33,10 @@ pub enum MujocoComponent {
     /// One geom of the enclosing instance. Its transform is **stream-owned**:
     /// the editor locks the gizmo and the sim writes it every frame.
     Geom(MujocoGeom),
+    /// One **site** of the enclosing instance — a massless marker frame.
+    /// Stream-owned like a geom, but addressed by SITE id, which is a separate
+    /// space; a site's pose in a geom's slot would drive the wrong node.
+    Site(MujocoSite),
 }
 
 /// The root of an imported MuJoCo model.
@@ -54,6 +58,10 @@ pub struct MujocoInstance {
     /// nodes instead of the real geom count would be silently misaligned from
     /// the first skipped geom onward.
     pub geom_count: u32,
+    /// How many sites the source model has — the id space the site channel
+    /// addresses. Same reasoning as `geom_count`.
+    #[serde(default)]
+    pub site_count: u32,
     /// Which MuJoCo visibility groups this instance renders. Defaults to
     /// MuJoCo's own convention (0–2 visible), which is what keeps a menagerie
     /// model showing its visual meshes rather than its collision capsules.
@@ -74,6 +82,7 @@ impl MujocoInstance {
             source,
             model_name: None,
             geom_count,
+            site_count: 0,
             visible_groups: default_visible_groups(),
         }
     }
@@ -103,6 +112,23 @@ pub struct MujocoGeom {
     /// Owning MuJoCo body index. Not used to place anything — geom world poses
     /// arrive directly — but it is how a skin's joints and a harness's body-level
     /// queries line up with our nodes.
+    pub body: u32,
+}
+
+/// One site of an instance. Deliberately its own component rather than a flag
+/// on [`MujocoGeom`]: MuJoCo indexes sites separately from geoms, and a shared
+/// id space would silently cross the two channels.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub struct MujocoSite {
+    /// Index into the source model's SITE array.
+    pub site_id: u32,
+    /// The site's own visibility group (MuJoCo's `sitegroup`).
+    pub group: i32,
+    /// Draw shape.
+    pub kind: GeomKind,
+    /// Owning MuJoCo body index.
     pub body: u32,
 }
 

@@ -353,6 +353,13 @@ smaller/reversible option, per the settled decisions above.
   every schema round-trip test passed. Any future per-node field has to be added
   in four places — `EditorNode`, `NodeSpec`, both conversions, and the reactive
   `Node` — and only a browser round-trip catches missing any of them.
+- **Sites are their own component and their own stream channel**, not a flag on
+  `MujocoGeom`. MuJoCo indexes sites separately from geoms, so a shared id space
+  would put a site's pose in a geom's slot — the exact class of silent failure
+  the geom-id binding exists to prevent. `MujocoSite { site_id, group, kind,
+  body }`, `MujocoInstance::site_count`, a second `sites` array in the sink's
+  binding, and `apply_site_poses` alongside `apply_geom_poses` (both over one
+  shared `write_poses`, so the two channels cannot drift in behaviour).
 - **Collider physics params are a separate optional node field**, not a payload
   on `NodeKind::Collider` (which carries the SHAPE). Widening the variant would
   break every saved project and baked bundle for a field absent on almost every
@@ -670,7 +677,17 @@ smaller/reversible option, per the settled decisions above.
    is browser-verified via chrome-devtools MCP; it doubles as the first producer
    exercising the sink API. Prereq: collider components exist in editor/scene
    formats (universal core + mujoco extension block).
-4. **Full visual features.** Sites, spatial tendons (capsule chains from waypoint
+4. **Full visual features.**
+
+   Sites ✅ (Aug 7 2026, on-device): sidecar `sites` table, `MujocoSite`
+   component, importer nodes, and the sink's site channel. Verified with MuJoCo's
+   `tendon_arm/arm26.xml` (11 sites, 5 geoms) — the editor shows all 11 named
+   site nodes (`s0`, `x0`, `s1`…`s8`, `x1`) rendered as white/green spheres at
+   their MuJoCo world poses along the arm, `[nodes.children.mujoco.site]` blocks
+   carry `site_id` 0–10 in their own id space beside the 5 geom blocks, console
+   clean.
+
+   Original scope: Sites, spatial tendons (capsule chains from waypoint
    channel), skins. Heightfields baked to meshes at export (Phase 1 covers this in
    the exporter if trivial, else here). Flex/deformables: the dynamic-vertex
    mesh path + `flex_vertices` stream channel, verified against MuJoCo's own

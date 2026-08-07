@@ -383,6 +383,19 @@ impl Model<'_> {
         /// Texcoord indices for the same faces, relative to `mesh_texcoordadr`.
         mesh_facetexcoord: i32 = nmeshface x 3,
 
+        // Sites are massless, non-colliding marker geoms: same shape as a geom,
+        // their own id space, and driven by the same kind of pose stream.
+        /// `mjtGeom` discriminant used to DRAW the site.
+        site_type: i32 = nsite x 1,
+        site_bodyid: i32 = nsite x 1,
+        site_matid: i32 = nsite x 1,
+        /// Site visibility group. Separate from geom groups; MuJoCo shows 0-2.
+        site_group: i32 = nsite x 1,
+        site_size: f64 = nsite x 3,
+        site_pos: f64 = nsite x 3,
+        site_quat: f64 = nsite x 4,
+        site_rgba: f32 = nsite x 4,
+
         mat_rgba: f32 = nmat x 4,
         mat_specular: f32 = nmat x 1,
         mat_shininess: f32 = nmat x 1,
@@ -546,6 +559,16 @@ impl Data<'_, '_> {
         /// Geom world orientations as **row-major 3x3 matrices**, not quaternions;
         /// mjData has no `geom_xquat`. See [`Self::geom_world_quat`].
         geom_xmat: f64 = ngeom x 9,
+        /// Site world positions — sites stream exactly like geoms, on their own
+        /// id space.
+        site_xpos: f64 = nsite x 3,
+        /// Site world orientations, row-major 3x3. See [`Self::site_world_quat`].
+        site_xmat: f64 = nsite x 9,
+    }
+
+    /// A site's world orientation as a `[w, x, y, z]` quaternion.
+    pub fn site_world_quat(&self, site: usize) -> [f64; 4] {
+        mat3_to_quat(&self.site_xmat()[site * 9..site * 9 + 9])
     }
 
     /// A geom's world orientation as a `[w, x, y, z]` quaternion, converted from
@@ -555,23 +578,32 @@ impl Data<'_, '_> {
     /// branchful trace conversion — picking the largest denominator keeps it
     /// stable when the trace is near -1.
     pub fn geom_world_quat(&self, geom: usize) -> [f64; 4] {
-        let m = &self.geom_xmat()[geom * 9..geom * 9 + 9];
-        let (m00, m01, m02) = (m[0], m[1], m[2]);
-        let (m10, m11, m12) = (m[3], m[4], m[5]);
-        let (m20, m21, m22) = (m[6], m[7], m[8]);
-        let trace = m00 + m11 + m22;
-        if trace > 0.0 {
-            let s = 0.5 / (trace + 1.0).sqrt();
-            [0.25 / s, (m21 - m12) * s, (m02 - m20) * s, (m10 - m01) * s]
-        } else if m00 > m11 && m00 > m22 {
-            let s = 2.0 * (1.0 + m00 - m11 - m22).sqrt();
-            [(m21 - m12) / s, 0.25 * s, (m01 + m10) / s, (m02 + m20) / s]
-        } else if m11 > m22 {
-            let s = 2.0 * (1.0 + m11 - m00 - m22).sqrt();
-            [(m02 - m20) / s, (m01 + m10) / s, 0.25 * s, (m12 + m21) / s]
-        } else {
-            let s = 2.0 * (1.0 + m22 - m00 - m11).sqrt();
-            [(m10 - m01) / s, (m02 + m20) / s, (m12 + m21) / s, 0.25 * s]
-        }
+        mat3_to_quat(&self.geom_xmat()[geom * 9..geom * 9 + 9])
+    }
+}
+
+/// Row-major 3x3 rotation matrix → `[w, x, y, z]` quaternion.
+///
+/// mjData stores orientations as matrices and has no `*_xquat` for geoms or
+/// sites, so this is the only way across. The matrix is orthonormal by
+/// construction; picking the largest denominator keeps the conversion stable
+/// when the trace is near -1.
+fn mat3_to_quat(m: &[f64]) -> [f64; 4] {
+    let (m00, m01, m02) = (m[0], m[1], m[2]);
+    let (m10, m11, m12) = (m[3], m[4], m[5]);
+    let (m20, m21, m22) = (m[6], m[7], m[8]);
+    let trace = m00 + m11 + m22;
+    if trace > 0.0 {
+        let s = 0.5 / (trace + 1.0).sqrt();
+        [0.25 / s, (m21 - m12) * s, (m02 - m20) * s, (m10 - m01) * s]
+    } else if m00 > m11 && m00 > m22 {
+        let s = 2.0 * (1.0 + m00 - m11 - m22).sqrt();
+        [(m21 - m12) / s, 0.25 * s, (m01 + m10) / s, (m02 + m20) / s]
+    } else if m11 > m22 {
+        let s = 2.0 * (1.0 + m11 - m00 - m22).sqrt();
+        [(m02 - m20) / s, (m01 + m10) / s, 0.25 * s, (m12 + m21) / s]
+    } else {
+        let s = 2.0 * (1.0 + m22 - m00 - m11).sqrt();
+        [(m10 - m01) / s, (m02 + m20) / s, (m12 + m21) / s, 0.25 * s]
     }
 }

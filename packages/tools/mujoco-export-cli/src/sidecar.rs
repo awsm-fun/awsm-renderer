@@ -4,7 +4,9 @@
 //! through the CLI surface.
 
 use anyhow::{Context, Result};
-use awsm_renderer_mujoco_format::sidecar::{Body, Geom, GeomKind, Material, Mesh, Sidecar, Source};
+use awsm_renderer_mujoco_format::sidecar::{
+    Body, Geom, GeomKind, Material, Mesh, Sidecar, Site, Source,
+};
 use awsm_renderer_mujoco_sys::{mjtGeom, mjtObj, Model};
 use sha2::{Digest, Sha256};
 use std::path::Path;
@@ -96,9 +98,43 @@ pub fn build(model: &Model<'_>, source: Source) -> Result<Sidecar> {
         });
     }
 
+    for st in 0..model.nsite() {
+        out.sites.push(Site {
+            name: model.name(mjtObj::mjOBJ_SITE, st).map(str::to_string),
+            body: model.site_bodyid()[st] as usize,
+            group: model.site_group()[st],
+            kind: site_kind(model, st)?,
+            size: read3(model.site_size(), st),
+            pos: read3(model.site_pos(), st),
+            quat: read4(model.site_quat(), st),
+            world_pos: read3(data.site_xpos(), st),
+            world_quat: data.site_world_quat(st),
+            material: Some(model.site_matid()[st])
+                .filter(|id| *id >= 0)
+                .map(|id| id as usize),
+            rgba: read4f(model.site_rgba(), st),
+        });
+    }
+
     out.validate()
         .map_err(|e| anyhow::anyhow!("built an invalid sidecar: {e}"))?;
     Ok(out)
+}
+
+/// A site's draw shape. `site_type` uses the same `mjtGeom` numbering as geoms,
+/// but only the primitive kinds are meaningful — a site never has a mesh.
+fn site_kind(model: &Model<'_>, s: usize) -> Result<GeomKind> {
+    Ok(match model.site_type()[s] {
+        0 => GeomKind::Plane,
+        2 => GeomKind::Sphere,
+        3 => GeomKind::Capsule,
+        4 => GeomKind::Ellipsoid,
+        5 => GeomKind::Cylinder,
+        6 => GeomKind::Box,
+        // Sites are drawn, never collided; anything else means MuJoCo grew a
+        // shape we do not know how to place, and guessing would misdraw it.
+        other => anyhow::bail!("site {s} has unsupported draw type {other}"),
+    })
 }
 
 fn geom_kind(model: &Model<'_>, g: usize) -> Result<GeomKind> {

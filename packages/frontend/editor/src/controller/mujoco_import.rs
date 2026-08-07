@@ -31,8 +31,8 @@ use std::collections::HashMap;
 use awsm_renderer_editor_protocol::mujoco::{GeomKind, MujocoMaterial, Sidecar};
 use awsm_renderer_editor_protocol::{
     AssetEntry, AssetId, AssetSource as SceneAssetSource, CapturedSource, MaterialDef,
-    MaterialVariant, MeshDef, MeshRef, MujocoComponent, MujocoGeom, MujocoInstance, NodeKind, Trs,
-    VariantId,
+    MaterialVariant, MeshDef, MeshRef, MujocoComponent, MujocoGeom, MujocoInstance, MujocoSite,
+    NodeKind, Trs, VariantId,
 };
 
 use crate::engine::scene::node::Node;
@@ -243,6 +243,7 @@ fn build_subtree(
     root.mujoco
         .set(Some(MujocoComponent::Instance(MujocoInstance {
             model_name: doc.model_name.clone(),
+            site_count: doc.sites.len() as u32,
             ..MujocoInstance::new(doc.source.clone(), doc.geoms.len() as u32)
         })));
 
@@ -388,6 +389,76 @@ fn build_subtree(
             body: geom.body as u32,
         })));
         // Sim-bound: the stream owns this transform, so the gizmo is off.
+        node.locked.set(true);
+        root.children.lock_mut().push_cloned(node);
+    }
+
+    // Sites: massless marker frames, same treatment as primitive geoms but on
+    // their own id space. Their group is MuJoCo's `sitegroup`, which shares the
+    // 0-2 default.
+    for (site_id, site) in doc.sites.iter().enumerate() {
+        if !visible.contains(&site.group) {
+            continue;
+        }
+        let Some(prim) = crate::controller::mujoco_primitive::build(site.kind, site.size) else {
+            continue;
+        };
+        let material = match site.material.and_then(|m| mat_assets.get(m)).copied() {
+            Some(id) => id,
+            None => {
+                let key = site.rgba.map(|c| c.to_bits());
+                *rgba_materials.entry(key).or_insert_with(|| {
+                    mint_material(
+                        format!(
+                            "rgba {:.2} {:.2} {:.2}",
+                            site.rgba[0], site.rgba[1], site.rgba[2]
+                        ),
+                        MaterialDef {
+                            base_color: site.rgba,
+                            alpha_mode: alpha_mode(site.rgba[3]),
+                            ..MaterialDef::default()
+                        },
+                    )
+                })
+            }
+        };
+        let (material_variants, selected_variant) = palette(material);
+        let key = (site.kind, site.size.map(|v| (v as f32).to_bits()));
+        let mesh = *primitive_meshes
+            .entry(key)
+            .or_insert_with(|| mint_mesh(&prim.label, &prim.mesh));
+        let node = Node::new_with_transform_and_kind(
+            site.name
+                .clone()
+                .unwrap_or_else(|| format!("site {site_id}")),
+            Trs {
+                translation: [
+                    site.world_pos[0] as f32,
+                    site.world_pos[1] as f32,
+                    site.world_pos[2] as f32,
+                ],
+                rotation: [
+                    site.world_quat[1] as f32,
+                    site.world_quat[2] as f32,
+                    site.world_quat[3] as f32,
+                    site.world_quat[0] as f32,
+                ],
+                scale: prim.scale,
+            },
+            NodeKind::Mesh {
+                mesh,
+                material_variants,
+                selected_variant,
+                shadow: Default::default(),
+                lod: Default::default(),
+            },
+        );
+        node.mujoco.set(Some(MujocoComponent::Site(MujocoSite {
+            site_id: site_id as u32,
+            group: site.group,
+            kind: site.kind,
+            body: site.body as u32,
+        })));
         node.locked.set(true);
         root.children.lock_mut().push_cloned(node);
     }

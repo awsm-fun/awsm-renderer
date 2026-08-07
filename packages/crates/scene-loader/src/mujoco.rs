@@ -57,12 +57,22 @@ pub struct MujocoInstance {
     /// simply `None` — the id space stays the model's, so a frame never has to be
     /// re-indexed.
     pub geoms: Vec<Option<awsm_renderer::transforms::TransformKey>>,
+    /// `site_id → ` that site's transform. A SEPARATE array from `geoms`
+    /// because MuJoCo indexes sites separately; sharing one would put a site's
+    /// pose in a geom's slot.
+    pub sites: Vec<Option<awsm_renderer::transforms::TransformKey>>,
 }
 
 impl MujocoInstance {
-    /// How many floats one frame must carry for this instance.
+    /// How many floats one GEOM frame must carry for this instance.
     pub fn frame_len(&self) -> usize {
         self.geoms.len() * FLOATS_PER_GEOM
+    }
+
+    /// How many floats one SITE frame must carry. Zero for a model with no
+    /// sites, which is most robots.
+    pub fn site_frame_len(&self) -> usize {
+        self.sites.len() * FLOATS_PER_GEOM
     }
 
     /// Whether `source` is the same compiled model this instance was imported
@@ -114,14 +124,22 @@ pub fn apply_geom_poses(
     instance: &MujocoInstance,
     poses: &[f32],
 ) -> Result<(), PoseError> {
-    let expected = instance.frame_len();
+    write_poses(renderer, &instance.geoms, poses)
+}
+
+fn write_poses(
+    renderer: &mut AwsmRenderer,
+    slots: &[Option<awsm_renderer::transforms::TransformKey>],
+    poses: &[f32],
+) -> Result<(), PoseError> {
+    let expected = slots.len() * FLOATS_PER_GEOM;
     if poses.len() != expected {
         return Err(PoseError::WrongLength {
             got: poses.len(),
             expected,
         });
     }
-    for (geom_id, key) in instance.geoms.iter().enumerate() {
+    for (geom_id, key) in slots.iter().enumerate() {
         let Some(key) = key else { continue };
         let p = &poses[geom_id * FLOATS_PER_GEOM..(geom_id + 1) * FLOATS_PER_GEOM];
         // Read-modify-write so the node's authored SCALE survives: an ellipsoid
@@ -142,6 +160,18 @@ pub fn apply_geom_poses(
         );
     }
     Ok(())
+}
+
+/// Apply one frame of site world poses — the optional site channel.
+///
+/// Same layout and same rules as [`apply_geom_poses`], indexed by **site** id.
+/// A producer that has no sites simply never calls this.
+pub fn apply_site_poses(
+    renderer: &mut AwsmRenderer,
+    instance: &MujocoInstance,
+    poses: &[f32],
+) -> Result<(), PoseError> {
+    write_poses(renderer, &instance.sites, poses)
 }
 
 /// Find every sim instance in a loaded scene and resolve its geom binding.
@@ -167,12 +197,14 @@ fn walk(
 ) {
     if let Some(MujocoComponent::Instance(inst)) = &node.mujoco {
         let mut geoms = vec![None; inst.geom_count as usize];
-        collect_geoms(node, handles, &mut geoms);
+        let mut sites = vec![None; inst.site_count as usize];
+        collect_geoms(node, handles, &mut geoms, &mut sites);
         out.push(MujocoInstance {
             root: node.id,
             source: inst.source.clone(),
             model_name: inst.model_name.clone(),
             geoms,
+            sites,
         });
         // An instance never nests inside another, so stop descending here.
         return;
@@ -186,13 +218,22 @@ fn collect_geoms(
     node: &EditorNode,
     handles: &HashMap<NodeId, crate::NodeHandles>,
     geoms: &mut [Option<awsm_renderer::transforms::TransformKey>],
+    sites: &mut [Option<awsm_renderer::transforms::TransformKey>],
 ) {
     for child in &node.children {
-        if let Some(MujocoComponent::Geom(g)) = &child.mujoco {
-            if let Some(slot) = geoms.get_mut(g.geom_id as usize) {
-                *slot = handles.get(&child.id).map(|h| h.transform);
+        match &child.mujoco {
+            Some(MujocoComponent::Geom(g)) => {
+                if let Some(slot) = geoms.get_mut(g.geom_id as usize) {
+                    *slot = handles.get(&child.id).map(|h| h.transform);
+                }
             }
+            Some(MujocoComponent::Site(s)) => {
+                if let Some(slot) = sites.get_mut(s.site_id as usize) {
+                    *slot = handles.get(&child.id).map(|h| h.transform);
+                }
+            }
+            _ => {}
         }
-        collect_geoms(child, handles, geoms);
+        collect_geoms(child, handles, geoms, sites);
     }
 }

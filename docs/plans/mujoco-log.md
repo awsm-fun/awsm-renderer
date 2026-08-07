@@ -700,3 +700,42 @@ template driving real physics through the real pipeline.
 
 **Next: Phase 4** — sites, spatial tendons, skins, heightfields, and flex
 deformables.
+
+---
+
+## 2026-08-07 — Phase 4, increment 1: sites (ON-DEVICE VERIFIED)
+
+**Landed.** Sites end to end: `mujoco-sys` accessors (`site_*` model fields plus
+`site_xpos`/`site_xmat`), a `sites` table in the sidecar, the exporter filling
+it from `mj_forward` at `qpos0`, a `MujocoSite` component, importer nodes, and a
+**site channel** in the pose sink (`apply_site_poses`).
+
+**Decision**: sites are their own component and their own channel, never a flag
+on `MujocoGeom`. MuJoCo indexes sites separately, so a shared id space would put
+a site's pose in a geom's slot — precisely the silent failure the geom-id binding
+exists to prevent. Both channels go through one shared `write_poses`, so they
+cannot drift in behaviour. The matrix→quaternion conversion was factored out of
+`geom_world_quat` so geoms and sites share it.
+
+**What the browser showed.** Imported MuJoCo's `tendon_arm/arm26.xml` (11 sites,
+5 geoms): the editor renders the red capsule arm segments, the translucent purple
+shoulder/elbow cylinders, and **all 11 site spheres** — white and green, at their
+MuJoCo world poses along the arm, exactly where the muscle attachment points are.
+The outliner carries the MJCF names (`s0`, `x0`, `s1`…`s8`, `x1`). The saved TOML
+has 11 `[nodes.children.mujoco.site]` blocks with `site_id` 0–10 **beside** 5
+`[…mujoco.geom]` blocks — separate id spaces, as designed. Console clean.
+
+**A harness bug that cost real time tonight, now understood.** Several of my
+"wait for the build" loops never terminated: `until ! pgrep -f "rustc.*awsm..."`
+matches the shell running *that very command*, so pgrep always finds itself. It
+looked like the machine was compiling for twenty minutes when nothing was. Wait
+on artifact mtimes or a marker file, never on a pgrep pattern that appears in the
+waiting command.
+
+Also: with the template page (:9000) running its sim and the editor both holding
+WebGPU contexts, the editor wedged before first paint — bindings answered but the
+boot overlay never cleared and screenshots showed it. Closing the template page
+fixed it immediately. Two live WebGPU pages on this machine is one too many.
+
+**Next in Phase 4:** heightfields (exporter-side, self-contained), then spatial
+tendons, skins, and flex.
