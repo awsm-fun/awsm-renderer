@@ -353,6 +353,20 @@ smaller/reversible option, per the settled decisions above.
   every schema round-trip test passed. Any future per-node field has to be added
   in four places — `EditorNode`, `NodeSpec`, both conversions, and the reactive
   `Node` — and only a browser round-trip catches missing any of them.
+- **MuJoCo Phong → our PBR is a documented approximation**, tuned to look right
+  on the menagerie models rather than to be theoretically pure: `rgba` → base
+  colour (alpha < 1 turns on blending), `roughness = 1 - shininess` (MuJoCo's
+  shininess is normalized gloss), `metallic = reflectance` (MuJoCo's only
+  mirror-like term; it has no metalness concept and most models leave it at 0),
+  `emissive = rgba * emission`. **`specular` is deliberately dropped**: in a
+  metallic-roughness model a dielectric's specular intensity is fixed, and
+  folding MuJoCo's value in would make every menagerie part — they all default
+  to `specular = 0.5` — read as half-metal.
+- **Materials go into the assignable library, not inline per node**, exactly as
+  the glTF importer does, so editing "metal" once repaints every metal part and a
+  MuJoCo material can be reused on non-MuJoCo geometry. Material-less geoms get a
+  material minted from their own `geom_rgba`, deduped by colour, so a geom is
+  never left on the magenta unassigned sentinel.
 - **Geom nodes are flat under the instance root, not nested by MuJoCo body.**
   MuJoCo reports every geom's *world* pose every frame, so a body hierarchy would
   only be a second place for those poses to compose — and composing twice is the
@@ -409,13 +423,20 @@ smaller/reversible option, per the settled decisions above.
 
    Progress: `mujoco-sys` ✅, `mujoco-format` (sidecar schema) ✅, exporter
    sidecar ✅ + GLB ✅, `mujoco` node component ✅ (parity checklist green),
-   `import_mujoco_from_url` editor command + MCP tool ✅ — **the Go2 stands on
-   four legs in the editor** (Aug 7 2026: 33 visible-group geoms at their qpos0
-   world poses under the convention root, collision group 3 skipped, console
-   clean). Remaining before the phase closes: materials (geoms currently render
-   magenta), primitive geoms (plane/sphere/capsule/box/cylinder/ellipsoid — the
-   humanoid needs these; the Phase 0 template already has a Z-axis capsule
-   builder to port), and the instance-root placement/re-import story.
+   `import_mujoco_from_url` editor command + MCP tool ✅, materials ✅.
+
+   **Stated exit criterion MET on-device, Aug 7 2026**: the menagerie Unitree
+   Go2 renders as the actual robot in the editor — white shell with the "GO2"
+   logo legible, black feet, black sensor grille, standing on four legs at its
+   qpos0 pose. Groups honoured (33 visible-group geoms; collision group 3
+   skipped), materials mapped (metal/black/white/gray in the library, 4 buckets),
+   fingerprint on the instance root, console clean.
+
+   Remaining follow-on inside this phase: primitive geoms
+   (plane/sphere/capsule/box/cylinder/ellipsoid — the DeepMind humanoid is all
+   primitives and currently imports as empty nodes; the Phase 0 template already
+   has a Z-axis capsule builder to port), and re-import-in-place preserving user
+   material overrides.
 
    Discovered while reading real models:
    - **MuJoCo re-frames mesh geoms at compile time.** A mesh geom's `geom_pos`/

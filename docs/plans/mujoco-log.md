@@ -241,3 +241,44 @@ matrix row exactly as designed.
 **Next:** materials — mint a library material per sidecar material (MuJoCo's
 Phong terms → our PBR) and assign per geom, so the Go2 renders in its real
 metal/black/white/gray instead of magenta.
+
+---
+
+## 2026-08-07 — Phase 1, increment 6: materials — **PHASE 1 EXIT CRITERION MET**
+
+**Landed.** The import now mints one library material per sidecar material and
+assigns it per geom. Materials go into the assignable library (not inline per
+node), exactly as the glTF importer does, so editing "metal" once repaints every
+metal part. Geoms with no material get one minted from their own `geom_rgba`,
+deduped by colour, so nothing is ever left on the magenta unassigned sentinel.
+
+MuJoCo Phong → our PBR, documented as an approximation: `rgba` → base colour
+(alpha < 1 turns on blending), `roughness = 1 - shininess`, `metallic =
+reflectance`, `emissive = rgba * emission`. **`specular` is deliberately
+dropped** — a dielectric's specular intensity is fixed in a metallic-roughness
+model, and every menagerie part defaults to `specular = 0.5`, so folding it in
+would make the whole robot read as half-metal.
+
+**What the browser showed.** The **Unitree Go2 rendering as the actual robot**:
+white shell with the "GO2" logo legible on top, black feet, black sensor grille
+on the head, standing on four legs at its qpos0 pose. Library shows
+metal/black/white/gray; HUD reads 34 nodes / 33 meshes / 4 materials / 4
+buckets. **Console clean** — zero errors, only the same three pre-existing
+warnings (trunk preload `integrity`, a wasm-bindgen init deprecation, one
+first-frame pipeline-compile notice).
+
+That is Phase 1's stated exit criterion, on-device: *"a menagerie Unitree model
+renders correctly (groups honored, materials mapped) in its initial pose;
+instance root placeable; model fingerprint recorded; parity checklist green."*
+All five hold.
+
+**Still open inside Phase 1** (recorded in the plan, not blockers for the
+criterion above): primitive geom kinds — the DeepMind humanoid is all capsules
+and currently imports as empty nodes with correct geom ids but no geometry — and
+re-import-in-place preserving user material overrides.
+
+**Next:** primitive geoms, so the humanoid renders too. Our `PrimitiveShape` has
+no capsule or ellipsoid, so the plan is: box/sphere/cylinder/plane map directly
+(with the axis fix — MuJoCo's cylinder/capsule run along local Z, our primitives
+along Y), ellipsoid = a sphere with per-axis node scale, capsule = the Z-axis
+capsule builder the Phase 0 template already wrote, ported to a captured mesh.

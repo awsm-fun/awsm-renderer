@@ -28,10 +28,11 @@
 
 use std::collections::HashMap;
 
-use awsm_renderer_editor_protocol::mujoco::{GeomKind, Sidecar};
+use awsm_renderer_editor_protocol::mujoco::{GeomKind, MujocoMaterial, Sidecar};
 use awsm_renderer_editor_protocol::{
-    AssetEntry, AssetId, AssetSource as SceneAssetSource, CapturedSource, MeshDef, MeshRef,
-    MujocoComponent, MujocoGeom, MujocoInstance, NodeKind, Trs,
+    AssetEntry, AssetId, AssetSource as SceneAssetSource, CapturedSource, MaterialDef,
+    MaterialVariant, MeshDef, MeshRef, MujocoComponent, MujocoGeom, MujocoInstance, NodeKind, Trs,
+    VariantId,
 };
 
 use crate::engine::scene::node::Node;
@@ -177,6 +178,26 @@ fn build_subtree(
         mesh_assets.insert(*i, mint_mesh(&label, mesh));
     }
 
+    // One library material per sidecar material, minted up front so every geom
+    // that shares a MuJoCo material shares ours (editing "metal" once repaints
+    // every metal part, which is the whole point of bringing them into the
+    // library rather than inlining per node).
+    let mat_assets: Vec<AssetId> = doc
+        .materials
+        .iter()
+        .enumerate()
+        .map(|(i, m)| {
+            mint_material(
+                m.name.clone().unwrap_or_else(|| format!("material {i}")),
+                pbr_from_mujoco(m),
+            )
+        })
+        .collect();
+    // Geoms with no material fall back to their own `rgba` (Go2's collision
+    // geoms, and plenty of hand-written MJCF). Deduped by colour so a model that
+    // paints twenty geoms the same red gets one material, not twenty.
+    let mut rgba_materials: HashMap<[u32; 4], AssetId> = HashMap::new();
+
     let visible = awsm_renderer_editor_protocol::mujoco::DEFAULT_VISIBLE_GROUPS;
     let mut skipped_kinds: Vec<GeomKind> = Vec::new();
 
@@ -210,12 +231,36 @@ fn build_subtree(
             scale: [1.0, 1.0, 1.0],
         };
 
+        // The geom's material: the sidecar's, or one minted from its own `rgba`.
+        // MuJoCo always has an answer here, so a geom should never come out
+        // magenta (our deliberately-unassigned sentinel).
+        let material = match geom.material.and_then(|m| mat_assets.get(m)).copied() {
+            Some(id) => id,
+            None => {
+                let key = geom.rgba.map(|c| c.to_bits());
+                *rgba_materials.entry(key).or_insert_with(|| {
+                    mint_material(
+                        format!(
+                            "rgba {:.2} {:.2} {:.2}",
+                            geom.rgba[0], geom.rgba[1], geom.rgba[2]
+                        ),
+                        MaterialDef {
+                            base_color: geom.rgba,
+                            alpha_mode: alpha_mode(geom.rgba[3]),
+                            ..MaterialDef::default()
+                        },
+                    )
+                })
+            }
+        };
+        let (material_variants, selected_variant) = palette(material);
+
         let kind = match geom.kind {
             GeomKind::Mesh => match geom.mesh.and_then(|m| mesh_assets.get(&m)).cloned() {
                 Some(mesh) => NodeKind::Mesh {
                     mesh,
-                    material_variants: Vec::new(),
-                    selected_variant: None,
+                    material_variants,
+                    selected_variant,
                     shadow: Default::default(),
                     lod: Default::default(),
                 },
@@ -287,4 +332,90 @@ fn mint_mesh(label: &str, mesh: &awsm_renderer_glb_export::MeshData) -> MeshRef 
             })),
         );
     MeshRef(mesh_id)
+}
+
+/// MuJoCo materials are Phong-ish; ours are metallic-roughness PBR. There is no
+/// exact correspondence, so this is a documented approximation, chosen to look
+/// right on the menagerie models rather than to be theoretically pure:
+///
+/// - `rgba` → base colour, and an alpha below 1 turns on blending;
+/// - `shininess` is MuJoCo's normalized gloss, so `roughness = 1 - shininess`;
+/// - `reflectance` is the only mirror-like term MuJoCo has, so it becomes
+///   `metallic`. MuJoCo has no metalness concept at all, and most models leave
+///   this at 0 — which is the right answer for painted plastic and anodized
+///   metal alike under an IBL;
+/// - `emission` scales the base colour into `emissive`.
+///
+/// `specular` is deliberately dropped: in a metallic-roughness model the
+/// specular intensity of a dielectric is fixed, and folding MuJoCo's value into
+/// metallic would make every menagerie part (which sets `specular = 0.5` by
+/// default) read as half-metal.
+fn pbr_from_mujoco(m: &MujocoMaterial) -> MaterialDef {
+    MaterialDef {
+        base_color: m.rgba,
+        metallic: m.reflectance.clamp(0.0, 1.0),
+        roughness: (1.0_f32 - m.shininess).clamp(0.0, 1.0),
+        emissive: [
+            m.rgba[0] * m.emission,
+            m.rgba[1] * m.emission,
+            m.rgba[2] * m.emission,
+        ],
+        alpha_mode: alpha_mode(m.rgba[3]),
+        ..MaterialDef::default()
+    }
+}
+
+fn alpha_mode(alpha: f32) -> awsm_renderer_editor_protocol::material::MaterialAlphaMode {
+    use awsm_renderer_editor_protocol::material::MaterialAlphaMode;
+    if alpha < 0.999 {
+        MaterialAlphaMode::Blend
+    } else {
+        MaterialAlphaMode::Opaque
+    }
+}
+
+/// Add a built-in PBR material to the assignable library, the same way the glTF
+/// importer does — so a MuJoCo material behaves like any other: renameable,
+/// editable, reusable on non-MuJoCo geometry.
+fn mint_material(name: String, mut def: MaterialDef) -> AssetId {
+    use crate::controller::custom_material::CustomMaterial;
+    use awsm_renderer_editor_protocol::MaterialShading;
+
+    let id = AssetId::new();
+    def.label = name.clone();
+    let mat = CustomMaterial::new_builtin(id, name, MaterialShading::Pbr);
+    mat.builtin.set(Some(def));
+    crate::controller::controller()
+        .custom_materials
+        .lock_mut()
+        .push_cloned(mat);
+    id
+}
+
+/// A one-entry material palette assigning `id` to a node, seeded exactly as the
+/// glTF importer seeds one (a clone of the library defaults as the per-mesh
+/// `inline`), so `builtin_merged` renders it identically.
+fn palette(id: AssetId) -> (Vec<MaterialVariant>, Option<VariantId>) {
+    use awsm_renderer_editor_protocol::dynamic_material::MaterialInstance;
+
+    let ctrl = crate::controller::controller();
+    let found = crate::controller::custom_material::find_material(&ctrl.custom_materials, id);
+    let name = found
+        .as_ref()
+        .map(|m| m.name.get_cloned())
+        .unwrap_or_else(|| "Material".to_string());
+    let inline = found
+        .and_then(|m| m.builtin.get_cloned())
+        .unwrap_or_default();
+    let v = MaterialVariant {
+        id: VariantId::new(),
+        name,
+        instance: MaterialInstance {
+            asset: id,
+            inline,
+            ..Default::default()
+        },
+    };
+    let vid = v.id;
+    (vec![v], Some(vid))
 }
