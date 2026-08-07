@@ -1,7 +1,7 @@
 //! Runtime-loaded FFI to the official MuJoCo library.
 //!
 //! MuJoCo's own C code is the ONLY thing that ever turns MJCF/URDF/`.mjb` into a
-//! compiled `mjModel` — we never parse those formats (see `docs/plans/mujoco.md`).
+//! compiled `mjModel` — we never parse those formats (see `docs/mujoco.md`).
 //! This crate is the whole of that seam: dlopen the release library, load a model,
 //! read `mjModel` fields as safe slices. Native tools only; never wasm, never the
 //! renderer.

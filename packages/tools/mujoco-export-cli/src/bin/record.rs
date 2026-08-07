@@ -11,7 +11,7 @@
 //!    replays, so CI never has to run a simulation.
 //!
 //! It is a **native tool**, like the exporter. No MuJoCo runtime code ever ships
-//! in the renderer or the editor (see `docs/plans/mujoco.md`, Non-goals).
+//! in the renderer or the editor (see `docs/mujoco.md`, Non-goals).
 
 use anyhow::{Context, Result};
 use awsm_renderer_mujoco_export_cli::sidecar;

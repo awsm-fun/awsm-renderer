@@ -3,7 +3,7 @@
 //!
 //! We never parse MJCF/URDF/`.mjb`. `libmujoco` does all of it (defaults
 //! inheritance, procedural textures, mesh fitting) and we read the compiled
-//! `mjModel`; see `docs/plans/mujoco.md`.
+//! `mjModel`; see `docs/mujoco.md`.
 //!
 //! Needs a local MuJoCo install — see `packages/crates/mujoco-sys/README.md`.
 

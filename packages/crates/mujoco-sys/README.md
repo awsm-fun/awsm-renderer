@@ -2,7 +2,7 @@
 
 Raw FFI to the official [MuJoCo](https://github.com/google-deepmind/mujoco) release
 library, for **native tools only** (the exporter CLI). No MuJoCo code — runtime or
-otherwise — ever ships in the renderer or in wasm; see `docs/plans/mujoco.md`.
+otherwise — ever ships in the renderer or in wasm; see `docs/mujoco.md`.
 
 ## Why dlopen instead of linking
 

@@ -6,7 +6,7 @@
 //! already sending. That is the whole point: this is interchange, not an asset.
 //! Our editor bakes a capture into ordinary animation clips and the file is then
 //! disposable, like a source `.obj` after import. There is no trajectory asset
-//! type and no trajectory UI anywhere in the system (see `docs/plans/mujoco.md`).
+//! type and no trajectory UI anywhere in the system (see `docs/mujoco.md`).
 //!
 //! ## Coordinates
 //!

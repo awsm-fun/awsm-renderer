@@ -5,7 +5,7 @@
 //! hand-authored or glTF-imported clip. It scrubs, mixes, saves and plays back in
 //! a bundle like any other. That is the whole design — "trajectory" is a bake
 //! step, never a concept the rest of the system has to know about (see
-//! `docs/plans/mujoco.md`).
+//! `docs/mujoco.md`).
 //!
 //! Pure data in, pure data out: a capture plus a geom_id→node map. No editor, no
 //! renderer, no filesystem — so the bake is natively unit-testable and the editor

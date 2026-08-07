@@ -6,7 +6,7 @@
 //! onto node transforms. Anything that can call it drives the renderer: the
 //! reference template's wasm worker, a native harness over a websocket, a test
 //! feeding a recorded capture. Running the simulation and getting frames here is
-//! the player's job (see `docs/plans/mujoco.md`).
+//! the player's job (see `docs/mujoco.md`).
 //!
 //! ## Coordinates
 //!

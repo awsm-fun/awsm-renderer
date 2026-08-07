@@ -26,7 +26,7 @@
 //! Everything here is **raw MuJoCo**: Z-up, right-handed, metres, quaternions as
 //! `[w, x, y, z]`. There is deliberately no conversion at this layer — the Y-up
 //! flip lives once, on the sim instance's root node in the scene (see
-//! `docs/plans/mujoco.md`, "Conventions"). Converting here as well would apply it
+//! `docs/mujoco.md`, "Conventions"). Converting here as well would apply it
 //! twice, and would put a second copy of the convention in a format third parties
 //! write by hand.
 
