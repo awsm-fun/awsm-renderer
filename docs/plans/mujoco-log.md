@@ -481,3 +481,45 @@ session is that deliberate rejection.
 
 **Remaining in Phase 2:** the player bundle playing the baked clip, and a
 browser-test-suite scene + goldens replaying a checked-in fixture capture.
+
+---
+
+## 2026-08-07 — Phase 2, increment 4: the player bundle plays the baked clip (ON-DEVICE VERIFIED)
+
+**No new code this iteration** — this was the bundle round-trip verification the
+plan's parity checklist and Phase 2 both ask for.
+
+**What the browser showed.** Composed a scene (humanoid instance + the baked
+"ragdoll fall" clip, 38 tracks / 3.99 s), then ran `load_player_bundle`: bake the
+project to an in-memory player bundle, reset to empty, reload through
+`populate_awsm_scene` — the actual runtime path a player uses.
+
+- The editor tree goes **empty (0 objects)** and the HUD reads 0 nodes / 0 meshes
+  — the scene now exists only inside the renderer, exactly a player's situation.
+- The renderer reports `clip_groups: 1`, `per_clip: [{channels: 38, name:
+  "ragdoll fall"}]`, `resolved_channels: 38`. **All 38 baked channels resolved
+  through the player loader**, so the clip survived project → scene.toml →
+  populate.
+- Ticking the renderer's animation clock 39 × 100 ms (`editor_tick_animation`,
+  the same call a game makes each frame) **plays the fall**: standing humanoid
+  before, collapsed on the floor after, shadowed by the bundle's directional
+  light. With no editor scene left, nothing else could be driving it.
+
+Console clean apart from one deliberate rejection from my own test script
+(I passed the default Directional Light as the instance id; the guard said "that
+node is not a MuJoCo sim instance" — right answer, my mistake).
+
+**Harness notes** (both cost time; the MCP memory is updated):
+- The running MCP server binary predates the new mujoco tools, so `tools/list`
+  doesn't have them — the stale-tool-list trap. Rather than restart the server
+  (which can tear down the whole `task mcp-dev` group), I drove the MuJoCo
+  commands through `wasmBindings.editor_dispatch_json` and used MCP only for
+  `load_player_bundle`, which the old binary already has.
+- Attaching the editor to MCP is now just
+  `http://localhost:9085/?mcp=http://127.0.0.1:9186` (no pair code since the
+  single-session refactor). The reconstructed `/tmp/mcp.py` needed one fix: the
+  initialize response's FIRST SSE event is a bare `data: ` with an empty payload,
+  which a naive parser tries to json-decode.
+
+**Remaining in Phase 2:** a browser-test-suite scene + goldens replaying a
+checked-in fixture capture, deterministic with no sim in CI.

@@ -561,8 +561,19 @@ smaller/reversible option, per the settled decisions above.
    fingerprint guard was exercised too: baking a Go2 capture onto the humanoid
    instance is refused with both model names and hashes, and adds no clip.
 
-   Remaining in this phase: the player bundle playing the baked clip, and a
-   browser-test-suite scene + goldens replaying a checked-in fixture capture.
+   **Player bundle plays the baked clip ✅ (Aug 7 2026, on-device).** Composed
+   humanoid + baked clip → `load_player_bundle` (bake to an in-memory bundle,
+   reset, reload through `populate_awsm_scene` — the runtime/player path). The
+   editor tree goes EMPTY (0 objects) while the renderer reports
+   `clip_groups: 1, per_clip: [{channels: 38, name: "ragdoll fall"}],
+   resolved_channels: 38` — all 38 baked channels resolved through the player
+   loader. Ticking the renderer's own animation clock (39 x 100 ms, the call a
+   game makes each frame) plays the fall: the humanoid starts standing and ends
+   collapsed on the floor, shadowed by the bundle's directional light. Nothing in
+   the editor could be driving it — there is no editor scene left.
+
+   Remaining in this phase: a browser-test-suite scene + goldens replaying a
+   checked-in fixture capture (deterministic, no sim in CI).
 3. **Pose sink + reference template.** Mapping layer in scene-loader (binding
    resolution + pose sink) on the player API — no networking in this repo; the
    stream convention (jitter buffer, reconnect, recording) lives in the
