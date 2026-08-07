@@ -353,6 +353,23 @@ smaller/reversible option, per the settled decisions above.
   every schema round-trip test passed. Any future per-node field has to be added
   in four places — `EditorNode`, `NodeSpec`, both conversions, and the reactive
   `Node` — and only a browser round-trip catches missing any of them.
+- **Re-import is explicit, not inferred.** `ImportMujocoFromUrl` takes an optional
+  `reimport: NodeId`: omitted, it always ADDS an instance; given, it updates that
+  one in place. Matching on the model's identity instead would have broken the
+  plan's own `multi` scenario — two instances of the same robot in one composed
+  world — by silently turning the second import into an update. A re-import
+  refreshes everything the model owns (poses, geometry, fingerprint, the geom
+  table, restoring geoms whose nodes were deleted) and preserves everything the
+  user owns (the root's id/name/**placement**, and each surviving geom's material
+  palette, matched by `geom_id`).
+- **Re-import builds the fresh subtree and transplants**, rather than diffing two
+  live trees: the build path is the one already exercised, and a separate "update"
+  path would be free to drift from it.
+- **Library materials dedupe on name AND definition.** Without it, every
+  re-import minted a fresh "metal"/"black"/… and stranded the old set (8 materials
+  after one re-import, observed in the browser). Matching the definition too means
+  a user who has *edited* "metal" keeps their edit — the incoming def no longer
+  matches, so the model's version arrives beside theirs instead of overwriting it.
 - **Primitive geoms become captured meshes, not `PrimitiveShape` recipes.** Two of
   MuJoCo's shapes — capsule and ellipsoid — have no `PrimitiveShape` equivalent at
   all, and sim-bound geometry is stream-owned and not meant to be edited, so one
@@ -450,8 +467,13 @@ smaller/reversible option, per the settled decisions above.
    a humanoid — head/hand spheres, capsule limbs and torso, both feet, standing
    on its MuJoCo ground plane, 21 nodes / 20 meshes, console clean.
 
-   Remaining follow-on inside this phase: re-import-in-place preserving user
-   material overrides. (Heightfield and SDF geoms still import as empty nodes
+   Re-import in place ✅ (Aug 7 2026, browser-verified: two consecutive
+   re-imports keep one root with its id and authored placement `[3,0,-2]`,
+   restore a geom node the user had deleted (33 children again), keep a
+   user-added+selected material variant, and hold the library at 4 materials
+   instead of accumulating).
+
+   **PHASE 1 COMPLETE.** (Heightfield and SDF geoms still import as empty nodes
    with correct geom ids — heightfields are explicitly Phase 4 in this plan.)
 
    Discovered while reading real models:

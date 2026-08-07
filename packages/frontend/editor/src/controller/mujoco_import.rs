@@ -42,6 +42,87 @@ use crate::prelude::*;
 ///
 /// Returns the root node; the caller inserts it and owns the undo entry.
 pub async fn import(sidecar_url: &str) -> Result<Arc<Node>, String> {
+    let (doc, meshes) = fetch(sidecar_url).await?;
+    Ok(build_subtree(&doc, &meshes))
+}
+
+/// Re-import into an existing instance, in place.
+///
+/// The point of a re-import is that the *model* changed — recompiled MJCF, new
+/// geometry, moved geoms — while the user's work around it did not. So this
+/// refreshes everything that comes from the model (poses, geometry, the
+/// fingerprint, the geom table) and preserves everything the user owns:
+///
+/// - the instance root's **id, name and transform** (its authored placement);
+/// - each surviving geom's **material palette**, so re-importing never undoes an
+///   art pass. A geom that is new in this version gets the sidecar's material.
+///
+/// Geoms are matched by `geom_id`, which is stable for a given compiled model.
+/// Ids that vanished have their nodes removed; ids that appeared get new ones.
+pub async fn reimport(sidecar_url: &str, target: &Arc<Node>) -> Result<(), String> {
+    let Some(MujocoComponent::Instance(_)) = target.mujoco.get_cloned() else {
+        return Err("that node is not a MuJoCo sim instance".to_string());
+    };
+    let (doc, meshes) = fetch(sidecar_url).await?;
+
+    // Build the fresh subtree, then transplant it onto the existing root rather
+    // than diffing two live trees — the build path is the one that is already
+    // exercised, and a second "update" path would be free to drift from it.
+    let fresh = build_subtree(&doc, &meshes);
+
+    // What the user owns on each surviving geom, keyed by geom id.
+    let mut kept: HashMap<u32, awsm_renderer_editor_protocol::NodeKind> = HashMap::new();
+    for child in target.children.lock_ref().iter() {
+        if let Some(MujocoComponent::Geom(g)) = child.mujoco.get_cloned() {
+            kept.insert(g.geom_id, child.kind.get_cloned());
+        }
+    }
+    for child in fresh.children.lock_ref().iter() {
+        let Some(MujocoComponent::Geom(g)) = child.mujoco.get_cloned() else {
+            continue;
+        };
+        let Some(old) = kept.get(&g.geom_id) else {
+            continue;
+        };
+        // Carry the OLD palette onto the NEW geometry: the mesh, shadow and LOD
+        // settings are the model's, the materials are the user's.
+        let (variants, selected) = match old {
+            awsm_renderer_editor_protocol::NodeKind::Mesh {
+                material_variants,
+                selected_variant,
+                ..
+            } => (material_variants.clone(), *selected_variant),
+            _ => continue,
+        };
+        if variants.is_empty() {
+            continue;
+        }
+        if let awsm_renderer_editor_protocol::NodeKind::Mesh {
+            mesh, shadow, lod, ..
+        } = child.kind.get_cloned()
+        {
+            child
+                .kind
+                .set(awsm_renderer_editor_protocol::NodeKind::Mesh {
+                    mesh,
+                    material_variants: variants,
+                    selected_variant: selected,
+                    shadow,
+                    lod,
+                });
+        }
+    }
+
+    // The root keeps its identity and placement; only its component is refreshed.
+    target.mujoco.set(fresh.mujoco.get_cloned());
+    let new_children: Vec<_> = fresh.children.lock_ref().to_vec();
+    target.children.lock_mut().replace_cloned(new_children);
+    Ok(())
+}
+
+async fn fetch(
+    sidecar_url: &str,
+) -> Result<(Sidecar, HashMap<usize, awsm_renderer_glb_export::MeshData>), String> {
     let doc = fetch_sidecar(sidecar_url).await?;
 
     // Geometry, if the model has any. An all-primitive model (the DeepMind
@@ -53,8 +134,7 @@ pub async fn import(sidecar_url: &str) -> Result<Arc<Node>, String> {
         }
         None => HashMap::new(),
     };
-
-    Ok(build_subtree(&doc, &meshes))
+    Ok((doc, meshes))
 }
 
 async fn fetch_sidecar(url: &str) -> Result<Sidecar, String> {
@@ -397,9 +477,35 @@ fn alpha_mode(alpha: f32) -> awsm_renderer_editor_protocol::material::MaterialAl
 /// Add a built-in PBR material to the assignable library, the same way the glTF
 /// importer does — so a MuJoCo material behaves like any other: renameable,
 /// editable, reusable on non-MuJoCo geometry.
+///
+/// An existing built-in material with the same name AND the same definition is
+/// reused rather than duplicated. That makes re-import idempotent — the same
+/// model recompiled would otherwise mint a fresh set of "metal"/"black"/… on
+/// every pass and leave the old ones stranded in the library — while a material
+/// that merely shares a name but differs in definition still gets its own entry.
+/// Matching on the definition (not just the name) also means a user who has
+/// edited "metal" keeps their edit: the incoming def no longer matches, so their
+/// material is left alone and the model's version arrives beside it.
 fn mint_material(name: String, mut def: MaterialDef) -> AssetId {
     use crate::controller::custom_material::CustomMaterial;
     use awsm_renderer_editor_protocol::MaterialShading;
+
+    {
+        let ctrl = crate::controller::controller();
+        let existing = ctrl.custom_materials.lock_ref();
+        for m in existing.iter() {
+            if m.name.get_cloned() != name {
+                continue;
+            }
+            if let Some(d) = m.builtin.get_cloned() {
+                let mut candidate = def.clone();
+                candidate.label = d.label.clone();
+                if d == candidate {
+                    return m.id;
+                }
+            }
+        }
+    }
 
     let id = AssetId::new();
     def.label = name.clone();

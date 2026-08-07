@@ -691,6 +691,13 @@ pub struct ImportMujocoParams {
     /// `awsm-renderer-mujoco-export` CLI. The editor fetches it plus the geometry
     /// GLB the sidecar names (resolved relative to this URL).
     pub sidecar_url: String,
+    /// Omit to ADD a new instance (import the same model twice to compose two
+    /// robots into one world). Pass an existing instance root's node id to
+    /// re-import into it in place instead: poses, geometry and the fingerprint
+    /// refresh; the instance's placement and each geom's material assignment are
+    /// preserved.
+    #[serde(default)]
+    pub reimport: Option<awsm_renderer_editor_protocol::NodeId>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -3023,6 +3030,7 @@ impl EditorMcp {
     ) -> Result<CallToolResult, McpError> {
         self.dispatch(EditorCommand::ImportMujocoFromUrl {
             sidecar_url: p.sidecar_url,
+            reimport: p.reimport,
         })
         .await?;
         self.query(EditorQuery::LastImportReport).await

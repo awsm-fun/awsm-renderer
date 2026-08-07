@@ -4073,12 +4073,34 @@ impl EditorController {
             // offline `awsm-renderer-mujoco-export`). Mints a placeable sim
             // instance root with one geom-id-stamped node beneath it per geom —
             // the subtree a running simulation binds its pose stream to.
-            EditorCommand::ImportMujocoFromUrl { sidecar_url } => {
+            EditorCommand::ImportMujocoFromUrl {
+                sidecar_url,
+                reimport,
+            } => {
                 // Settle-visibility front guard, same as ImportModelFromUrl: the
                 // fetch + glTF populate must hold the barrier for a driver
                 // dispatching through the fire-and-forget seam.
                 let _load_guard = CompileGuard::new();
                 let _activity = crate::engine::activity::begin_activity("Importing MuJoCo model…");
+                // Re-import into an existing instance, when asked. The undo
+                // inverse of a re-import would be the WHOLE previous subtree, so
+                // this returns None (not undoable) rather than pretending — the
+                // same call the glTF re-import path makes.
+                if let Some(id) = reimport {
+                    let node = mutate::find_by_id(&self.scene, id).ok_or_else(|| {
+                        crate::error::EditorError::msg(
+                            "reimport target not found (check ids against get_snapshot)",
+                        )
+                    })?;
+                    crate::controller::mujoco_import::reimport(&sidecar_url, &node)
+                        .await
+                        .map_err(|e| {
+                            crate::error::EditorError::msg(format!("mujoco re-import failed: {e}"))
+                        })?;
+                    self.scene.bump_revision();
+                    self.dirty.set_neq(true);
+                    return Ok(None);
+                }
                 let root = crate::controller::mujoco_import::import(&sidecar_url)
                     .await
                     .map_err(|e| {

@@ -320,3 +320,44 @@ believing a bad angle.
 
 **Next:** Phase 1's last follow-on — re-import in place, preserving user material
 overrides — then Phase 2 (capture-to-clip bake).
+
+---
+
+## 2026-08-07 — Phase 1, increment 8: re-import in place — **PHASE 1 COMPLETE**
+
+**Landed.** `ImportMujocoFromUrl` grew an optional `reimport: NodeId`.
+
+**Explicit, not inferred.** Omitted, the command always ADDS an instance;
+given, it updates that one in place. Matching on model identity instead would
+have broken the plan's own `multi` scenario — two instances of the same robot in
+one composed world — by silently turning the second import into an update.
+
+A re-import refreshes everything the *model* owns (poses, geometry, fingerprint,
+the geom table — including restoring geoms whose nodes were deleted) and
+preserves everything the *user* owns (the root's id, name and placement; each
+surviving geom's material palette, matched by `geom_id`). It builds the fresh
+subtree and transplants it rather than diffing two live trees, so there is no
+second construction path free to drift from the real one.
+
+**What the browser showed.** Import Go2 → move the instance to `[3,0,-2]` →
+delete a geom node → add and select a "user-override" material variant on
+another geom → **re-import twice**. Result: one root, same node id, placement
+still `[3,0,-2]`, 33 children again (the deleted geom restored), the
+user-override variant still present *and still selected*.
+
+**A wart the browser caught.** The first run reported **8 materials** where there
+should be 4 — every re-import was minting a fresh metal/black/white/gray and
+stranding the old set. Fixed by deduping library materials on name AND
+definition; matching the definition too means a user who has edited "metal" keeps
+their edit (the incoming def no longer matches, so the model's version arrives
+beside theirs rather than overwriting it). Two consecutive re-imports now hold
+the library at 4.
+
+Console clean throughout.
+
+**Phase 1 is complete**: exporter (sidecar + GLB), the `mujoco` node component
+with the parity checklist green, the editor import command + MCP tool, materials,
+primitive geoms, and re-import. Both oracles render on-device — the Unitree Go2
+as the real robot, the DeepMind humanoid as a humanoid.
+
+**Next: Phase 2** — the capture format and the capture→animation-clip bake.

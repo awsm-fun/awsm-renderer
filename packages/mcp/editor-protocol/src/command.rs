@@ -469,7 +469,17 @@ pub enum EditorCommand {
     ///
     /// We never read MJCF/URDF: the sidecar and GLB are what MuJoCo's own
     /// compiler produced, via the offline exporter.
-    ImportMujocoFromUrl { sidecar_url: String },
+    ImportMujocoFromUrl {
+        sidecar_url: String,
+        /// `None` adds a NEW instance — which is what composing two robots into
+        /// one world needs, so importing the same model twice is never
+        /// second-guessed. `Some(node)` re-imports into that existing instance
+        /// in place, refreshing everything the model owns (poses, geometry,
+        /// fingerprint) while keeping the user's placement and per-geom material
+        /// assignments.
+        #[serde(default)]
+        reimport: Option<NodeId>,
+    },
 
     /// Import a glTF model from a locally-picked file. `url` is a `blob:` object
     /// URL minted from the picked `File`; `name` is the real filename (used for
