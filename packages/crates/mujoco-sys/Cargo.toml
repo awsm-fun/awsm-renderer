@@ -1,0 +1,27 @@
+[package]
+# FFI to the official MuJoCo release library. `-sys` by convention even though we
+# dlopen rather than link (see README): it is raw bindings, nothing more.
+name = "awsm-renderer-mujoco-sys"
+description = "Runtime-loaded FFI bindings to the official MuJoCo library (native tools only; never wasm, never the renderer)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+# Never published: the bindings are layout-locked to one MuJoCo release and the
+# crate is useless without a local MuJoCo install.
+publish = false
+
+[dependencies]
+# The whole linking strategy. Bindgen's `--dynamic-loading` output is a struct of
+# resolved symbols over a `libloading::Library`, so this crate has NO build.rs,
+# NO link flags, and builds (and `cargo check`s) on machines with no MuJoCo at
+# all — only *running* it needs the dylib.
+libloading = "0.8"
+thiserror = { workspace = true }
+
+[dev-dependencies]
+# Tests need a real MuJoCo install; they self-skip (with a printed reason) when
+# `MUJOCO_DIR` / the system loader path has none.
+anyhow = { workspace = true }

@@ -549,6 +549,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "awsm-renderer-mujoco-sys"
+version = "0.31.0"
+dependencies = [
+ "anyhow",
+ "libloading",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "awsm-renderer-multithreaded-example"
 version = "0.31.0"
 dependencies = [
@@ -2279,6 +2288,16 @@ name = "libc"
 version = "0.2.185"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "52ff2c0fe9bc6cb6b14a0592c2ff4fa9ceb83eea9db979b0487cd054946a2b8f"
+
+[[package]]
+name = "libloading"
+version = "0.8.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d7c4b02199fee7c5d21a5ae7d8cfa79a6ef5bb2fc834d6e9058e89c825efdc55"
+dependencies = [
+ "cfg-if",
+ "windows-link",
+]
 
 [[package]]
 name = "libm"

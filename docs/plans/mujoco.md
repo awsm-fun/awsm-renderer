@@ -259,6 +259,28 @@ stream:
 - [ ] added to `node_sync` effective-def merge if any field behaves per-mesh
 - [ ] MCP command coverage for every editor action
 
+## Decisions taken during implementation
+
+Implementation details the plan left open, settled as they came up. Each prefers the
+smaller/reversible option, per the settled decisions above.
+
+- **`mujoco-sys` dlopens rather than links** (bindgen `--dynamic-loading` over
+  `libloading`; no `build.rs`, no link flags). The crate is a normal workspace
+  member, so `cargo check --workspace` has to keep working on a machine with no
+  MuJoCo installed — which a link-time dependency would break for everyone. Only
+  *running* the tools needs the library. Discovery order: `$MUJOCO_LIB` (exact
+  file) → `$MUJOCO_DIR` (unpacked release: macOS framework / Linux `lib` /
+  Windows `bin`) → system loader path.
+- **Version lock is enforced at load**, not assumed: `mjModel` is a plain C struct
+  whose layout moves between releases, so `Library::load` compares `mj_version()`
+  against the generated `mjVERSION_HEADER` and errors out on a mismatch. Reading a
+  3.10 model through 3.11 bindings would produce plausible-looking garbage geometry,
+  which is far worse than a hard failure. Pinned to **MuJoCo 3.11.0**.
+- **Bindings are checked in**, not generated at build time — so no `libclang`/bindgen
+  requirement for anyone building the workspace. `regen-bindings.sh` documents the
+  exact invocation; `EXPECTED_VERSION` derives from the regenerated header constant
+  so there is no second thing to bump.
+
 ## Phases
 
 0. **Proof-of-loop spike (templates repo) — DONE, on-device verified Aug 7
