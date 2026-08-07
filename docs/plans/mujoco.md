@@ -871,7 +871,15 @@ forward compatibility and starts testing the new table's schema.
    knee, ankle and abdomen hinge, each along its own axis (a knee's
    perpendicular to its hip's). Templates commit `b596a45`.
 
-   Remaining: inertia boxes.
+   Inertia boxes ✅ (Aug 8 2026, on-device): per body, the equivalent
+   mass-and-inertia box in the body's INERTIAL frame, translucent green, opt-in
+   with `?inertia`. Half-extents invert the box inertia formula and are static,
+   so only the frame crosses the wire — the same 7-float shape as a geom pose.
+   Verified on the humanoid: boxes wrapping every body, elongated along the
+   limbs and roughly cubic at pelvis and head, tracking each body as it
+   settles. Templates commit `312e038`.
+
+   **PHASE 5 COMPLETE.**
 6. **Permanent reference doc.** Write `docs/mujoco.md`: how the feature works —
    architecture, the seam formats (sidecar, capture, stream convention, pose
    sink API), the mujoco component + fingerprint binding, collider param

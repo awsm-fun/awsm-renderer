@@ -1078,3 +1078,34 @@ with ~275 overlay meshes live (256 contact spikes + ~20 joint bars). Still no
 repro; still recorded.
 
 **Next:** inertia boxes finish Phase 5, then Phase 6 (the permanent doc).
+
+---
+
+## 2026-08-08 — Phase 5 COMPLETE: inertia boxes (ON-DEVICE VERIFIED)
+
+**Landed (templates repo, `312e038`).** Per body, the box with the same mass and
+inertia, drawn in the body's **inertial** frame — not the body frame: it is
+offset to the centre of mass and rotated onto the principal axes. Translucent
+green, opt-in with `?inertia`.
+
+This is the overlay that shows what the solver actually sees, which is the whole
+reason it earns its place: a limb whose visual mesh is slender but whose inertia
+box is fat is mis-specified, and nothing else in the picture reveals that.
+
+The half-extents invert the box inertia formula (`a² = 3/2m (Iyy + Izz - Ixx)`
+and cyclically) and are **static**, so they are derived once at link time and
+never cross the wire — only the frame does, in exactly the same 7-float shape as
+a geom pose, which is why this overlay needed no new wire concepts at all. A
+physically unrealisable tensor can drive that expression negative, so it clamps
+at zero rather than taking a NaN square root; a massless body (the world above
+all) gets no box.
+
+**What the browser showed.** Green boxes wrapping every body of the collapsed
+humanoid — elongated along the limbs, roughly cubic at pelvis and head — each
+tracking its body as the ragdoll settles. Console clean.
+
+**Phase 5 is done**: contacts, contact forces, joint axes, inertia boxes, all
+four opt-in via URL flags, all four dev-tooling that lives only in the template.
+
+**Next: Phase 6** — write `docs/mujoco.md` as the permanent reference, delete
+this plan and this log, commit. That is the stop condition.
