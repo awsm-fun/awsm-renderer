@@ -553,9 +553,11 @@ name = "awsm-renderer-mujoco-export-cli"
 version = "0.31.0"
 dependencies = [
  "anyhow",
+ "awsm-renderer-glb-export",
  "awsm-renderer-mujoco-format",
  "awsm-renderer-mujoco-sys",
  "clap",
+ "gltf",
  "serde_json",
  "sha2",
 ]

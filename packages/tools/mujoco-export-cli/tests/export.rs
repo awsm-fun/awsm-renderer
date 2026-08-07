@@ -6,10 +6,8 @@
 
 use std::path::PathBuf;
 
+use awsm_renderer_mujoco_export_cli::sidecar;
 use awsm_renderer_mujoco_format::sidecar::{GeomKind, Sidecar};
-
-#[path = "../src/sidecar.rs"]
-mod sidecar;
 
 fn export(path: PathBuf) -> Option<Sidecar> {
     let lib = match awsm_renderer_mujoco_sys::Library::load() {

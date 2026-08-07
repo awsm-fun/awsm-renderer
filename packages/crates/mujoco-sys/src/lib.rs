@@ -314,6 +314,18 @@ impl Model<'_> {
     pub fn nhfield(&self) -> usize {
         self.raw().nhfield as usize
     }
+    pub fn nmeshvert(&self) -> usize {
+        self.raw().nmeshvert as usize
+    }
+    pub fn nmeshnormal(&self) -> usize {
+        self.raw().nmeshnormal as usize
+    }
+    pub fn nmeshtexcoord(&self) -> usize {
+        self.raw().nmeshtexcoord as usize
+    }
+    pub fn nmeshface(&self) -> usize {
+        self.raw().nmeshface as usize
+    }
 
     model_slices! {
         /// `mjtGeom` discriminants; see [`geom_kind`](Self::geom_kind).
@@ -339,6 +351,37 @@ impl Model<'_> {
         body_parentid: i32 = nbody x 1,
         body_pos: f64 = nbody x 3,
         body_quat: f64 = nbody x 4,
+
+        // Meshes are stored OBJ-style: one shared pool per attribute, sliced per
+        // mesh by an (adr, num) pair, with SEPARATE face-index arrays for
+        // positions/normals/texcoords. glTF needs one index per vertex tuple, so a
+        // consumer has to de-index; see the exporter's `mesh` module.
+        /// First vertex of mesh `i` in [`mesh_vert`](Self::mesh_vert).
+        mesh_vertadr: i32 = nmesh x 1,
+        mesh_vertnum: i32 = nmesh x 1,
+        /// First face of mesh `i` in [`mesh_face`](Self::mesh_face).
+        mesh_faceadr: i32 = nmesh x 1,
+        mesh_facenum: i32 = nmesh x 1,
+        mesh_normaladr: i32 = nmesh x 1,
+        mesh_normalnum: i32 = nmesh x 1,
+        /// `-1` when the mesh has no texture coordinates.
+        mesh_texcoordadr: i32 = nmesh x 1,
+        mesh_texcoordnum: i32 = nmesh x 1,
+        /// Post-compile vertex positions — already recentred to the mesh's own
+        /// frame, which is why geom_pos/geom_quat of mesh geoms are not the
+        /// authored ones. Only ever pair these two together.
+        mesh_vert: f32 = nmeshvert x 3,
+        mesh_normal: f32 = nmeshnormal x 3,
+        mesh_texcoord: f32 = nmeshtexcoord x 2,
+        /// Position indices, **relative to the mesh's own `mesh_vertadr`** — add
+        /// the mesh's base before indexing the shared pool. (The exporter's tests
+        /// assert this against the per-mesh counts, so an upstream change to the
+        /// convention fails loudly instead of reading a neighbouring mesh.)
+        mesh_face: i32 = nmeshface x 3,
+        /// Normal indices for the same faces, relative to `mesh_normaladr`.
+        mesh_facenormal: i32 = nmeshface x 3,
+        /// Texcoord indices for the same faces, relative to `mesh_texcoordadr`.
+        mesh_facetexcoord: i32 = nmeshface x 3,
 
         mat_rgba: f32 = nmat x 4,
         mat_specular: f32 = nmat x 1,

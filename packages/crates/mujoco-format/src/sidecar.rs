@@ -263,11 +263,19 @@ pub struct Material {
 }
 
 /// A mesh referenced by a geom. The vertex data itself is in the companion GLB —
-/// this is only the name-to-index correspondence plus what the GLB cannot carry.
+/// this is only the correspondence between the two files.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Mesh {
+    /// The MuJoCo asset name, as authored. Not necessarily unique, and not
+    /// necessarily present — which is exactly why it is not the binding key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Name of the node carrying this mesh in the companion GLB. Stated
+    /// explicitly so a reader never has to reproduce our naming rule, and so a
+    /// GLB that has been through another tool still binds. Absent ⇒ fall back to
+    /// the GLB's root node at this same index.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
 }
 
 #[cfg(test)]

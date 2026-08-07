@@ -7,7 +7,7 @@
 //!
 //! Needs a local MuJoCo install — see `packages/crates/mujoco-sys/README.md`.
 
-mod sidecar;
+use awsm_renderer_mujoco_export_cli::{mesh, sidecar};
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -60,6 +60,20 @@ fn main() -> Result<()> {
 
     std::fs::create_dir_all(&args.out_dir)
         .with_context(|| format!("creating {}", args.out_dir.display()))?;
+
+    // Geometry first: an all-primitive model produces no GLB at all, and the
+    // sidecar's mesh list is what says so.
+    let mesh_names: Vec<_> = doc.meshes.iter().map(|m| m.name.clone()).collect();
+    let glb_path = match mesh::build(&model, &mesh_names)? {
+        Some(scene) => {
+            let bytes = awsm_renderer_glb_export::write_glb(&scene);
+            let path = args.out_dir.join(format!("{name}.glb"));
+            std::fs::write(&path, &bytes).with_context(|| format!("writing {}", path.display()))?;
+            Some((path, bytes.len()))
+        }
+        None => None,
+    };
+
     let out = args.out_dir.join(format!("{name}.mujoco.json"));
     // Pretty-printed on purpose: the sidecar is a documented interchange format
     // people are expected to read, diff and hand-edit.
@@ -90,8 +104,15 @@ fn main() -> Result<()> {
         );
         println!("  materials  {}", doc.materials.len());
         println!("  meshes     {}", doc.meshes.len());
+        match &glb_path {
+            Some((p, len)) => println!("  glb        {} ({} KiB)", p.display(), len / 1024),
+            None => println!("  glb        (none — model has no meshes)"),
+        }
     } else {
         println!("{}", out.display());
+        if let Some((p, _)) = &glb_path {
+            println!("{}", p.display());
+        }
     }
 
     Ok(())

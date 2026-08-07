@@ -56,8 +56,10 @@ pub fn build(model: &Model<'_>, source: Source) -> Result<Sidecar> {
     }
 
     for m in 0..model.nmesh() {
+        let name = model.name(mjtObj::mjOBJ_MESH, m).map(str::to_string);
         out.meshes.push(Mesh {
-            name: model.name(mjtObj::mjOBJ_MESH, m).map(str::to_string),
+            node: Some(crate::mesh::node_name(m, name.as_deref())),
+            name,
         });
     }
 
