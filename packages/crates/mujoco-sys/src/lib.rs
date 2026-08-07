@@ -473,6 +473,17 @@ impl<'lib> Model<'lib> {
     /// `mj_forward` rather than `mj_step`: we want where the model *starts*, not
     /// where it falls to.
     pub fn forward_at_initial_pose<'m>(&'m self) -> Result<Data<'m, 'lib>, Error> {
+        self.make_data(None)
+    }
+
+    /// Same, but starting from one of the model's authored keyframes (MJCF
+    /// `<key>`). Most menagerie models ship a `home` pose as keyframe 0, which is
+    /// a far better starting configuration than `qpos0` for a walking robot.
+    pub fn reset_to_keyframe<'m>(&'m self, key: i32) -> Result<Data<'m, 'lib>, Error> {
+        self.make_data(Some(key))
+    }
+
+    fn make_data<'m>(&'m self, key: Option<i32>) -> Result<Data<'m, 'lib>, Error> {
         let ptr = unsafe { (self.lib.mj.mj_makeData)(self.ptr) };
         if ptr.is_null() {
             return Err(Error::LoadFailed {
@@ -482,10 +493,18 @@ impl<'lib> Model<'lib> {
         }
         let data = Data { ptr, model: self };
         unsafe {
-            (self.lib.mj.mj_resetData)(self.ptr, ptr);
+            match key {
+                Some(k) => (self.lib.mj.mj_resetDataKeyframe)(self.ptr, ptr, k),
+                None => (self.lib.mj.mj_resetData)(self.ptr, ptr),
+            }
             (self.lib.mj.mj_forward)(self.ptr, ptr);
         }
         Ok(data)
+    }
+
+    /// The model's integration timestep, in seconds (MJCF `<option timestep>`).
+    pub fn timestep(&self) -> f64 {
+        self.raw().opt.timestep
     }
 }
 
@@ -507,6 +526,14 @@ impl Data<'_, '_> {
     /// The raw struct, for fields without an accessor yet.
     pub fn raw(&self) -> &mjData {
         unsafe { &*self.ptr }
+    }
+
+    /// Advance the simulation by one `timestep`.
+    ///
+    /// The only place this repo's tools run physics at all, and they are native
+    /// offline tools: no MuJoCo ever executes in the renderer or the editor.
+    pub fn step(&mut self) {
+        unsafe { (self.model.lib.mj.mj_step)(self.model.ptr, self.ptr) }
     }
 
     data_slices! {

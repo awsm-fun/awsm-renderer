@@ -353,6 +353,23 @@ smaller/reversible option, per the settled decisions above.
   every schema round-trip test passed. Any future per-node field has to be added
   in four places — `EditorNode`, `NodeSpec`, both conversions, and the reactive
   `Node` — and only a browser round-trip catches missing any of them.
+- **The capture format mirrors the live stream exactly** — a flat
+  `7 * geom_count` `f32` array per frame, `[px,py,pz,qw,qx,qy,qz]` indexed by geom
+  id, plus a time in seconds. A harness that can feed the pose sink records a
+  capture by writing what it was already sending, with no translation step on
+  either end. `f32` because that is what the sink takes: storing more precision
+  than the sink accepts would be storing a difference nothing can observe.
+- **The capture carries the model fingerprint**, and `geom_count` is stated once
+  at the top rather than inferred per frame — a truncated frame is then caught
+  instead of shifting every geom after it, which would read as a physics bug
+  rather than a bad file.
+- **`awsm-renderer-mujoco-record` is a second binary in the exporter crate**, not
+  a second crate and not a mode of the exporter: recording is a different job
+  (run a sim, sample poses) that happens to need the same model loading, and a
+  capture producer is meant to be *copyable* rather than privileged. It samples
+  on **step counts**, never an accumulated float clock, so re-running it
+  reproduces a capture byte-for-byte — which is what makes the checked-in test
+  fixtures worth checking in.
 - **Re-import is explicit, not inferred.** `ImportMujocoFromUrl` takes an optional
   `reimport: NodeId`: omitted, it always ADDS an instance; given, it updates that
   one in place. Matching on the model's identity instead would have broken the
@@ -492,6 +509,14 @@ smaller/reversible option, per the settled decisions above.
    bake tool converts capture → native animation clips; scrub/play in editor;
    player bundle plays the clip. Browser-test-suite scene + goldens replay a
    checked-in fixture capture — deterministic, no sim in CI.
+
+   Progress: capture format ✅ (`mujoco-format::capture`) + reference recorder
+   ✅ (`awsm-renderer-mujoco-record`). Verified natively against real physics —
+   the humanoid ragdoll's torso falls 1.28 m → 0.26 m over 3 s, every quaternion
+   stays unit to 7e-8, two runs are byte-identical, and frame 0 matches the
+   sidecar's `world_pos` to 1e-5 so the first simulated frame continues from the
+   imported pose rather than jumping. Remaining: the bake (capture → animation
+   clips), the editor command, and the on-device scrub/play.
 3. **Pose sink + reference template.** Mapping layer in scene-loader (binding
    resolution + pose sink) on the player API — no networking in this repo; the
    stream convention (jitter buffer, reconnect, recording) lives in the

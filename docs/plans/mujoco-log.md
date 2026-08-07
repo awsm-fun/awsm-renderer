@@ -361,3 +361,40 @@ primitive geoms, and re-import. Both oracles render on-device — the Unitree Go
 as the real robot, the DeepMind humanoid as a humanoid.
 
 **Next: Phase 2** — the capture format and the capture→animation-clip bake.
+
+---
+
+## 2026-08-07 — Phase 2, increment 1: capture format + reference recorder
+
+**Landed.** Two halves of the same seam:
+
+- `mujoco-format::capture` — the frozen capture schema. Deliberately the same
+  shape as the live stream, dumped verbatim: a flat `7 * geom_count` `f32` array
+  per frame (`[px,py,pz,qw,qx,qy,qz]`, indexed by geom id) plus a time in
+  seconds. A harness that can feed the pose sink records a capture by writing
+  what it was already sending. `geom_count` is stated once at the top so a
+  truncated frame is caught rather than shifting every geom after it.
+- `awsm-renderer-mujoco-record` — the reference producer, a second binary in the
+  exporter crate. Steps a model with MuJoCo's own integrator and writes the
+  capture. Explicitly in scope per the plan's settled decisions ("streamer adds
+  `mj_step` + mjData reads"); still a native tool, no MuJoCo in the renderer.
+
+**Verified against real physics — native, no browser surface in this increment**
+(the capture is a file format; the browser part arrives with the bake, next).
+What was actually run: recorded the DeepMind humanoid for 3 s at 30 fps, and
+
+- the ragdoll **actually falls** — torso z 1.282 m standing → 0.266 m at 1.57 s →
+  settled at 0.262 m. That is the check that the recorder steps physics rather
+  than dumping one pose 86 times;
+- every quaternion in every frame stays unit to **6.9e-8** (worst case across
+  20 geoms x 86 frames), which is what validates the `geom_xmat` → quaternion
+  conversion across a real range of orientations, not just at rest;
+- **two runs are byte-identical** (sha256 equal). Sampling on step counts rather
+  than an accumulated float clock is what buys that, and it is the whole reason
+  checked-in fixture captures are worth checking in;
+- **frame 0 matches the sidecar's `world_pos` to 1e-5**, so a capture and the
+  imported initial pose agree and the first simulated frame will not jump.
+
+**Next:** the bake — capture → native animation clips (T+R track per bound geom
+node, keyframe-reduced), the editor command to import a capture, and then the
+on-device scrub/play that is Phase 2's real exit criterion.

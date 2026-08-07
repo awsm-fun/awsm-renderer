@@ -13,6 +13,14 @@
 //! - **Unknown fields are accepted and new fields default**, so a v1 reader
 //!   survives a v1.x producer.
 //!
+//! ## The two formats
+//!
+//! - [`sidecar`] — what a compiled model *is*: geoms, materials, meshes, groups,
+//!   the source fingerprint. Written once at export, imported once by the editor.
+//! - [`capture`] — what a simulation *did*: a sequence of stream frames. Written
+//!   by whatever ran the sim, baked into ordinary animation clips, then thrown
+//!   away.
+//!
 //! ## Coordinates
 //!
 //! Everything here is **raw MuJoCo**: Z-up, right-handed, metres, quaternions as
@@ -22,6 +30,8 @@
 //! twice, and would put a second copy of the convention in a format third parties
 //! write by hand.
 
+pub mod capture;
 pub mod sidecar;
 
+pub use capture::Capture;
 pub use sidecar::Sidecar;
