@@ -657,3 +657,46 @@ the plan paid for itself.
 
 **Next:** the templates-repo `physics-mujoco` template migrating onto the pose
 sink, which is the last piece of Phase 3 and the plan's end-to-end oracle.
+
+---
+
+## 2026-08-07 — Phase 3, increment 3: the template migrates onto the sink — **PHASE 3 COMPLETE**
+
+**Landed** (templates repo, commit `b6d4042` — its own git repo, renderer crates
+pinned to local paths).
+
+The Phase-0 spike built its own renderer-side mirror: read `mjModel` off the
+wasm module, mint a meshgen primitive + material + node per geom. The plan
+called that throwaway, and the pipeline it stood in for now exists. So:
+
+- the robot is **authored content** — exported by `awsm-renderer-mujoco-export`,
+  imported in the editor, shipped in `media/bundle` like any other geometry;
+- the render worker builds **nothing**. It takes the instance the loader already
+  resolved (`LoadedScene::mujoco`) and each frame hands the seqlock'd snapshot to
+  `scene_loader::mujoco::apply_geom_poses`;
+- `render_thread.rs` goes **693 → 460 lines**, and every geom-to-node decision
+  now happens once at import instead of on every page load.
+
+**The SAB pose block is now literally a stream frame.** The worker writes
+quaternions in MuJoCo's `[w,x,y,z]` order rather than glam's `[x,y,z,w]`, so
+nothing is reshaped on either side of the SharedArrayBuffer — this worker could
+dump its block verbatim as a capture file and the editor would bake it into a
+clip. That is the format doing its job.
+
+`link_sim` refuses to bind when the sim's geom count disagrees with the scene's
+instance, for the same reason the capture import checks fingerprints.
+
+**What the browser showed.** HUD: *"mujoco: model ready — 20 geoms, dt 5.0 ms"*
+→ *"sim linked (20/20 geoms) — running"* → *"first frames rendered — ready"*.
+The humanoid is **collapsed on the ground under live physics**, from a bundle
+whose authored pose is standing — so only the sink could have moved it. Console
+clean, zero errors.
+
+(The machine was under heavy build contention: WebGPU device acquisition alone
+took 31 s and renderer init 81 s. Slow, not broken — it did reach `running`.)
+
+**Phase 3 is complete**: pose sink, collider physics params, and the reference
+template driving real physics through the real pipeline.
+
+**Next: Phase 4** — sites, spatial tendons, skins, heightfields, and flex
+deformables.

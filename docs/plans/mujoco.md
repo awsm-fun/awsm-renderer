@@ -644,8 +644,19 @@ smaller/reversible option, per the settled decisions above.
    from MuJoCo's own defaults); `node_sync` is N/A for the same reason as the
    mujoco component; MCP coverage is the dedicated tool + parity row.
 
-   Remaining: the templates-repo `physics-mujoco` template migrating onto the
-   sink.
+   Template migrated onto the sink ✅ (Aug 7 2026, templates-repo commit
+   b6d4042). The Phase-0 client-side mirror is gone: the robot is authored
+   content shipped in `media/bundle`, and the render worker only takes
+   `LoadedScene::mujoco` and hands the seqlock'd snapshot to `apply_geom_poses`.
+   `render_thread.rs` 693 → 460 lines. The worker's SAB pose block now writes
+   quaternions in MuJoCo's `[w,x,y,z]` order, so the block **is** a stream frame
+   in the documented convention and nothing is reshaped on either side — the
+   worker could dump it verbatim as a capture. **Browser-verified**: HUD reads
+   *"sim linked (20/20 geoms) — running"*, the humanoid is collapsed on the
+   ground under live physics from a bundle whose authored pose is standing,
+   console clean.
+
+   **PHASE 3 COMPLETE.**
 
    Original scope: mapping layer in scene-loader (binding
    resolution + pose sink) on the player API — no networking in this repo; the
