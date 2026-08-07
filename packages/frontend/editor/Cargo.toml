@@ -27,6 +27,9 @@ awsm-renderer-materials = { workspace = true }
 awsm-renderer-lod-bake = { workspace = true, features = ["serde"] }
 awsm-renderer-particles = { workspace = true, features = ["serde"] }
 awsm-renderer = { workspace = true, features = ["ktx", "serde", "texture-export", "debug-views", "dynamic-material-validation"] }
+# Convex-hull solve for collider fitting + hull wireframes. Already in the
+# dependency graph via awsm-renderer scene_spatial, so wasm-proven and free.
+parry3d = "0.28"
 awsm-renderer-core = { workspace = true }
 awsm-renderer-gltf = { workspace = true }
 awsm-renderer-scene-loader = { workspace = true }

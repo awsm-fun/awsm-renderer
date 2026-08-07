@@ -5,6 +5,17 @@
 use crate::controller::CameraAxis;
 use crate::prelude::*;
 
+// The Outliner pane's width, user-draggable via the resize handle on its
+// right edge. A module-local rather than an EditorController field on
+// purpose: pure UI chrome, and the command-routing guard only audits
+// controller state. Clamped so it can neither vanish nor swallow the
+// viewport.
+const OUTLINER_MIN_W: f64 = 180.0;
+const OUTLINER_MAX_W: f64 = 640.0;
+thread_local! {
+    static OUTLINER_WIDTH: Mutable<f64> = Mutable::new(240.0);
+}
+
 const ACCENT_FG: &str = "oklch(0.18 0.02 255)";
 
 /// A camera-axis snap button for the Settings → Camera grid.
@@ -2194,13 +2205,47 @@ fn workspace(ctrl: &EditorController) -> Dom {
                 .style("display", "flex")
                 .style("flex-direction", "row")
                 .child(html!("div", {
-                    .style("width", "240px")
+                    .style_signal("width", OUTLINER_WIDTH.with(|w| w.signal())
+                        .map(|w| format!("{w}px")))
                     .style("flex", "0 0 auto")
                     .style("border-right", "1px solid var(--line)")
                     .style("min-height", "0")
                     .style("position", "relative")
                     .apply(panel_highlight(FocusTarget::Outliner))
                     .child(crate::scene_mode::outliner::render())
+                    // Resize handle: drag to widen the pane (long node names
+                    // were unreadable at the fixed 240px). Same drag idiom as
+                    // the timeline's strip_drag.
+                    .child(html!("div", {
+                        .style("position", "absolute")
+                        .style("top", "0")
+                        .style("right", "-3px")
+                        .style("width", "6px")
+                        .style("height", "100%")
+                        .style("cursor", "ew-resize")
+                        .style("z-index", "5")
+                        .apply(|b| {
+                            use std::cell::Cell;
+                            use std::rc::Rc;
+                            let drag: Rc<Cell<Option<(f64, f64)>>> =
+                                Rc::new(Cell::new(None));
+                            b.event(clone!(drag => move |e: events::MouseDown| {
+                                e.stop_propagation();
+                                let w = OUTLINER_WIDTH.with(|w| w.get());
+                                drag.set(Some((e.x(), w)));
+                            }))
+                            .global_event(clone!(drag => move |e: events::MouseMove| {
+                                if let Some((down_x, down_w)) = drag.get() {
+                                    let w = (down_w + (e.x() - down_x))
+                                        .clamp(OUTLINER_MIN_W, OUTLINER_MAX_W);
+                                    OUTLINER_WIDTH.with(|m| m.set_neq(w));
+                                }
+                            }))
+                            .global_event(clone!(drag => move |_: events::MouseUp| {
+                                drag.set(None);
+                            }))
+                        })
+                    }))
                 }))
                 .child(html!("div", {
                     .style("flex", "1")

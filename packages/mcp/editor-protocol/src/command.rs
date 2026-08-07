@@ -403,6 +403,30 @@ pub enum EditorCommand {
         parent: Option<NodeId>,
     },
 
+    /// Fit a convex-hull collider to `source`'s subtree meshes and insert it
+    /// (sibling of `source` unless `parent` is given). The hull is computed
+    /// at apply time from the CPU mesh caches — vertices in source-local
+    /// space with `source`'s own scale baked in, since collider node scale
+    /// is locked to 1 — then decimated to at most `max_points` (default 48,
+    /// clamped 4..=254 to match the physics host's Box3D hull limit).
+    /// Carries its `id` like `Insert` (idempotent, replay-stable).
+    /// Inverse: `Delete` of the new node.
+    InsertHullFromNode {
+        id: NodeId,
+        source: NodeId,
+        #[serde(default)]
+        parent: Option<NodeId>,
+        #[serde(default)]
+        max_points: Option<u32>,
+        /// Subtrees under `source` to leave OUT of the fit (each id prunes
+        /// that node and everything below it). The escape hatch for rigs
+        /// whose subtree carries geometry that is not "the body" — socketed
+        /// equipment under hand bones, a telescoping segment stored at full
+        /// extension, editor-only markers.
+        #[serde(default)]
+        exclude: Vec<NodeId>,
+    },
+
     /// Re-insert a captured node subtree at `index` under `parent` (preserving
     /// ids). This is the inverse of `Delete` — undoing a delete restores the
     /// exact subtree. `node` is boxed (it's the largest variant payload).
@@ -1665,6 +1689,7 @@ impl EditorCommand {
             EditorCommand::ReloadProjectInMemory => "Reload project (round-trip)",
             EditorCommand::VerifyRoundtrip => "Verify save/load round-trip",
             EditorCommand::Insert { .. } | EditorCommand::InsertTree { .. } => "Insert node",
+            EditorCommand::InsertHullFromNode { .. } => "Fit collision hull",
             EditorCommand::Delete { .. } => "Delete node",
             EditorCommand::SetKind { .. } => "Edit properties",
             EditorCommand::SetSubtreeLod { .. } => "Set LOD",

@@ -443,7 +443,7 @@ fn replay_prefab_node(
             // Rebuild the instanced billboard for this instance — the same sync
             // builder the main path uses (no simulation). The game drives it via the
             // recorded handle; `PrefabInstance::teardown` frees its mesh + transform.
-            match particles::build_emitter(renderer, def, tk, world) {
+            match particles::build_emitter_untextured(renderer, def, tk, world) {
                 Ok(handle) => handles.emitter = Some(handle),
                 Err(err) => {
                     tracing::warn!("prefab replay: ParticleEmitter build failed: {err}")
@@ -1837,7 +1837,23 @@ async fn materialize(
         // the game drives it; cleanest is to not build it).
         NodeKind::ParticleEmitter(def) => {
             if effective_visible {
-                match particles::build_emitter(renderer, def, tk, node_world) {
+                // Resolve the billboard sprite (if authored) through the same
+                // bundle texture cache the material slots use — sRGB, albedo
+                // mips (editor bridge §14 parity).
+                let sprite = if let Some(tref) = &def.texture {
+                    texture::load_texture(
+                        renderer,
+                        cache,
+                        assets,
+                        tref,
+                        true,
+                        awsm_renderer_core::texture::mipmap::MipmapTextureKind::Albedo,
+                    )
+                    .await
+                } else {
+                    None
+                };
+                match particles::build_emitter(renderer, def, tk, node_world, sprite).await {
                     Ok(handle) => {
                         // Track the billboard mesh + its instance transform for
                         // teardown, then record the handle for the NodeHandles

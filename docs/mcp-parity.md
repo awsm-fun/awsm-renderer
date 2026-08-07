@@ -48,6 +48,7 @@ dedicated tool reaches it indirectly · **dispatch** = escape hatch only ·
 | wire tag | dedicated tool(s) | exposure | notes |
 |---|---|---|---|
 | `insert` | `insert_primitive`, `insert_empty`, `insert_camera`, `insert_light`, `insert_particle`, `insert_decal`, `insert_instancer` | tool | Line/Sprite/Curve/Sweep/Instances/Collision* specs via dispatch (`spec` unit variants = bare string or `{"<tag>":{}}`). |
+| `insert_hull_from_node` | — | dispatch | Fits a convex-hull collider to a source node's subtree meshes (`{"cmd":"insert_hull_from_node","id":"<uuid>","source":"<uuid>","parent":null,"max_points":48,"exclude":[]}`). |
 | `insert_tree` | — | dispatch | Undo-inverse of `Delete` (re-inserts a captured subtree, preserved ids). Internal bookkeeping; fine as dispatch-only. |
 | `delete` | `delete_node` | tool | |
 | `duplicate` | `duplicate_node` | tool | Echoes the caller-minted clone root id. |

@@ -17,16 +17,16 @@
 //! Keeping the instance count fixed at `max_alive` means the per-frame
 //! [`drive_emitter`] re-write reuses the same buffers (no reallocation).
 //!
-//! **Follow-ons (matching the editor bridge's own documented gaps):** the sprite
-//! `texture` is not yet bound (untextured emissive dots only), and `blend` always
-//! routes through the opaque-emissive path (the transparent-blend pass is the
-//! follow-on). Neither is a regression — the pre-loader `materialize` dropped the
-//! whole emitter.
+//! Sprite `texture` + `blend` are honoured on the main load path (ported from
+//! the editor bridge §14): the sprite's alpha drives a Mask cutout
+//! (`blend=false`) or a true transparent blend (`blend=true`, async pipeline).
+//! Prefab REPLAY still builds untextured/opaque ([`build_emitter_untextured`]) —
+//! `PrefabTemplate::instantiate` is sync and cannot await the blend pipeline.
 
 use anyhow::Result;
 use awsm_renderer::instances::InstanceAttr;
 use awsm_renderer::materials::pbr::PbrMaterial;
-use awsm_renderer::materials::{Material, MaterialAlphaMode};
+use awsm_renderer::materials::{Material, MaterialAlphaMode, MaterialTexture};
 use awsm_renderer::meshes::mesh::BillboardMode;
 use awsm_renderer::meshes::MeshKey;
 use awsm_renderer::shadows::MeshShadowFlags;
@@ -173,12 +173,24 @@ pub(crate) fn def_to_emitter(def: &ParticleEmitterDef) -> Emitter {
 /// `tk` is the emitter node's transform; `node_world` its accumulated world
 /// matrix (for the spawn origin). Emits one fresh instance transform (the parent
 /// of the billboard) plus the quad mesh — both pushed onto `loaded` for teardown.
-pub(crate) fn build_emitter(
+/// The shared billboard-quad + material + dead-instance scaffolding. `sprite`
+/// binds the emitter's billboard texture (base-color AND emissive, editor
+/// bridge §14) and picks the alpha route: `blend` → transparent Blend,
+/// sprite-without-blend → Mask cutout (the particle takes the sprite's
+/// shape), untextured → Opaque emissive dots.
+struct EmitterParts {
+    handle: EmitterHandle,
+    initial_transforms: Vec<Transform>,
+    initial_attrs: Vec<InstanceAttr>,
+}
+
+fn build_emitter_parts(
     renderer: &mut AwsmRenderer,
     def: &ParticleEmitterDef,
     tk: TransformKey,
     node_world: Mat4,
-) -> Result<EmitterHandle> {
+    sprite: Option<MaterialTexture>,
+) -> Result<EmitterParts> {
     let emitter = def_to_emitter(def);
     let capacity = emitter.max_alive.max(1) as usize;
     let base_world_pos = node_world.w_axis.truncate();
@@ -190,15 +202,18 @@ pub(crate) fn build_emitter(
         EmitterSpace::World => renderer.transforms.root_node,
     };
 
-    // Emissive dots: per-instance colour/alpha (driven each frame) tints them; the
-    // emissive factor seeds a glow from the curve's start colour so an untextured
-    // emitter still reads as light. (Texture binding is a follow-on, matching the
-    // editor bridge.)
     let base_color = match &def.color_over_life {
         ColorOverLifeDef::Const(c) => *c,
         ColorOverLifeDef::Linear { start, .. } => *start,
     };
-    let mut pbr = PbrMaterial::new(MaterialAlphaMode::Opaque, true);
+    let alpha_mode = if def.blend {
+        MaterialAlphaMode::Blend
+    } else if sprite.is_some() {
+        MaterialAlphaMode::Mask { cutoff: 0.5 }
+    } else {
+        MaterialAlphaMode::Opaque
+    };
+    let mut pbr = PbrMaterial::new(alpha_mode, true);
     pbr.base_color_factor = [1.0, 1.0, 1.0, 1.0];
     pbr.metallic_factor = 0.0;
     pbr.roughness_factor = 1.0;
@@ -207,6 +222,11 @@ pub(crate) fn build_emitter(
         base_color[1] * 1.6,
         base_color[2] * 1.6,
     ];
+    // The sprite's alpha drives the cutout/blend (the particle takes the
+    // sprite's SHAPE); binding it to emissive too keeps the kept texels
+    // glowing instead of washing out against a bright IBL.
+    pbr.base_color_tex = sprite.clone();
+    pbr.emissive_tex = sprite;
     let material_key = renderer.materials.insert(
         Material::Pbr(Box::new(pbr)),
         &renderer.textures,
@@ -237,19 +257,50 @@ pub(crate) fn build_emitter(
         scale: Vec3::ZERO,
     };
     let dead_attr = InstanceAttr::from_rgba_alpha_size([1.0, 1.0, 1.0, 0.0], 0.0, 1.0);
-    let initial_transforms = vec![dead.clone(); capacity];
-    let initial_attrs = vec![dead_attr; capacity];
-    renderer.enable_mesh_instancing_opaque(mesh, &initial_transforms)?;
-    let _ = renderer.set_mesh_instance_attrs(instance_transform, &initial_attrs);
-
-    Ok(EmitterHandle {
-        mesh,
-        instance_transform,
-        emitter_transform: tk,
-        base_world_pos,
-        capacity,
-        def: def.clone(),
+    Ok(EmitterParts {
+        handle: EmitterHandle {
+            mesh,
+            instance_transform,
+            emitter_transform: tk,
+            base_world_pos,
+            capacity,
+            def: def.clone(),
+        },
+        initial_transforms: vec![dead; capacity],
+        initial_attrs: vec![dead_attr; capacity],
     })
+}
+
+/// Build an emitter with its sprite texture + blend route honoured. Async
+/// because a `blend` emitter compiles the transparent instancing pipeline
+/// (the opaque/mask route awaits a cheap early-return).
+pub(crate) async fn build_emitter(
+    renderer: &mut AwsmRenderer,
+    def: &ParticleEmitterDef,
+    tk: TransformKey,
+    node_world: Mat4,
+    sprite: Option<MaterialTexture>,
+) -> Result<EmitterHandle> {
+    let parts = build_emitter_parts(renderer, def, tk, node_world, sprite)?;
+    renderer
+        .enable_mesh_instancing(parts.handle.mesh, &parts.initial_transforms)
+        .await?;
+    let _ = renderer.set_mesh_instance_attrs(parts.handle.instance_transform, &parts.initial_attrs);
+    Ok(parts.handle)
+}
+
+/// The prefab-replay builder: sync (instantiate cannot await), so untextured
+/// opaque-emissive only — same as the pre-texture behaviour.
+pub(crate) fn build_emitter_untextured(
+    renderer: &mut AwsmRenderer,
+    def: &ParticleEmitterDef,
+    tk: TransformKey,
+    node_world: Mat4,
+) -> Result<EmitterHandle> {
+    let parts = build_emitter_parts(renderer, def, tk, node_world, None)?;
+    renderer.enable_mesh_instancing_opaque(parts.handle.mesh, &parts.initial_transforms)?;
+    let _ = renderer.set_mesh_instance_attrs(parts.handle.instance_transform, &parts.initial_attrs);
+    Ok(parts.handle)
 }
 
 /// Push a simulator's live particles to its [`EmitterHandle`]'s instanced mesh —

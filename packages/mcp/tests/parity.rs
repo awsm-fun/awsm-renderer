@@ -111,6 +111,7 @@ const EXPECTED_COMMANDS: &[&str] = &[
     "import_cluster_asset",
     "import_texture_from_url",
     "insert",
+    "insert_hull_from_node",
     "insert_keyframe",
     "insert_tree",
     "load_player_bundle",

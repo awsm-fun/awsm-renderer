@@ -9,6 +9,29 @@ use crate::controller::InsertSpec;
 use crate::engine::scene::{AssetId, AssetSource, EnvRotation, EnvSlot};
 use crate::prelude::*;
 
+/// Fit a convex-hull collider to the primary selection's meshes.
+fn fit_hull_from_selection() {
+    let sel = controller().selected.get_cloned();
+    let Some(&source) = sel.last() else {
+        Toast::error("Fit hull: select the source node first (its meshes become the hull)");
+        return;
+    };
+    spawn_local(async move {
+        if let Err(err) = controller()
+            .dispatch(EditorCommand::InsertHullFromNode {
+                id: awsm_renderer_editor_protocol::NodeId::new(),
+                source,
+                parent: None,
+                max_points: None,
+                exclude: Vec::new(),
+            })
+            .await
+        {
+            Toast::error(format!("Fit hull: {err}"));
+        }
+    });
+}
+
 /// Dispatch an insert of `spec` at the scene root.
 fn insert(spec: InsertSpec) {
     spawn_local(async move {
@@ -251,6 +274,8 @@ fn insert_row() -> Dom {
                 ("Cone", InsertSpec::CollisionCone),
                 ("Ellipsoid", InsertSpec::CollisionEllipsoid),
             ])).render())
+        .child(Btn::new().label("Hull (fit)").icon("collision").variant(BtnVariant::Ghost).size(BtnSize::Sm)
+            .on_click(fit_hull_from_selection).render())
         .child(Btn::new().label("Camera").icon("camera").variant(BtnVariant::Ghost).size(BtnSize::Sm)
             .on_click(|| insert(InsertSpec::Camera)).render())
         .child(DropButton::new().label("Primitive\u{2026}").icon("sphere").size(BtnSize::Sm)
