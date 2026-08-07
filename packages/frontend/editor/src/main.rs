@@ -413,6 +413,28 @@ pub async fn editor_apply_mujoco_poses(instance: usize, poses: Vec<f32>) -> Stri
     "ok".to_string()
 }
 
+/// Test seam: apply one frame of TENDON waypoints to a resolved sim instance.
+///
+/// `frame` is, per tendon in id order, a live waypoint count followed by that
+/// tendon's full waypoint capacity as xyz triples — see
+/// `awsm_renderer_scene_loader::mujoco::apply_tendon_waypoints`.
+#[wasm_bindgen]
+pub async fn editor_apply_mujoco_tendons(instance: usize, frame: Vec<f32>) -> String {
+    let handle = crate::engine::context::renderer_handle();
+    let mut r = handle.lock().await;
+    let applied = controller::with_bundle_mujoco_instance_mut(instance, |inst| {
+        awsm_renderer_scene_loader::mujoco::apply_tendon_waypoints(&mut r, inst, &frame)
+    });
+    match applied {
+        None => format!("error: no sim instance {instance}"),
+        Some(Err(e)) => format!("error: {e}"),
+        Some(Ok(())) => {
+            r.update_transforms();
+            "ok".to_string()
+        }
+    }
+}
+
 /// Test seam: how many sim instances the last `LoadPlayerBundle` reload resolved,
 /// and how long a pose frame must be for each.
 #[wasm_bindgen]
@@ -428,6 +450,9 @@ pub fn editor_mujoco_instances() -> String {
                 "geom_count": i.geoms.len(),
                 "bound_geoms": i.geoms.iter().filter(|g| g.is_some()).count(),
                 "frame_len": i.frame_len(),
+                "site_frame_len": i.site_frame_len(),
+                "tendon_capacity": i.tendons.iter().map(|t| t.capacity).collect::<Vec<_>>(),
+                "tendon_frame_len": i.tendon_frame_len(),
             })
         })
         .collect();

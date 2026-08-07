@@ -7766,6 +7766,16 @@ pub fn bundle_mujoco_instances() -> Vec<awsm_renderer_scene_loader::mujoco::Mujo
     LAST_BUNDLE_MUJOCO.with(|c| c.borrow().clone())
 }
 
+/// Drive ONE retained sim instance in place. The tendon channel edge-triggers
+/// segment visibility, so it needs the instance that persists between frames —
+/// a clone would forget what it last showed and re-assert it every call.
+pub fn with_bundle_mujoco_instance_mut<T>(
+    index: usize,
+    f: impl FnOnce(&mut awsm_renderer_scene_loader::mujoco::MujocoInstance) -> T,
+) -> Option<T> {
+    LAST_BUNDLE_MUJOCO.with(|c| c.borrow_mut().get_mut(index).map(f))
+}
+
 /// Fetch + parse a pre-baked cluster-LOD ("cluster") DAG (`<id>.clusters.bin`, JSON)
 /// from a URL — the `awsm-renderer-lod-bake` CLI output the `ImportClusterAsset` command brings
 /// into the editor as a view-only [`NodeKind::ClusterMesh`].

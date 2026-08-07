@@ -264,7 +264,10 @@ stream:
       on-device (`editor_project_toml`, below); the second is guarded by
       `bake::tests::the_mujoco_component_survives_the_bundle_bake`, which asserts
       the fingerprint/geom_count/geom ids survive a real `scene_to_toml` →
-      `scene_from_toml`.
+      `scene_from_toml`. Re-checked for tendons on-device (Aug 8 2026): the
+      exported `scene.toml` carries all 38 `tendon_segment` blocks and
+      `tendon_capacity`, and `load_player_bundle` resolved them back to a
+      `tendon_frame_len` of 138.
 - [x] survives project save/load roundtrip — **verified in the browser**: a
       hand-written `project.toml` with an instance + geom loaded via
       `load_project_from_url`, and `editor_project_toml` read back every field
@@ -541,6 +544,27 @@ So the importer mints the whole chain up front and hides the unused tail:
 - `MujocoInstance::tendon_capacity` carries the per-tendon pool sizes so a
   consumer laying out a stream frame never has to re-derive them from the tree.
 
+### The tendon channel carries waypoints, and hiding is edge-triggered (Aug 8 2026)
+
+Unlike the geom and site channels, a tendon frame is not a list of poses:
+
+- **Layout is `[live_count, then the full capacity as xyz triples]` per tendon,
+  in tendon-id order.** Fixed size even though the live count varies, so a
+  producer can publish it into a preallocated `SharedArrayBuffer` — the same
+  reason the pool itself is preallocated. A producer reads it straight out of
+  `ten_wrapadr`/`ten_wrapnum`/`wrap_xpos`.
+- **A count above the pool size is an error, not a clamp.** It means the
+  producer and the imported model disagree about which model this is, so the
+  rest of the frame is untrustworthy too — the same reasoning as `WrongLength`.
+- **Segment visibility is edge-triggered**, which is why
+  `apply_tendon_waypoints` takes `&mut MujocoInstance` while the other two
+  channels take `&`. `set_mesh_hidden` bumps the TLAS revision and re-syncs the
+  spatial index; re-asserting it every frame for every segment would churn the
+  BVH for nothing. The instance remembers how many segments it last showed.
+- **The authored RADIUS survives**, the same read-modify-write rule the geom
+  channel uses for ellipsoid scale: a frame carries no width, so only the
+  segment's Z scale (its length) comes from the stream.
+
 ### Forward-compat fixtures need a name that is still hypothetical (Aug 8 2026)
 
 `sidecar.rs`'s "a later producer added fields" test has now been broken twice by
@@ -745,8 +769,18 @@ forward compatibility and starts testing the new table's schema.
    blocks and 14 `visible = false` intact. MuJoCo's `humanoid.xml`, whose only
    tendons are FIXED (joint coupling), imports 0 segment nodes and
    `tendon_capacity = [0, 0]`. Console clean throughout.
-   Still open in this item: the tendon waypoint **stream channel** +
-   `apply_tendon_waypoints` in the sink.
+   Spatial tendons, stream half ✅ (Aug 8 2026, on-device):
+   `apply_tendon_waypoints` in the sink, plus the `editor_apply_mujoco_tendons`
+   test seam. Verified through the REAL player path — author in the editor →
+   `export_player_bundle` → `load_player_bundle` → drive: replaying the model's
+   own qpos0 waypoints reproduces the imported placement pixel-for-pixel (the
+   editor and the sink share `segment_transform`, and this is what proves it);
+   bowing the waypoints outward visibly plucks the six cables off the arm with
+   their site endpoints still pinned; filling every tendon to its full capacity
+   makes the hidden spare segments appear as smooth many-segment arcs; and
+   shrinking back to two waypoints collapses each tendon to one chord and
+   re-hides the rest. Both error paths fire (`WrongLength`, `TooManyWaypoints`).
+   Console clean.
 
    Original scope: Sites, spatial tendons (capsule chains from waypoint
    channel), skins. Heightfields baked to meshes at export (Phase 1 covers this in

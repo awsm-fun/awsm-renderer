@@ -812,3 +812,46 @@ fresh port instead.
 
 **Next in Phase 4:** the tendon waypoint stream channel +
 `apply_tendon_waypoints` in the sink (increment 3b), then skins, then flex.
+
+---
+
+## 2026-08-08 — Phase 4, increment 3b: the tendon stream channel (ON-DEVICE VERIFIED)
+
+**Landed.** `apply_tendon_waypoints` in the pose sink, plus `TendonSlots` on the
+resolved instance and an `editor_apply_mujoco_tendons` test seam. Tendons are now
+drivable end to end.
+
+Three design calls, all recorded in the plan. The frame is
+`[live_count, then the full capacity as xyz triples]` per tendon — fixed size
+even though the count varies, so a producer can publish it into a preallocated
+SAB, which is the same reason the segment pool is preallocated. A count above the
+pool is an error rather than a clamp, because it means the producer and the
+imported model disagree about which model this is. And segment visibility is
+**edge-triggered** — `set_mesh_hidden` bumps the TLAS revision and re-syncs the
+spatial index, so re-asserting it every frame for every segment would churn the
+BVH for nothing; that is why this one channel takes `&mut` on the instance while
+geoms and sites take `&`.
+
+**What the browser showed**, through the real player path (editor → 
+`export_player_bundle` → `load_player_bundle` → drive):
+
+- Replaying the model's own qpos0 waypoints reproduces the imported placement
+  exactly — the editor and the sink share `segment_transform`, and an unchanged
+  frame is the proof.
+- Bowing the waypoints outward plucks all six cables off the arm, endpoints
+  still pinned at their site spheres.
+- Filling every tendon to its full capacity makes the hidden spares appear: the
+  three-chord bow becomes a smooth many-segment arc. This is the whole point of
+  the pool, and it works.
+- Shrinking back to two waypoints collapses each tendon to a single chord and
+  re-hides the rest.
+- `WrongLength` and `TooManyWaypoints` both fire with useful messages.
+
+Console clean. The bundle carried all 38 `tendon_segment` blocks and
+`tendon_capacity`, and the loader resolved them back to a `tendon_frame_len` of
+138 — so the `export_player_bundle` parity box is re-checked for tendons.
+
+Also fixed in passing: the `WrongLength` message hardcoded a geom-channel
+explanation, which was wrong the moment a second channel existed.
+
+**Next in Phase 4:** skins (mjSkin → skinned meshes), then flex/deformables.

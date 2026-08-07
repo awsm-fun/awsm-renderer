@@ -27,11 +27,15 @@ use std::collections::HashMap;
 
 use awsm_renderer::transforms::Transform;
 use awsm_renderer::AwsmRenderer;
-use awsm_renderer_scene::mujoco::{MujocoComponent, Source};
+use awsm_renderer_scene::mujoco::{segment_transform, MujocoComponent, Source};
 use awsm_renderer_scene::tree::{EditorNode, NodeId};
 use glam::{Quat, Vec3};
 
 pub use awsm_renderer_scene::mujoco::FLOATS_PER_GEOM;
+
+/// Floats per tendon waypoint: `[x, y, z]`. A waypoint is a point on a cable,
+/// not a frame, so it carries no rotation.
+pub const FLOATS_PER_WAYPOINT: usize = 3;
 
 /// One loaded sim instance, ready to be driven.
 ///
@@ -61,6 +65,42 @@ pub struct MujocoInstance {
     /// because MuJoCo indexes sites separately; sharing one would put a site's
     /// pose in a geom's slot.
     pub sites: Vec<Option<awsm_renderer::transforms::TransformKey>>,
+    /// `tendon_id → ` that tendon's segment pool. A third id space again.
+    pub tendons: Vec<TendonSlots>,
+}
+
+/// One tendon's preallocated chain of segment nodes.
+///
+/// The pool exists because a tendon's waypoint count changes as it wraps around
+/// geometry, and this sink can only write to nodes that already exist. Segments
+/// beyond the current waypoint count are hidden rather than destroyed.
+#[derive(Debug, Clone, Default)]
+pub struct TendonSlots {
+    /// The most waypoints this tendon can ever have (the importer's pool size).
+    /// Zero for a FIXED tendon, which has no path through space to draw.
+    pub capacity: u32,
+    /// `segment[i]` spans waypoint `i` → `i + 1`, so there is one fewer of these
+    /// than the capacity.
+    segments: Vec<Option<Segment>>,
+    /// How many segments are currently un-hidden. Kept so visibility is
+    /// **edge-triggered**: `set_mesh_hidden` bumps the TLAS revision and
+    /// re-syncs the spatial index, so calling it every frame for every segment
+    /// would churn the BVH for nothing.
+    shown: u32,
+}
+
+impl TendonSlots {
+    /// Floats one frame must carry for this tendon: a count, then a slot for
+    /// every waypoint the pool can hold.
+    pub fn frame_len(&self) -> usize {
+        1 + self.capacity as usize * FLOATS_PER_WAYPOINT
+    }
+}
+
+#[derive(Debug, Clone)]
+struct Segment {
+    transform: awsm_renderer::transforms::TransformKey,
+    meshes: Vec<awsm_renderer::meshes::MeshKey>,
 }
 
 impl MujocoInstance {
@@ -73,6 +113,14 @@ impl MujocoInstance {
     /// sites, which is most robots.
     pub fn site_frame_len(&self) -> usize {
         self.sites.len() * FLOATS_PER_GEOM
+    }
+
+    /// How many floats one TENDON frame must carry: per tendon, a live waypoint
+    /// count followed by that tendon's full waypoint capacity. Fixed size even
+    /// though the live count varies, so a producer can publish it into a
+    /// preallocated shared buffer.
+    pub fn tendon_frame_len(&self) -> usize {
+        self.tendons.iter().map(TendonSlots::frame_len).sum()
     }
 
     /// Whether `source` is the same compiled model this instance was imported
@@ -91,7 +139,18 @@ impl MujocoInstance {
 /// protocol one — so this is an error, never a silent truncation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PoseError {
-    WrongLength { got: usize, expected: usize },
+    WrongLength {
+        got: usize,
+        expected: usize,
+    },
+    /// A tendon frame claimed more live waypoints than the pool can hold. Not
+    /// clamped silently: it means the producer and the imported model disagree
+    /// about the model, and the rest of the frame is therefore untrustworthy.
+    TooManyWaypoints {
+        tendon: usize,
+        got: usize,
+        capacity: u32,
+    },
 }
 
 impl std::fmt::Display for PoseError {
@@ -99,8 +158,15 @@ impl std::fmt::Display for PoseError {
         match self {
             PoseError::WrongLength { got, expected } => write!(
                 f,
-                "pose frame has {got} floats, this instance needs {expected} \
-                 ({FLOATS_PER_GEOM} per geom x geom count)"
+                "frame has {got} floats, this channel needs {expected} for this instance"
+            ),
+            PoseError::TooManyWaypoints {
+                tendon,
+                got,
+                capacity,
+            } => write!(
+                f,
+                "tendon {tendon} reported {got} waypoints but its pool holds {capacity}"
             ),
         }
     }
@@ -174,6 +240,88 @@ pub fn apply_site_poses(
     write_poses(renderer, &instance.sites, poses)
 }
 
+/// Apply one frame of tendon waypoints — the optional tendon channel.
+///
+/// The frame is, per tendon in id order: **one live waypoint count**, then that
+/// tendon's full waypoint capacity as `[x, y, z]` triples (see
+/// [`MujocoInstance::tendon_frame_len`]). Slots past the live count are ignored,
+/// so a producer can leave stale values there. A producer reads this straight
+/// out of `mjData`'s `ten_wrapadr`/`ten_wrapnum`/`wrap_xpos`.
+///
+/// Takes `&mut` on the instance because segment visibility is edge-triggered:
+/// hiding a mesh re-syncs the spatial index, so the sink remembers how many
+/// segments it last showed rather than re-asserting the state every frame.
+///
+/// Each live segment is placed spanning consecutive waypoints; its authored
+/// RADIUS (the node's x/y scale) is preserved, since a frame carries no width.
+pub fn apply_tendon_waypoints(
+    renderer: &mut AwsmRenderer,
+    instance: &mut MujocoInstance,
+    frame: &[f32],
+) -> Result<(), PoseError> {
+    let expected = instance.tendon_frame_len();
+    if frame.len() != expected {
+        return Err(PoseError::WrongLength {
+            got: frame.len(),
+            expected,
+        });
+    }
+    let mut base = 0usize;
+    for (tendon_id, slots) in instance.tendons.iter_mut().enumerate() {
+        let stride = slots.frame_len();
+        let block = &frame[base..base + stride];
+        base += stride;
+        if slots.capacity == 0 {
+            continue;
+        }
+        let live = block[0] as usize;
+        if live > slots.capacity as usize {
+            return Err(PoseError::TooManyWaypoints {
+                tendon: tendon_id,
+                got: live,
+                capacity: slots.capacity,
+            });
+        }
+        let waypoint = |i: usize| -> [f32; 3] {
+            let o = 1 + i * FLOATS_PER_WAYPOINT;
+            [block[o], block[o + 1], block[o + 2]]
+        };
+        // A path of N waypoints draws N-1 segments; 0 or 1 waypoints draws none.
+        let active = live.saturating_sub(1) as u32;
+        for (i, segment) in slots.segments.iter().enumerate() {
+            let Some(segment) = segment else { continue };
+            if (i as u32) < active {
+                let (translation, rotation, span) =
+                    segment_transform(waypoint(i), waypoint(i + 1), 1.0);
+                let radius = renderer
+                    .transforms
+                    .get_local(segment.transform)
+                    .map(|t| t.scale)
+                    .unwrap_or(Vec3::ONE);
+                let _ = renderer.transforms.set_local(
+                    segment.transform,
+                    Transform {
+                        translation: Vec3::from(translation),
+                        rotation: Quat::from_array(rotation),
+                        scale: Vec3::new(radius.x, radius.y, span[2]),
+                    },
+                );
+            }
+            // Only the segments crossing the show/hide boundary this frame get
+            // touched — see `TendonSlots::shown`.
+            let was = (i as u32) < slots.shown;
+            let now = (i as u32) < active;
+            if was != now {
+                for mesh in &segment.meshes {
+                    let _ = renderer.set_mesh_hidden(*mesh, !now);
+                }
+            }
+        }
+        slots.shown = active;
+    }
+    Ok(())
+}
+
 /// Find every sim instance in a loaded scene and resolve its geom binding.
 ///
 /// `handles` is the loader's `NodeId → NodeHandles` map; the transform key of
@@ -198,13 +346,26 @@ fn walk(
     if let Some(MujocoComponent::Instance(inst)) = &node.mujoco {
         let mut geoms = vec![None; inst.geom_count as usize];
         let mut sites = vec![None; inst.site_count as usize];
-        collect_geoms(node, handles, &mut geoms, &mut sites);
+        // Pool sizes come from the instance, not from counting nodes: a hidden
+        // group can leave a pool with no nodes at all, and the frame layout
+        // still has to reserve its slots.
+        let mut tendons: Vec<TendonSlots> = inst
+            .tendon_capacity
+            .iter()
+            .map(|capacity| TendonSlots {
+                capacity: *capacity,
+                segments: vec![None; capacity.saturating_sub(1) as usize],
+                shown: 0,
+            })
+            .collect();
+        collect_geoms(node, handles, &mut geoms, &mut sites, &mut tendons);
         out.push(MujocoInstance {
             root: node.id,
             source: inst.source.clone(),
             model_name: inst.model_name.clone(),
             geoms,
             sites,
+            tendons,
         });
         // An instance never nests inside another, so stop descending here.
         return;
@@ -219,6 +380,7 @@ fn collect_geoms(
     handles: &HashMap<NodeId, crate::NodeHandles>,
     geoms: &mut [Option<awsm_renderer::transforms::TransformKey>],
     sites: &mut [Option<awsm_renderer::transforms::TransformKey>],
+    tendons: &mut [TendonSlots],
 ) {
     for child in &node.children {
         match &child.mujoco {
@@ -232,8 +394,74 @@ fn collect_geoms(
                     *slot = handles.get(&child.id).map(|h| h.transform);
                 }
             }
+            Some(MujocoComponent::TendonSegment(t)) => {
+                if let Some(slots) = tendons.get_mut(t.tendon_id as usize) {
+                    if let Some(slot) = slots.segments.get_mut(t.segment as usize) {
+                        *slot = handles.get(&child.id).map(|h| Segment {
+                            transform: h.transform,
+                            meshes: h.meshes.clone(),
+                        });
+                        // The importer parks spare segments hidden. Seed `shown`
+                        // from what was authored so the first frame's
+                        // edge-trigger compares against the truth.
+                        if child.visible {
+                            slots.shown = slots.shown.max(t.segment + 1);
+                        }
+                    }
+                }
+            }
             _ => {}
         }
-        collect_geoms(child, handles, geoms, sites);
+        collect_geoms(child, handles, geoms, sites, tendons);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn slots(capacity: u32) -> TendonSlots {
+        TendonSlots {
+            capacity,
+            segments: vec![None; capacity.saturating_sub(1) as usize],
+            shown: 0,
+        }
+    }
+
+    #[test]
+    fn a_tendon_frame_reserves_a_count_plus_the_whole_pool() {
+        // The layout a producer has to agree with, spelled out: the frame is
+        // fixed-size even though the live waypoint count varies, so it can be
+        // published into a preallocated shared buffer.
+        assert_eq!(slots(6).frame_len(), 1 + 6 * 3);
+        // A fixed tendon still occupies its slot — the index IS the tendon id.
+        assert_eq!(slots(0).frame_len(), 1);
+    }
+
+    #[test]
+    fn an_instances_tendon_frame_is_the_sum_of_its_tendons() {
+        let inst = MujocoInstance {
+            root: awsm_renderer_scene::tree::NodeId::new(),
+            source: Source {
+                filename: "a.xml".into(),
+                sha256: "x".into(),
+                mujoco_version: "3.11.0".into(),
+            },
+            model_name: None,
+            geoms: Vec::new(),
+            sites: Vec::new(),
+            // arm26's shape, plus a fixed tendon to prove zero-capacity slots
+            // are still counted.
+            tendons: vec![slots(6), slots(6), slots(10), slots(0)],
+        };
+        assert_eq!(inst.tendon_frame_len(), 19 + 19 + 31 + 1);
+    }
+
+    #[test]
+    fn a_pool_holds_one_fewer_segment_than_waypoint() {
+        // Off-by-one here would silently drop a tendon's last span.
+        assert_eq!(slots(6).segments.len(), 5);
+        assert_eq!(slots(1).segments.len(), 0);
+        assert_eq!(slots(0).segments.len(), 0);
     }
 }
