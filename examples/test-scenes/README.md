@@ -51,6 +51,7 @@ bundles, which are window-independent.
 | `anim-skinned` | skinned mesh playback, rig roundtrip | skinned model mid-stride at t=0.5, no T-pose, no candy-wrapper collapse |
 | `anim-morph` | morph targets, multi-track per-index blending (005 §3) | two morph indices driven independently by two tracks |
 | `anim-blend` | animation blends / mixer layers, masks, transport | blended pose distinct from either source clip |
+| `mujoco-capture` | MuJoCo import (sidecar → sim instance, primitive geoms, groups, materials) + capture→clip bake | humanoid frozen mid-collapse at t=1.2s, driven by a clip baked from a checked-in recorded capture — no simulator in the loop |
 | `shadows-all` | directional cascades + spot + point/cube, denoise blur, world-ref bias | contact-tight shadows, no Peter-Pan gap, no donut/hole under lowered meshes |
 | `alpha-cutoff` | masked materials, cutoff values, double-sided | hard-edged cutouts, back faces visible where double-sided |
 | `transparent` | transparent pass ordering over opaque | correct through-glass layering, no popping |

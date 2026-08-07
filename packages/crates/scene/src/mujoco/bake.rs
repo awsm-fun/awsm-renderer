@@ -301,6 +301,16 @@ fn keep_mask(
     keep
 }
 
+fn zeroed_like(v: &TrackValue) -> TrackValue {
+    match v {
+        TrackValue::Vec2(_) => TrackValue::Vec2([0.0; 2]),
+        TrackValue::Vec3(_) => TrackValue::Vec3([0.0; 3]),
+        TrackValue::Vec4(_) => TrackValue::Vec4([0.0; 4]),
+        TrackValue::Quat(_) => TrackValue::Quat([0.0; 4]),
+        TrackValue::Scalar(_) => TrackValue::Scalar(0.0),
+    }
+}
+
 fn track(
     node: NodeId,
     prop: TransformProp,
@@ -315,11 +325,15 @@ fn track(
             continue;
         }
         kept_times.push(times[i]);
+        // Zeroed tangents, matching what the editor's own `new_keyframe` writes
+        // for a linear key. They are meaningless outside cubic interpolation, and
+        // echoing `value` into both would triple the clip's on-disk size while
+        // implying a cubic tangent that happens to equal the value.
         keys.push(Keyframe {
             value,
             interp: Interp::Linear,
-            in_tangent: value,
-            out_tangent: value,
+            in_tangent: zeroed_like(&value),
+            out_tangent: zeroed_like(&value),
         });
     }
     StoredTrack {

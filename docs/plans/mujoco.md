@@ -353,6 +353,11 @@ smaller/reversible option, per the settled decisions above.
   every schema round-trip test passed. Any future per-node field has to be added
   in four places — `EditorNode`, `NodeSpec`, both conversions, and the reactive
   `Node` — and only a browser round-trip catches missing any of them.
+- **Baked keyframes carry ZEROED tangents**, matching the editor's own
+  `new_keyframe`. Echoing `value` into `in_tangent`/`out_tangent` (as the first
+  cut did) both implies a cubic tangent that happens to equal the value and
+  triples the clip's on-disk size — it cost 22% of a real scene's `project.toml`
+  before it was caught by looking at the saved file.
 - **The capture import rejects a fingerprint mismatch before baking anything.**
   A capture of a different model bakes into poses that are individually plausible
   and collectively nonsense — the wrong robot driven convincingly, which is close
@@ -572,8 +577,15 @@ smaller/reversible option, per the settled decisions above.
    collapsed on the floor, shadowed by the bundle's directional light. Nothing in
    the editor could be driving it — there is no editor scene left.
 
-   Remaining in this phase: a browser-test-suite scene + goldens replaying a
-   checked-in fixture capture (deterministic, no sim in CI).
+   **Browser-test-suite scene ✅ (Aug 7 2026, on-device).**
+   `examples/test-scenes/mujoco-capture/` — `fixtures/` (a checked-in sidecar +
+   a 2 s / 58-frame capture, 112 KiB together, so CI never runs physics),
+   `author.js`, `project/`, `bundle/`, `golden.png`, `verify.md`, and a row in
+   the suite README. Authored through the real MCP pipeline (`save_project` /
+   `export_player_bundle` / `screenshot_scene`); the golden shows the humanoid
+   frozen mid-collapse at t=1.2 s on its own ground plane, grid/gizmos off.
+
+   **PHASE 2 COMPLETE.**
 3. **Pose sink + reference template.** Mapping layer in scene-loader (binding
    resolution + pose sink) on the player API — no networking in this repo; the
    stream convention (jitter buffer, reconnect, recording) lives in the

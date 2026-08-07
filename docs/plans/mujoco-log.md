@@ -523,3 +523,44 @@ node is not a MuJoCo sim instance" — right answer, my mistake).
 
 **Remaining in Phase 2:** a browser-test-suite scene + goldens replaying a
 checked-in fixture capture, deterministic with no sim in CI.
+
+---
+
+## 2026-08-07 — Phase 2, increment 5: browser-test-suite scene — **PHASE 2 COMPLETE**
+
+**Landed.** `examples/test-scenes/mujoco-capture/` — the whole MuJoCo pipeline as
+a permanent suite scene, with **no simulator in the loop**:
+
+- `fixtures/` — a checked-in sidecar + a 2 s / 58-frame capture (112 KiB
+  together). Replaying the same JSON must produce the same pose, so CI never
+  runs physics.
+- `author.js` — `new_project` → `import_mujoco_from_url` → `import_mujoco_capture`
+  → `set_playhead {t: 1.2}` → pinned camera, grid/gizmos off.
+- `project/`, `bundle/`, `golden.png`, `verify.md`, plus a row in the suite
+  README.
+
+**What the browser showed.** Authored through the real MCP pipeline
+(`save_project` → `export_player_bundle` → `screenshot_scene`, artifacts copied
+from the temp dirs). The golden is the humanoid **frozen mid-collapse at
+t=1.2 s** — doubled forward, head near the ground, on the model's own flat
+ground plane, softly shadowed. `verify.md` spells out the four ways this scene
+can fail (standing pose = clip not driving; heap at the origin = lost world
+poses; a limb spun a full turn = hemisphere flip survived the bake; lying on its
+side = convention rotation missing or doubled).
+
+**A real defect the artifact bake exposed.** The saved `project.toml` came out
+at 1021 KiB. Reading it showed why: my bake wrote `value` into both
+`in_tangent` and `out_tangent`, which is meaningless for a linear key — the
+editor's own `new_keyframe` writes ZEROES — and tripled the stored floats.
+Fixed; the same scene now saves 792 KiB (−22%). Worth noting the browser step
+found this, not the unit tests: every test still passed either way.
+
+Scene size (2.0 MB) is in line with the suite (existing project.tomls run
+1.2–4.6 MiB).
+
+**Phase 2 is complete**: capture format, reference recorder, the bake, the
+editor command + MCP tool, scrub/play on-device, the player-bundle round-trip,
+and now a deterministic suite scene with a golden.
+
+**Next: Phase 3** — the pose sink in scene-loader (binding resolution + the
+player-API sink), then the `physics-mujoco` reference template migrates onto it.
