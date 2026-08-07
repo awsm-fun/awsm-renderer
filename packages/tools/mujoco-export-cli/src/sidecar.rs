@@ -69,15 +69,39 @@ pub fn build(model: &Model<'_>, source: Source) -> Result<Sidecar> {
         });
     }
 
+    // One synthetic mesh entry per heightfield, appended after the real meshes.
+    // The grid is static after compile, so baking it here means nothing
+    // downstream — editor, scene format, pose sink — ever learns what a
+    // heightfield is.
+    for h in 0..model.nhfield() {
+        let name = model
+            .name(mjtObj::mjOBJ_HFIELD, h)
+            .map(str::to_string)
+            .or_else(|| Some(format!("hfield {h}")));
+        let index = model.nmesh() + h;
+        out.meshes.push(Mesh {
+            node: Some(crate::mesh::node_name(index, name.as_deref())),
+            name,
+        });
+    }
+
     for g in 0..model.ngeom() {
         let kind = geom_kind(model, g)?;
         // geom_dataid indexes meshes for mesh geoms and heightfields for hfield
         // geoms — the same field, two meanings, so it is only a mesh reference
         // when the type says so.
-        let mesh = (kind == GeomKind::Mesh)
-            .then(|| model.geom_dataid()[g])
-            .filter(|id| *id >= 0)
-            .map(|id| id as usize);
+        let mesh = match kind {
+            GeomKind::Mesh => Some(model.geom_dataid()[g])
+                .filter(|id| *id >= 0)
+                .map(|id| id as usize),
+            // A heightfield geom points at its BAKED mesh. `kind` stays `hfield`
+            // so the sidecar remains a faithful record of the compiled model;
+            // consumers that only know how to draw meshes just follow `mesh`.
+            GeomKind::Hfield => Some(model.geom_dataid()[g])
+                .filter(|id| *id >= 0)
+                .map(|id| model.nmesh() + id as usize),
+            _ => None,
+        };
         let material = Some(model.geom_matid()[g])
             .filter(|id| *id >= 0)
             .map(|id| id as usize);

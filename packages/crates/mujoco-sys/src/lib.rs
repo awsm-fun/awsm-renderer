@@ -326,6 +326,9 @@ impl Model<'_> {
     pub fn nmeshface(&self) -> usize {
         self.raw().nmeshface as usize
     }
+    pub fn nhfielddata(&self) -> usize {
+        self.raw().nhfielddata as usize
+    }
 
     model_slices! {
         /// `mjtGeom` discriminants; see [`geom_kind`](Self::geom_kind).
@@ -382,6 +385,19 @@ impl Model<'_> {
         mesh_facenormal: i32 = nmeshface x 3,
         /// Texcoord indices for the same faces, relative to `mesh_texcoordadr`.
         mesh_facetexcoord: i32 = nmeshface x 3,
+
+        // Heightfields: an nrow x ncol elevation grid, sliced out of one shared
+        // pool by (adr, nrow*ncol) — same pattern as meshes.
+        /// `[x half-extent, y half-extent, z scale, z base]`, metres. Elevations
+        /// are normalized 0..1 and multiplied by `z scale`; the solid base
+        /// extends `z base` BELOW zero.
+        hfield_size: f64 = nhfield x 4,
+        hfield_nrow: i32 = nhfield x 1,
+        hfield_ncol: i32 = nhfield x 1,
+        /// First sample of hfield `i` in [`hfield_data`](Self::hfield_data).
+        hfield_adr: i32 = nhfield x 1,
+        /// Normalized elevations, row-major, all heightfields concatenated.
+        hfield_data: f32 = nhfielddata x 1,
 
         // Sites are massless, non-colliding marker geoms: same shape as a geom,
         // their own id space, and driven by the same kind of pose stream.

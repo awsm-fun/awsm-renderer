@@ -739,3 +739,28 @@ fixed it immediately. Two live WebGPU pages on this machine is one too many.
 
 **Next in Phase 4:** heightfields (exporter-side, self-contained), then spatial
 tendons, skins, and flex.
+
+---
+
+## 2026-08-07 — Phase 4, increment 2: heightfields (ON-DEVICE VERIFIED)
+
+**Landed.** Heightfields are **baked to meshes at export**, which is what the
+plan asked for and the right call for a deeper reason: MuJoCo's grid is static
+after compile, so there is nothing dynamic to preserve — and baking here means
+the editor, the scene format and the pose sink never learn what a heightfield is.
+An hfield geom arrives downstream as an ordinary mesh geom.
+
+The sidecar still records `type: "hfield"` — it stays a faithful record of the
+compiled model — with `mesh` pointing at the baked entry, appended after the real
+meshes. The bake emits the top surface plus a skirt down to the model's base
+depth, on its own vertices, so the terrain reads as solid at a grazing angle and
+the rim fold stays sharp instead of smearing normals.
+
+**What was verified.** Exported `google_barkour_vb/scene_hfield_mjx.xml`. Reading
+the baked mesh straight back out of the GLB: **69,616 vertices, 256 distinct
+elevation levels** (exactly what an 8-bit PNG heightfield yields, so the data was
+read correctly, not zeroed), z spanning **−0.100 → +0.050** — precisely the
+model's `size` z-scale (0.05) and base depth (0.1). In the editor it renders as
+undulating ground with the Barkour robot standing on it; 37 nodes, console clean.
+
+**Next in Phase 4:** spatial tendons, then skins, then flex.

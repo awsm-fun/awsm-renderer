@@ -21,7 +21,7 @@ use awsm_renderer_mujoco_sys::Model;
 /// (all-primitive models like the DeepMind humanoid) — there is no point writing
 /// an empty GLB, and the importer keys off the sidecar's mesh list anyway.
 pub fn build(model: &Model<'_>, names: &[Option<String>]) -> Result<Option<GlbScene>> {
-    if model.nmesh() == 0 {
+    if model.nmesh() == 0 && model.nhfield() == 0 {
         return Ok(None);
     }
     let mut scene = GlbScene::default();
@@ -32,6 +32,29 @@ pub fn build(model: &Model<'_>, names: &[Option<String>]) -> Result<Option<GlbSc
             transform: Trs::IDENTITY,
             mesh: Some(mesh),
             // No material on purpose — see the module docs.
+            material: None,
+            ..Default::default()
+        });
+    }
+    // Heightfields are baked to meshes and APPENDED after the real meshes, so a
+    // heightfield geom downstream is just a mesh geom. Their sidecar entries are
+    // appended in the same order (see the exporter's sidecar builder).
+    for h in 0..model.nhfield() {
+        let nrow = model.hfield_nrow()[h] as usize;
+        let ncol = model.hfield_ncol()[h] as usize;
+        let adr = model.hfield_adr()[h] as usize;
+        let data = &model.hfield_data()[adr..adr + nrow * ncol];
+        let size = [
+            model.hfield_size()[h * 4],
+            model.hfield_size()[h * 4 + 1],
+            model.hfield_size()[h * 4 + 2],
+            model.hfield_size()[h * 4 + 3],
+        ];
+        let index = model.nmesh() + h;
+        scene.nodes.push(ExportNode {
+            name: node_name(index, names.get(index).and_then(|n| n.as_deref())),
+            transform: Trs::IDENTITY,
+            mesh: Some(heightfield_mesh(size, nrow, ncol, data)),
             material: None,
             ..Default::default()
         });
@@ -137,4 +160,86 @@ fn extract(model: &Model<'_>, m: usize) -> Result<MeshData> {
         out.uvs.push(uvs);
     }
     Ok(out)
+}
+
+/// Tessellate a heightfield into a triangle mesh.
+///
+/// **Heightfields are baked at export, not at import.** MuJoCo's grid is static
+/// after compile, so there is nothing dynamic to preserve — and baking here means
+/// the editor, the scene format and the pose sink never learn what a heightfield
+/// is. An hfield geom arrives downstream as an ordinary mesh geom.
+///
+/// The grid spans `[-size.x, +size.x] x [-size.y, +size.y]` in the geom's local
+/// frame with elevation `data * size.z`, and MuJoCo draws a solid base extending
+/// `size.w` below zero. This emits the top surface plus that skirt, so the
+/// terrain reads as solid from a grazing angle instead of as a paper sheet.
+pub fn heightfield_mesh(size: [f64; 4], nrow: usize, ncol: usize, data: &[f32]) -> MeshData {
+    let (half_x, half_y) = (size[0] as f32, size[1] as f32);
+    let (z_scale, z_base) = (size[2] as f32, size[3] as f32);
+    let mut mesh = MeshData::default();
+    if nrow < 2 || ncol < 2 || data.len() < nrow * ncol {
+        return mesh;
+    }
+
+    // MuJoCo indexes the grid row-major with rows along +Y and columns along +X.
+    let at = |r: usize, c: usize| data[r * ncol + c];
+    let pos = |r: usize, c: usize| {
+        let u = c as f32 / (ncol - 1) as f32;
+        let v = r as f32 / (nrow - 1) as f32;
+        [
+            -half_x + u * 2.0 * half_x,
+            -half_y + v * 2.0 * half_y,
+            at(r, c) * z_scale,
+        ]
+    };
+
+    let mut uvs = Vec::with_capacity(nrow * ncol);
+    for r in 0..nrow {
+        for c in 0..ncol {
+            mesh.positions.push(pos(r, c));
+            uvs.push([c as f32 / (ncol - 1) as f32, r as f32 / (nrow - 1) as f32]);
+        }
+    }
+    let idx = |r: usize, c: usize| (r * ncol + c) as u32;
+    for r in 0..nrow - 1 {
+        for c in 0..ncol - 1 {
+            mesh.indices.extend_from_slice(&[
+                idx(r, c),
+                idx(r, c + 1),
+                idx(r + 1, c + 1),
+                idx(r, c),
+                idx(r + 1, c + 1),
+                idx(r + 1, c),
+            ]);
+        }
+    }
+
+    // Skirt: drop each boundary edge to the base plane so the terrain is a solid,
+    // not a sheet. Walls are their own vertices — sharing them with the top
+    // surface would smear its normals over the fold.
+    let wall = |a: [f32; 3], b: [f32; 3], mesh: &mut MeshData, uvs: &mut Vec<[f32; 2]>| {
+        let base = mesh.positions.len() as u32;
+        let bottom = -z_base;
+        for p in [a, b, [b[0], b[1], bottom], [a[0], a[1], bottom]] {
+            mesh.positions.push(p);
+            uvs.push([0.0, 0.0]);
+        }
+        mesh.indices
+            .extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+    };
+    for c in 0..ncol - 1 {
+        wall(pos(0, c + 1), pos(0, c), &mut mesh, &mut uvs);
+        wall(pos(nrow - 1, c), pos(nrow - 1, c + 1), &mut mesh, &mut uvs);
+    }
+    for r in 0..nrow - 1 {
+        wall(pos(r, 0), pos(r + 1, 0), &mut mesh, &mut uvs);
+        wall(pos(r + 1, ncol - 1), pos(r, ncol - 1), &mut mesh, &mut uvs);
+    }
+
+    mesh.uvs.push(uvs);
+    // Area-weighted vertex normals: the grid is generated, so there are no
+    // authored normals to carry, and the skirt's separate vertices keep the fold
+    // at the rim sharp.
+    mesh.compute_vertex_normals();
+    mesh
 }

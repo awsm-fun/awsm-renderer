@@ -340,19 +340,26 @@ fn build_subtree(
         let (material_variants, selected_variant) = palette(material);
 
         let kind = match geom.kind {
-            GeomKind::Mesh => match geom.mesh.and_then(|m| mesh_assets.get(&m)).cloned() {
-                Some(mesh) => NodeKind::Mesh {
-                    mesh,
-                    material_variants,
-                    selected_variant,
-                    shadow: Default::default(),
-                    lod: Default::default(),
-                },
-                None => {
-                    tracing::warn!("mujoco import: geom {geom_id} has no usable mesh; skipping");
-                    continue;
+            // Heightfields were baked to a mesh at export (the grid is static
+            // after compile), so they take the mesh path — nothing in the editor
+            // or the scene format knows what a heightfield is.
+            GeomKind::Mesh | GeomKind::Hfield => {
+                match geom.mesh.and_then(|m| mesh_assets.get(&m)).cloned() {
+                    Some(mesh) => NodeKind::Mesh {
+                        mesh,
+                        material_variants,
+                        selected_variant,
+                        shadow: Default::default(),
+                        lod: Default::default(),
+                    },
+                    None => {
+                        tracing::warn!(
+                            "mujoco import: geom {geom_id} has no usable mesh; skipping"
+                        );
+                        continue;
+                    }
                 }
-            },
+            }
             // Primitive geoms: box/sphere/capsule/cylinder/ellipsoid/plane.
             other => match crate::controller::mujoco_primitive::build(other, geom.size) {
                 Some(prim) => {

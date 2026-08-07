@@ -353,6 +353,14 @@ smaller/reversible option, per the settled decisions above.
   every schema round-trip test passed. Any future per-node field has to be added
   in four places — `EditorNode`, `NodeSpec`, both conversions, and the reactive
   `Node` — and only a browser round-trip catches missing any of them.
+- **Heightfields are baked to meshes at export, so nothing downstream knows what
+  a heightfield is.** MuJoCo's grid is static after compile, so there is nothing
+  dynamic to preserve; an hfield geom arrives at the editor, the scene format and
+  the pose sink as an ordinary mesh geom. The sidecar still records `type:
+  "hfield"` (it is a faithful record of the compiled model) with `mesh` pointing
+  at the baked entry, which is appended after the real meshes. The bake emits the
+  top surface plus a skirt down to the model's base depth, on its own vertices,
+  so the terrain reads as solid at a grazing angle and the rim fold stays sharp.
 - **Sites are their own component and their own stream channel**, not a flag on
   `MujocoGeom`. MuJoCo indexes sites separately from geoms, so a shared id space
   would put a site's pose in a geom's slot — the exact class of silent failure
@@ -686,6 +694,13 @@ smaller/reversible option, per the settled decisions above.
    their MuJoCo world poses along the arm, `[nodes.children.mujoco.site]` blocks
    carry `site_id` 0–10 in their own id space beside the 5 geom blocks, console
    clean.
+
+   Heightfields ✅ (Aug 7 2026, on-device): baked at export.
+   `google_barkour_vb/scene_hfield_mjx.xml` exports its 20x20 m terrain as a
+   69,616-vertex mesh with **256 distinct elevation levels** (an 8-bit PNG
+   heightfield read correctly) spanning z −0.100 → +0.050, exactly the model's
+   `size` z-scale and base depth. It renders in the editor as undulating ground
+   under the Barkour robot, console clean.
 
    Original scope: Sites, spatial tendons (capsule chains from waypoint
    channel), skins. Heightfields baked to meshes at export (Phase 1 covers this in
