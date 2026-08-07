@@ -184,3 +184,14 @@ fn rotate_y_to_z(mut mesh: MeshData) -> MeshData {
     }
     mesh
 }
+
+/// A **unit** cylinder along local Z: radius 1, half-length 1.
+///
+/// The tendon-segment mesh. Segments change length every frame as a tendon
+/// wraps, so the length lives in the node's Z scale rather than the geometry —
+/// a cylinder is the one shape that scales along its axis without distorting,
+/// which is why segments are cylinders and not the capsules MuJoCo draws. At
+/// tendon widths (millimetres) the missing end-caps are not visible.
+pub fn unit_cylinder_z() -> MeshData {
+    rotate_y_to_z(awsm_renderer_meshgen::cylinder_mesh(1.0, 2.0, 16))
+}

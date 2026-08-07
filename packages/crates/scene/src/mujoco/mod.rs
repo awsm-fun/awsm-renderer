@@ -37,6 +37,10 @@ pub enum MujocoComponent {
     /// Stream-owned like a geom, but addressed by SITE id, which is a separate
     /// space; a site's pose in a geom's slot would drive the wrong node.
     Site(MujocoSite),
+    /// One preallocated **segment** of a spatial tendon. A tendon's waypoint
+    /// count changes as it wraps and unwraps, so segments are created once and
+    /// the unused tail is hidden — never created per frame.
+    TendonSegment(MujocoTendonSegment),
 }
 
 /// The root of an imported MuJoCo model.
@@ -62,6 +66,11 @@ pub struct MujocoInstance {
     /// addresses. Same reasoning as `geom_count`.
     #[serde(default)]
     pub site_count: u32,
+    /// Per-tendon waypoint capacity, indexed by tendon id — the pool sizes the
+    /// importer allocated. A stream frame's tendon channel is laid out against
+    /// these, so a consumer never has to re-derive them from the tree.
+    #[serde(default)]
+    pub tendon_capacity: Vec<u32>,
     /// Which MuJoCo visibility groups this instance renders. Defaults to
     /// MuJoCo's own convention (0–2 visible), which is what keeps a menagerie
     /// model showing its visual meshes rather than its collision capsules.
@@ -83,6 +92,7 @@ impl MujocoInstance {
             model_name: None,
             geom_count,
             site_count: 0,
+            tendon_capacity: Vec::new(),
             visible_groups: default_visible_groups(),
         }
     }
@@ -132,10 +142,84 @@ pub struct MujocoSite {
     pub body: u32,
 }
 
+/// Place one tendon segment: the unit-Z cylinder spanning waypoints `a` to `b`.
+///
+/// Returns `(translation, rotation, scale)`. The mesh is a unit cylinder along
+/// local Z, so the span's length lives entirely in the Z scale — this is the one
+/// piece of tendon geometry both the editor (initial pose) and the runtime pose
+/// sink have to agree on, so it lives here rather than in either of them.
+///
+/// A zero-length span (two coincident waypoints — MuJoCo emits these for pulley
+/// wrap points) collapses to a zero Z scale rather than producing a NaN
+/// direction.
+pub fn segment_transform(a: [f32; 3], b: [f32; 3], width: f32) -> ([f32; 3], [f32; 4], [f32; 3]) {
+    let (a, b) = (glam::Vec3::from(a), glam::Vec3::from(b));
+    let span = b - a;
+    let len = span.length();
+    let rotation = if len > 1e-9 {
+        glam::Quat::from_rotation_arc(glam::Vec3::Z, span / len)
+    } else {
+        glam::Quat::IDENTITY
+    };
+    (
+        ((a + b) * 0.5).to_array(),
+        rotation.to_array(),
+        [width, width, len * 0.5],
+    )
+}
+
+/// One segment of a tendon's preallocated chain.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub struct MujocoTendonSegment {
+    /// Index into the source model's TENDON array — a third id space alongside
+    /// geoms and sites.
+    pub tendon_id: u32,
+    /// Which segment of that tendon's chain this is: the span from waypoint
+    /// `segment` to `segment + 1`.
+    pub segment: u32,
+    /// The tendon's visibility group (MuJoCo's `tendongroup`).
+    pub group: i32,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::tree::{EditorNode, NodeId, NodeKind};
+
+    #[test]
+    fn a_segment_spans_its_two_waypoints() {
+        let a = [1.0, 2.0, 3.0];
+        let b = [1.0, 2.0, 5.0];
+        let (t, r, s) = segment_transform(a, b, 0.01);
+        assert_eq!(t, [1.0, 2.0, 4.0], "sits at the midpoint");
+        assert!((s[2] - 1.0).abs() < 1e-6, "half the 2m span: {s:?}");
+        assert_eq!([s[0], s[1]], [0.01, 0.01], "width is radial");
+        // Already along +Z, so the rotation is a no-op; check by transporting the
+        // mesh's own tip and landing on the far waypoint.
+        let tip = glam::Quat::from_array(r) * glam::Vec3::new(0.0, 0.0, s[2]) + glam::Vec3::from(t);
+        assert!(tip.abs_diff_eq(glam::Vec3::from(b), 1e-5), "{tip:?}");
+    }
+
+    #[test]
+    fn a_segment_rotates_onto_an_arbitrary_span() {
+        let a = [0.0, 0.0, 0.0];
+        let b = [0.3, -0.4, 0.0];
+        let (t, r, s) = segment_transform(a, b, 0.02);
+        let tip = glam::Quat::from_array(r) * glam::Vec3::new(0.0, 0.0, s[2]) + glam::Vec3::from(t);
+        assert!(tip.abs_diff_eq(glam::Vec3::from(b), 1e-5), "{tip:?}");
+        assert!((s[2] - 0.25).abs() < 1e-6, "half of the 0.5m span: {s:?}");
+    }
+
+    #[test]
+    fn coincident_waypoints_collapse_instead_of_going_nan() {
+        // MuJoCo emits these for pulley wrap points; a normalize() here would
+        // poison the whole node transform.
+        let (t, r, s) = segment_transform([0.5; 3], [0.5; 3], 0.01);
+        assert!(t.iter().chain(&r).chain(&s).all(|v| v.is_finite()));
+        assert_eq!(s[2], 0.0);
+    }
 
     fn source() -> Source {
         Source {

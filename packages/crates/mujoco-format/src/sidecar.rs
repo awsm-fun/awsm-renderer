@@ -64,6 +64,12 @@ pub struct Sidecar {
     /// in their own channel.
     #[serde(default)]
     pub sites: Vec<Site>,
+
+    /// Spatial tendons — cables routed through sites and around geometry. Index
+    /// in this vec IS the MuJoCo tendon id, a third id space alongside geoms and
+    /// sites.
+    #[serde(default)]
+    pub tendons: Vec<Tendon>,
 }
 
 impl Sidecar {
@@ -80,6 +86,7 @@ impl Sidecar {
             materials: Vec::new(),
             meshes: Vec::new(),
             sites: Vec::new(),
+            tendons: Vec::new(),
         }
     }
 
@@ -142,6 +149,28 @@ impl Sidecar {
                         len: self.materials.len(),
                     });
                 }
+            }
+        }
+        for (i, t) in self.tendons.iter().enumerate() {
+            if let Some(m) = t.material {
+                if m >= self.materials.len() {
+                    return Err(Error::BadIndex {
+                        what: "tendon.material",
+                        index: i,
+                        value: m,
+                        len: self.materials.len(),
+                    });
+                }
+            }
+            // The pool bound must actually bound the pose it ships with, or the
+            // importer allocates too few segments to draw the model as exported.
+            if t.world_waypoints.len() > t.max_waypoints as usize {
+                return Err(Error::BadIndex {
+                    what: "tendon.world_waypoints exceeds max_waypoints",
+                    index: i,
+                    value: t.world_waypoints.len(),
+                    len: t.max_waypoints as usize,
+                });
             }
         }
         for (i, b) in self.bodies.iter().enumerate() {
@@ -344,6 +373,44 @@ pub struct Site {
     pub rgba: [f32; 4],
 }
 
+/// A spatial tendon: a cable drawn as a chain of capsule segments between
+/// waypoints.
+///
+/// The waypoint count **varies at runtime** as the tendon wraps and unwraps
+/// around geometry, so a renderer cannot create nodes per frame. It preallocates
+/// [`max_waypoints`](Self::max_waypoints) worth of segments and hides the unused
+/// tail — which is why that bound is exported rather than discovered.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub struct Tendon {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Visibility group (MuJoCo's `tendongroup`); 0-2 visible by default.
+    pub group: i32,
+    /// Rendering radius, metres.
+    pub width: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub material: Option<usize>,
+    pub rgba: [f32; 4],
+    /// The most waypoints this tendon can ever have.
+    ///
+    /// Twice its path's wrap-object count — MuJoCo's own bound, since it sizes
+    /// `wrap_xpos` at two points per wrap object. Taking it from the compiled
+    /// model rather than sampling one frame means a tendon that wraps later in a
+    /// run never runs out of segments.
+    ///
+    /// **Zero means not drawable.** A model's tendon list also contains FIXED
+    /// tendons — joint-coupling constraints with no path through space. They
+    /// keep their slot here so this vec's index stays the MuJoCo tendon id, but
+    /// they get no pool and no waypoints.
+    pub max_waypoints: u32,
+    /// Waypoints in the model's initial configuration (`qpos0`), world space —
+    /// so the imported scene shows the tendon routed correctly before any
+    /// simulation runs.
+    #[serde(default)]
+    pub world_waypoints: Vec<[f64; 3]>,
+}
+
 /// MuJoCo materials are Phong-ish; mapping them onto our PBR materials happens at
 /// *import*, not here, so the sidecar stays a faithful record of the source.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -437,18 +504,76 @@ mod tests {
     #[test]
     fn a_v1_reader_survives_a_later_producer_adding_fields() {
         // Additive changes must not bump VERSION, which only works if unknown
-        // fields are ignored and absent ones default.
+        // fields are ignored and absent ones default. `contacts` is a stand-in
+        // for a table this version does not know about — pick a fresh name here
+        // whenever one of these placeholders becomes real, or the test stops
+        // testing forward compatibility and starts testing the new table.
         let json = r#"{
             "format": "awsm-mujoco-sidecar",
             "version": 1,
             "source": {"filename":"a.xml","sha256":"x","mujoco_version":"3.11.0"},
             "bodies": [{"parent":0,"pos":[0,0,0],"quat":[1,0,0,0],"future_field":42}],
-            "tendons": [{"whatever": true}]
+            "contacts": [{"whatever": true}]
         }"#;
         let s: Sidecar = serde_json::from_str(json).unwrap();
         s.validate().unwrap();
         assert_eq!(s.bodies.len(), 1);
         assert!(s.geoms.is_empty(), "absent arrays default to empty");
+    }
+
+    #[test]
+    fn a_tendon_survives_a_json_round_trip() {
+        let mut s = Sidecar::new(source());
+        s.tendons.push(Tendon {
+            name: Some("BF".into()),
+            group: 0,
+            width: 0.009,
+            material: None,
+            rgba: [0.4, 0.6, 0.4, 1.0],
+            max_waypoints: 10,
+            world_waypoints: vec![[0.0, 0.0, 0.1], [0.0, 0.05, 0.2]],
+        });
+        let back: Sidecar = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(back, s);
+        back.validate().unwrap();
+    }
+
+    #[test]
+    fn a_tendon_may_carry_fewer_waypoints_than_its_capacity() {
+        // The invariant the renderer's pool depends on: `max_waypoints` is a
+        // ceiling, and the initial pose routinely sits below it.
+        let mut s = Sidecar::new(source());
+        s.tendons.push(Tendon {
+            name: None,
+            group: 0,
+            width: 0.01,
+            material: None,
+            rgba: [1.0; 4],
+            max_waypoints: 6,
+            world_waypoints: vec![[0.0; 3]; 4],
+        });
+        s.validate().unwrap();
+    }
+
+    #[test]
+    fn validate_rejects_a_tendon_whose_pose_overflows_its_pool() {
+        let mut s = Sidecar::new(source());
+        s.tendons.push(Tendon {
+            name: None,
+            group: 0,
+            width: 0.01,
+            material: None,
+            rgba: [1.0; 4],
+            max_waypoints: 2,
+            world_waypoints: vec![[0.0; 3]; 3],
+        });
+        assert!(matches!(
+            s.validate(),
+            Err(Error::BadIndex {
+                what: "tendon.world_waypoints exceeds max_waypoints",
+                ..
+            })
+        ));
     }
 
     #[test]

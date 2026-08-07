@@ -166,3 +166,56 @@ fn the_fingerprint_tracks_content_not_path() {
     );
     std::fs::remove_dir_all(&dir).ok();
 }
+
+#[test]
+fn the_muscle_arm_exports_six_tendons_with_room_to_wrap() {
+    let Some(path) = release_model("tendon_arm/arm26.xml") else {
+        return;
+    };
+    let Some(s) = export(path) else { return };
+
+    let names: Vec<_> = s.tendons.iter().filter_map(|t| t.name.as_deref()).collect();
+    assert_eq!(names, ["SF", "SE", "EF", "EE", "BF", "BE"]);
+
+    for t in &s.tendons {
+        // The capacity has to EXCEED the initial routing, otherwise the importer
+        // sizes its segment pool to a pose rather than to the model, and the
+        // tendon runs out of segments the first time it wraps.
+        assert!(
+            t.max_waypoints as usize > t.world_waypoints.len(),
+            "{:?}: {} waypoints in a pool of {}",
+            t.name,
+            t.world_waypoints.len(),
+            t.max_waypoints
+        );
+        assert!(t.width > 0.0);
+        assert!(t.world_waypoints.len() >= 2, "a tendon needs a path");
+        // Waypoints are WORLD positions at qpos0, not body-local offsets — the
+        // whole arm sits well above the origin, so none of these may be at it.
+        assert!(
+            t.world_waypoints
+                .iter()
+                .all(|p| p.iter().any(|c| c.abs() > 1e-6)),
+            "{:?} has a waypoint at the origin: {:?}",
+            t.name,
+            t.world_waypoints
+        );
+    }
+}
+
+#[test]
+fn the_humanoids_fixed_tendons_export_as_undrawable() {
+    // The humanoid's hamstrings are FIXED tendons — joint coupling, no path in
+    // space. They must still occupy their slots (the index is the tendon id) but
+    // ask for no segment pool, or the importer draws two cables at the origin.
+    let Some(path) = release_model("humanoid/humanoid.xml") else {
+        return;
+    };
+    let Some(s) = export(path) else { return };
+    let names: Vec<_> = s.tendons.iter().filter_map(|t| t.name.as_deref()).collect();
+    assert_eq!(names, ["hamstring_right", "hamstring_left"]);
+    assert!(s
+        .tendons
+        .iter()
+        .all(|t| t.max_waypoints == 0 && t.world_waypoints.is_empty()));
+}

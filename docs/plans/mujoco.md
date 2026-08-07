@@ -517,6 +517,37 @@ smaller/reversible option, per the settled decisions above.
   the library, not a header guarantee. Unchecked, a change there would read a
   neighbouring mesh's vertices and produce geometry that looks *almost* right.
 
+### Tendon segments are a preallocated pool of unit cylinders (Aug 8 2026)
+
+A tendon's waypoint count *changes at runtime* as it wraps and unwraps around
+geometry, and a pose stream can only write transforms — it cannot create nodes.
+So the importer mints the whole chain up front and hides the unused tail:
+
+- **The pool bound comes from the compiled model, not from a sampled frame.**
+  `max_waypoints = 2 * tendon_num` is MuJoCo's own rule for sizing `wrap_xpos`,
+  so it is the true ceiling. Sizing to the qpos0 routing instead would leave a
+  tendon short of segments the first time it wraps (arm26's `BF` routes through
+  7 waypoints at rest but is allowed 10).
+- **Segments are cylinders, not the capsules MuJoCo draws.** Length lives in the
+  node's Z scale, and a cylinder is the one shape that scales along its axis
+  without distorting; a scaled capsule squashes its caps. At tendon widths
+  (3–10 mm) the missing end-caps are not visible.
+- **Fixed tendons get a slot but no pool.** A model's tendon list mixes spatial
+  tendons with FIXED ones (joint-coupling constraints with no path through
+  space). They keep their index — that index *is* the MuJoCo tendon id, which a
+  stream binds against — but export `max_waypoints: 0` and no waypoints, which
+  the importer already skips. Told apart by `wrap_type`, the compiled truth,
+  rather than by a runtime `ten_wrapnum` of 0.
+- `MujocoInstance::tendon_capacity` carries the per-tendon pool sizes so a
+  consumer laying out a stream frame never has to re-derive them from the tree.
+
+### Forward-compat fixtures need a name that is still hypothetical (Aug 8 2026)
+
+`sidecar.rs`'s "a later producer added fields" test has now been broken twice by
+the placeholder table becoming real (`sites`, then `tendons`). Whenever that
+happens, rename the placeholder — otherwise the test quietly stops testing
+forward compatibility and starts testing the new table's schema.
+
 ## Phases
 
 0. **Proof-of-loop spike (templates repo) — DONE, on-device verified Aug 7
@@ -701,6 +732,21 @@ smaller/reversible option, per the settled decisions above.
    heightfield read correctly) spanning z −0.100 → +0.050, exactly the model's
    `size` z-scale and base depth. It renders in the editor as undulating ground
    under the Barkour robot, console clean.
+
+   Spatial tendons, static half ✅ (Aug 8 2026, on-device): sidecar `tendons`
+   table, `MujocoTendonSegment` component, `segment_transform` (shared by the
+   editor and — next increment — the sink), and the importer's **preallocated
+   segment pool**. Verified with `tendon_arm/arm26.xml`: 6 tendons mint 38
+   segment nodes (`SF 0`…`BE 8`), 14 of them starting hidden as spares, and the
+   viewport shows the muscle cables routed through the arm's site spheres and
+   bending at each waypoint. `tendon_capacity = [6, 6, 6, 6, 10, 10]` survives a
+   real save → `load_project_from_url` → re-save roundtrip (proved live by a
+   marker rename in the served `project.toml`), with all 38 `tendon_segment`
+   blocks and 14 `visible = false` intact. MuJoCo's `humanoid.xml`, whose only
+   tendons are FIXED (joint coupling), imports 0 segment nodes and
+   `tendon_capacity = [0, 0]`. Console clean throughout.
+   Still open in this item: the tendon waypoint **stream channel** +
+   `apply_tendon_waypoints` in the sink.
 
    Original scope: Sites, spatial tendons (capsule chains from waypoint
    channel), skins. Heightfields baked to meshes at export (Phase 1 covers this in

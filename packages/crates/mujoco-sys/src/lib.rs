@@ -22,7 +22,7 @@ pub mod bindings;
 use std::ffi::{CStr, CString};
 use std::path::{Path, PathBuf};
 
-pub use bindings::{mjData, mjModel, mjtGeom, mjtObj};
+pub use bindings::{mjData, mjModel, mjtGeom, mjtObj, mjtWrap};
 
 /// MuJoCo release these bindings were generated against, in `mj_version()`'s
 /// encoding (`major * 1_000_000 + minor * 1_000 + patch`, e.g. `3_011_000`).
@@ -329,6 +329,9 @@ impl Model<'_> {
     pub fn nhfielddata(&self) -> usize {
         self.raw().nhfielddata as usize
     }
+    pub fn nwrap(&self) -> usize {
+        self.raw().nwrap as usize
+    }
 
     model_slices! {
         /// `mjtGeom` discriminants; see [`geom_kind`](Self::geom_kind).
@@ -385,6 +388,24 @@ impl Model<'_> {
         mesh_facenormal: i32 = nmeshface x 3,
         /// Texcoord indices for the same faces, relative to `mesh_texcoordadr`.
         mesh_facetexcoord: i32 = nmeshface x 3,
+
+        // Spatial tendons. A tendon's path is a list of wrap OBJECTS (sites,
+        // geoms it wraps around, pulleys); at runtime each contributes up to TWO
+        // points, which is why `wrap_xpos` is `nwrap x 6`. That factor of two is
+        // the compile-time bound on how many waypoints a tendon can ever have —
+        // the number the renderer preallocates segment nodes for.
+        tendon_adr: i32 = ntendon x 1,
+        tendon_num: i32 = ntendon x 1,
+        tendon_matid: i32 = ntendon x 1,
+        tendon_group: i32 = ntendon x 1,
+        /// Rendering radius, metres.
+        tendon_width: f64 = ntendon x 1,
+        tendon_rgba: f32 = ntendon x 4,
+    /// Per wrap OBJECT (not per tendon): an `mjtWrap` discriminant. A tendon
+    /// whose objects are `mjWRAP_JOINT` is a FIXED tendon — a joint-coupling
+    /// constraint with no path through space — which is why the exporter has to
+    /// read this rather than assume every tendon is drawable.
+    wrap_type: i32 = nwrap x 1,
 
         // Heightfields: an nrow x ncol elevation grid, sliced out of one shared
         // pool by (adr, nrow*ncol) — same pattern as meshes.
@@ -580,6 +601,16 @@ impl Data<'_, '_> {
         site_xpos: f64 = nsite x 3,
         /// Site world orientations, row-major 3x3. See [`Self::site_world_quat`].
         site_xmat: f64 = nsite x 9,
+        /// First wrap point of tendon `i` in [`wrap_xpos`](Self::wrap_xpos).
+        ten_wrapadr: i32 = ntendon x 1,
+        /// How many wrap points tendon `i` has **this frame** — it changes as the
+        /// tendon wraps and unwraps around geometry, which is the whole reason
+        /// segment nodes are preallocated and hidden rather than created.
+        ten_wrapnum: i32 = ntendon x 1,
+        /// Every tendon's wrap points, concatenated. Sliced per tendon by
+        /// (`ten_wrapadr`, `ten_wrapnum`); `nwrap x 6` because one wrap object
+        /// can contribute two points.
+        wrap_xpos: f64 = nwrap x 6,
     }
 
     /// A site's world orientation as a `[w, x, y, z]` quaternion.

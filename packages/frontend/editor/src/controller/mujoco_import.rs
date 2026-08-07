@@ -28,11 +28,12 @@
 
 use std::collections::HashMap;
 
+use awsm_renderer_editor_protocol::mujoco::segment_transform;
 use awsm_renderer_editor_protocol::mujoco::{GeomKind, MujocoMaterial, Sidecar};
 use awsm_renderer_editor_protocol::{
     AssetEntry, AssetId, AssetSource as SceneAssetSource, CapturedSource, MaterialDef,
     MaterialVariant, MeshDef, MeshRef, MujocoComponent, MujocoGeom, MujocoInstance, MujocoSite,
-    NodeKind, Trs, VariantId,
+    MujocoTendonSegment, NodeKind, Trs, VariantId,
 };
 
 use crate::engine::scene::node::Node;
@@ -468,6 +469,96 @@ fn build_subtree(
         })));
         node.locked.set(true);
         root.children.lock_mut().push_cloned(node);
+    }
+
+    // Tendons: each is a chain of `max_waypoints - 1` cylinder segments, ALL of
+    // them minted now. The waypoint count changes as the tendon wraps around
+    // geometry mid-run, and a pose stream cannot create nodes — so the pool is
+    // sized to the model's ceiling and the unused tail simply starts hidden.
+    let mut tendon_capacity = vec![0u32; doc.tendons.len()];
+    if !doc.tendons.is_empty() {
+        let segment_mesh = mint_mesh(
+            "tendon segment",
+            &crate::controller::mujoco_primitive::unit_cylinder_z(),
+        );
+        for (tendon_id, tendon) in doc.tendons.iter().enumerate() {
+            if !visible.contains(&tendon.group) {
+                continue;
+            }
+            let segments = tendon.max_waypoints.saturating_sub(1);
+            if segments == 0 {
+                continue;
+            }
+            tendon_capacity[tendon_id] = tendon.max_waypoints;
+            let material = match tendon.material.and_then(|m| mat_assets.get(m)).copied() {
+                Some(id) => id,
+                None => {
+                    let key = tendon.rgba.map(|c| c.to_bits());
+                    *rgba_materials.entry(key).or_insert_with(|| {
+                        mint_material(
+                            format!(
+                                "rgba {:.2} {:.2} {:.2}",
+                                tendon.rgba[0], tendon.rgba[1], tendon.rgba[2]
+                            ),
+                            MaterialDef {
+                                base_color: tendon.rgba,
+                                alpha_mode: alpha_mode(tendon.rgba[3]),
+                                ..MaterialDef::default()
+                            },
+                        )
+                    })
+                }
+            };
+            let label = tendon
+                .name
+                .clone()
+                .unwrap_or_else(|| format!("tendon {tendon_id}"));
+            let width = tendon.width as f32;
+            let waypoint = |i: usize| -> Option<[f32; 3]> {
+                tendon
+                    .world_waypoints
+                    .get(i)
+                    .map(|p| [p[0] as f32, p[1] as f32, p[2] as f32])
+            };
+            for segment in 0..segments as usize {
+                let span = waypoint(segment).zip(waypoint(segment + 1));
+                let (translation, rotation, scale) = match span {
+                    Some((a, b)) => segment_transform(a, b, width),
+                    // Beyond the initial pose's waypoints: a spare, parked at
+                    // the origin with no length until the stream needs it.
+                    None => ([0.0; 3], [0.0, 0.0, 0.0, 1.0], [width, width, 0.0]),
+                };
+                let (material_variants, selected_variant) = palette(material);
+                let node = Node::new_with_transform_and_kind(
+                    format!("{label} {segment}"),
+                    Trs {
+                        translation,
+                        rotation,
+                        scale,
+                    },
+                    NodeKind::Mesh {
+                        mesh: segment_mesh,
+                        material_variants,
+                        selected_variant,
+                        shadow: Default::default(),
+                        lod: Default::default(),
+                    },
+                );
+                node.visible.set(span.is_some());
+                node.mujoco
+                    .set(Some(MujocoComponent::TendonSegment(MujocoTendonSegment {
+                        tendon_id: tendon_id as u32,
+                        segment: segment as u32,
+                        group: tendon.group,
+                    })));
+                node.locked.set(true);
+                root.children.lock_mut().push_cloned(node);
+            }
+        }
+    }
+    if let Some(MujocoComponent::Instance(mut instance)) = root.mujoco.get_cloned() {
+        instance.tendon_capacity = tendon_capacity;
+        root.mujoco.set(Some(MujocoComponent::Instance(instance)));
     }
 
     if !skipped_kinds.is_empty() {

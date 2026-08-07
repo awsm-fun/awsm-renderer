@@ -764,3 +764,51 @@ model's `size` z-scale (0.05) and base depth (0.1). In the editor it renders as
 undulating ground with the Barkour robot standing on it; 37 nodes, console clean.
 
 **Next in Phase 4:** spatial tendons, then skins, then flex.
+
+---
+
+## 2026-08-08 — Phase 4, increment 3a: spatial tendons, static half (ON-DEVICE VERIFIED)
+
+**Landed.** The sidecar gained a `tendons` table, the scene gained a
+`MujocoComponent::TendonSegment`, and the importer mints a **preallocated pool**
+of unit-cylinder segments per drawable tendon.
+
+The one design call worth recording: a tendon's waypoint count changes at
+runtime as it wraps around geometry, and a pose stream can only write transforms
+— it can't create nodes. So the pool is sized from the *compiled model*
+(`max_waypoints = 2 * tendon_num`, MuJoCo's own rule for sizing `wrap_xpos`) and
+the unused tail simply starts hidden. Sizing it from the initial pose instead
+would have looked fine on arm26 today and run out of segments the first time a
+tendon wrapped: `BF` routes through 7 waypoints at rest but is allowed 10.
+Segments are cylinders rather than the capsules MuJoCo draws, because length
+lives in the node's Z scale and only a cylinder scales along its axis without
+distorting.
+
+**A real bug the tests caught before the browser did.** My first pass assumed
+every tendon is drawable. MuJoCo's own `humanoid.xml` proved otherwise: its
+hamstrings are FIXED tendons — joint-coupling constraints with no path through
+space — and they exported with a pool but zero waypoints, which would have drawn
+two stray cables at the origin. Now told apart by `wrap_type` (the compiled
+truth) rather than by a runtime `ten_wrapnum` of 0, and exported with
+`max_waypoints: 0` while keeping their slot, since the index *is* the tendon id.
+
+**What the browser showed.** `tendon_arm/arm26.xml` imported: 6 tendons → 38
+segment nodes (`SF 0`…`BE 8`), 14 of them hidden spares, and the viewport shows
+the muscle cables running the length of the arm and visibly bending as they pass
+through the site spheres. Then a genuine save/load roundtrip: `save_project` →
+served over a CORS-enabled static server → `load_project_from_url` → re-save.
+`tendon_capacity = [6, 6, 6, 6, 10, 10]`, 38 `tendon_segment` blocks and 14
+`visible = false` all came back identical, and the reloaded scene renders the
+same. Separately, `humanoid.xml` imported 0 segment nodes with
+`tendon_capacity = [0, 0]` — the fixed-tendon fix confirmed on-device, not just
+in a test. Console clean.
+
+**Two harness notes.** `load_project_from_url` silently does nothing if the
+served project has no CORS headers (plain `python3 -m http.server` won't do), and
+the failure looks exactly like a successful no-op load — I only caught it by
+renaming a node in the served `project.toml` and checking the marker came back.
+Also, appending a cache-buster to `base_url` corrupts the fetch path; serve on a
+fresh port instead.
+
+**Next in Phase 4:** the tendon waypoint stream channel +
+`apply_tendon_waypoints` in the sink (increment 3b), then skins, then flex.

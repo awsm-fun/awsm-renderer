@@ -5,9 +5,9 @@
 
 use anyhow::{Context, Result};
 use awsm_renderer_mujoco_format::sidecar::{
-    Body, Geom, GeomKind, Material, Mesh, Sidecar, Site, Source,
+    Body, Geom, GeomKind, Material, Mesh, Sidecar, Site, Source, Tendon,
 };
-use awsm_renderer_mujoco_sys::{mjtGeom, mjtObj, Model};
+use awsm_renderer_mujoco_sys::{mjtGeom, mjtObj, mjtWrap, Model};
 use sha2::{Digest, Sha256};
 use std::path::Path;
 
@@ -137,6 +137,45 @@ pub fn build(model: &Model<'_>, source: Source) -> Result<Sidecar> {
                 .filter(|id| *id >= 0)
                 .map(|id| id as usize),
             rgba: read4f(model.site_rgba(), st),
+        });
+    }
+
+    for t in 0..model.ntendon() {
+        let adr0 = model.tendon_adr()[t] as usize;
+        let num0 = model.tendon_num()[t] as usize;
+        // A FIXED tendon (joint coupling) has no path through space, so there is
+        // nothing to draw. It still gets an entry, because this vec's index is
+        // the MuJoCo tendon id and a stream binds against that; a zero pool is
+        // how "not drawable" is spelled.
+        let spatial = model.wrap_type()[adr0..adr0 + num0]
+            .iter()
+            .any(|w| *w != mjtWrap::mjWRAP_JOINT as i32);
+        // Two points per wrap object is MuJoCo's own allocation rule for
+        // `wrap_xpos`, so it is the true ceiling on this tendon's waypoints.
+        let max_waypoints = if spatial { (num0 as u32) * 2 } else { 0 };
+        let adr = data.ten_wrapadr()[t] as usize;
+        let num = if spatial {
+            data.ten_wrapnum()[t] as usize
+        } else {
+            0
+        };
+        let xpos = data.wrap_xpos();
+        let world_waypoints = (0..num)
+            .map(|i| {
+                let o = (adr + i) * 3;
+                [xpos[o], xpos[o + 1], xpos[o + 2]]
+            })
+            .collect();
+        out.tendons.push(Tendon {
+            name: model.name(mjtObj::mjOBJ_TENDON, t).map(str::to_string),
+            group: model.tendon_group()[t],
+            width: model.tendon_width()[t],
+            material: Some(model.tendon_matid()[t])
+                .filter(|id| *id >= 0)
+                .map(|id| id as usize),
+            rgba: read4f(model.tendon_rgba(), t),
+            max_waypoints,
+            world_waypoints,
         });
     }
 
