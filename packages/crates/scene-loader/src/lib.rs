@@ -4226,6 +4226,7 @@ mod material_palette_tests {
 
     fn mesh_node(variants: Vec<MaterialVariant>, selected: Option<VariantId>) -> EditorNode {
         EditorNode {
+            mujoco: None,
             id: NodeId::new(),
             name: String::new(),
             transform: Default::default(),
@@ -4307,6 +4308,7 @@ mod prefab_tests {
 
     fn node(id: NodeId, prefab: bool, children: Vec<EditorNode>) -> EditorNode {
         EditorNode {
+            mujoco: None,
             id,
             name: String::new(),
             transform: Default::default(),

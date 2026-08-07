@@ -2275,6 +2275,7 @@ mod tests {
         }
         fn node(name: &str, kind: NodeKind) -> EditorNode {
             EditorNode {
+                mujoco: None,
                 id: NodeId::new(),
                 name: name.into(),
                 transform: Default::default(),

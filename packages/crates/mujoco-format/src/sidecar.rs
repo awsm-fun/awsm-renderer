@@ -17,6 +17,7 @@ pub const MAGIC: &str = "awsm-mujoco-sidecar";
 pub const VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Sidecar {
     /// Always [`MAGIC`].
     pub format: String,
@@ -165,6 +166,7 @@ impl std::error::Error for Error {}
 /// transport MJCF/URDF. A harness matches its loaded models against this and fails
 /// loudly on a mismatch, instead of silently driving the wrong robot.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Source {
     /// File name only — never a path. Paths are machine-specific and would make
     /// the fingerprint unmatchable on the sim's side.
@@ -178,6 +180,7 @@ pub struct Source {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Body {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -190,6 +193,7 @@ pub struct Body {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Geom {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -225,6 +229,7 @@ pub struct Geom {
 /// The doc comment on each variant is the meaning of [`Geom::size`], which is the
 /// one thing about MuJoCo primitives that cannot be guessed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum GeomKind {
     /// Infinite ground plane. `size` = `[x half-extent, y half-extent, grid
@@ -252,6 +257,7 @@ pub enum GeomKind {
 /// MuJoCo materials are Phong-ish; mapping them onto our PBR materials happens at
 /// *import*, not here, so the sidecar stays a faithful record of the source.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Material {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -265,6 +271,7 @@ pub struct Material {
 /// A mesh referenced by a geom. The vertex data itself is in the companion GLB —
 /// this is only the correspondence between the two files.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Mesh {
     /// The MuJoCo asset name, as authored. Not necessarily unique, and not
     /// necessarily present — which is exactly why it is not the binding key.

@@ -159,6 +159,7 @@ mod tests {
             ))),
         );
         project.nodes.push(EditorNode {
+            mujoco: None,
             id: NodeId::new(),
             name: "Ball".into(),
             transform: Default::default(),
@@ -186,5 +187,73 @@ mod tests {
         // The runtime Scene serializes to scene.toml + round-trips.
         let toml = scene_to_toml(&scene).expect("scene.toml");
         assert_eq!(scene_from_toml(&toml).unwrap(), scene);
+    }
+
+    /// A MuJoCo instance must reach the bundle's `scene.toml` intact. This is the
+    /// export half of the plan's parity checklist: a scene that bakes fine but
+    /// loses the fingerprint renders correctly and can never bind a sim to it,
+    /// which is a silent failure rather than a loud one.
+    #[test]
+    fn the_mujoco_component_survives_the_bundle_bake() {
+        use awsm_renderer_scene::mujoco::{
+            GeomKind, MujocoComponent, MujocoGeom, MujocoInstance, Source,
+        };
+
+        let source = Source {
+            filename: "go2.xml".into(),
+            sha256: "b".repeat(64),
+            mujoco_version: "3.11.0".into(),
+        };
+        let geom = EditorNode {
+            mujoco: Some(MujocoComponent::Geom(MujocoGeom {
+                geom_id: 12,
+                group: 2,
+                kind: GeomKind::Mesh,
+                body: 3,
+            })),
+            id: NodeId::new(),
+            name: "geom_12".into(),
+            transform: Default::default(),
+            kind: NodeKind::Group,
+            locked: false,
+            visible: true,
+            prefab: false,
+            children: vec![],
+        };
+        let mut project = EditorProject {
+            name: "sim".into(),
+            ..Default::default()
+        };
+        project.nodes.push(EditorNode {
+            mujoco: Some(MujocoComponent::Instance(MujocoInstance::new(
+                source.clone(),
+                56,
+            ))),
+            id: NodeId::new(),
+            name: "go2".into(),
+            transform: Default::default(),
+            kind: NodeKind::Group,
+            locked: false,
+            visible: true,
+            prefab: false,
+            children: vec![geom],
+        });
+
+        let scene = project_to_scene(&project);
+        // Through the real serializer the player reads, not just in memory.
+        let baked = scene_from_toml(&scene_to_toml(&scene).expect("scene.toml")).unwrap();
+
+        let Some(MujocoComponent::Instance(inst)) = &baked.nodes[0].mujoco else {
+            panic!("instance component lost in the bake: {:?}", baked.nodes[0]);
+        };
+        assert_eq!(inst.source, source);
+        assert_eq!(inst.geom_count, 56, "the stream's id space must survive");
+        assert_eq!(inst.visible_groups, vec![0, 1, 2]);
+
+        let Some(MujocoComponent::Geom(g)) = &baked.nodes[0].children[0].mujoco else {
+            panic!("geom component lost in the bake");
+        };
+        assert_eq!((g.geom_id, g.group, g.body), (12, 2, 3));
+        assert_eq!(g.kind, GeomKind::Mesh);
     }
 }

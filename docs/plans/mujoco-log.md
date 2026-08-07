@@ -152,3 +152,45 @@ scene formats, and an import command that reads sidecar + GLB and mints geom
 nodes at their sidecar poses under an instance root. That is where the pipeline
 parity checklist starts applying, and where Phase 1's real exit criterion (the
 Go2 rendering as a robot, groups honoured, materials mapped) gets met.
+
+---
+
+## 2026-08-07 — Phase 1, increment 4: the `mujoco` node component (ON-DEVICE VERIFIED)
+
+**Landed.** `EditorNode::mujoco: Option<MujocoComponent>` — an enum, `Instance`
+(source fingerprint, model name, `geom_count`, `visible_groups`) or `Geom`
+(`geom_id`, `group`, `kind`, `body`). A field on the node rather than a table on
+the scene, so it rides along through copy/delete/reparent and the plan's
+"scene-level sim instance list" is derived rather than stored. No stored
+geom_id→node_id map either: each geom knows its own id and the binding is
+resolved by walking the subtree, so there is no second copy to drift.
+
+Because `EditorProject` (authoring) and `Scene` (bundle) are both built from
+`EditorNode`, one field covers both formats.
+
+**The bug this iteration existed to find.** After the schema landed and every
+round-trip test passed, the browser round-trip returned the component **empty**.
+The editor does not serialize `EditorNode` directly — its reactive
+`engine::scene::Node` converts through `NodeSpec`, which has its own field list.
+A per-node field has to be added in *four* places (`EditorNode`, `NodeSpec`, both
+conversions, and the reactive `Node`), and nothing but a browser round-trip
+catches missing one. Exactly the silent-failure class the parity checklist names.
+Recorded in the plan so the next per-node field doesn't repeat it.
+
+**What the browser showed** (after the fix): a hand-written `project.toml`
+carrying an instance + a child geom, loaded into the editor at :9085 via
+`load_project_from_url`, then read back with `editor_project_toml` — every field
+present and correct: `[nodes.mujoco.instance]` with `model_name`/`geom_count`/
+`visible_groups`, `[nodes.mujoco.instance.source]` with the real Go2
+filename/sha256/mujoco_version, and `[nodes.children.mujoco.geom]` with
+`geom_id = 12`, `group = 2`, `kind = "capsule"`, `body = 3`.
+
+**Parity checklist**: three of five boxes green, one ruled N/A after checking
+(`node_sync`'s effective-def merge is `MaterialInstance` → `MaterialDef` only,
+nothing per-mesh here), one still open (MCP coverage, nothing to cover until the
+import command). Notes on how each was verified are in the plan.
+
+**Next:** the editor import command — read sidecar + GLB, mint an instance root
+with the convention rotation and a geom node per visible geom at its sidecar
+pose, minting materials from the sidecar's Phong terms. That is Phase 1's real
+exit criterion: the Go2 standing there as a robot.

@@ -253,11 +253,30 @@ is the test of whether the whole flow works.
 Each is a known silent-failure spot — the scene renders fine but can't bind the
 stream:
 
-- [ ] mujoco component exists in **both** editor-protocol and scene (bundle) formats
-- [ ] survives `export_player_bundle`
-- [ ] survives project save/load roundtrip
-- [ ] added to `node_sync` effective-def merge if any field behaves per-mesh
-- [ ] MCP command coverage for every editor action
+- [x] mujoco component exists in **both** editor-protocol and scene (bundle) formats
+      — one `EditorNode` type backs `EditorProject` (authoring) *and* `Scene`
+      (bundle), so `EditorNode::mujoco` is in both by construction. It also had to
+      be added to `NodeSpec`, which is the editor's real serialization pivot (see
+      below). Guarded by `mujoco::tests::round_trips_through_toml_and_json` and
+      `the_on_disk_shape_is_stable`.
+- [x] survives `export_player_bundle` — the bundle's `scene.toml` comes from
+      `to_editor_project` → `project_to_scene`. The first half was watched
+      on-device (`editor_project_toml`, below); the second is guarded by
+      `bake::tests::the_mujoco_component_survives_the_bundle_bake`, which asserts
+      the fingerprint/geom_count/geom ids survive a real `scene_to_toml` →
+      `scene_from_toml`.
+- [x] survives project save/load roundtrip — **verified in the browser**: a
+      hand-written `project.toml` with an instance + geom loaded via
+      `load_project_from_url`, and `editor_project_toml` read back every field
+      (source fingerprint, `geom_count`, `visible_groups`, `geom_id`, `group`,
+      `kind`, `body`). The first attempt came back EMPTY — see the `NodeSpec` note
+      under "Decisions taken during implementation".
+- [x] added to `node_sync` effective-def merge if any field behaves per-mesh —
+      **N/A, checked not assumed**: `node_sync::builtin_merged`/`merged_builtin_def`
+      merge a `MaterialInstance` onto a `MaterialDef`. Nothing in the mujoco
+      component is a per-mesh material override, so there is no merge to join.
+- [ ] MCP command coverage for every editor action — nothing to cover yet (the
+      import command is the next increment).
 
 ## Decisions taken during implementation
 
@@ -311,6 +330,27 @@ smaller/reversible option, per the settled decisions above.
   `(pos, normal, uv)` triple becomes one vertex, so sharing survives. UV V is
   flipped here too — the GLB is then a plain correct glTF any viewer opens right,
   rather than one that needs our importer to look correct.
+- **The mujoco component is a field on the node, not a table on the scene.**
+  `EditorNode::mujoco: Option<MujocoComponent>` — an enum, `Instance` or `Geom`,
+  because a node is one or the other and never both. On the node it travels with
+  the subtree through copy/delete/reparent, and it needs no second structure to
+  keep in sync. The plan's "scene-level sim instance list" is then derived (every
+  node carrying an `Instance`), which supports N instances for free.
+- **No stored geom_id→node_id map.** Each geom node knows its own `geom_id`, so
+  the binding is resolved by walking the instance subtree at load — which is what
+  the plan's pose-sink section already says ("resolves"). A stored map would be a
+  second copy free to drift from the tree it describes, and drift there means
+  poses applied to the wrong nodes, which reads as a physics bug rather than a
+  data bug. `geom_count` *is* stored, because it cannot be recovered: an import
+  that skips hidden groups leaves gaps, and a frame sized to the visible nodes
+  would be misaligned from the first skipped geom onward.
+- **`NodeSpec` is the editor's real serialization pivot, not `EditorNode`.**
+  Adding the field to the shared scene schema was NOT enough: the editor's
+  reactive `engine::scene::Node` converts through `NodeSpec` (`spec_from_node` /
+  `node_from_spec`), so the component was silently dropped on save even though
+  every schema round-trip test passed. Any future per-node field has to be added
+  in four places — `EditorNode`, `NodeSpec`, both conversions, and the reactive
+  `Node` — and only a browser round-trip catches missing any of them.
 - **Face indices are bounds-checked per corner.** MuJoCo's face indices being
   mesh-relative rather than absolute into the shared pool is a convention read off
   the library, not a header guarantee. Unchecked, a change there would read a

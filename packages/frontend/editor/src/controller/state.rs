@@ -4105,6 +4105,7 @@ impl EditorController {
                             locked: false,
                             visible: true,
                             prefab: false,
+                            mujoco: None,
                             children: vec![],
                         };
                         let node = crate::controller::node_spec::node_from_spec(&spec);

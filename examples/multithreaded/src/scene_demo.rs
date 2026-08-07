@@ -406,6 +406,7 @@ fn demo_scene() -> awsm_renderer_scene::Scene {
     );
 
     let mesh_node = |name: &str, mesh_id: AssetId, tx: [f32; 3]| EditorNode {
+        mujoco: None,
         id: NodeId::new(),
         name: name.into(),
         transform: Trs {
@@ -442,6 +443,7 @@ fn demo_scene() -> awsm_renderer_scene::Scene {
         .nodes
         .push(mesh_node("box", box_mesh, [0.0, 0.0, 0.0]));
     scene.nodes.push(EditorNode {
+        mujoco: None,
         id: NodeId::new(),
         name: "scene-light".into(),
         transform: Trs {

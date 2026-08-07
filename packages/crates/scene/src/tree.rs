@@ -42,6 +42,16 @@ pub struct EditorNode {
     /// authors can see and edit them.
     #[serde(default)]
     pub prefab: bool,
+    /// What this node is to a MuJoCo simulation: an instance root, one geom of
+    /// one, or (the overwhelming default) nothing at all.
+    ///
+    /// A field on the node rather than a table on the scene, so it travels with
+    /// the subtree through copy/delete/reparent and needs no second structure to
+    /// keep in sync. `#[serde(default)]` + `skip_serializing_if` means every
+    /// pre-feature project and bundle loads unchanged and non-MuJoCo scenes never
+    /// grow the key. See [`MujocoComponent`](crate::mujoco::MujocoComponent).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mujoco: Option<crate::mujoco::MujocoComponent>,
     #[serde(default)]
     pub children: Vec<EditorNode>,
 }
@@ -604,6 +614,7 @@ mod tests {
     #[test]
     fn skinned_mesh_joints_toml_round_trip() {
         let node = EditorNode {
+            mujoco: None,
             id: NodeId::new(),
             name: "Cylinder".into(),
             transform: Trs::default(),
@@ -671,6 +682,7 @@ mod tests {
         use crate::primitive::MeshRef;
 
         let node = EditorNode {
+            mujoco: None,
             id: NodeId::new(),
             name: "Forest".into(),
             transform: Trs::default(),

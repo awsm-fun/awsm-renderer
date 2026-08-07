@@ -566,6 +566,7 @@ dependencies = [
 name = "awsm-renderer-mujoco-format"
 version = "0.31.0"
 dependencies = [
+ "schemars",
  "serde",
  "serde_json",
 ]
@@ -660,6 +661,7 @@ dependencies = [
 name = "awsm-renderer-scene"
 version = "0.31.0"
 dependencies = [
+ "awsm-renderer-mujoco-format",
  "bitcode",
  "glam 0.32.1",
  "schemars",

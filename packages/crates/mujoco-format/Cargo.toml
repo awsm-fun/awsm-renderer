@@ -13,6 +13,13 @@ repository.workspace = true
 
 [dependencies]
 serde = { workspace = true }
+# Optional JSON Schemas, so consumers that expose these types through the MCP
+# server's typed tool params (the scene crate) can propagate the feature.
+schemars = { version = "1", optional = true }
+
+[features]
+default = []
+schemars = ["dep:schemars"]
 
 [dev-dependencies]
 serde_json = { workspace = true }
