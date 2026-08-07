@@ -353,6 +353,23 @@ smaller/reversible option, per the settled decisions above.
   every schema round-trip test passed. Any future per-node field has to be added
   in four places — `EditorNode`, `NodeSpec`, both conversions, and the reactive
   `Node` — and only a browser round-trip catches missing any of them.
+- **The pose sink's binding is a `Vec<Option<TransformKey>>` indexed by geom id**,
+  sized to the model's full geom count — not a map. It is indexed once per geom
+  per frame, so an array lookup is the right shape; geoms the scene chose not to
+  render are simply `None`, and the id space stays the model's so a producer
+  never has to re-index a frame.
+- **A pose frame carries translation and rotation only; scale is preserved** by
+  read-modify-write. An ellipsoid geom is a unit sphere scaled per-axis by its
+  node, so overwriting scale would flatten it on the first frame.
+- **A mis-sized frame is an error, never a truncation.** Applying a short frame
+  would drive every geom past the mismatch from the wrong slot — motion that
+  reads as a physics bug rather than a protocol one.
+- **The editor gets two test seams** (`editor_apply_mujoco_poses`,
+  `editor_mujoco_instances`), mirroring `editor_tick_animation`: after a
+  `LoadPlayerBundle` reload the scene exists only in the renderer, exactly as it
+  does for a player, so driving the sink there exercises the real path. The
+  editor never calls them itself; a player calls
+  `scene_loader::mujoco::apply_geom_poses` against its own `LoadedScene`.
 - **Baked keyframes carry ZEROED tangents**, matching the editor's own
   `new_keyframe`. Echoing `value` into `in_tangent`/`out_tangent` (as the first
   cut did) both implies a cubic tangent that happens to equal the value and
@@ -586,7 +603,24 @@ smaller/reversible option, per the settled decisions above.
    frozen mid-collapse at t=1.2 s on its own ground plane, grid/gizmos off.
 
    **PHASE 2 COMPLETE.**
-3. **Pose sink + reference template.** Mapping layer in scene-loader (binding
+3. **Pose sink + reference template.**
+
+   Pose sink ✅ (Aug 7 2026): `scene_loader::mujoco` — `MujocoInstance` (root,
+   fingerprint, geom_id→TransformKey binding), `resolve_instances` (walks the
+   tree at load; `LoadedScene::mujoco`), `apply_geom_poses`. **Verified
+   on-device**: imported the humanoid with NO clip, ran `load_player_bundle`
+   (editor tree empty, 0 clips — nothing but the sink can move anything), and
+   fed all 58 frames of the recorded fixture capture straight into
+   `apply_geom_poses`. The humanoid went from standing to collapsed on the
+   floor; 58/58 frames applied with zero errors; console clean. Both guards
+   fired: a 100-float frame → *"pose frame has 100 floats, this instance needs
+   140"*, and instance index 3 → *"no sim instance 3 (the last bundle reload
+   resolved 1)"*.
+
+   Remaining: the templates-repo `physics-mujoco` template migrating onto the
+   sink, and collider components (universal core + mujoco extension block).
+
+   Original scope: mapping layer in scene-loader (binding
    resolution + pose sink) on the player API — no networking in this repo; the
    stream convention (jitter buffer, reconnect, recording) lives in the
    template. In the **templates repo**: `physics-mujoco` template —

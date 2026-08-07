@@ -97,6 +97,7 @@ pub mod dynamic;
 pub mod environment;
 pub mod light;
 pub mod material;
+pub mod mujoco;
 pub mod particles;
 pub mod texture;
 
@@ -247,6 +248,11 @@ pub struct LoadedScene {
     /// node. The rows live in `renderer.instances`, outside the mesh/transform
     /// stores, so [`teardown`](Self::teardown) frees them explicitly.
     pub instanced_transforms: Vec<TransformKey>,
+    /// Every MuJoCo sim instance in the loaded scene, with its geom_id→transform
+    /// binding already resolved — the handles a player feeds pose frames to (see
+    /// [`mujoco::apply_geom_poses`]). Empty for scenes with no sim instances,
+    /// which is almost all of them.
+    pub mujoco: Vec<mujoco::MujocoInstance>,
 }
 
 /// One pre-built entry of a mesh's material palette — see
@@ -1257,6 +1263,11 @@ pub async fn load_scene_for_player(
     // through these (see the field docs on `LoadedScene`).
     loaded.skin_joints = maps.skin_joints.clone();
     loaded.node_materials = maps.node_materials.clone();
+
+    // Resolve each MuJoCo sim instance's geom_id→transform binding, now that
+    // every node has a transform key. Derived from the tree rather than read
+    // from a stored map, so it cannot drift from the subtree it describes.
+    loaded.mujoco = mujoco::resolve_instances(&scene.nodes, &loaded.nodes);
 
     // ── Phase 3b: load animation clips + the NLA mixer ────────────────────────
     // Now that every node's transform / material / light / camera / mesh key

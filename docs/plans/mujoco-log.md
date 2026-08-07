@@ -564,3 +564,49 @@ and now a deterministic suite scene with a golden.
 
 **Next: Phase 3** — the pose sink in scene-loader (binding resolution + the
 player-API sink), then the `physics-mujoco` reference template migrates onto it.
+
+---
+
+## 2026-08-07 — Phase 3, increment 1: the pose sink (ON-DEVICE VERIFIED)
+
+**Landed.** `scene_loader::mujoco` — the renderer's entire contract with an
+external simulator, and the whole of the MuJoCo runtime surface in this repo. No
+networking, no transport, no timing source, no MuJoCo code:
+
+- `MujocoInstance` — the instance root, the model fingerprint, and a
+  `Vec<Option<TransformKey>>` indexed **by geom id** and sized to the model's
+  full geom count. An array, not a map, because it is indexed once per geom per
+  frame; unrendered geoms are `None` and the id space stays the model's, so a
+  producer never re-indexes a frame.
+- `resolve_instances` — walks the loaded tree and fills `LoadedScene::mujoco`.
+  Derived, never stored, same as everywhere else in this feature.
+- `apply_geom_poses` — writes one frame. Translation and rotation only, with
+  **scale preserved** by read-modify-write (an ellipsoid geom is a unit sphere
+  scaled per axis; overwriting scale would flatten it on frame one). A mis-sized
+  frame is an error, never a truncation.
+
+Plus two editor test seams (`editor_apply_mujoco_poses`,
+`editor_mujoco_instances`) mirroring `editor_tick_animation`: after a bundle
+reload the scene lives only in the renderer, exactly as it does for a player.
+
+**What the browser showed.** Imported the humanoid **with no clip at all**, ran
+`load_player_bundle` (editor tree empty, 0 clips — so nothing but the sink could
+move anything), then fed all **58 frames of the recorded fixture capture**
+straight into `apply_geom_poses`:
+
+- **58/58 frames applied, zero errors**; the humanoid went from standing to
+  collapsed on the floor. Screenshots before and after.
+- The torso's MuJoCo z walks 1.282 → 1.246 → 0.899 → 0.348 → 0.261 → 0.262
+  across the fed frames.
+- Both guards fired on purpose: a 100-float frame → *"pose frame has 100 floats,
+  this instance needs 140 (7 per geom x geom count)"*; instance index 3 → *"no
+  sim instance 3 (the last bundle reload resolved 1)"*.
+- Console clean.
+
+This is the same fixture the `mujoco-capture` scene bakes into a clip, now taking
+the OTHER path — proving both consumers of one capture agree.
+
+**Next:** the templates-repo `physics-mujoco` template migrating onto the sink
+(its Phase-0 client-side mirror is throwaway by design), plus collider components
+(universal core + `mujoco` extension block), which the plan lists as a Phase 3
+prereq.

@@ -1624,6 +1624,7 @@ impl EditorController {
                     // Track the direct inserts so the NEXT reset removes them
                     // (they're outside the bridge's per-node teardown).
                     set_bundle_resources(loaded.meshes, loaded.lights, loaded.clips);
+                    LAST_BUNDLE_MUJOCO.with(|c| *c.borrow_mut() = loaded.mujoco);
                 }
                 self.project_name.set("round-trip.awsm".to_string());
                 self.dirty.set_neq(false);
@@ -7731,6 +7732,20 @@ thread_local! {
         Vec<awsm_renderer::lights::LightKey>,
         Vec<awsm_renderer::animation::AnimationClipKey>,
     )> = const { RefCell::new((Vec::new(), Vec::new(), Vec::new())) };
+
+    /// The MuJoCo sim instances a `LoadPlayerBundle` populate resolved, retained
+    /// so a scriptable driver can feed them pose frames. The editor itself never
+    /// drives these — it is the TEST SEAM for the scene-loader pose sink, the
+    /// same role `editor_tick_animation` plays for clips: after a bundle reload
+    /// the scene lives only in the renderer, so this is the only way to exercise
+    /// the sink through the real player path.
+    static LAST_BUNDLE_MUJOCO: RefCell<Vec<awsm_renderer_scene_loader::mujoco::MujocoInstance>> =
+        const { RefCell::new(Vec::new()) };
+}
+
+/// The sim instances the last bundle reload resolved (see `LAST_BUNDLE_MUJOCO`).
+pub fn bundle_mujoco_instances() -> Vec<awsm_renderer_scene_loader::mujoco::MujocoInstance> {
+    LAST_BUNDLE_MUJOCO.with(|c| c.borrow().clone())
 }
 
 /// Fetch + parse a pre-baked cluster-LOD ("cluster") DAG (`<id>.clusters.bin`, JSON)

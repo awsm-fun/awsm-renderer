@@ -14,7 +14,7 @@ pub mod bake;
 
 /// Re-exported so consumers of the component don't need a direct dependency on
 /// the interchange crate just to name the types the component is made of.
-pub use awsm_renderer_mujoco_format::capture::Capture;
+pub use awsm_renderer_mujoco_format::capture::{Capture, FLOATS_PER_GEOM};
 pub use awsm_renderer_mujoco_format::sidecar::{
     GeomKind, Material as MujocoMaterial, Sidecar, Source,
 };
