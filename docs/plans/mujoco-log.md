@@ -47,3 +47,54 @@ Unitree exit criterion).
 **Next:** `packages/tools/mujoco-export-cli` — start with the sidecar
 (`mujoco.json`) half over primitives only, dumping the humanoid's geom/material
 tables, before touching the GLB/mesh path.
+
+---
+
+## 2026-08-07 — Phase 1, increment 2: sidecar schema + exporter's sidecar half
+
+**Landed.** Two crates:
+
+- `packages/crates/mujoco-format` (`awsm-renderer-mujoco-format`) — the frozen
+  `mujoco.json` schema. Pure serde, no MuJoCo dependency, so the wasm-side editor
+  and scene-loader can read it and the native exporter can write it. Enums are
+  documented strings, unknown fields are ignored, absent ones default, and
+  `Sidecar::validate()` checks the index references (`geom.body`, `geom.material`,
+  `geom.mesh`, `body.parent`) that JSON cannot express — the exact silent-failure
+  the plan's parity checklist is about.
+- `packages/tools/mujoco-export-cli` (`awsm-renderer-mujoco-export`) — compiles a
+  model with MuJoCo's own compiler and writes `<name>.mujoco.json`: source
+  fingerprint (filename + SHA-256 + MuJoCo version), bodies, geoms, materials,
+  mesh names. GLB half not yet started.
+
+**Verified — no browser surface in this increment** (a native CLI; nothing
+user-visible reaches the browser until the editor import command lands, which is
+where the on-device criterion starts to apply). What was actually run:
+
+- Exported the **Unitree Go2** from a menagerie checkout: 14 bodies, 56 geoms,
+  16 meshes, 4 materials (`metal`/`black`/`white`/`gray`). The group split the
+  plan calls out is real and correct — **33 visual mesh geoms in group 2, 23
+  collision primitives (box/sphere/cylinder) in group 3**, nothing else.
+  Every visual geom resolves to a mesh AND a material; every collision geom has
+  neither.
+- Exported the DeepMind humanoid: 17 bodies, 20 geoms, 0 meshes, floor is a
+  `plane` on body 0, all quaternions unit.
+- 8 tests green (`cargo test -p awsm-renderer-mujoco-export-cli
+  -p awsm-renderer-mujoco-format` with `MUJOCO_DIR` set), `cargo check
+  --workspace` and clippy clean.
+
+**Found by reading real models** (recorded under Phase 1 in the plan):
+
+- MuJoCo **re-frames mesh geoms at compile time** — a mesh geom's pos/quat are
+  relative to the mesh's recentred inertial frame, not the authored frame. Go2's
+  visual geoms all carry non-identity pos/quat because of it. Self-consistent
+  only if the GLB's vertices come from `mjModel.mesh_vert` (post-compile) and
+  never from the source OBJ/STL. Directly constrains the next increment.
+- `geom_dataid` is overloaded (mesh id vs heightfield id) — only dereference it
+  against the geom type.
+- Collision geoms have no material, so material-less must fall back to
+  `geom_rgba`, not error.
+
+**Next:** the GLB half of the exporter — `mjModel.mesh_vert`/`mesh_face`/
+`mesh_normal`/`mesh_texcoord` through the existing `glb-export` crate, one glTF
+mesh per MuJoCo mesh, verified by loading the emitted GLB back and comparing
+counts (and eventually by the editor rendering it).

@@ -280,6 +280,24 @@ smaller/reversible option, per the settled decisions above.
   requirement for anyone building the workspace. `regen-bindings.sh` documents the
   exact invocation; `EXPECTED_VERSION` derives from the regenerated header constant
   so there is no second thing to bump.
+- **The seam formats get their own crate**, `packages/crates/mujoco-format`
+  (`awsm-renderer-mujoco-format`): pure serde, zero MuJoCo dependency, therefore
+  wasm-safe. Both ends need it — the native exporter writes it and the wasm-side
+  editor/scene-loader read it — and neither should have to reach through the other.
+  Enums serialize as documented strings (`"capsule"`, not `3`) so MuJoCo's internal
+  numbering never leaks into a format third parties hand-write, unknown fields are
+  ignored and absent ones default (additive changes never bump `VERSION`), and
+  `Sidecar::validate()` checks the index references JSON itself cannot express.
+- **The sidecar stores raw MuJoCo coordinates** (Z-up, metres, `[w,x,y,z]` quats),
+  with no conversion. The Y-up flip stays exactly where the plan puts it — once, on
+  the instance root node — because converting at both layers would apply it twice
+  and would bake a second copy of the convention into a hand-writable format.
+- **Geom order is never filtered or reordered**: the array index *is* the MuJoCo
+  geom id the pose stream addresses. Collision geoms and invisible groups are
+  exported with their real group; deciding what to render is the importer's job.
+- **The exporter is not cargo-dist'd** (unlike `lod-bake-cli`/`env-bake-cli`): a
+  prebuilt binary is useless without a matching local MuJoCo install, and shipping
+  one would imply we redistribute MuJoCo. Users build it themselves.
 
 ## Phases
 
@@ -313,6 +331,24 @@ smaller/reversible option, per the settled decisions above.
    menagerie Unitree model renders correctly (groups honored, materials mapped) in
    its initial pose; instance root placeable; model fingerprint (filename + content
    hash) recorded on the instance. Parity checklist green.
+
+   Progress: `mujoco-sys` ✅, `mujoco-format` (sidecar schema) ✅, exporter's
+   sidecar half ✅ (Go2 exports 33 visual mesh geoms in group 2 + 23 collision
+   primitives in group 3). Remaining: GLB/mesh half of the exporter, mjpkg,
+   editor import command, on-device render.
+
+   Discovered while reading real models:
+   - **MuJoCo re-frames mesh geoms at compile time.** A mesh geom's `geom_pos`/
+     `geom_quat` are relative to the *mesh's own inertial frame*, not the frame
+     the MJCF author wrote, because the compiler recentres mesh vertices. Go2's
+     visual geoms accordingly carry non-identity pos/quat. This is self-consistent
+     as long as the GLB's vertices come from `mjModel`'s `mesh_vert` (post-compile)
+     and never from the original OBJ/STL — which is another reason we only ever
+     read the compiled model.
+   - **`geom_dataid` is overloaded**: mesh index for mesh geoms, heightfield index
+     for hfield geoms. Only ever dereference it against the geom's type.
+   - Go2's collision geoms carry no material, so a material-less geom must fall
+     back to `geom_rgba` rather than being treated as an error.
 2. **Capture-to-clip bake.** Documented capture format (any harness can write it);
    bake tool converts capture → native animation clips; scrub/play in editor;
    player bundle plays the clip. Browser-test-suite scene + goldens replay a

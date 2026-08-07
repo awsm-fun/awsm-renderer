@@ -1,0 +1,18 @@
+[package]
+# The frozen seam formats — deliberately its own crate, and deliberately dependency-
+# free beyond serde, so that BOTH the native exporter and the wasm-side editor /
+# scene-loader can depend on it without dragging MuJoCo (native-only) along.
+name = "awsm-renderer-mujoco-format"
+description = "Frozen schema for the MuJoCo sidecar (and capture) interchange formats — pure data, no MuJoCo dependency, wasm-safe"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

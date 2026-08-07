@@ -31,6 +31,9 @@ members = [
     # Native-only MuJoCo FFI (dlopen, no build.rs) — safe to keep in the workspace
     # because it needs no MuJoCo present to build. See its README.
     "packages/crates/mujoco-sys",
+    # Pure-serde interchange schemas; no MuJoCo dep, so wasm consumers can use it.
+    "packages/crates/mujoco-format",
+    "packages/tools/mujoco-export-cli",
 ]
 resolver = "2"
 
@@ -145,6 +148,7 @@ awsm-renderer-codec-meshopt = { path = "packages/crates/codec-meshopt", version 
 awsm-renderer-codec-basis = { path = "packages/crates/codec-basis", version = "0.31.0" }
 # Native-tools-only (not published; MuJoCo FFI can never build for wasm).
 awsm-renderer-mujoco-sys = { path = "packages/crates/mujoco-sys", version = "0.31.0" }
+awsm-renderer-mujoco-format = { path = "packages/crates/mujoco-format", version = "0.31.0" }
 # Frontend-only (not published); workspace dep keeps consumers path-agnostic.
 awsm-renderer-web-shared = { path = "packages/frontend/web-shared", version = "0.31.0" }
 

@@ -365,6 +365,19 @@ impl Model<'_> {
         })
     }
 
+    /// The model's own name (MJCF `<mujoco model="...">`).
+    ///
+    /// mjModel has no field for it: MuJoCo writes it as the first entry of the
+    /// shared `names` blob, ahead of every object name.
+    pub fn model_name(&self) -> Option<&str> {
+        let names = self.raw().names;
+        if names.is_null() {
+            return None;
+        }
+        let s = unsafe { CStr::from_ptr(names) }.to_str().ok()?;
+        (!s.is_empty()).then_some(s)
+    }
+
     /// Name of an object, or `None` when it was authored unnamed.
     pub fn name(&self, kind: mjtObj, id: usize) -> Option<&str> {
         let ptr = unsafe { (self.lib.mj.mj_id2name)(self.ptr, kind as i32, id as i32) };

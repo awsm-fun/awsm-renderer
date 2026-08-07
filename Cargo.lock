@@ -549,6 +549,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "awsm-renderer-mujoco-export-cli"
+version = "0.31.0"
+dependencies = [
+ "anyhow",
+ "awsm-renderer-mujoco-format",
+ "awsm-renderer-mujoco-sys",
+ "clap",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
+name = "awsm-renderer-mujoco-format"
+version = "0.31.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "awsm-renderer-mujoco-sys"
 version = "0.31.0"
 dependencies = [
