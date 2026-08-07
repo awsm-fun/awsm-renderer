@@ -1456,6 +1456,7 @@ mod cluster_persistence_tests {
 
     fn cluster_node(source: AssetId, children: Vec<EditorNode>) -> EditorNode {
         EditorNode {
+            physics: None,
             mujoco: None,
             id: NodeId::new(),
             name: "cluster".into(),

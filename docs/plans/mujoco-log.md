@@ -610,3 +610,50 @@ the OTHER path — proving both consumers of one capture agree.
 (its Phase-0 client-side mirror is throwaway by design), plus collider components
 (universal core + `mujoco` extension block), which the plan lists as a Phase 3
 prereq.
+
+---
+
+## 2026-08-07 — Phase 3, increment 2: collider physics params (ON-DEVICE VERIFIED)
+
+**Landed.** The plan's Phase-3 prereq: `collider::PhysicsParams` — a universal
+core (sliding friction, restitution, collision layer/mask, optional density)
+plus an optional `MujocoPhysics` extension block (torsional + rolling friction,
+`condim`, `solref`/`solimp`, `margin`/`gap`, `priority`) — on
+`EditorNode::physics`, with `SetPhysicsParams` and the `set_physics_params` MCP
+tool.
+
+Decisions (in the plan): a **separate optional node field**, not a payload on
+`NodeKind::Collider` (widening that variant would break every saved project and
+baked bundle for a field absent on almost every node); a **whole-value replace**
+rather than a patch, because the fields interact — MuJoCo's torsional and rolling
+friction are inert below `condim` 4 and 6, which is the usual reason a value
+appears to do nothing; and **omitted sub-fields fall back to MuJoCo's own
+defaults**, not zero. Layer/mask default to "everything" so an author who never
+touches them gets collisions rather than silence.
+
+The doc comments carry the two facts a user will otherwise learn the hard way:
+MuJoCo has NO restitution parameter (bounce lives in solref/solimp, so the
+universal value maps only approximately), and engines combine pairwise friction
+differently (MuJoCo max-modulo-priority, Rapier average, Box2D geometric mean),
+so identical authored values do not give identical contact behaviour.
+
+**What the browser showed.** Inserted a collision box, set a full params block
+via `set_physics_params`, then ran `reload_project_in_memory` (the editor's own
+save→load self-test — serialize, drop session caches, load back). The
+`[nodes.physics]` and `[nodes.physics.mujoco]` blocks come back **byte-identical**,
+with the sub-fields I did NOT author (`torsional_friction`, `rolling_friction`,
+`solref`, `solimp`) filled in from MuJoCo's defaults exactly as designed.
+Console clean.
+
+**Parity checklist for the new field**: one field on the shared `EditorNode` so
+both formats carry it; the bundle bake guarded by
+`bake::tests::collider_physics_params_survive_the_bundle_bake`; save/load
+verified in the browser as above; `node_sync` N/A (not a per-mesh material
+override); MCP covered by the dedicated tool + parity row.
+
+Threading it through took the same four places the `mujoco` field did
+(`EditorNode`, `NodeSpec`, both conversions, the reactive `Node`) — the note in
+the plan paid for itself.
+
+**Next:** the templates-repo `physics-mujoco` template migrating onto the pose
+sink, which is the last piece of Phase 3 and the plan's end-to-end oracle.

@@ -701,6 +701,15 @@ pub struct ImportMujocoParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct SetPhysicsParamsParams {
+    /// The collider node to parameterize.
+    pub node: awsm_renderer_editor_protocol::NodeId,
+    /// The whole params block; omit to CLEAR it back to engine defaults.
+    #[serde(default)]
+    pub params: Option<awsm_renderer_scene::collider::PhysicsParams>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ImportMujocoCaptureParams {
     /// URL of a `<name>.capture.json` recorded by `awsm-renderer-mujoco-record`
     /// (or by any harness writing the same documented format).
@@ -3030,6 +3039,30 @@ impl EditorMcp {
         self.dispatch(EditorCommand::ImportModelFromUrl { url: p.url })
             .await?;
         self.query(EditorQuery::LastImportReport).await
+    }
+
+    #[tool(
+        description = "Set a collider node's contact parameters: the universal core \
+        (friction, restitution, collision layer/mask, optional density) plus an optional \
+        `mujoco` block (torsional/rolling friction, condim, solref/solimp, margin/gap, \
+        priority). WHOLE-VALUE replace, not a patch — omit `params` to clear back to engine \
+        defaults. Two gotchas worth knowing: MuJoCo has NO restitution parameter (bounce \
+        lives in solref/solimp, so the universal value maps only approximately), and \
+        MuJoCo's torsional/rolling friction are inert below condim 4 and 6 respectively, \
+        which is the usual reason a value appears to do nothing. Engines also combine \
+        pairwise friction differently (MuJoCo: element-wise max modulo priority; Rapier: \
+        average; Box2D: geometric mean), so identical values do not give identical contact \
+        behaviour across engines."
+    )]
+    async fn set_physics_params(
+        &self,
+        Parameters(p): Parameters<SetPhysicsParamsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::SetPhysicsParams {
+            node: p.node,
+            params: p.params,
+        })
+        .await
     }
 
     #[tool(

@@ -457,6 +457,21 @@ pub enum EditorCommand {
     /// adds a movable node. View-only: a cluster mesh has no editable geometry stack.
     ImportClusterAsset { clusters_url: String },
 
+    /// Set (or clear) a collider node's contact parameters — the universal core
+    /// plus an optional per-engine extension block.
+    ///
+    /// Whole-value replace, not a patch: the params are a small, fully-specified
+    /// struct whose fields interact (MuJoCo's torsional/rolling friction are
+    /// inert below their `condim` thresholds), so merging half of one authored
+    /// block into another is more confusing than restating it. `params: None`
+    /// clears the block back to the engine's defaults.
+    /// Inverse: restore the previous params.
+    SetPhysicsParams {
+        node: NodeId,
+        #[serde(default)]
+        params: Option<awsm_renderer_scene::collider::PhysicsParams>,
+    },
+
     /// Import a compiled MuJoCo model from an `awsm-renderer-mujoco-export`
     /// sidecar (`<name>.mujoco.json`), plus the companion geometry GLB the
     /// sidecar names.
@@ -1759,6 +1774,7 @@ impl EditorCommand {
             EditorCommand::ImportModelFromUrl { .. } => "Import model",
             EditorCommand::ImportClusterAsset { .. } => "Import cluster asset",
             EditorCommand::ImportMujocoFromUrl { .. } => "Import MuJoCo model",
+            EditorCommand::SetPhysicsParams { .. } => "Set physics params",
             EditorCommand::ImportModelFromFile { .. } => "Import model",
             EditorCommand::ImportTextureFromUrl { .. } => "Import texture",
             EditorCommand::ImportKtxEnvFromUrl { .. } => "Import environment",

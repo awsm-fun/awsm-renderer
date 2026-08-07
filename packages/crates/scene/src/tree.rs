@@ -42,6 +42,17 @@ pub struct EditorNode {
     /// authors can see and edit them.
     #[serde(default)]
     pub prefab: bool,
+    /// Contact parameters for a `Collider` node — universal core plus an
+    /// optional per-engine extension block (see
+    /// [`PhysicsParams`](crate::collider::PhysicsParams)).
+    ///
+    /// A separate optional field rather than a payload on
+    /// [`NodeKind::Collider`], which carries the SHAPE: adding it to the variant
+    /// would break every saved project and baked bundle for a field that is
+    /// absent on almost every node. Ignored on non-collider nodes today; it is
+    /// where a future dynamic body's mass properties would go too.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub physics: Option<crate::collider::PhysicsParams>,
     /// What this node is to a MuJoCo simulation: an instance root, one geom of
     /// one, or (the overwhelming default) nothing at all.
     ///
@@ -614,6 +625,7 @@ mod tests {
     #[test]
     fn skinned_mesh_joints_toml_round_trip() {
         let node = EditorNode {
+            physics: None,
             mujoco: None,
             id: NodeId::new(),
             name: "Cylinder".into(),
@@ -682,6 +694,7 @@ mod tests {
         use crate::primitive::MeshRef;
 
         let node = EditorNode {
+            physics: None,
             mujoco: None,
             id: NodeId::new(),
             name: "Forest".into(),

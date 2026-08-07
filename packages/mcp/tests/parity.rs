@@ -111,6 +111,7 @@ const EXPECTED_COMMANDS: &[&str] = &[
     "import_cluster_asset",
     "import_mujoco_from_url",
     "import_mujoco_capture",
+    "set_physics_params",
     "import_texture_from_url",
     "insert",
     "insert_hull_from_node",

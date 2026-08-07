@@ -44,6 +44,9 @@ pub struct Node {
     /// Reactive because the inspector reads it to show the "driven by sim"
     /// indicator and to disable the transform gizmo. Persists across save/load.
     pub mujoco: Mutable<Option<awsm_renderer_editor_protocol::MujocoComponent>>,
+    /// Collider contact parameters (universal core + per-engine block).
+    /// Reactive so the inspector can bind to it. Persists across save/load.
+    pub physics: Mutable<Option<awsm_renderer_editor_protocol::collider::PhysicsParams>>,
 }
 
 impl Node {
@@ -60,6 +63,7 @@ impl Node {
             visible: Mutable::new(true),
             prefab: Mutable::new(false),
             mujoco: Mutable::new(None),
+            physics: Mutable::new(None),
         })
     }
 
@@ -248,6 +252,7 @@ impl Node {
             visible: Mutable::new(true),
             prefab: Mutable::new(false),
             mujoco: Mutable::new(None),
+            physics: Mutable::new(None),
         })
     }
 
@@ -288,6 +293,7 @@ impl Node {
             visible: Mutable::new(self.visible.get()),
             prefab: Mutable::new(self.prefab.get()),
             mujoco: Mutable::new(self.mujoco.get_cloned()),
+            physics: Mutable::new(self.physics.get_cloned()),
         })
     }
 }

@@ -121,6 +121,7 @@ mod tests {
 
     fn node(mujoco: Option<MujocoComponent>) -> EditorNode {
         EditorNode {
+            physics: None,
             id: NodeId::new(),
             name: "n".into(),
             transform: Default::default(),

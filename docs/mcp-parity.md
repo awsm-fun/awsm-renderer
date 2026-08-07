@@ -80,6 +80,7 @@ dedicated tool reaches it indirectly · **dispatch** = escape hatch only ·
 | `import_model_from_file` | — | n/a | Session-local `blob:` URL from the file picker — meaningless over MCP (use `import_model_from_url`). |
 | `import_cluster_asset` | `import_cluster_asset` | tool | |
 | `import_mujoco_from_url` | `import_mujoco_from_url` | tool | Sidecar + geometry GLB from `awsm-renderer-mujoco-export`; returns the import report. Omit `reimport` to ADD an instance, pass an instance node id to refresh one in place (keeps placement + material assignments). |
+| `set_physics_params` | `set_physics_params` | tool | Collider contact params: universal core + optional `mujoco` extension block. Whole-value replace; omit `params` to clear. |
 | `import_mujoco_capture` | `import_mujoco_capture` | tool | Bakes a recorded capture into an ordinary animation clip on a sim instance; rejects a model-fingerprint mismatch. |
 | `import_texture_from_url` | `import_texture_from_url` | tool | |
 | `import_ktx_env_from_url` | `set_environment` (URL args) | wrapper | The tool mints the asset + patches the slot in one call; direct dispatch works for pre-registering. |

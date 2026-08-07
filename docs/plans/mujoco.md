@@ -353,6 +353,20 @@ smaller/reversible option, per the settled decisions above.
   every schema round-trip test passed. Any future per-node field has to be added
   in four places — `EditorNode`, `NodeSpec`, both conversions, and the reactive
   `Node` — and only a browser round-trip catches missing any of them.
+- **Collider physics params are a separate optional node field**, not a payload
+  on `NodeKind::Collider` (which carries the SHAPE). Widening the variant would
+  break every saved project and baked bundle for a field absent on almost every
+  node; an additive `EditorNode::physics: Option<PhysicsParams>` costs nothing and
+  is also where a future dynamic body's mass properties belong.
+- **`SetPhysicsParams` is a whole-value replace, not a patch.** The params are a
+  small fully-specified struct whose fields interact — MuJoCo's torsional and
+  rolling friction are inert below `condim` 4 and 6 — so merging half of one
+  authored block into another is more confusing than restating it. Omitting
+  `params` clears the block back to engine defaults.
+- **An omitted `mujoco` sub-field falls back to MuJoCo's OWN default**, not to
+  zero, so authoring one knob doesn't silently re-specify the contact model.
+  Layer/mask default to "everything", so an author who never touches them gets
+  collisions rather than silence.
 - **The pose sink's binding is a `Vec<Option<TransformKey>>` indexed by geom id**,
   sized to the model's full geom count — not a map. It is indexed once per geom
   per frame, so an array lookup is the right shape; geoms the scene chose not to
@@ -617,8 +631,21 @@ smaller/reversible option, per the settled decisions above.
    140"*, and instance index 3 → *"no sim instance 3 (the last bundle reload
    resolved 1)"*.
 
+   Collider components ✅ (Aug 7 2026) — `collider::PhysicsParams` (universal
+   friction / restitution / layer / mask / density) + `MujocoPhysics`
+   (torsional + rolling friction, `condim`, `solref`/`solimp`, `margin`/`gap`,
+   `priority`), on `EditorNode::physics`, with the `SetPhysicsParams` command and
+   the `set_physics_params` MCP tool. Parity: it is one field on the shared
+   `EditorNode`, so **both** formats carry it; the bundle bake is guarded by
+   `bake::tests::collider_physics_params_survive_the_bundle_bake`; **save/load was
+   verified in the browser** (`set_physics_params` on a collision box →
+   `reload_project_in_memory` → the `[nodes.physics]` + `[nodes.physics.mujoco]`
+   blocks come back byte-identical, with the un-authored MuJoCo sub-fields filled
+   from MuJoCo's own defaults); `node_sync` is N/A for the same reason as the
+   mujoco component; MCP coverage is the dedicated tool + parity row.
+
    Remaining: the templates-repo `physics-mujoco` template migrating onto the
-   sink, and collider components (universal core + mujoco extension block).
+   sink.
 
    Original scope: mapping layer in scene-loader (binding
    resolution + pose sink) on the player API — no networking in this repo; the

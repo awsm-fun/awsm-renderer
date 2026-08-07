@@ -360,6 +360,7 @@ mod tests {
 
     fn node(id: NodeId, children: Vec<EditorNode>) -> EditorNode {
         EditorNode {
+            physics: None,
             mujoco: None,
             id,
             name: String::new(),

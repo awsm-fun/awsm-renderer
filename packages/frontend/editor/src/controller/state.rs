@@ -4074,6 +4074,23 @@ impl EditorController {
             // offline `awsm-renderer-mujoco-export`). Mints a placeable sim
             // instance root with one geom-id-stamped node beneath it per geom —
             // the subtree a running simulation binds its pose stream to.
+            EditorCommand::SetPhysicsParams { node, params } => {
+                match mutate::find_by_id(&self.scene, node) {
+                    Some(n) => {
+                        let prev = n.physics.get_cloned();
+                        n.physics.set(params);
+                        self.scene.bump_revision();
+                        self.dirty.set_neq(true);
+                        Ok(Some(EditorCommand::SetPhysicsParams {
+                            node,
+                            params: prev,
+                        }))
+                    }
+                    None => Err(crate::error::EditorError::msg(
+                        "target id not found — command not applied (check ids against get_snapshot)",
+                    )),
+                }
+            }
             EditorCommand::ImportMujocoFromUrl {
                 sidecar_url,
                 reimport,
@@ -4159,6 +4176,7 @@ impl EditorController {
                             visible: true,
                             prefab: false,
                             mujoco: None,
+                            physics: None,
                             children: vec![],
                         };
                         let node = crate::controller::node_spec::node_from_spec(&spec);
