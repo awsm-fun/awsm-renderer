@@ -194,3 +194,50 @@ import command). Notes on how each was verified are in the plan.
 with the convention rotation and a geom node per visible geom at its sidecar
 pose, minting materials from the sidecar's Phong terms. That is Phase 1's real
 exit criterion: the Go2 standing there as a robot.
+
+---
+
+## 2026-08-07 — Phase 1, increment 5: the editor import command (ON-DEVICE VERIFIED)
+
+**Landed.** `EditorCommand::ImportMujocoFromUrl { sidecar_url }` +
+`controller/mujoco_import.rs` + the `import_mujoco_from_url` MCP tool (parity
+matrix row + wire-tag guard). Fetches the sidecar, validates it, resolves and
+loads the GLB the sidecar names, and mints:
+
+- a **sim instance root** — user-placeable, carrying the model fingerprint and
+  the Z-up→Y-up convention rotation (`from_rotation_x(-π/2)`, matching the Phase
+  0 template);
+- one node per geom in MuJoCo's visible groups (0–2), each stamped with its geom
+  id, `locked` because the stream owns its transform;
+- one mesh **asset** per MuJoCo mesh, shared by every geom that uses it.
+
+**What the browser showed.** `import_mujoco_from_url` on the exported Go2 →
+**the robot standing on four legs** in the editor viewport: body on top, four
+legs down to the feet, at the model's real qpos0 pose. 34 nodes / 33 meshes,
+outliner shows the geom-id gaps (0,1,2,3,4,8,9,11,…) that prove collision group
+3 was skipped, every geom node locked. **Console clean — zero errors.** Geoms
+render magenta because materials are deliberately the next increment.
+
+**The bug the browser found.** The first render was a jumble: I was applying
+`geom.pos`/`geom.quat` as node locals, but those are **body-relative**, and the
+geom nodes are flat. Composing the body chain would have given the *joint-zero*
+pose, which is not `qpos0` for any robot with a reference configuration. Fixed
+at the source instead: the exporter now runs `mj_makeData` + `mj_forward` and
+records each geom's **world** pose at `qpos0` in the sidecar. That is also
+exactly the shape a stream frame carries, so the simulation's first frame will
+continue from the initial render rather than jumping.
+
+**Two harness traps worth remembering** (both cost a cycle):
+- Waiting on `! pgrep rustc` races trunk — it exits before the build starts.
+  Wait for the build to *start*, then finish.
+- Reloading the page with `ignoreCache` does NOT bust the cache for the
+  editor's own `fetch` of the sidecar. A stale pre-`world_pos` JSON came back
+  and every geom landed at the origin. Cache-bust the asset URL, not the page.
+
+**Parity checklist is now fully green** — the last box (MCP coverage) closed
+with the dedicated tool; `packages/mcp/tests/parity.rs` caught the missing
+matrix row exactly as designed.
+
+**Next:** materials — mint a library material per sidecar material (MuJoCo's
+Phong terms → our PBR) and assign per geom, so the Go2 renders in its real
+metal/black/white/gray instead of magenta.

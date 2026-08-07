@@ -4069,6 +4069,36 @@ impl EditorController {
                     .map_err(|e| crate::error::EditorError::msg(format!("import failed: {e}")))?;
                 Ok(None)
             }
+            // Import a compiled MuJoCo model (sidecar + geometry GLB from the
+            // offline `awsm-renderer-mujoco-export`). Mints a placeable sim
+            // instance root with one geom-id-stamped node beneath it per geom —
+            // the subtree a running simulation binds its pose stream to.
+            EditorCommand::ImportMujocoFromUrl { sidecar_url } => {
+                // Settle-visibility front guard, same as ImportModelFromUrl: the
+                // fetch + glTF populate must hold the barrier for a driver
+                // dispatching through the fire-and-forget seam.
+                let _load_guard = CompileGuard::new();
+                let _activity = crate::engine::activity::begin_activity("Importing MuJoCo model…");
+                let root = crate::controller::mujoco_import::import(&sidecar_url)
+                    .await
+                    .map_err(|e| {
+                        // Same CORS trap as the model import: the editor is a
+                        // browser app, so a plain file server without CORS
+                        // headers surfaces only as "Failed to fetch".
+                        let hint = if e.contains("Failed to fetch") {
+                            "\n(likely CORS: the editor is a browser app, so the file \
+                             server must send `Access-Control-Allow-Origin`)"
+                        } else {
+                            ""
+                        };
+                        crate::error::EditorError::msg(format!("mujoco import failed: {e}{hint}"))
+                    })?;
+                let node_id = root.id;
+                mutate::insert_under(&self.scene, None, root);
+                self.scene.bump_revision();
+                self.dirty.set_neq(true);
+                Ok(Some(EditorCommand::Delete { id: node_id }))
+            }
             // Import a PRE-BAKED cluster asset (awsm-renderer-lod-bake CLI output) as a
             // VIEW-ONLY ClusterMesh node, rendered via the bounded cluster pipeline
             // (the player path). No in-editor bake, no dense explode — large meshes

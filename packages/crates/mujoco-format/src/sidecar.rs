@@ -31,6 +31,15 @@ pub struct Sidecar {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_name: Option<String>,
 
+    /// The companion geometry GLB, as a path relative to this file. `None` when
+    /// the model is all primitives and no GLB was written.
+    ///
+    /// Named here rather than inferred from the sidecar's own filename so the
+    /// pair is self-describing: a consumer resolves one URL against the other and
+    /// never has to know our naming convention.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub glb: Option<String>,
+
     /// Body 0 is always MuJoCo's `world`, and is its own parent.
     #[serde(default)]
     pub bodies: Vec<Body>,
@@ -58,6 +67,7 @@ impl Sidecar {
             version: VERSION,
             source,
             model_name: None,
+            glb: None,
             bodies: Vec::new(),
             geoms: Vec::new(),
             materials: Vec::new(),
@@ -208,10 +218,24 @@ pub struct Geom {
     /// Type-dependent, always three slots because MuJoCo stores it that way; see
     /// [`GeomKind`] for what each means.
     pub size: [f64; 3],
-    /// Offset from the owning body's frame, in metres.
+    /// Offset from the owning body's frame, in metres. The model's authored
+    /// placement — NOT where the geom starts; see [`world_pos`](Self::world_pos).
     pub pos: [f64; 3],
     /// Rotation from the owning body's frame, `[w, x, y, z]`.
     pub quat: [f64; 4],
+    /// Where this geom actually **is** in the model's initial configuration
+    /// (`qpos0`), in world space.
+    ///
+    /// Deliberately the same shape and meaning as a pose-stream frame, so the
+    /// initial render and the simulation's first frame agree and nothing jumps.
+    /// A consumer must NOT try to derive this by composing `pos` up the body
+    /// chain: that reproduces the joint-zero pose, which is not `qpos0` whenever
+    /// the model has a non-zero reference configuration (most robots do).
+    #[serde(default)]
+    pub world_pos: [f64; 3],
+    /// Initial-configuration world orientation, `[w, x, y, z]`.
+    #[serde(default = "identity_quat")]
+    pub world_quat: [f64; 4],
     /// Index into `meshes`, for [`GeomKind::Mesh`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mesh: Option<usize>,
@@ -222,6 +246,10 @@ pub struct Geom {
     /// MuJoCo's `geom_rgba`, always present. Only *used* when `material` is
     /// `None`, but exported unconditionally so a reader never has to guess.
     pub rgba: [f32; 4],
+}
+
+fn identity_quat() -> [f64; 4] {
+    [1.0, 0.0, 0.0, 0.0]
 }
 
 /// MuJoCo's visual geom types, as strings.
@@ -315,6 +343,8 @@ mod tests {
             size: [0.5, 0.0, 0.0],
             pos: [0.0; 3],
             quat: [1.0, 0.0, 0.0, 0.0],
+            world_pos: [0.0; 3],
+            world_quat: [1.0, 0.0, 0.0, 0.0],
             mesh: None,
             material: None,
             rgba: [1.0; 4],

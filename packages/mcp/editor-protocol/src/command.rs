@@ -457,6 +457,20 @@ pub enum EditorCommand {
     /// adds a movable node. View-only: a cluster mesh has no editable geometry stack.
     ImportClusterAsset { clusters_url: String },
 
+    /// Import a compiled MuJoCo model from an `awsm-renderer-mujoco-export`
+    /// sidecar (`<name>.mujoco.json`), plus the companion geometry GLB the
+    /// sidecar names.
+    ///
+    /// Mints a **sim instance root** — user-placeable, carrying the Z-up→Y-up
+    /// convention rotation and the model's fingerprint — with one node per geom
+    /// beneath it, each stamped with its MuJoCo geom id so a running simulation
+    /// can bind to it. Geoms outside the instance's visible groups are skipped
+    /// for rendering but still counted in the id space the stream addresses.
+    ///
+    /// We never read MJCF/URDF: the sidecar and GLB are what MuJoCo's own
+    /// compiler produced, via the offline exporter.
+    ImportMujocoFromUrl { sidecar_url: String },
+
     /// Import a glTF model from a locally-picked file. `url` is a `blob:` object
     /// URL minted from the picked `File`; `name` is the real filename (used for
     /// `.glb`/`.gltf` type inference — blob URLs have no extension — and the
@@ -1605,6 +1619,7 @@ impl EditorCommand {
                 | EditorCommand::LoadProjectFromUrl { .. }
                 | EditorCommand::ImportModelFromUrl { .. }
                 | EditorCommand::ImportModelFromFile { .. }
+                | EditorCommand::ImportMujocoFromUrl { .. }
                 // Active clip set + clip params that the group lowers.
                 | EditorCommand::AddClip { .. }
                 | EditorCommand::DeleteClip { .. }
@@ -1707,6 +1722,7 @@ impl EditorCommand {
             EditorCommand::LoadProjectFromUrl { .. } => "Load project",
             EditorCommand::ImportModelFromUrl { .. } => "Import model",
             EditorCommand::ImportClusterAsset { .. } => "Import cluster asset",
+            EditorCommand::ImportMujocoFromUrl { .. } => "Import MuJoCo model",
             EditorCommand::ImportModelFromFile { .. } => "Import model",
             EditorCommand::ImportTextureFromUrl { .. } => "Import texture",
             EditorCommand::ImportKtxEnvFromUrl { .. } => "Import environment",

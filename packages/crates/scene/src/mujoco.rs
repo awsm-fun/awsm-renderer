@@ -12,7 +12,7 @@
 
 /// Re-exported so consumers of the component don't need a direct dependency on
 /// the interchange crate just to name the types the component is made of.
-pub use awsm_renderer_mujoco_format::sidecar::{GeomKind, Source};
+pub use awsm_renderer_mujoco_format::sidecar::{GeomKind, Sidecar, Source};
 
 /// A node's MuJoCo role. A node is an instance root or a geom, never both, so
 /// this is one field rather than two optional ones.

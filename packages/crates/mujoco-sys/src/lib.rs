@@ -448,3 +448,103 @@ impl std::fmt::Debug for Model<'_> {
             .finish_non_exhaustive()
     }
 }
+
+/// A simulation state (`mjData`) for one model, freed on drop.
+///
+/// The exporter only ever uses this to evaluate the model's *initial*
+/// configuration — one `mj_forward` at `qpos0` — so the sidecar can record where
+/// each geom actually starts. Nothing here steps physics; running a simulation is
+/// never this repo's job.
+pub struct Data<'m, 'lib> {
+    ptr: *mut mjData,
+    model: &'m Model<'lib>,
+}
+
+impl Drop for Data<'_, '_> {
+    fn drop(&mut self) {
+        unsafe { (self.model.lib.mj.mj_deleteData)(self.ptr) }
+    }
+}
+
+impl<'lib> Model<'lib> {
+    /// Allocate simulation state and evaluate the model's initial configuration
+    /// (`qpos0`), so the `*_x*` Cartesian fields are populated.
+    ///
+    /// `mj_forward` rather than `mj_step`: we want where the model *starts*, not
+    /// where it falls to.
+    pub fn forward_at_initial_pose<'m>(&'m self) -> Result<Data<'m, 'lib>, Error> {
+        let ptr = unsafe { (self.lib.mj.mj_makeData)(self.ptr) };
+        if ptr.is_null() {
+            return Err(Error::LoadFailed {
+                path: PathBuf::from("<mjData>"),
+                message: "mj_makeData returned NULL".into(),
+            });
+        }
+        let data = Data { ptr, model: self };
+        unsafe {
+            (self.lib.mj.mj_resetData)(self.ptr, ptr);
+            (self.lib.mj.mj_forward)(self.ptr, ptr);
+        }
+        Ok(data)
+    }
+}
+
+/// Same pairing rule as [`model_slices`], against `mjData` — the counts still
+/// live on the model.
+macro_rules! data_slices {
+    ($( $(#[$m:meta])* $name:ident : $ty:ty = $count:ident x $stride:literal ),* $(,)?) => {
+        $(
+            $(#[$m])*
+            pub fn $name(&self) -> &[$ty] {
+                let raw = unsafe { &*self.ptr };
+                unsafe { slice(raw.$name, self.model.$count() * $stride) }
+            }
+        )*
+    };
+}
+
+impl Data<'_, '_> {
+    /// The raw struct, for fields without an accessor yet.
+    pub fn raw(&self) -> &mjData {
+        unsafe { &*self.ptr }
+    }
+
+    data_slices! {
+        /// Body frame world positions.
+        xpos: f64 = nbody x 3,
+        /// Body frame world orientations, `[w, x, y, z]`.
+        xquat: f64 = nbody x 4,
+        /// Geom world positions — what the pose stream will later carry.
+        geom_xpos: f64 = ngeom x 3,
+        /// Geom world orientations as **row-major 3x3 matrices**, not quaternions;
+        /// mjData has no `geom_xquat`. See [`Self::geom_world_quat`].
+        geom_xmat: f64 = ngeom x 9,
+    }
+
+    /// A geom's world orientation as a `[w, x, y, z]` quaternion, converted from
+    /// `geom_xmat`.
+    ///
+    /// The matrix is orthonormal by construction, so this is the standard
+    /// branchful trace conversion — picking the largest denominator keeps it
+    /// stable when the trace is near -1.
+    pub fn geom_world_quat(&self, geom: usize) -> [f64; 4] {
+        let m = &self.geom_xmat()[geom * 9..geom * 9 + 9];
+        let (m00, m01, m02) = (m[0], m[1], m[2]);
+        let (m10, m11, m12) = (m[3], m[4], m[5]);
+        let (m20, m21, m22) = (m[6], m[7], m[8]);
+        let trace = m00 + m11 + m22;
+        if trace > 0.0 {
+            let s = 0.5 / (trace + 1.0).sqrt();
+            [0.25 / s, (m21 - m12) * s, (m02 - m20) * s, (m10 - m01) * s]
+        } else if m00 > m11 && m00 > m22 {
+            let s = 2.0 * (1.0 + m00 - m11 - m22).sqrt();
+            [(m21 - m12) / s, 0.25 * s, (m01 + m10) / s, (m02 + m20) / s]
+        } else if m11 > m22 {
+            let s = 2.0 * (1.0 + m11 - m00 - m22).sqrt();
+            [(m02 - m20) / s, (m01 + m10) / s, 0.25 * s, (m12 + m21) / s]
+        } else {
+            let s = 2.0 * (1.0 + m22 - m00 - m11).sqrt();
+            [(m10 - m01) / s, (m02 + m20) / s, (m12 + m21) / s, 0.25 * s]
+        }
+    }
+}

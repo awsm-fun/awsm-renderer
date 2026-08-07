@@ -275,8 +275,10 @@ stream:
       **N/A, checked not assumed**: `node_sync::builtin_merged`/`merged_builtin_def`
       merge a `MaterialInstance` onto a `MaterialDef`. Nothing in the mujoco
       component is a per-mesh material override, so there is no merge to join.
-- [ ] MCP command coverage for every editor action — nothing to cover yet (the
-      import command is the next increment).
+- [x] MCP command coverage for every editor action — `import_mujoco_from_url` is
+      a dedicated typed tool, with a row in `docs/mcp-parity.md` and the wire tag
+      in `packages/mcp/tests/parity.rs` (the CI guard fails both directions on
+      drift, and did).
 
 ## Decisions taken during implementation
 
@@ -351,6 +353,22 @@ smaller/reversible option, per the settled decisions above.
   every schema round-trip test passed. Any future per-node field has to be added
   in four places — `EditorNode`, `NodeSpec`, both conversions, and the reactive
   `Node` — and only a browser round-trip catches missing any of them.
+- **Geom nodes are flat under the instance root, not nested by MuJoCo body.**
+  MuJoCo reports every geom's *world* pose every frame, so a body hierarchy would
+  only be a second place for those poses to compose — and composing twice is the
+  drift the flat layout avoids. `MujocoGeom::body` still records the owning body
+  for the skin path and for harness-side body queries.
+- **The sidecar records each geom's WORLD pose at `qpos0`**, evaluated by MuJoCo
+  itself (`mj_makeData` + `mj_forward`, never `mj_step` — we want where the model
+  starts, not where it falls). Two reasons: composing `pos` up the body chain
+  reproduces the *joint-zero* pose, which is not `qpos0` for any robot with a
+  reference configuration; and a world pose is exactly the shape a stream frame
+  carries, so the simulation's first frame continues from the initial render
+  instead of jumping. The body-local `pos`/`quat` stay in the sidecar as the
+  model's authored data.
+- **The sidecar names its own GLB** (`Sidecar::glb`, relative to the sidecar).
+  The pair is then self-describing and a consumer never has to know our naming
+  convention.
 - **Face indices are bounds-checked per corner.** MuJoCo's face indices being
   mesh-relative rather than absolute into the shared pool is a convention read off
   the library, not a header guarantee. Unchecked, a change there would read a
@@ -389,10 +407,15 @@ smaller/reversible option, per the settled decisions above.
    its initial pose; instance root placeable; model fingerprint (filename + content
    hash) recorded on the instance. Parity checklist green.
 
-   Progress: `mujoco-sys` ✅, `mujoco-format` (sidecar schema) ✅, exporter's
-   sidecar half ✅ (Go2 exports 33 visual mesh geoms in group 2 + 23 collision
-   primitives in group 3). Remaining: GLB/mesh half of the exporter, mjpkg,
-   editor import command, on-device render.
+   Progress: `mujoco-sys` ✅, `mujoco-format` (sidecar schema) ✅, exporter
+   sidecar ✅ + GLB ✅, `mujoco` node component ✅ (parity checklist green),
+   `import_mujoco_from_url` editor command + MCP tool ✅ — **the Go2 stands on
+   four legs in the editor** (Aug 7 2026: 33 visible-group geoms at their qpos0
+   world poses under the convention root, collision group 3 skipped, console
+   clean). Remaining before the phase closes: materials (geoms currently render
+   magenta), primitive geoms (plane/sphere/capsule/box/cylinder/ellipsoid — the
+   humanoid needs these; the Phase 0 template already has a Z-axis capsule
+   builder to port), and the instance-root placement/re-import story.
 
    Discovered while reading real models:
    - **MuJoCo re-frames mesh geoms at compile time.** A mesh geom's `geom_pos`/

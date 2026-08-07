@@ -686,6 +686,14 @@ pub struct UrlParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ImportMujocoParams {
+    /// URL of a `<name>.mujoco.json` sidecar produced by the
+    /// `awsm-renderer-mujoco-export` CLI. The editor fetches it plus the geometry
+    /// GLB the sidecar names (resolved relative to this URL).
+    pub sidecar_url: String,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ImportClusterParams {
     /// URL of a pre-baked cluster-LOD DAG file (`<id>.clusters.bin`) produced by the
     /// `awsm-renderer-lod-bake` CLI. The editor fetches + renders it as a view-only cluster mesh.
@@ -2995,6 +3003,28 @@ impl EditorMcp {
         // then return WHAT the import created instead of a bare "ok".
         self.dispatch(EditorCommand::ImportModelFromUrl { url: p.url })
             .await?;
+        self.query(EditorQuery::LastImportReport).await
+    }
+
+    #[tool(
+        description = "Import a compiled MuJoCo model from an `awsm-renderer-mujoco-export` \
+        sidecar (`<name>.mujoco.json`) plus the geometry GLB it names. Creates a placeable \
+        SIM INSTANCE ROOT carrying the model's fingerprint (source filename + content hash) \
+        and the Z-up->Y-up convention rotation, with one node per geom beneath it, each \
+        stamped with its MuJoCo geom id so an external simulation can bind its pose stream. \
+        Geoms outside MuJoCo's default visible groups (0-2) are skipped — that is what \
+        renders a menagerie robot rather than its collision capsules. We never read \
+        MJCF/URDF: run the offline exporter first. Same CORS requirement as \
+        `import_model_from_url`. Returns the import report."
+    )]
+    async fn import_mujoco_from_url(
+        &self,
+        Parameters(p): Parameters<ImportMujocoParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::ImportMujocoFromUrl {
+            sidecar_url: p.sidecar_url,
+        })
+        .await?;
         self.query(EditorQuery::LastImportReport).await
     }
 

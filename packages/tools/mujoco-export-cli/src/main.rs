@@ -45,7 +45,7 @@ fn main() -> Result<()> {
     let model = lib.load_model(&args.model)?;
 
     let source = sidecar::fingerprint(&args.model, lib.version_string())?;
-    let doc = sidecar::build(&model, source)?;
+    let mut doc = sidecar::build(&model, source)?;
 
     let name = args
         .name
@@ -69,6 +69,7 @@ fn main() -> Result<()> {
             let bytes = awsm_renderer_glb_export::write_glb(&scene);
             let path = args.out_dir.join(format!("{name}.glb"));
             std::fs::write(&path, &bytes).with_context(|| format!("writing {}", path.display()))?;
+            doc.glb = Some(format!("{name}.glb"));
             Some((path, bytes.len()))
         }
         None => None,

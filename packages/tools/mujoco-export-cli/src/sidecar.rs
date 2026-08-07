@@ -32,6 +32,10 @@ pub fn fingerprint(path: &Path, mujoco_version: String) -> Result<Source> {
 /// MuJoCo geom id the pose stream addresses. Deciding what to render is the
 /// importer's job, and it needs the whole table to do it.
 pub fn build(model: &Model<'_>, source: Source) -> Result<Sidecar> {
+    // Evaluate the model's initial configuration once, so each geom can record
+    // where it actually starts rather than where it was authored relative to its
+    // body. See `Geom::world_pos`.
+    let data = model.forward_at_initial_pose()?;
     let mut out = Sidecar::new(source);
     out.model_name = model.model_name().map(str::to_string);
 
@@ -84,6 +88,8 @@ pub fn build(model: &Model<'_>, source: Source) -> Result<Sidecar> {
             size: read3(model.geom_size(), g),
             pos: read3(model.geom_pos(), g),
             quat: read4(model.geom_quat(), g),
+            world_pos: read3(data.geom_xpos(), g),
+            world_quat: data.geom_world_quat(g),
             mesh,
             material,
             rgba: read4f(model.geom_rgba(), g),
