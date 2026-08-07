@@ -7,6 +7,26 @@ at the bottom. Deleted at Phase 6 along with the plan.
 
 *(nothing — no blockers as of the latest entry)*
 
+## OPEN (not blocked on you — scoped out with reasons)
+
+- **Flex deformation streaming.** The flex SURFACE ships and renders at its bind
+  pose (flag, bunny, floppy all verified). Making it *move* needs one of two
+  multi-increment pieces of renderer work, and I judged neither worth starting
+  unattended when Phases 5 and 6 were still open:
+  1. A **dynamic-vertex mesh path** in the renderer — the plan's original
+     wording. The geometry pipeline explodes positions into a visibility stream,
+     derives tangents, AABBs and BVH state at commit, so per-frame vertex
+     upload means re-running a chunk of the hottest code in the engine.
+  2. **Skinning**, which needs no new renderer capability at all: each flex
+     vertex is rigidly attached to exactly one body, so one joint per vertex at
+     weight 1 reproduces the deformation exactly through the existing GPU
+     skinning path, driven by an ordinary body-pose channel. The catch is the
+     editor's MuJoCo import mints plain mesh assets, so it would need a skinned
+     path; and interpolated flexes (bunny) have no vertex bodies at all and
+     would stay static.
+  My recommendation is (2) — it is the smaller surface and reuses machinery that
+  already works. Everything the exporter emits serves either route unchanged.
+
 ---
 
 ## 2026-08-07 — Phase 1, increment 1: `mujoco-sys` bindings crate
@@ -900,3 +920,49 @@ vertex bodies (one joint per vertex, weight 1) through the existing GPU skinning
 path with no new renderer capability, while an interpolated one can only be
 driven by uploading vertex positions, which the renderer has no path for today.
 The exported data serves either route.
+
+---
+
+## 2026-08-08 — Phase 4 closed, Phase 5 started: the contacts overlay (ON-DEVICE VERIFIED)
+
+**A judgement call first.** The next flex increment was deformation streaming,
+and I went looking for the cheapest honest route before writing any of it. The
+renderer's geometry pipeline explodes positions into a visibility stream and
+derives tangents/AABB/BVH state at commit, so a per-frame vertex upload means
+re-running a chunk of the hottest code in the engine — not something to start
+unattended, on a branch, for the item this plan itself ranks last, with Phases 5
+and 6 still open. There is a much cheaper route (skin each flex to its vertex
+bodies, one joint per vertex at weight 1 — no new renderer capability), but it
+needs a skinned path through the editor's MuJoCo import, which is also several
+increments. So I parked it, with both routes and my recommendation written up in
+the OPEN list at the top of this log, and moved to Phase 5. Nothing about the
+exported flex data has to change for either route.
+
+**Landed (templates repo, `ac44524`): the contact-point overlay.** The sim
+worker publishes contact positions and normals in the **same seqlock** as the
+poses, so the overlay can never draw contacts from a different step than the
+bodies they touch. The count varies every step while the block must be
+fixed-size, so the region is preallocated with the live count in the header —
+the same shape as the renderer's tendon channel, for the same reason. Opt in
+with `?contacts`; overlays stay off by default and out of the way of what the
+template is actually demonstrating.
+
+One small renderer-side addition made this clean: `MujocoInstance` now exposes
+`root_transform`. The spikes are parented under it, so contact positions apply as
+raw MuJoCo world coordinates exactly as geom poses do, instead of the template
+re-deriving the convention rotation and drifting from it.
+
+**What the browser showed.** The collapsed humanoid reports 10–13 live contacts.
+Four red spikes stand along the resting foot (the classic box-foot corner set)
+with more at the hip, each oriented along its `+Z` floor normal, and they appear
+and disappear as the sim shifts. Console clean.
+
+**Two harness notes.** Trunk does not re-copy `web/` on its own — only a Rust
+rebuild triggers the copy, so a worker-only edit needs a manual `cp` into
+`dist/`. And my first look showed no spikes at all with everything working
+correctly: at 4 mm × 6 cm they were a red hair a couple of pixels wide. The
+console instrumentation, not the screenshot, is what proved the data was flowing;
+the spikes are now 12 mm × 12 cm.
+
+**Next in Phase 5:** force arrows, joint axes, inertia boxes — same channel, same
+pool shape.

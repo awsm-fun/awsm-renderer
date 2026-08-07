@@ -824,8 +824,12 @@ forward compatibility and starts testing the new table's schema.
    2,503-vertex Stanford bunny — a wrong index rebase or the wrong
    element/shell choice would give a mess, not a bunny. `body_attached` reads
    `true` for the flag and `false` for the interpolated bunny. Console clean.
-   Still open in this item: the flex vertex **stream channel**, which needs a
-   renderer decision (see the flex decision note).
+   **Flex DEFORMATION is deferred** — see the open-items list at the top of the
+   log. The surface ships and renders at its bind pose; making it move needs
+   either a new renderer dynamic-vertex capability or a skinned-import path
+   through the editor's MuJoCo importer, and both are multi-increment renderer
+   work for the item this plan itself ranks last. The exported data
+   (`vertex_bodies`, `vertex_count`) serves either route unchanged.
 
    **Skins: dropped, on evidence.** `mjSkin` is MuJoCo's older deformable and is
    dead in 3.11 — `nskin == 0` for every model shipped with the release and for
@@ -841,8 +845,18 @@ forward compatibility and starts testing the new table's schema.
    mesh path + `flex_vertices` stream channel, verified against MuJoCo's own
    `model/flex/` demos (cloth flag) — last in this phase since no robot model
    needs it, but fully in scope (see "What sim output maps to").
-5. **Template debug overlays.** Contacts/forces/joint axes/inertia via the dev-only
-   channel + overlay toggles.
+5. **Template debug overlays.**
+
+   Contacts ✅ (Aug 8 2026, on-device): the sim worker publishes contact
+   positions + normals in the SAME seqlock as the poses (so an overlay can never
+   draw contacts from a different step than the bodies they touch), and the
+   render thread draws a preallocated pool of red spikes parented under the sim
+   instance's root transform. Opt in with `?contacts`. Verified in the template
+   at :9000: the collapsed humanoid reports 10-13 live contacts, drawn as four
+   spikes along the resting foot plus more at the hip, each standing along its
+   `+Z` floor normal. Console clean. Templates commit `ac44524`.
+
+   Remaining: forces, joint axes, inertia boxes — same channel, same pool shape.
 6. **Permanent reference doc.** Write `docs/mujoco.md`: how the feature works —
    architecture, the seam formats (sidecar, capture, stream convention, pose
    sink API), the mujoco component + fingerprint binding, collider param

@@ -46,6 +46,13 @@ pub struct MujocoInstance {
     /// The instance root's node id. Its transform is the model's authored
     /// placement (plus the convention rotation) and is **not** stream-driven.
     pub root: NodeId,
+    /// The instance root's transform key.
+    ///
+    /// Exposed so a consumer can parent its OWN nodes into the sim's frame —
+    /// a debug overlay drawing contact points, say. Anything under here can use
+    /// raw MuJoCo world coordinates verbatim, exactly as the geom nodes do,
+    /// instead of duplicating the convention rotation and drifting from it.
+    pub root_transform: Option<awsm_renderer::transforms::TransformKey>,
     /// The model this instance was imported from. A harness matches its own
     /// loaded models against this and fails loudly rather than driving the wrong
     /// robot; see [`Self::matches`].
@@ -361,6 +368,7 @@ fn walk(
         collect_geoms(node, handles, &mut geoms, &mut sites, &mut tendons);
         out.push(MujocoInstance {
             root: node.id,
+            root_transform: handles.get(&node.id).map(|h| h.transform),
             source: inst.source.clone(),
             model_name: inst.model_name.clone(),
             geoms,
@@ -442,6 +450,7 @@ mod tests {
     fn an_instances_tendon_frame_is_the_sum_of_its_tendons() {
         let inst = MujocoInstance {
             root: awsm_renderer_scene::tree::NodeId::new(),
+            root_transform: None,
             source: Source {
                 filename: "a.xml".into(),
                 sha256: "x".into(),
