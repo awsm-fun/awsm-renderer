@@ -9,6 +9,23 @@ at the bottom. Deleted at Phase 6 along with the plan.
 
 ## OPEN (not blocked on you — scoped out with reasons)
 
+- **The template's dev server is currently broken.** `trunk serve` for
+  `physics-mujoco` stopped rebuilding partway through the night, and a
+  from-scratch restart now fails in wasm-bindgen with *"failed to prepare module
+  for threading"* (see `/tmp/tpl-dev.log`). `dist/` is serving the last good
+  build, which is why the page still runs. Everything committed was verified
+  BEFORE this started; the contact-force visual below is the one thing it
+  blocked. Worth a clean `task dev` from a fresh shell in the morning — my
+  hand-rolled RUSTFLAGS may simply not match the Taskfile's.
+
+- **Contact force → spike length.** The force is on the wire and verified
+  arriving (48.9 N first touch, 3581 N landing spike, 120-350 N at rest). What
+  is NOT verified is scaling the spike by it: the spikes stopped rendering when
+  I wired the scale, and I could not isolate why before the build harness went
+  down. The render side is therefore committed at the fixed length that WAS
+  watched working. `self.scratch[o + 6]` is the value; consuming it is a
+  one-function change.
+
 - **Flex deformation streaming.** The flex SURFACE ships and renders at its bind
   pose (flag, bunny, floppy all verified). Making it *move* needs one of two
   multi-increment pieces of renderer work, and I judged neither worth starting
@@ -966,3 +983,45 @@ the spikes are now 12 mm × 12 cm.
 
 **Next in Phase 5:** force arrows, joint axes, inertia boxes — same channel, same
 pool shape.
+
+---
+
+## 2026-08-08 — Phase 5: contact forces on the wire (PARTIALLY VERIFIED — read this one)
+
+**Verified on-device:** contact normal forces reach the shared block. 48.9 N at
+first touch, a 3581 N spike as the humanoid lands, settling to 120–350 N at rest
+— exactly what a ~40 kg ragdoll should produce, and a good sanity check that the
+numbers are real newtons and not garbage.
+
+**NOT verified on-device:** scaling the contact spikes by that force. When I
+wired the scale the spikes stopped rendering, and I could not isolate why before
+the template's build harness went down (see the OPEN list). Rather than ship a
+visual nobody has watched, I reverted the render side to the fixed-length spikes
+that WERE watched working, and left the force on the wire with a comment naming
+it. Consuming it is a one-function change for the next iteration.
+
+**Three wrong turns getting the force out**, all worth recording because none of
+them announce themselves:
+
+1. The binding rejects a plain JS `Array` outright — "Expected TypedArray or
+   WasmBuffer".
+2. It ACCEPTS a plain `Float64Array`, copies it in, and discards the result. No
+   error, no warning; every contact just reads zero force forever. This one cost
+   the most time, because "all contacts carry zero force" is a perfectly
+   plausible physics answer at the first published step.
+3. The module exports neither `_malloc` nor `HEAPF64`, so the usual
+   allocate-in-the-heap trick is out.
+
+The right handle is the module's own `DoubleBuffer`, read through `GetView()`.
+That is now in the worker with a comment, so nobody has to rediscover it.
+
+**Also seen once, and worth a look independently of MuJoCo:** the render worker
+died with `PANIC: parry3d bvh_binned_build.rs:61: index out of bounds: the len
+is 8 but the index is 8`, taking the tab's rendering with it. It has not
+recurred, and I have no reliable repro, so I am NOT claiming the contact overlay
+caused it — but 256 pooled meshes being shown and hidden is exactly the kind of
+spatial-index churn that would expose a binning off-by-one, so it is a plausible
+trigger and worth remembering if it shows up again.
+
+**Next:** finish the force visual (one function), then joint axes and inertia
+boxes, then Phase 6.
