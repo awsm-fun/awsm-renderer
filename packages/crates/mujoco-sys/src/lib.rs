@@ -323,6 +323,9 @@ impl Model<'_> {
     pub fn nflextexcoord(&self) -> usize {
         self.raw().nflextexcoord as usize
     }
+    pub fn nflexnode(&self) -> usize {
+        self.raw().nflexnode as usize
+    }
     pub fn nhfield(&self) -> usize {
         self.raw().nhfield as usize
     }
@@ -454,6 +457,29 @@ impl Model<'_> {
         /// this is the visible skin; for a 2D one the elements already are.
         flex_shell: i32 = nflexshelldata x 1,
         flex_texcoord: f32 = nflextexcoord x 2,
+        /// Interpolation mode: 0 = each vertex rides its own body, 1 = vertices
+        /// are interpolated from a cage of NODES (trilinear).
+        flex_interp: i32 = nflex x 1,
+        flex_nodeadr: i32 = nflex x 1,
+        flex_nodenum: i32 = nflex x 1,
+        /// The body each cage NODE rides. For an interpolated flex these are the
+        /// only bodies the deformation depends on — 8 of them for a trilinear
+        /// cell, however many thousand vertices it drives.
+        flex_nodebodyid: i32 = nflexnode x 1,
+        /// Cage node positions in their body's frame.
+        flex_node: f64 = nflexnode x 3,
+        /// Cage node positions at rest.
+        flex_node0: f64 = nflexnode x 3,
+        /// For a body-attached flex, each vertex's offset in its body's frame
+        /// (usually zero — the body sits at the vertex). For an interpolated
+        /// flex, the vertex's REST WORLD position.
+        flex_vert: f64 = nflexvert x 3,
+        /// For an interpolated flex, the vertex's **normalized coordinates**
+        /// inside its cage cell — not a position. These ARE the trilinear
+        /// parameters, so the skinning weights are a product of them and need no
+        /// geometry of our own. (Verified against `flex_vert` and the cage
+        /// bounds; see `tests/flex_skin.rs`.)
+        flex_vert0: f64 = nflexvert x 3,
 
         // Heightfields: an nrow x ncol elevation grid, sliced out of one shared
         // pool by (adr, nrow*ncol) — same pattern as meshes.
