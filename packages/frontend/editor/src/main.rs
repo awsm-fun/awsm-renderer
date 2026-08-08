@@ -435,6 +435,25 @@ pub async fn editor_apply_mujoco_tendons(instance: usize, frame: Vec<f32>) -> St
     }
 }
 
+/// Test seam: apply one frame of BODY world poses to a resolved sim instance.
+///
+/// This is the channel that deforms a flex — a deformable is skinned to the
+/// bodies that move it, so driving those bodies moves the surface on the GPU.
+#[wasm_bindgen]
+pub async fn editor_apply_mujoco_bodies(instance: usize, poses: Vec<f32>) -> String {
+    let instances = controller::bundle_mujoco_instances();
+    let Some(inst) = instances.get(instance) else {
+        return format!("error: no sim instance {instance}");
+    };
+    let handle = crate::engine::context::renderer_handle();
+    let mut r = handle.lock().await;
+    if let Err(e) = awsm_renderer_scene_loader::mujoco::apply_body_poses(&mut r, inst, &poses) {
+        return format!("error: {e}");
+    }
+    r.update_transforms();
+    "ok".to_string()
+}
+
 /// Test seam: how many sim instances the last `LoadPlayerBundle` reload resolved,
 /// and how long a pose frame must be for each.
 #[wasm_bindgen]
@@ -453,6 +472,8 @@ pub fn editor_mujoco_instances() -> String {
                 "site_frame_len": i.site_frame_len(),
                 "tendon_capacity": i.tendons.iter().map(|t| t.capacity).collect::<Vec<_>>(),
                 "tendon_frame_len": i.tendon_frame_len(),
+                "body_frame_len": i.body_frame_len(),
+                "bound_bodies": i.bodies.iter().filter(|b| b.is_some()).count(),
             })
         })
         .collect();
