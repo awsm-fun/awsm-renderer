@@ -569,6 +569,21 @@ fn build_clean_node(
                 ),
                 _ => (None, None),
             };
+            // Influence sets beyond the first. This re-export IS what the
+            // materialiser decodes, so dropping them here silently halves a
+            // vertex's influences — a MuJoCo trilinear flex keeps four of its
+            // eight cage corners with weights summing to ~0.5 and collapses
+            // toward them, which reads as a physics bug rather than a lost
+            // attribute.
+            let mut extra_influence_sets: Vec<crate::SkinInfluenceSet> = Vec::new();
+            let mut set = 1u32;
+            while let (Some(j), Some(w)) = (reader.read_joints(set), reader.read_weights(set)) {
+                extra_influence_sets.push(crate::SkinInfluenceSet {
+                    joints: j.into_u16().collect(),
+                    weights: w.into_f32().collect(),
+                });
+                set += 1;
+            }
             // Carry the AUTHORED tangents through verbatim so the writer emits them
             // instead of regenerating via MikkTSpace — a save→reload of this clean
             // rig glb then preserves the exact tangent basis a normal map was baked
@@ -607,6 +622,7 @@ fn build_clean_node(
                 out.material = material;
                 out.joints = joints;
                 out.weights = weights;
+                out.extra_influence_sets = extra_influence_sets;
                 out.tangents = tangents;
                 out.morph_targets = morph_targets;
                 out.morph_weights = mesh.weights().map(|w| w.to_vec()).unwrap_or_default();

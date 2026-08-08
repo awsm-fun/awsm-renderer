@@ -550,4 +550,36 @@ fn eight_influences_round_trip_through_two_joint_sets() {
         "weights must sum to 1, got {total}"
     );
     assert_eq!(skin.packed_index_weights().len(), verts * 2 * 8 * 4);
+
+    // The CLEAN RE-EXPORT is what the editor's materialiser actually decodes, so
+    // it has to carry both sets too. Dropping them here is invisible in the
+    // source GLB and collapses the mesh at runtime.
+    let clean = awsm_renderer_glb_export::reexport_clean(&glb).expect("clean re-export");
+    let flex_node = clean
+        .nodes
+        .iter()
+        .find(|n| n.name == "flex")
+        .expect("flex node survives the clean re-export");
+    assert_eq!(
+        flex_node.extra_influence_sets.len(),
+        1,
+        "the second influence set must survive reexport_clean"
+    );
+    assert_eq!(flex_node.extra_influence_sets[0].joints[0], [4, 5, 6, 7]);
+
+    let clean_glb = awsm_renderer_glb_export::write_glb(&clean);
+    let (cdoc, cbuf, _) = gltf::import_slice(&clean_glb).expect("loadable clean glTF");
+    let craw: Vec<Vec<u8>> = cbuf.iter().map(|b| b.0.clone()).collect();
+    let cindex = cdoc
+        .nodes()
+        .find(|n| n.name() == Some("flex"))
+        .expect("flex node")
+        .index() as u32;
+    let cex = awsm_renderer_glb_export::extract_node_mesh(&cdoc, &craw, cindex, None)
+        .expect("extract from clean");
+    assert_eq!(
+        cex.skin.expect("clean skin").set_count(),
+        2,
+        "a full write -> clean re-export -> write -> read cycle must keep both sets"
+    );
 }
