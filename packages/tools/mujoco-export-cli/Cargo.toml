@@ -30,6 +30,7 @@ name = "awsm-renderer-mujoco-record"
 path = "src/bin/record.rs"
 
 [dependencies]
+glam = { workspace = true }
 awsm-renderer-mujoco-sys = { workspace = true }
 awsm-renderer-mujoco-format = { workspace = true }
 # The geometry half of the export. Same writer the editor's model export uses, so
@@ -42,7 +43,6 @@ serde_json = { workspace = true }
 sha2 = "0.10.8"
 
 [dev-dependencies]
-glam = { workspace = true }
 # The capture->clip bake, so the recorder can be tested against the thing that
 # actually consumes its output rather than against its own output shape.
 awsm-renderer-scene = { workspace = true }

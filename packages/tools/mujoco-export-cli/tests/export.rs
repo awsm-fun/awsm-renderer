@@ -233,8 +233,8 @@ fn a_cloth_flex_exports_its_elements_as_the_surface() {
     assert_eq!(f.vertex_count, 171);
     // Every vertex of a plain cloth rides its own body, which is what makes the
     // body-attached path available to a renderer at all.
-    assert_eq!(f.vertex_bodies.len(), f.vertex_count);
-    assert!(f.vertex_bodies.iter().all(|b| *b < s.bodies.len()));
+    assert_eq!(f.joint_bodies.len(), f.vertex_count, "one joint per vertex");
+    assert!(f.joint_bodies.iter().all(|b| *b < s.bodies.len()));
     assert_eq!(s.meshes[f.mesh].name.as_deref(), Some("flag"));
 }
 
@@ -249,11 +249,11 @@ fn a_solid_flex_exports_its_shell_not_its_tetrahedra() {
     let f = &s.flexes[0];
     assert_eq!(f.dim, 3);
     assert!(f.vertex_count > 0);
-    assert_eq!(f.vertex_bodies.len(), f.vertex_count);
+    assert_eq!(f.joint_bodies.len(), f.vertex_count);
 }
 
 #[test]
-fn an_interpolated_flex_reports_no_vertex_bodies() {
+fn an_interpolated_flex_binds_to_its_cage_not_its_vertices() {
     // bunny.xml drives its surface from a cage of NODES, so MuJoCo has no body
     // per vertex. All-or-nothing: a partial list would let a consumer skin some
     // vertices and strand the rest at the bind pose.
@@ -263,10 +263,12 @@ fn an_interpolated_flex_reports_no_vertex_bodies() {
     let Some(s) = export(path) else { return };
     let f = &s.flexes[0];
     assert!(f.vertex_count > 2000);
-    assert!(
-        f.vertex_bodies.is_empty(),
-        "{} bodies for an interpolated flex",
-        f.vertex_bodies.len()
+    // The whole point: 2503 vertices, EIGHT joints. An interpolated flex is the
+    // cheapest case to drive, not — as it first appears — an impossible one.
+    assert_eq!(
+        f.joint_bodies.len(),
+        8,
+        "a trilinear cage has eight corners, whatever the vertex count"
     );
 }
 

@@ -14,7 +14,7 @@
 use std::collections::HashMap;
 
 use anyhow::{ensure, Result};
-use awsm_renderer_glb_export::{ExportNode, GlbScene, MeshData, Trs};
+use awsm_renderer_glb_export::{ExportNode, ExportSkin, GlbScene, MeshData, SkinInfluenceSet, Trs};
 use awsm_renderer_mujoco_sys::{Data, Model};
 
 /// Build the geometry library. Returns `None` when the model has no meshes at all
@@ -70,11 +70,75 @@ pub fn build(
     // the origin under the instance root.
     for f in 0..model.nflex() {
         let index = model.nmesh() + model.nhfield() + f;
-        scene.nodes.push(ExportNode {
+        let mesh = flex_mesh(model, data, f);
+        let vertnum = mesh.positions.len();
+
+        // A flex deforms by linear blend skinning EXACTLY — verified to the
+        // nanometre against MuJoCo's own `flexvert_xpos` (tests/flex_skin.rs) —
+        // so it ships as a skinned mesh and the renderer needs no per-frame
+        // vertex traffic at all.
+        let (joint_bodies, influences) = flex_influences(model, f, vertnum);
+        let node_index = scene.nodes.len();
+        let joint_base = node_index + 1;
+
+        let mut node = ExportNode {
             name: node_name(index, names.get(index).and_then(|n| n.as_deref())),
             transform: Trs::IDENTITY,
-            mesh: Some(flex_mesh(model, data, f)),
+            mesh: Some(mesh),
             material: None,
+            ..Default::default()
+        };
+
+        if !joint_bodies.is_empty() && vertnum > 0 {
+            node.skin = Some(scene.skins.len());
+            node.joints = Some(
+                influences
+                    .first()
+                    .map(|s| s.joints.clone())
+                    .unwrap_or_default(),
+            );
+            node.weights = Some(
+                influences
+                    .first()
+                    .map(|s| s.weights.clone())
+                    .unwrap_or_default(),
+            );
+            node.extra_influence_sets = influences.into_iter().skip(1).collect();
+        }
+        scene.nodes.push(node);
+
+        if joint_bodies.is_empty() || vertnum == 0 {
+            continue;
+        }
+
+        // One glTF node per joint, placed at its body's REST world pose. The
+        // inverse of that pose is the inverse-bind matrix, so at the bind pose
+        // every joint contributes the identity and the mesh sits exactly where
+        // its baked vertices already are.
+        let mut ibms = Vec::with_capacity(joint_bodies.len());
+        for (j, body) in joint_bodies.iter().enumerate() {
+            let (t, r) = body_rest_pose(data, *body);
+            scene.nodes.push(ExportNode {
+                name: format!("{}_joint_{j}", node_name(index, None)),
+                transform: Trs {
+                    translation: t,
+                    rotation: r,
+                    scale: [1.0; 3],
+                },
+                ..Default::default()
+            });
+            ibms.push(
+                glam::Mat4::from_rotation_translation(
+                    glam::Quat::from_array(r),
+                    glam::Vec3::from(t),
+                )
+                .inverse()
+                .to_cols_array(),
+            );
+        }
+        scene.skins.push(ExportSkin {
+            joints: (joint_base..joint_base + joint_bodies.len()).collect(),
+            inverse_bind_matrices: ibms,
             ..Default::default()
         });
     }
@@ -319,4 +383,136 @@ pub fn heightfield_mesh(size: [f64; 4], nrow: usize, ncol: usize, data: &[f32]) 
     // at the rim sharp.
     mesh.compute_vertex_normals();
     mesh
+}
+
+/// A body's rest world pose, as `(translation, rotation)`.
+fn body_rest_pose(data: &Data<'_, '_>, body: usize) -> ([f32; 3], [f32; 4]) {
+    let xpos = data.xpos();
+    let q = &data.xquat()[body * 4..body * 4 + 4];
+    (
+        [
+            xpos[body * 3] as f32,
+            xpos[body * 3 + 1] as f32,
+            xpos[body * 3 + 2] as f32,
+        ],
+        // MuJoCo quaternions are [w, x, y, z]; glTF and glam want [x, y, z, w].
+        [q[1] as f32, q[2] as f32, q[3] as f32, q[0] as f32],
+    )
+}
+
+/// The flex's joint bodies and the per-vertex influence sets that bind to them.
+///
+/// Two shapes, one mechanism:
+///
+/// - **body-attached**: each vertex rides its own body, so it has ONE influence
+///   at weight 1 and the joint list is the vertex list.
+/// - **interpolated**: every vertex is a trilinear blend of the cage's eight
+///   corners. MuJoCo already stores each vertex's position inside its cell as
+///   normalized coordinates in `flex_vert0`, so the eight weights are products
+///   of numbers it already computed — no cell search, no geometry of ours.
+fn flex_influences(
+    model: &Model<'_>,
+    f: usize,
+    vertnum: usize,
+) -> (Vec<usize>, Vec<SkinInfluenceSet>) {
+    let vertadr = model.flex_vertadr()[f] as usize;
+
+    if model.flex_interp()[f] == 0 {
+        let bodies: Vec<usize> = model.flex_vertbodyid()[vertadr..vertadr + vertnum]
+            .iter()
+            .map(|b| (*b).max(0) as usize)
+            .collect();
+        let set = SkinInfluenceSet {
+            joints: (0..vertnum).map(|v| [v as u16, 0, 0, 0]).collect(),
+            weights: vec![[1.0, 0.0, 0.0, 0.0]; vertnum],
+        };
+        return (bodies, vec![set]);
+    }
+
+    let nadr = model.flex_nodeadr()[f] as usize;
+    let nnum = model.flex_nodenum()[f] as usize;
+    let bodies: Vec<usize> = model.flex_nodebodyid()[nadr..nadr + nnum]
+        .iter()
+        .map(|b| (*b).max(0) as usize)
+        .collect();
+    if nnum != 8 {
+        // Only a trilinear cage (eight corners) is a fixed-weight blend we can
+        // bake. A quadratic cage would need 27 influences — seven sets — so it
+        // is refused loudly rather than approximated into something that looks
+        // nearly right and moves wrongly.
+        eprintln!(
+            "warning: flex {f} is interpolated with {nnum} cage nodes, not 8; only \
+             trilinear cages bake to a skin, so this flex ships un-deformable"
+        );
+        return (Vec::new(), Vec::new());
+    }
+
+    let corner = cage_corners(model, f);
+    let vert0 = model.flex_vert0();
+    let mut a = SkinInfluenceSet {
+        joints: Vec::with_capacity(vertnum),
+        weights: Vec::with_capacity(vertnum),
+    };
+    let mut b = a.clone();
+    for v in 0..vertnum {
+        let o = (vertadr + v) * 3;
+        let t = [vert0[o], vert0[o + 1], vert0[o + 2]];
+        let mut w = [0.0f32; 8];
+        for (n, slot) in w.iter_mut().enumerate() {
+            *slot = (0..3)
+                .map(|k| if n >> k & 1 == 1 { t[k] } else { 1.0 - t[k] })
+                .product::<f64>() as f32;
+        }
+        a.joints.push([
+            corner[0] as u16,
+            corner[1] as u16,
+            corner[2] as u16,
+            corner[3] as u16,
+        ]);
+        a.weights.push([w[0], w[1], w[2], w[3]]);
+        b.joints.push([
+            corner[4] as u16,
+            corner[5] as u16,
+            corner[6] as u16,
+            corner[7] as u16,
+        ]);
+        b.weights.push([w[4], w[5], w[6], w[7]]);
+    }
+    (bodies, vec![a, b])
+}
+
+/// Which cage node sits at each corner, indexed by our own bit convention
+/// (bit `k` set ⇒ the high side of axis `k`).
+///
+/// Derived from the rest positions rather than assumed: MuJoCo promises no
+/// corner ordering, and an assumed one produces a mesh that looks right at rest
+/// and turns inside out the moment it moves.
+fn cage_corners(model: &Model<'_>, f: usize) -> [usize; 8] {
+    let adr = model.flex_nodeadr()[f] as usize;
+    let node0 = model.flex_node0();
+    let at = |n: usize| {
+        let o = (adr + n) * 3;
+        [node0[o], node0[o + 1], node0[o + 2]]
+    };
+    let mut lo = [f64::MAX; 3];
+    let mut hi = [f64::MIN; 3];
+    for n in 0..8 {
+        let p = at(n);
+        for k in 0..3 {
+            lo[k] = lo[k].min(p[k]);
+            hi[k] = hi[k].max(p[k]);
+        }
+    }
+    let mut corner = [0usize; 8];
+    for n in 0..8 {
+        let p = at(n);
+        let mut bits = 0usize;
+        for k in 0..3 {
+            if p[k] > (lo[k] + hi[k]) * 0.5 {
+                bits |= 1 << k;
+            }
+        }
+        corner[bits] = n;
+    }
+    corner
 }

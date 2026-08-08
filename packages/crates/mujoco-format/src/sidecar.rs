@@ -189,25 +189,15 @@ impl Sidecar {
                     });
                 }
             }
-            for b in &fx.vertex_bodies {
+            for b in &fx.joint_bodies {
                 if *b >= self.bodies.len() {
                     return Err(Error::BadIndex {
-                        what: "flex.vertex_bodies",
+                        what: "flex.joint_bodies",
                         index: i,
                         value: *b,
                         len: self.bodies.len(),
                     });
                 }
-            }
-            // Either every vertex names a body or none does — a partial list
-            // would silently mis-bind a skinned flex.
-            if !fx.vertex_bodies.is_empty() && fx.vertex_bodies.len() != fx.vertex_count {
-                return Err(Error::BadIndex {
-                    what: "flex.vertex_bodies length",
-                    index: i,
-                    value: fx.vertex_bodies.len(),
-                    len: fx.vertex_count,
-                });
             }
             if fx.mesh >= self.meshes.len() {
                 return Err(Error::BadIndex {
@@ -422,9 +412,10 @@ pub struct Site {
 ///
 /// A flex is a soup of vertices, each rigidly attached to its own body; it
 /// deforms because those bodies move independently. That is the whole model, and
-/// it is why the exported surface carries [`vertex_bodies`](Self::vertex_bodies):
-/// a renderer can deform this mesh either by streaming vertex positions or by
-/// skinning it to those bodies, and the choice is downstream of this file.
+/// it is why the exported surface carries [`joint_bodies`](Self::joint_bodies)
+/// and ships as a SKINNED mesh: the deformation is linear blend skinning
+/// exactly, so a renderer reproduces it from those bodies' poses alone, with no
+/// per-frame vertex traffic.
 ///
 /// `mjSkin`, MuJoCo's older deformable, is deliberately NOT exported: no model
 /// shipped with MuJoCo 3.11 and no menagerie robot defines one.
@@ -445,16 +436,22 @@ pub struct Flex {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub material: Option<usize>,
     pub rgba: [f32; 4],
-    /// The body each vertex is rigidly attached to, in flex-vertex order.
+    /// The bodies this surface is SKINNED to, in the GLB skin's joint order.
     ///
-    /// **Empty when the flex is not body-attached.** A flex with interpolation
-    /// (`trilinear`, `quadratic`) drives its vertices from a smaller cage of
-    /// NODES instead, and MuJoCo reports no body per vertex. Such a flex can
-    /// only be deformed by streaming its vertex positions — it cannot be
-    /// skinned to bodies — so the two cases are collapsed into one checkable
-    /// predicate rather than a per-vertex option.
+    /// A flex deforms because bodies move, and which bodies depends on the
+    /// flex's interpolation mode — but the *shape* of the answer does not, which
+    /// is why one field covers both:
+    ///
+    /// - body-attached: one joint per vertex, so this is the vertex's body and
+    ///   the vertex has a single influence at weight 1;
+    /// - interpolated (`trilinear`): the cage's node bodies — eight of them,
+    ///   however many thousand vertices they drive — and every vertex is
+    ///   influenced by all eight.
+    ///
+    /// Empty only for a flex with no drawable surface. A consumer streams these
+    /// bodies' poses; it never needs the vertex positions.
     #[serde(default)]
-    pub vertex_bodies: Vec<usize>,
+    pub joint_bodies: Vec<usize>,
     /// How many vertices the surface has. The positions themselves live in the
     /// GLB, not here — a soft body has thousands of them and JSON is the wrong
     /// place for that — but a stream frame is sized from this.

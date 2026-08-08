@@ -525,7 +525,7 @@ fn build_subtree(
             flex_id: flex_id as u32,
             group: flex.group,
             vertex_count: flex.vertex_count as u32,
-            body_attached: !flex.vertex_bodies.is_empty(),
+            body_attached: !flex.joint_bodies.is_empty(),
         })));
         node.locked.set(true);
         root.children.lock_mut().push_cloned(node);

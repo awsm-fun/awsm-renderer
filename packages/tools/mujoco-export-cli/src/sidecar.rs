@@ -184,14 +184,22 @@ pub fn build(model: &Model<'_>, source: Source) -> Result<Sidecar> {
         let vertadr = model.flex_vertadr()[f] as usize;
         let vertnum = model.flex_vertnum()[f] as usize;
 
-        // An interpolated flex drives its vertices from a cage of nodes, and
-        // MuJoCo reports -1 here. All-or-nothing: a partial list would let a
-        // consumer skin some vertices and leave the rest at the bind pose.
-        let ids = &model.flex_vertbodyid()[vertadr..vertadr + vertnum];
-        let vertex_bodies: Vec<usize> = if ids.iter().all(|b| *b >= 0) {
-            ids.iter().map(|b| *b as usize).collect()
+        // The bodies this flex is skinned to. An interpolated flex reports -1
+        // per vertex because its vertices ride a CAGE, not bodies — so the
+        // joints are the cage's node bodies instead. Same field, same meaning
+        // downstream: "the bodies whose poses deform this surface".
+        let joint_bodies: Vec<usize> = if model.flex_interp()[f] != 0 {
+            let nadr = model.flex_nodeadr()[f] as usize;
+            let nnum = model.flex_nodenum()[f] as usize;
+            model.flex_nodebodyid()[nadr..nadr + nnum]
+                .iter()
+                .map(|b| *b as usize)
+                .collect()
         } else {
-            Vec::new()
+            model.flex_vertbodyid()[vertadr..vertadr + vertnum]
+                .iter()
+                .map(|b| (*b).max(0) as usize)
+                .collect()
         };
         // One synthetic mesh entry per flex, appended after the real meshes and
         // the heightfields — the same trick heightfields use, and in the same
@@ -212,7 +220,7 @@ pub fn build(model: &Model<'_>, source: Source) -> Result<Sidecar> {
                 .filter(|id| *id >= 0)
                 .map(|id| id as usize),
             rgba: read4f(model.flex_rgba(), f),
-            vertex_bodies,
+            joint_bodies,
             vertex_count: vertnum,
             mesh,
         });

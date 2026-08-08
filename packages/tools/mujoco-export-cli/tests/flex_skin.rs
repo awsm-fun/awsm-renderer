@@ -234,3 +234,110 @@ fn a_body_attached_flex_is_a_one_influence_skin() {
         max_err * 1.0e9
     );
 }
+
+/// End-to-end: read the EXPORTED GLB back, rebuild the deformation from its skin
+/// exactly as the renderer's shader would, and compare against MuJoCo.
+///
+/// The earlier tests prove the maths. This one proves the artifact — that the
+/// weights, the joint order, the inverse-bind matrices and the two-set packing
+/// all survive the writer and mean what they should on the other side.
+#[test]
+fn the_exported_glb_deforms_like_mujoco() {
+    for (rel, expect_sets, expect_joints) in [("bunny.xml", 2usize, 8usize), ("flag.xml", 1, 171)] {
+        let Some((lib, path)) = model(rel) else {
+            return;
+        };
+        let m = lib.load_model(&path).expect("compile");
+        let src =
+            awsm_renderer_mujoco_export_cli::sidecar::fingerprint(&path, lib.version_string())
+                .unwrap();
+        let doc = awsm_renderer_mujoco_export_cli::sidecar::build(&m, src).unwrap();
+        let names: Vec<_> = doc.meshes.iter().map(|x| x.name.clone()).collect();
+        let mut data = m.forward_at_initial_pose().unwrap();
+        let scene = awsm_renderer_mujoco_export_cli::mesh::build(&m, &data, &names)
+            .unwrap()
+            .expect("a flex model bakes a surface");
+        let glb = awsm_renderer_glb_export::write_glb(&scene);
+
+        let (gdoc, buffers, _) = gltf::import_slice(&glb).expect("loadable glTF");
+        let raw: Vec<Vec<u8>> = buffers.iter().map(|b| b.0.clone()).collect();
+        let flex = &doc.flexes[0];
+        let node_name = doc.meshes[flex.mesh].node.as_deref().unwrap();
+        let node_index = gdoc
+            .nodes()
+            .find(|n| n.name() == Some(node_name))
+            .expect("flex node")
+            .index() as u32;
+        let ex = awsm_renderer_glb_export::extract_node_mesh(&gdoc, &raw, node_index, None)
+            .expect("extract");
+        let skin = ex.skin.expect("the flex must export AS A SKIN");
+
+        assert_eq!(skin.set_count(), expect_sets, "{rel}: influence sets");
+        assert_eq!(
+            skin.joint_node_indices.len(),
+            expect_joints,
+            "{rel}: joints"
+        );
+        assert_eq!(skin.inverse_bind_matrices.len(), expect_joints);
+        assert_eq!(
+            flex.joint_bodies.len(),
+            expect_joints,
+            "{rel}: sidecar joints"
+        );
+
+        // Deform for real, then skin the bind-pose mesh exactly as the shader
+        // does: sum over influences of weight * (joint_world * ibm) * v_bind.
+        for _ in 0..500 {
+            data.step();
+        }
+        let bind = &ex.mesh.positions;
+        let mut max_err = 0.0f64;
+        for (v, p) in bind.iter().enumerate() {
+            let mut acc = glam::Mat4::ZERO;
+            for s in 0..skin.set_count() {
+                let (js, ws) = match s {
+                    0 => (skin.joints[v], skin.weights[v]),
+                    _ => (
+                        skin.extra_sets[s - 1].joints[v],
+                        skin.extra_sets[s - 1].weights[v],
+                    ),
+                };
+                for i in 0..4 {
+                    if ws[i] == 0.0 {
+                        continue;
+                    }
+                    let body = flex.joint_bodies[js[i] as usize];
+                    let xpos = data.xpos();
+                    let q = &data.xquat()[body * 4..body * 4 + 4];
+                    let joint_world = glam::Mat4::from_rotation_translation(
+                        glam::Quat::from_xyzw(q[1] as f32, q[2] as f32, q[3] as f32, q[0] as f32),
+                        glam::Vec3::new(
+                            xpos[body * 3] as f32,
+                            xpos[body * 3 + 1] as f32,
+                            xpos[body * 3 + 2] as f32,
+                        ),
+                    );
+                    let ibm =
+                        glam::Mat4::from_cols_array(&skin.inverse_bind_matrices[js[i] as usize]);
+                    acc += (joint_world * ibm) * ws[i];
+                }
+            }
+            let predicted = acc.transform_point3(glam::Vec3::from(*p));
+            let o = (m.flex_vertadr()[0] as usize + v) * 3;
+            let truth = data.flexvert_xpos();
+            let actual = glam::Vec3::new(truth[o] as f32, truth[o + 1] as f32, truth[o + 2] as f32);
+            max_err = max_err.max((predicted - actual).length() as f64);
+        }
+        println!(
+            "{rel:<12} exported-GLB skin reproduces MuJoCo to {:.4} mm",
+            max_err * 1000.0
+        );
+        // f32 through the GLB, so not the nanometre of the f64 test — but a
+        // micron is still far below anything visible.
+        assert!(
+            max_err < 1.0e-5,
+            "{rel}: exported skin drifts {:.4} mm from MuJoCo",
+            max_err * 1000.0
+        );
+    }
+}
