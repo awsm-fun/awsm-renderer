@@ -102,6 +102,14 @@ pub struct GlbScene {
     pub env: Option<EnvRef>,
 }
 
+/// One further four-influence set for a skinned mesh, parallel to
+/// [`ExportNode::joints`] / [`ExportNode::weights`] and vertex-aligned with them.
+#[derive(Clone, Debug, Default)]
+pub struct SkinInfluenceSet {
+    pub joints: Vec<[u16; 4]>,
+    pub weights: Vec<[f32; 4]>,
+}
+
 /// A skin (skeleton) — a set of joint nodes + their inverse-bind matrices. The
 /// player rebuilds the skinned deformation from this + the mesh's per-vertex
 /// `JOINTS_0`/`WEIGHTS_0`; our clips animate the joint nodes' TRS.
@@ -148,6 +156,16 @@ pub struct ExportNode {
     /// Per-vertex `WEIGHTS_0` (4 blend weights, summing to ~1), one per mesh
     /// vertex. `Some` only for skinned meshes.
     pub weights: Option<Vec<[f32; 4]>>,
+    /// Influence sets BEYOND the first — `JOINTS_1`/`WEIGHTS_1` onward, four
+    /// more influences each.
+    ///
+    /// Additive rather than turning [`Self::joints`] into a `Vec<Vec<_>>`: four
+    /// influences covers essentially every authored rig, and every existing
+    /// producer means exactly that. A model needing more says so explicitly.
+    ///
+    /// The renderer's skinning shader accumulates sets in a loop with the first
+    /// two unrolled, so two sets (eight influences) cost no dynamic branching.
+    pub extra_influence_sets: Vec<SkinInfluenceSet>,
     /// Per-vertex `TANGENT` (vec4: xyz + handedness), one per mesh vertex, carried
     /// from the source glTF's AUTHORED tangent attribute. `Some` ⇒ the writer emits
     /// these verbatim instead of regenerating via MikkTSpace, so a save→reload
@@ -182,6 +200,7 @@ impl Default for ExportNode {
             mesh: None,
             material: None,
             skin: None,
+            extra_influence_sets: Vec::new(),
             joints: None,
             weights: None,
             tangents: None,

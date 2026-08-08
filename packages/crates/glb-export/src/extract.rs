@@ -748,8 +748,10 @@ impl ExtractedMorph {
 /// shapes the renderer's `RawSkin` + `Skins::insert` consume; `joint_node_indices`
 /// are glTF node indices (mapped to editor `TransformKey`s by the caller).
 ///
-/// Note: reads skin SET 0 only (`JOINTS_0`/`WEIGHTS_0`) — 4 influences/vertex,
-/// the common case. Multi-set rigs (`JOINTS_1`+) are a follow-up.
+/// Reads every influence set the primitive carries: `JOINTS_0`/`WEIGHTS_0` into
+/// [`Self::joints`]/[`Self::weights`], and any further sets into
+/// [`Self::extra_sets`]. Four influences covers essentially every authored rig;
+/// more is what a MuJoCo trilinear flex needs (eight, from an eight-node cage).
 #[derive(Clone)]
 pub struct ExtractedSkin {
     /// glTF node indices of the skin's joints (parallel to `inverse_bind_matrices`).
@@ -761,6 +763,8 @@ pub struct ExtractedSkin {
     pub joints: Vec<[u16; 4]>,
     /// Per-vertex blend weights, 4 per vertex, parallel to `joints`.
     pub weights: Vec<[f32; 4]>,
+    /// Influence sets beyond the first, in `JOINTS_1`, `JOINTS_2`, … order.
+    pub extra_sets: Vec<crate::SkinInfluenceSet>,
 }
 
 impl ExtractedSkin {
@@ -774,14 +778,37 @@ impl ExtractedSkin {
     /// the renderer resolves them against `RawSkin.joints` (the editor `TransformKey`s
     /// the caller maps from `joint_node_indices`).
     pub fn packed_index_weights(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(self.joints.len() * 32);
-        for (j, w) in self.joints.iter().zip(self.weights.iter()) {
-            for i in 0..4 {
-                out.extend_from_slice(&(j[i] as u32).to_le_bytes());
-                out.extend_from_slice(&w[i].to_le_bytes());
+        let sets = self.set_count();
+        let mut out = Vec::with_capacity(self.joints.len() * 32 * sets);
+        for v in 0..self.joints.len() {
+            // ALL of a vertex's sets sit together: the shader indexes
+            // `vertex_index * set_count * 8` floats, so sets are the inner run.
+            for s in 0..sets {
+                let (j, w) = match s {
+                    0 => (self.joints[v], self.weights[v]),
+                    _ => {
+                        let e = &self.extra_sets[s - 1];
+                        (e.joints[v], e.weights[v])
+                    }
+                };
+                for i in 0..4 {
+                    out.extend_from_slice(&(j[i] as u32).to_le_bytes());
+                    out.extend_from_slice(&w[i].to_le_bytes());
+                }
             }
         }
         out
+    }
+
+    /// How many four-influence sets this skin carries (at least one).
+    pub fn set_count(&self) -> usize {
+        1 + self
+            .extra_sets
+            .iter()
+            .take_while(|e| {
+                e.joints.len() == self.joints.len() && e.weights.len() == self.joints.len()
+            })
+            .count()
     }
 }
 
@@ -812,6 +839,7 @@ pub fn extract_node_mesh(
     let mut all_have_uvs1 = true;
     let mut all_have_colors = true;
     let mut all_have_skin = true;
+    let mut extra_sets: Vec<crate::SkinInfluenceSet> = Vec::new();
     let mut all_have_tangents = true;
     // Morph targets, accumulated per-target across primitives (vertex-aligned with
     // `positions`). The first contributing primitive fixes the target count; a
@@ -873,6 +901,18 @@ pub fn extract_node_mesh(
                 weights.extend(w.into_f32());
             }
             _ => all_have_skin = false,
+        }
+        // Sets beyond the first. glTF numbers them contiguously, so the first
+        // gap ends the run — reading past it would misalign every later set.
+        let mut set = 1u32;
+        while let (Some(j), Some(w)) = (reader.read_joints(set), reader.read_weights(set)) {
+            let idx = set as usize - 1;
+            if extra_sets.len() <= idx {
+                extra_sets.push(crate::SkinInfluenceSet::default());
+            }
+            extra_sets[idx].joints.extend(j.into_u16());
+            extra_sets[idx].weights.extend(w.into_f32());
+            set += 1;
         }
 
         match reader.read_indices() {
@@ -960,6 +1000,7 @@ pub fn extract_node_mesh(
                 inverse_bind_matrices,
                 joints,
                 weights,
+                extra_sets,
             })
         }
         _ => None,
@@ -1124,12 +1165,41 @@ mod tests {
     /// skin storage buffer expects (mirrors renderer-gltf `convert_skin`): one entry
     /// per vertex, the 4 influences interleaved as (u32 joint index LE, f32 weight LE).
     #[test]
+    fn packed_index_weights_puts_a_vertexs_sets_together() {
+        // The shader indexes `vertex_index * set_count * 8` floats, so a
+        // vertex's sets must be CONTIGUOUS. Packing set-major instead would
+        // read joint indices out of the neighbouring vertex — geometry that
+        // looks almost right, which is the worst kind of wrong.
+        let skin = ExtractedSkin {
+            joint_node_indices: vec![0, 1, 2, 3, 4, 5, 6, 7],
+            inverse_bind_matrices: vec![],
+            joints: vec![[0u16, 1, 2, 3], [0, 1, 2, 3]],
+            weights: vec![[0.25f32; 4], [0.25; 4]],
+            extra_sets: vec![crate::SkinInfluenceSet {
+                joints: vec![[4u16, 5, 6, 7], [4, 5, 6, 7]],
+                weights: vec![[0.0f32; 4], [0.0; 4]],
+            }],
+        };
+        assert_eq!(skin.set_count(), 2);
+        let got = skin.packed_index_weights();
+        assert_eq!(got.len(), 2 /*verts*/ * 2 /*sets*/ * 8 /*floats*/ * 4);
+
+        // Vertex 0's second set starts one set (32 bytes) in, and names joint 4.
+        let idx = u32::from_le_bytes(got[32..36].try_into().unwrap());
+        assert_eq!(idx, 4, "vertex 0's set 1 must follow its set 0");
+        // Vertex 1 starts a full two sets (64 bytes) in.
+        let idx = u32::from_le_bytes(got[64..68].try_into().unwrap());
+        assert_eq!(idx, 0, "vertex 1's set 0 must follow vertex 0's last set");
+    }
+
+    #[test]
     fn packed_index_weights_layout() {
         let skin = ExtractedSkin {
             joint_node_indices: vec![5, 6, 7, 8],
             inverse_bind_matrices: vec![],
             joints: vec![[0u16, 1, 2, 3], [3, 0, 0, 0]],
             weights: vec![[0.5f32, 0.25, 0.125, 0.125], [1.0, 0.0, 0.0, 0.0]],
+            extra_sets: Vec::new(),
         };
         let got = skin.packed_index_weights();
 

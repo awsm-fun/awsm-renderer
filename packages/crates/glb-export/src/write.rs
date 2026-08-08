@@ -40,6 +40,8 @@ struct PrimSource<'a> {
     /// writer emits these instead of regenerating via MikkTSpace.
     tangents: Option<&'a [[f32; 4]]>,
     morph_targets: &'a [MorphTarget],
+    /// Influence sets beyond the first; see `ExportNode::extra_influence_sets`.
+    extra_influence_sets: &'a [crate::SkinInfluenceSet],
 }
 
 pub fn write_glb(scene: &GlbScene) -> Vec<u8> {
@@ -157,6 +159,7 @@ impl Builder {
                 weights: n.weights.as_deref(),
                 tangents: n.tangents.as_deref(),
                 morph_targets: &n.morph_targets,
+                extra_influence_sets: &n.extra_influence_sets,
             },
             texture_indices,
         )];
@@ -169,6 +172,9 @@ impl Builder {
                     weights: ep.weights.as_deref(),
                     tangents: ep.tangents.as_deref(),
                     morph_targets: &ep.morph_targets,
+                    // Extra primitives are a multi-material split of ONE source
+                    // mesh; >4 influences on those is not a shape we produce.
+                    extra_influence_sets: &[],
                 },
                 texture_indices,
             ));
@@ -320,6 +326,38 @@ impl Builder {
                     None,
                 );
                 attributes.insert(Checked::Valid(mesh::Semantic::Weights(0)), wacc);
+
+                // Sets beyond the first. glTF numbers them contiguously from 0,
+                // so a gap here would silently drop every later set on import.
+                for (i, extra) in src.extra_influence_sets.iter().enumerate() {
+                    let set = i as u32 + 1;
+                    if extra.joints.len() != vcount || extra.weights.len() != vcount {
+                        continue;
+                    }
+                    let jbytes: Vec<u8> = extra
+                        .joints
+                        .iter()
+                        .flat_map(|j| j.iter().flat_map(|v| v.to_le_bytes()))
+                        .collect();
+                    let jacc = self.push_accessor(
+                        &jbytes,
+                        vcount,
+                        accessor::ComponentType::U16,
+                        accessor::Type::Vec4,
+                        None,
+                        None,
+                    );
+                    attributes.insert(Checked::Valid(mesh::Semantic::Joints(set)), jacc);
+                    let wacc = self.push_accessor(
+                        &flatten_f32x4(&extra.weights),
+                        vcount,
+                        accessor::ComponentType::F32,
+                        accessor::Type::Vec4,
+                        None,
+                        None,
+                    );
+                    attributes.insert(Checked::Valid(mesh::Semantic::Weights(set)), wacc);
+                }
             }
         }
 
