@@ -81,8 +81,9 @@ pub fn build(
         let node_index = scene.nodes.len();
         let joint_base = node_index + 1;
 
+        let mesh_node_name = node_name(index, names.get(index).and_then(|n| n.as_deref()));
         let mut node = ExportNode {
-            name: node_name(index, names.get(index).and_then(|n| n.as_deref())),
+            name: mesh_node_name.clone(),
             transform: Trs::IDENTITY,
             mesh: Some(mesh),
             material: None,
@@ -119,7 +120,10 @@ pub fn build(
         for (j, body) in joint_bodies.iter().enumerate() {
             let (t, r) = body_rest_pose(data, *body);
             scene.nodes.push(ExportNode {
-                name: format!("{}_joint_{j}", node_name(index, None)),
+                // Derived from the MESH node's name, which is the only identity
+                // the sidecar and the GLB share — the importer finds joints by
+                // exactly this rule.
+                name: format!("{mesh_node_name}_joint_{j}"),
                 transform: Trs {
                     translation: t,
                     rotation: r,

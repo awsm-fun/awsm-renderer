@@ -43,6 +43,14 @@ pub enum MujocoComponent {
     TendonSegment(MujocoTendonSegment),
     /// A deformable's visible surface, imported at its initial-pose shape.
     Flex(MujocoFlex),
+    /// A node bound to a MuJoCo BODY rather than a geom or site.
+    ///
+    /// Today these are the skin joints of a flex — a deformable is skinned to
+    /// the bodies that move it, so those bodies need nodes to be joints of. The
+    /// channel is deliberately general (any body, by id) rather than
+    /// flex-specific: a body is a body, and mocap markers or attachment points
+    /// would bind the same way.
+    Body(MujocoBody),
 }
 
 /// The root of an imported MuJoCo model.
@@ -77,6 +85,11 @@ pub struct MujocoInstance {
     /// `tendon_capacity` plays, sizing a stream frame without walking the tree.
     #[serde(default)]
     pub flex_vertex_counts: Vec<u32>,
+    /// How many bodies the source model has, so a body frame can be sized
+    /// without walking the tree. Most bodies have no node; the id space is
+    /// still the model's.
+    #[serde(default)]
+    pub body_count: u32,
     /// Which MuJoCo visibility groups this instance renders. Defaults to
     /// MuJoCo's own convention (0–2 visible), which is what keeps a menagerie
     /// model showing its visual meshes rather than its collision capsules.
@@ -100,6 +113,7 @@ impl MujocoInstance {
             site_count: 0,
             tendon_capacity: Vec::new(),
             flex_vertex_counts: Vec::new(),
+            body_count: 0,
             visible_groups: default_visible_groups(),
         }
     }
@@ -191,6 +205,15 @@ pub struct MujocoFlex {
     /// interpolates its vertices from a cage of nodes is not, and can only be
     /// deformed by streaming positions.
     pub body_attached: bool,
+}
+
+/// A node driven by a MuJoCo body's world pose.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub struct MujocoBody {
+    /// Index into the source model's BODY array — a fifth id space.
+    pub body_id: u32,
 }
 
 /// One segment of a tendon's preallocated chain.

@@ -74,6 +74,9 @@ pub struct MujocoInstance {
     pub sites: Vec<Option<awsm_renderer::transforms::TransformKey>>,
     /// `tendon_id → ` that tendon's segment pool. A third id space again.
     pub tendons: Vec<TendonSlots>,
+    /// `body_id → ` that body's transform. Sparse by nature: most bodies have
+    /// no node, and the ones that do are a flex's skin joints.
+    pub bodies: Vec<Option<awsm_renderer::transforms::TransformKey>>,
 }
 
 /// One tendon's preallocated chain of segment nodes.
@@ -120,6 +123,13 @@ impl MujocoInstance {
     /// sites, which is most robots.
     pub fn site_frame_len(&self) -> usize {
         self.sites.len() * FLOATS_PER_GEOM
+    }
+
+    /// How many floats one BODY frame must carry. Bodies drive a deformable's
+    /// skin joints — a flex is skinned to the bodies that move it — so this is
+    /// how a soft body deforms without a single vertex crossing the wire.
+    pub fn body_frame_len(&self) -> usize {
+        self.bodies.len() * FLOATS_PER_GEOM
     }
 
     /// How many floats one TENDON frame must carry: per tendon, a live waypoint
@@ -247,6 +257,18 @@ pub fn apply_site_poses(
     write_poses(renderer, &instance.sites, poses)
 }
 
+/// Apply one frame of BODY world poses — the channel that deforms flexes.
+///
+/// Same layout and rules as [`apply_geom_poses`], indexed by **body** id. A
+/// model with no body-bound nodes needs it never.
+pub fn apply_body_poses(
+    renderer: &mut AwsmRenderer,
+    instance: &MujocoInstance,
+    poses: &[f32],
+) -> Result<(), PoseError> {
+    write_poses(renderer, &instance.bodies, poses)
+}
+
 /// Apply one frame of tendon waypoints — the optional tendon channel.
 ///
 /// The frame is, per tendon in id order: **one live waypoint count**, then that
@@ -353,6 +375,7 @@ fn walk(
     if let Some(MujocoComponent::Instance(inst)) = &node.mujoco {
         let mut geoms = vec![None; inst.geom_count as usize];
         let mut sites = vec![None; inst.site_count as usize];
+        let mut bodies = vec![None; inst.body_count as usize];
         // Pool sizes come from the instance, not from counting nodes: a hidden
         // group can leave a pool with no nodes at all, and the frame layout
         // still has to reserve its slots.
@@ -365,7 +388,14 @@ fn walk(
                 shown: 0,
             })
             .collect();
-        collect_geoms(node, handles, &mut geoms, &mut sites, &mut tendons);
+        collect_geoms(
+            node,
+            handles,
+            &mut geoms,
+            &mut sites,
+            &mut tendons,
+            &mut bodies,
+        );
         out.push(MujocoInstance {
             root: node.id,
             root_transform: handles.get(&node.id).map(|h| h.transform),
@@ -374,6 +404,7 @@ fn walk(
             geoms,
             sites,
             tendons,
+            bodies,
         });
         // An instance never nests inside another, so stop descending here.
         return;
@@ -389,6 +420,7 @@ fn collect_geoms(
     geoms: &mut [Option<awsm_renderer::transforms::TransformKey>],
     sites: &mut [Option<awsm_renderer::transforms::TransformKey>],
     tendons: &mut [TendonSlots],
+    bodies: &mut [Option<awsm_renderer::transforms::TransformKey>],
 ) {
     for child in &node.children {
         match &child.mujoco {
@@ -418,9 +450,14 @@ fn collect_geoms(
                     }
                 }
             }
+            Some(MujocoComponent::Body(b)) => {
+                if let Some(slot) = bodies.get_mut(b.body_id as usize) {
+                    *slot = handles.get(&child.id).map(|h| h.transform);
+                }
+            }
             _ => {}
         }
-        collect_geoms(child, handles, geoms, sites, tendons);
+        collect_geoms(child, handles, geoms, sites, tendons, bodies);
     }
 }
 
@@ -459,6 +496,7 @@ mod tests {
             model_name: None,
             geoms: Vec::new(),
             sites: Vec::new(),
+            bodies: Vec::new(),
             // arm26's shape, plus a fixed tendon to prove zero-capacity slots
             // are still counted.
             tendons: vec![slots(6), slots(6), slots(10), slots(0)],
