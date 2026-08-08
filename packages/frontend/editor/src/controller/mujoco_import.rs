@@ -627,7 +627,11 @@ fn build_subtree(
         // happened to resolve, which looks like a physics bug rather than an
         // import one.
         let skinned = rig_entry.filter(|_| joints.len() == flex.joint_bodies.len());
-        if skinned.is_none() && !joint_nodes.is_empty() {
+        // Fires for a SHORT bind and for a zero bind alike. Gating on "some
+        // joints resolved" would stay silent in the loudest case of all — a GLB
+        // whose joint nodes are named differently than this importer expects,
+        // where nothing binds and the flex quietly ships un-deformable.
+        if skinned.is_none() && rig_entry.is_some() {
             tracing::warn!(
                 "mujoco import: flex {flex_id} bound {}/{} skin joints — importing it \
                  at its bind pose instead",

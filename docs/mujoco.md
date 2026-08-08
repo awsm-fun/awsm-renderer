@@ -129,6 +129,7 @@ layout an `mjData` read already produces — a producer never reshapes anything.
 | `apply_geom_poses` | `7 × geom_count`: `[px,py,pz,qw,qx,qy,qz]` | the only required one |
 | `apply_site_poses` | `7 × site_count` | sites have their own id space |
 | `apply_tendon_waypoints` | per tendon: a live count, then its full waypoint capacity as xyz triples | see below |
+| `apply_body_poses` | `7 × body_count` | drives a flex's skin joints |
 
 A mis-sized frame is an error, never a silent truncation: applying one would
 drive every node past the mismatch from the wrong slot, which reads as a physics
@@ -176,17 +177,29 @@ the inside with invisible faces. Vertices come from `mjData` in world space
 rather than `flex_vert` (which is each vertex in *its own body's* frame), so the
 node transform is identity — a deformable has no rigid frame to place it by.
 
-`vertex_bodies` is populated only when *every* vertex is rigidly attached to a
-body. A flex with interpolation drives its vertices from a smaller cage of nodes
-instead and reports none; a partial list would let a consumer skin some vertices
-and strand the rest at the bind pose.
+**A flex deforms by linear blend skinning, exactly** — verified to the nanometre
+against MuJoCo's own `flexvert_xpos` across a real simulation
+(`tests/flex_skin.rs`). So it exports and imports as an ordinary **skinned
+mesh**, driven by the bodies that move it, and no vertex ever crosses the wire.
 
-Flex surfaces render at their bind pose. **Deforming them at runtime is not
-implemented.** Two routes are open and the exported data serves either: a
-dynamic-vertex upload path in the renderer, or skinning each vertex to its body
-at weight 1 through the existing GPU skinning path — the latter needs no new
-renderer capability but does need a skinned import path, and cannot serve
-interpolated flexes at all.
+One mechanism covers both kinds:
+
+- **body-attached**: each vertex rides its own body, so it has ONE influence at
+  weight 1 and the joint list is the vertex list.
+- **interpolated** (`trilinear`): every vertex is a blend of the cage's eight
+  corners — eight influences, two glTF joint sets. MuJoCo already stores each
+  vertex's position inside its cell as normalized coordinates in `flex_vert0`,
+  so the weights are products of numbers it computed: no cell search, no
+  geometry of ours. The corner-to-node mapping is *derived* from rest positions,
+  because MuJoCo promises no ordering and a wrong guess yields a mesh that looks
+  right at rest and inverts the moment it moves.
+
+`joint_bodies` names the bodies in the skin's joint order; a stream drives them
+through [`apply_body_poses`]. The interpolated case is the cheapest to drive, not
+the hardest: eight joint matrices per frame deform 2,503 bunny vertices.
+
+Quadratic cages would need 27 influences and are refused loudly rather than
+approximated.
 
 **`mjSkin` is not supported, on purpose.** It is MuJoCo's legacy deformable:
 `nskin` is 0 for every model shipped with 3.11 and every menagerie robot, and the
