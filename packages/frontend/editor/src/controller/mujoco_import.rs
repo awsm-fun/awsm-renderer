@@ -32,8 +32,9 @@ use awsm_renderer_editor_protocol::mujoco::segment_transform;
 use awsm_renderer_editor_protocol::mujoco::{GeomKind, MujocoMaterial, Sidecar};
 use awsm_renderer_editor_protocol::{
     AssetEntry, AssetId, AssetSource as SceneAssetSource, CapturedSource, MaterialDef,
-    MaterialVariant, MeshDef, MeshRef, MujocoComponent, MujocoFlex, MujocoGeom, MujocoInstance,
-    MujocoSite, MujocoTendonSegment, NodeKind, Trs, VariantId,
+    MaterialVariant, MeshDef, MeshRef, MujocoBody, MujocoComponent, MujocoFlex, MujocoGeom,
+    MujocoInstance, MujocoSite, MujocoTendonSegment, NodeKind, SkinJoint, SkinnedMeshRef, Trs,
+    VariantId,
 };
 
 use crate::engine::scene::node::Node;
@@ -43,8 +44,8 @@ use crate::prelude::*;
 ///
 /// Returns the root node; the caller inserts it and owns the undo entry.
 pub async fn import(sidecar_url: &str) -> Result<Arc<Node>, String> {
-    let (doc, meshes) = fetch(sidecar_url).await?;
-    Ok(build_subtree(&doc, &meshes))
+    let (doc, meshes, rig) = fetch(sidecar_url).await?;
+    Ok(build_subtree(&doc, &meshes, &rig))
 }
 
 /// Re-import into an existing instance, in place.
@@ -64,12 +65,12 @@ pub async fn reimport(sidecar_url: &str, target: &Arc<Node>) -> Result<(), Strin
     let Some(MujocoComponent::Instance(_)) = target.mujoco.get_cloned() else {
         return Err("that node is not a MuJoCo sim instance".to_string());
     };
-    let (doc, meshes) = fetch(sidecar_url).await?;
+    let (doc, meshes, rig) = fetch(sidecar_url).await?;
 
     // Build the fresh subtree, then transplant it onto the existing root rather
     // than diffing two live trees — the build path is the one that is already
     // exercised, and a second "update" path would be free to drift from it.
-    let fresh = build_subtree(&doc, &meshes);
+    let fresh = build_subtree(&doc, &meshes, &rig);
 
     // What the user owns on each surviving geom, keyed by geom id.
     let mut kept: HashMap<u32, awsm_renderer_editor_protocol::NodeKind> = HashMap::new();
@@ -121,21 +122,41 @@ pub async fn reimport(sidecar_url: &str, target: &Arc<Node>) -> Result<(), Strin
     Ok(())
 }
 
+/// What a flex needs to become a real skinned node: the GLB registered as an
+/// asset (so the materialiser can decode the rig), plus each GLB node's identity
+/// in both index spaces the skin machinery uses.
+#[derive(Default)]
+pub struct FlexRig {
+    /// The GLB's asset id — `SkinnedMeshRef::source`.
+    pub asset_id: Option<AssetId>,
+    /// GLB node name → (`gltf_node_index`, flat index in the clean rig glb,
+    /// local transform). The flat index is what `SkinnedMeshRef::rig_node_index`
+    /// and `SkinJoint::index` both address.
+    pub nodes: HashMap<String, (u32, u32, awsm_renderer::transforms::Transform)>,
+}
+
 async fn fetch(
     sidecar_url: &str,
-) -> Result<(Sidecar, HashMap<usize, awsm_renderer_glb_export::MeshData>), String> {
+) -> Result<
+    (
+        Sidecar,
+        HashMap<usize, awsm_renderer_glb_export::MeshData>,
+        FlexRig,
+    ),
+    String,
+> {
     let doc = fetch_sidecar(sidecar_url).await?;
 
     // Geometry, if the model has any. An all-primitive model (the DeepMind
     // humanoid) legitimately has no GLB at all.
-    let meshes = match &doc.glb {
+    let (meshes, rig) = match &doc.glb {
         Some(rel) => {
             let glb_url = resolve(sidecar_url, rel)?;
             fetch_meshes(&glb_url, &doc).await?
         }
-        None => HashMap::new(),
+        None => (HashMap::new(), FlexRig::default()),
     };
-    Ok((doc, meshes))
+    Ok((doc, meshes, rig))
 }
 
 async fn fetch_sidecar(url: &str) -> Result<Sidecar, String> {
@@ -172,8 +193,34 @@ fn resolve(base: &str, rel: &str) -> Result<String, String> {
 async fn fetch_meshes(
     glb_url: &str,
     doc: &Sidecar,
-) -> Result<HashMap<usize, awsm_renderer_glb_export::MeshData>, String> {
+) -> Result<(HashMap<usize, awsm_renderer_glb_export::MeshData>, FlexRig), String> {
     let import = crate::engine::bridge::gltf::import(glb_url).await?;
+
+    // A flex ships as a skinned mesh, and a skinned node is defined by asset
+    // identity plus indices into the re-exported CLEAN RIG GLB — not by a
+    // standalone skin object. So when the model has any deformable, register the
+    // GLB the same way a model import does, and record both index spaces.
+    let mut rig = FlexRig::default();
+    if !doc.flexes.is_empty() {
+        let asset_id = AssetId::new();
+        crate::controller::controller()
+            .scene
+            .assets
+            .lock()
+            .unwrap()
+            .entries
+            .insert(
+                asset_id,
+                AssetEntry::new(SceneAssetSource::Filename(import.display_name.clone())),
+            );
+        crate::engine::bridge::bridge()
+            .insert_template(asset_id, std::sync::Arc::new(import.template.clone()));
+        if let Some(glb) = import.skinned_glb.clone() {
+            crate::engine::bridge::skinned_bake_cache::store_rig_glb(asset_id, glb);
+        }
+        rig.asset_id = Some(asset_id);
+        collect_rig_nodes(&import.template.roots, &import.node_flat_indices, &mut rig);
+    }
 
     let mut by_name: HashMap<&str, u32> = HashMap::new();
     let mut order: Vec<u32> = Vec::new();
@@ -200,7 +247,29 @@ async fn fetch_meshes(
             None => tracing::warn!("mujoco import: GLB node {node_index} carries no geometry"),
         }
     }
-    Ok(out)
+    Ok((out, rig))
+}
+
+/// Index every GLB node by NAME, in both spaces the skin machinery uses.
+///
+/// Name is the key because it is the only identity the sidecar and the GLB
+/// share — the same reason the mesh lookup uses it.
+fn collect_rig_nodes(
+    nodes: &[crate::engine::bridge::asset_template::AssetTemplateNode],
+    flat: &HashMap<u32, u32>,
+    rig: &mut FlexRig,
+) {
+    for n in nodes {
+        if let Some(label) = n.label.as_deref() {
+            if let Some(&index) = flat.get(&n.gltf_node_index) {
+                rig.nodes.insert(
+                    label.to_string(),
+                    (n.gltf_node_index, index, n.local.clone()),
+                );
+            }
+        }
+        collect_rig_nodes(&n.children, flat, rig);
+    }
 }
 
 fn collect_named<'a>(
@@ -227,6 +296,7 @@ fn convention_rotation() -> [f32; 4] {
 fn build_subtree(
     doc: &Sidecar,
     meshes: &HashMap<usize, awsm_renderer_glb_export::MeshData>,
+    rig: &FlexRig,
 ) -> Arc<Node> {
     let model_name = doc
         .model_name
@@ -508,19 +578,102 @@ fn build_subtree(
             }
         };
         let (material_variants, selected_variant) = palette(material);
-        let node = Node::new_with_transform_and_kind(
-            flex.name
-                .clone()
-                .unwrap_or_else(|| format!("flex {flex_id}")),
-            Trs::default(),
-            NodeKind::Mesh {
-                mesh,
-                material_variants,
-                selected_variant,
-                shadow: Default::default(),
-                lod: Default::default(),
-            },
-        );
+        let label = flex
+            .name
+            .clone()
+            .unwrap_or_else(|| format!("flex {flex_id}"));
+        let glb_node = doc.meshes[flex.mesh].node.clone().unwrap_or_default();
+
+        // A flex deforms by linear blend skinning EXACTLY (measured to the
+        // nanometre against MuJoCo), so it imports as a skinned mesh: the bodies
+        // that move it become joint nodes, the body channel drives those, and
+        // the GPU does the deformation with correctly skinned normals. No vertex
+        // ever crosses the wire.
+        let rig_entry = rig
+            .asset_id
+            .zip(rig.nodes.get(&glb_node))
+            .filter(|_| !flex.joint_bodies.is_empty() && flex.vertex_count > 0);
+
+        let mut joints = Vec::new();
+        let mut joint_nodes = Vec::new();
+        if rig_entry.is_some() {
+            for (j, body) in flex.joint_bodies.iter().enumerate() {
+                let Some(&(_, joint_flat, ref local)) =
+                    rig.nodes.get(&format!("{glb_node}_joint_{j}"))
+                else {
+                    continue;
+                };
+                let jnode = Node::new_with_transform_and_kind(
+                    format!("{label} joint {j}"),
+                    Trs {
+                        translation: local.translation.to_array(),
+                        rotation: local.rotation.to_array(),
+                        scale: local.scale.to_array(),
+                    },
+                    NodeKind::Group,
+                );
+                jnode.mujoco.set(Some(MujocoComponent::Body(MujocoBody {
+                    body_id: *body as u32,
+                })));
+                jnode.locked.set(true);
+                joints.push(SkinJoint {
+                    node: jnode.id,
+                    index: joint_flat,
+                });
+                joint_nodes.push(jnode);
+            }
+        }
+        // All or nothing: a partially-bound skin deforms toward whichever bodies
+        // happened to resolve, which looks like a physics bug rather than an
+        // import one.
+        let skinned = rig_entry.filter(|_| joints.len() == flex.joint_bodies.len());
+        if skinned.is_none() && !joint_nodes.is_empty() {
+            tracing::warn!(
+                "mujoco import: flex {flex_id} bound {}/{} skin joints — importing it \
+                 at its bind pose instead",
+                joints.len(),
+                flex.joint_bodies.len()
+            );
+            joint_nodes.clear();
+        }
+        // Joints must exist BEFORE the skinned mesh that references them: the
+        // materialiser needs every bone live in the bridge to build the skin.
+        for jnode in joint_nodes {
+            root.children.lock_mut().push_cloned(jnode);
+        }
+
+        let node = match skinned {
+            Some((asset_id, &(gltf_node_index, rig_node_index, _))) => {
+                Node::new_with_transform_and_kind(
+                    label,
+                    Trs::default(),
+                    NodeKind::SkinnedMesh {
+                        skin: SkinnedMeshRef {
+                            source: asset_id,
+                            node_index: gltf_node_index,
+                            rig_node_index,
+                            primitive_index: None,
+                            joints,
+                        },
+                        material_variants,
+                        selected_variant,
+                        shadow: Default::default(),
+                        lod: Default::default(),
+                    },
+                )
+            }
+            None => Node::new_with_transform_and_kind(
+                label,
+                Trs::default(),
+                NodeKind::Mesh {
+                    mesh,
+                    material_variants,
+                    selected_variant,
+                    shadow: Default::default(),
+                    lod: Default::default(),
+                },
+            ),
+        };
         node.mujoco.set(Some(MujocoComponent::Flex(MujocoFlex {
             flex_id: flex_id as u32,
             group: flex.group,
@@ -619,6 +772,7 @@ fn build_subtree(
     if let Some(MujocoComponent::Instance(mut instance)) = root.mujoco.get_cloned() {
         instance.tendon_capacity = tendon_capacity;
         instance.flex_vertex_counts = flex_vertex_counts;
+        instance.body_count = doc.bodies.len() as u32;
         root.mujoco.set(Some(MujocoComponent::Instance(instance)));
     }
 

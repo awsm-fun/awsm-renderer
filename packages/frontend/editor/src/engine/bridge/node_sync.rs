@@ -1183,11 +1183,18 @@ fn mesh_shadow_flags_from_config(
 /// joint can't be resolved to its bone yet — callers then fall back to the
 /// template-reuse path.
 fn raw_mesh_from_rig(skin: &awsm_renderer_editor_protocol::SkinnedMeshRef) -> Option<RawMeshData> {
-    let Some(decode) = super::skinned_bake_cache::get_rig_node_decode(
+    let decode = super::skinned_bake_cache::get_rig_node_decode(
         skin.source,
         skin.rig_node_index,
         skin.primitive_index,
-    ) else {
+    );
+    if decode.is_none() {
+        tracing::warn!(
+            "raw_mesh_from_rig: no rig decode for rig_node_index={}",
+            skin.rig_node_index
+        );
+    }
+    let Some(decode) = decode else {
         tracing::debug!(
             "raw_mesh_from_rig: no rig decode for {:?} rig_node_index={}",
             skin.source,
@@ -1210,7 +1217,13 @@ fn raw_mesh_from_rig(skin: &awsm_renderer_editor_protocol::SkinnedMeshRef) -> Op
             Some(RawSkin {
                 joints,
                 inverse_bind_matrices,
-                set_count: 1,
+                // Ask the EXTRACTED skin, don't assume. `packed_index_weights`
+                // emits every set it has, and the shader strides by
+                // `vertex_index * set_count * 8` floats — so a hardcoded 1 walks
+                // a two-set buffer one set at a time and every vertex past the
+                // first reads its neighbour's joints. Four influences covers
+                // authored rigs; a MuJoCo trilinear flex needs eight.
+                set_count: ext_skin.set_count(),
                 index_weights: ext_skin.packed_index_weights(),
             })
         }
@@ -1484,11 +1497,18 @@ async fn materialize_skinned_duplicate(
     // can't take this path. A MORPH-ONLY node (rig decode has no skin) shares
     // geometry too — it skips the skin clone and mints only a fresh
     // morph-weights instance (`duplicate_mesh_with_transform`).
-    let Some(decode) = super::skinned_bake_cache::get_rig_node_decode(
+    let decode = super::skinned_bake_cache::get_rig_node_decode(
         skin.source,
         skin.rig_node_index,
         skin.primitive_index,
-    ) else {
+    );
+    if decode.is_none() {
+        tracing::warn!(
+            "raw_mesh_from_rig: no rig decode for rig_node_index={}",
+            skin.rig_node_index
+        );
+    }
+    let Some(decode) = decode else {
         return false;
     };
     // Skinned: resolve the donor skin + this node's cloned joints up front
