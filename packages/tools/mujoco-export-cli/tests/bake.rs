@@ -26,6 +26,7 @@ fn the_baked_clip_still_falls() {
     let clip = bake(
         &c,
         &HashMap::from([(1u32, torso)]),
+        &HashMap::new(),
         "fall",
         Reduction::default(),
     )
@@ -68,8 +69,15 @@ fn reduction_removes_most_keys_of_a_real_run() {
     };
     let binding: HashMap<u32, NodeId> = (0..c.geom_count).map(|g| (g, NodeId::new())).collect();
 
-    let full = bake(&c, &binding, "full", Reduction::NONE).unwrap();
-    let reduced = bake(&c, &binding, "reduced", Reduction::default()).unwrap();
+    let full = bake(&c, &binding, &HashMap::new(), "full", Reduction::NONE).unwrap();
+    let reduced = bake(
+        &c,
+        &binding,
+        &HashMap::new(),
+        "reduced",
+        Reduction::default(),
+    )
+    .unwrap();
 
     let keys = |clip: &awsm_renderer_scene::StoredAnimation| -> usize {
         clip.tracks.iter().map(|t| t.keys.len()).sum()
@@ -102,9 +110,104 @@ fn the_baked_clip_round_trips_as_ordinary_animation_data() {
         return;
     };
     let binding: HashMap<u32, NodeId> = (0..c.geom_count).map(|g| (g, NodeId::new())).collect();
-    let clip = bake(&c, &binding, "fall", Reduction::default()).unwrap();
+    let clip = bake(&c, &binding, &HashMap::new(), "fall", Reduction::default()).unwrap();
 
     let toml_s = toml::to_string(&clip).unwrap();
     let back: awsm_renderer_scene::StoredAnimation = toml::from_str(&toml_s).unwrap();
     assert_eq!(back, clip);
+}
+
+/// A recorded FLEX bakes into a clip that deforms it.
+///
+/// The end-to-end version of the body channel: a real simulation of MuJoCo's
+/// flag, recorded with its 173 body frames, baked against a body binding. What
+/// comes out is an ordinary animation clip — no MuJoCo, no deformable, no
+/// per-vertex anything — whose tracks drive the flex's skin joints.
+#[test]
+fn a_recorded_flex_bakes_into_a_deforming_clip() {
+    let Some(c) = record("flex/flag.xml", 2.0, 30.0) else {
+        return;
+    };
+    c.validate().unwrap();
+    assert!(
+        c.body_count > 0,
+        "a flex model must record a body channel — without it nothing can \
+         replay the deformation"
+    );
+
+    // One node per body, as the importer mints for a flex's skin joints.
+    let nodes: Vec<NodeId> = (0..c.body_count).map(|_| NodeId::new()).collect();
+    let body_binding: HashMap<u32, NodeId> = nodes
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (i as u32, *n))
+        .collect();
+
+    let clip = bake(
+        &c,
+        &HashMap::new(),
+        &body_binding,
+        "wave",
+        Reduction::default(),
+    )
+    .unwrap();
+
+    let keyed: std::collections::HashSet<NodeId> = clip
+        .tracks
+        .iter()
+        .filter_map(|t| match t.target {
+            TrackTarget::Transform { node, .. } => Some(node),
+            _ => None,
+        })
+        .collect();
+
+    // The flag is pinned at one edge and flaps: most of it moves, and the
+    // world body (id 0) never does.
+    assert!(
+        !keyed.contains(&nodes[0]),
+        "body 0 is the world body and never moves, so it must not be keyed"
+    );
+    assert!(
+        keyed.len() > c.body_count as usize / 2,
+        "most of a flapping flag's bodies should be keyed, got {} of {}",
+        keyed.len(),
+        c.body_count
+    );
+
+    // And the motion is real, not a flat pair of keys.
+    let moving = clip
+        .tracks
+        .iter()
+        .find(|t| {
+            matches!(
+                t.target,
+                TrackTarget::Transform {
+                    prop: TransformProp::Translation,
+                    ..
+                }
+            ) && t.keys.len() > 2
+        })
+        .expect("some body must carry a multi-key translation track");
+    let extent = |axis: usize| {
+        let vs: Vec<f32> = moving
+            .keys
+            .iter()
+            .filter_map(|k| match k.value {
+                TrackValue::Vec3(v) => Some(v[axis]),
+                _ => None,
+            })
+            .collect();
+        vs.iter().cloned().fold(f32::MIN, f32::max) - vs.iter().cloned().fold(f32::MAX, f32::min)
+    };
+    let travelled = (0..3).map(extent).fold(0.0f32, f32::max);
+    println!(
+        "flag: {} of {} bodies keyed; largest single-axis travel {:.3} m",
+        keyed.len(),
+        c.body_count,
+        travelled
+    );
+    assert!(
+        travelled > 0.01,
+        "the flag must visibly move, got {travelled} m"
+    );
 }

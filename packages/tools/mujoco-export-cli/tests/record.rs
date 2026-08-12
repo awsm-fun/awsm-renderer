@@ -42,6 +42,7 @@ fn record(rel: &str, seconds: f64, fps: f64) -> Option<Capture> {
             let mut f = Frame {
                 time: step as f64 * timestep,
                 geom_poses: Vec::new(),
+                body_poses: Vec::new(),
             };
             for g in 0..model.ngeom() {
                 let p = &data.geom_xpos()[g * 3..g * 3 + 3];

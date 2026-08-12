@@ -80,12 +80,21 @@ fn main() -> Result<()> {
     let steps_per_frame = ((1.0 / args.fps) / timestep).round().max(1.0) as u64;
     let total_steps = (args.seconds / timestep).round() as u64;
 
-    let mut out = Capture::new(source, model.ngeom() as u32);
+    // The body channel is recorded only for a model with a DEFORMABLE. A flex
+    // imports as a skinned mesh whose joints are the bodies its cage rides, so
+    // its bodies are the only way to replay the deformation — while for a purely
+    // rigid model they would be pure duplication of the geom poses, roughly
+    // doubling the file for nothing.
+    let nbody = match model.nflex() > 0 {
+        true => model.nbody(),
+        false => 0,
+    };
+    let mut out = Capture::new(source, model.ngeom() as u32).with_bodies(nbody as u32);
     let mut step = 0u64;
     loop {
         if step.is_multiple_of(steps_per_frame) {
             out.frames
-                .push(sample(&data, model.ngeom(), step as f64 * timestep));
+                .push(sample(&data, model.ngeom(), nbody, step as f64 * timestep));
         }
         if step >= total_steps {
             break;
@@ -119,6 +128,9 @@ fn main() -> Result<()> {
     if args.verbose {
         println!("  model      {name}");
         println!("  geoms      {}", out.geom_count);
+        if out.body_count > 0 {
+            println!("  bodies     {} (deformable)", out.body_count);
+        }
         println!("  timestep   {timestep} s ({steps_per_frame} steps/frame)");
         println!(
             "  frames     {} over {:.3} s",
@@ -130,17 +142,36 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// One frame: every geom's world pose, in geom-id order.
-fn sample(data: &awsm_renderer_mujoco_sys::Data<'_, '_>, ngeom: usize, time: f64) -> Frame {
+/// One frame: every geom's world pose in geom-id order, then — when the model
+/// has a deformable — every body's world pose in body-id order.
+fn sample(
+    data: &awsm_renderer_mujoco_sys::Data<'_, '_>,
+    ngeom: usize,
+    nbody: usize,
+    time: f64,
+) -> Frame {
     let mut frame = Frame {
         time,
         geom_poses: Vec::with_capacity(ngeom * 7),
+        body_poses: Vec::with_capacity(nbody * 7),
     };
     let xpos = data.geom_xpos();
     for g in 0..ngeom {
         let p = &xpos[g * 3..g * 3 + 3];
         let q = data.geom_world_quat(g);
         frame.push_geom(
+            [p[0] as f32, p[1] as f32, p[2] as f32],
+            [q[0] as f32, q[1] as f32, q[2] as f32, q[3] as f32],
+        );
+    }
+    // `xquat` is already a quaternion in MuJoCo's [w, x, y, z] order — the very
+    // order a frame stores — so unlike the geoms there is no matrix to convert.
+    let bpos = data.xpos();
+    let bquat = data.xquat();
+    for b in 0..nbody {
+        let p = &bpos[b * 3..b * 3 + 3];
+        let q = &bquat[b * 4..b * 4 + 4];
+        frame.push_body(
             [p[0] as f32, p[1] as f32, p[2] as f32],
             [q[0] as f32, q[1] as f32, q[2] as f32, q[3] as f32],
         );

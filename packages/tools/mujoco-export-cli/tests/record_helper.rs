@@ -33,18 +33,35 @@ pub fn record(rel: &str, seconds: f64, fps: f64) -> Option<Capture> {
     let total = (seconds / timestep).round() as u64;
 
     let source = sidecar::fingerprint(&path, lib.version_string()).unwrap();
-    let mut out = Capture::new(source, model.ngeom() as u32);
+    // Body poses only for a model with a deformable — same rule the recorder
+    // binary applies, for the same reason.
+    let nbody = match model.nflex() > 0 {
+        true => model.nbody(),
+        false => 0,
+    };
+    let mut out = Capture::new(source, model.ngeom() as u32).with_bodies(nbody as u32);
     let mut step = 0u64;
     loop {
         if step.is_multiple_of(steps_per_frame) {
             let mut f = Frame {
                 time: step as f64 * timestep,
                 geom_poses: Vec::new(),
+                body_poses: Vec::new(),
             };
             for g in 0..model.ngeom() {
                 let p = &data.geom_xpos()[g * 3..g * 3 + 3];
                 let q = data.geom_world_quat(g);
                 f.push_geom(
+                    [p[0] as f32, p[1] as f32, p[2] as f32],
+                    [q[0] as f32, q[1] as f32, q[2] as f32, q[3] as f32],
+                );
+            }
+            let bpos = data.xpos();
+            let bquat = data.xquat();
+            for b in 0..nbody {
+                let p = &bpos[b * 3..b * 3 + 3];
+                let q = &bquat[b * 4..b * 4 + 4];
+                f.push_body(
                     [p[0] as f32, p[1] as f32, p[2] as f32],
                     [q[0] as f32, q[1] as f32, q[2] as f32, q[3] as f32],
                 );

@@ -34,6 +34,10 @@ pub const VERSION: u32 = 1;
 /// Floats per geom in a frame: `[px, py, pz, qw, qx, qy, qz]`.
 pub const FLOATS_PER_GEOM: usize = 7;
 
+/// Floats per body in a frame. Same shape as a geom pose — a body frame is a
+/// rigid frame like any other.
+pub const FLOATS_PER_BODY: usize = 7;
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Capture {
@@ -51,6 +55,12 @@ pub struct Capture {
     /// Stated once here rather than inferred per frame so a truncated or
     /// mis-sized frame is caught instead of shifting every geom after it.
     pub geom_count: u32,
+
+    /// The model's body count, i.e. the id space [`Frame::body_poses`] is
+    /// indexed by. Zero when this capture carries no body channel at all, which
+    /// is the normal case: only a model with a **flex** needs one.
+    #[serde(default)]
+    pub body_count: u32,
 
     /// Frames in capture order. Times are seconds from the start of the capture
     /// and must be non-decreasing; the bake reads them as clip keyframe times,
@@ -75,6 +85,19 @@ pub struct Frame {
     /// takes f32, and a capture that stored more precision than the sink accepts
     /// would be storing a difference nothing can observe.
     pub geom_poses: Vec<f32>,
+
+    /// `7 * body_count` floats, same layout as [`Self::geom_poses`] but indexed
+    /// by **MuJoCo body id** — or empty when the capture has no body channel.
+    ///
+    /// This is what deforms a deformable. A flex imports as an ordinary skinned
+    /// mesh whose joints are the bodies its cage rides, so recording body frames
+    /// is all it takes to replay a deformation with no simulator in the loop —
+    /// no vertex data is recorded, or could be.
+    ///
+    /// Additive: a capture written before this field existed simply has none,
+    /// and deserializes to empty rather than failing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub body_poses: Vec<f32>,
 }
 
 impl Capture {
@@ -84,8 +107,15 @@ impl Capture {
             version: VERSION,
             source,
             geom_count,
+            body_count: 0,
             frames: Vec::new(),
         }
+    }
+
+    /// Declare a body channel of `body_count` bodies (see [`Self::body_count`]).
+    pub fn with_bodies(mut self, body_count: u32) -> Self {
+        self.body_count = body_count;
+        self
     }
 
     /// Check the magic, the version, and every invariant JSON cannot express.
@@ -101,6 +131,10 @@ impl Capture {
             return Err(Error::WrongVersion(self.version));
         }
         let expected = self.geom_count as usize * FLOATS_PER_GEOM;
+        // A body channel is optional, but a PARTIAL one is not: half a channel
+        // would deform some of the flex and leave the rest at its bind pose,
+        // which reads as a physics bug rather than a bad file.
+        let expected_bodies = self.body_count as usize * FLOATS_PER_BODY;
         let mut previous = f64::NEG_INFINITY;
         for (i, f) in self.frames.iter().enumerate() {
             if f.geom_poses.len() != expected {
@@ -108,6 +142,13 @@ impl Capture {
                     frame: i,
                     got: f.geom_poses.len(),
                     expected,
+                });
+            }
+            if f.body_poses.len() != expected_bodies {
+                return Err(Error::BodyFrameSize {
+                    frame: i,
+                    got: f.body_poses.len(),
+                    expected: expected_bodies,
                 });
             }
             if !f.time.is_finite() {
@@ -154,6 +195,19 @@ impl Frame {
         self.geom_poses.extend_from_slice(&pos);
         self.geom_poses.extend_from_slice(&quat_wxyz);
     }
+
+    /// One body's world pose, same contract as [`Self::geom`].
+    pub fn body(&self, body_id: usize) -> Option<([f32; 3], [f32; 4])> {
+        let base = body_id * FLOATS_PER_BODY;
+        let s = self.body_poses.get(base..base + FLOATS_PER_BODY)?;
+        Some(([s[0], s[1], s[2]], [s[3], s[4], s[5], s[6]]))
+    }
+
+    /// Append one body's world pose, in id order.
+    pub fn push_body(&mut self, pos: [f32; 3], quat_wxyz: [f32; 4]) {
+        self.body_poses.extend_from_slice(&pos);
+        self.body_poses.extend_from_slice(&quat_wxyz);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -161,6 +215,11 @@ pub enum Error {
     WrongFormat(String),
     WrongVersion(u32),
     FrameSize {
+        frame: usize,
+        got: usize,
+        expected: usize,
+    },
+    BodyFrameSize {
         frame: usize,
         got: usize,
         expected: usize,
@@ -195,6 +254,16 @@ impl std::fmt::Display for Error {
                 f,
                 "frame {frame} carries {got} floats, expected {expected} \
                  ({FLOATS_PER_GEOM} per geom x geom_count)"
+            ),
+            Error::BodyFrameSize {
+                frame,
+                got,
+                expected,
+            } => write!(
+                f,
+                "frame {frame} carries {got} BODY floats, expected {expected} \
+                 ({FLOATS_PER_BODY} per body x body_count) — a partial body \
+                 channel would deform only part of a flex"
             ),
             Error::BadTime { frame, time } => {
                 write!(f, "frame {frame} has a non-finite time {time}")
@@ -231,6 +300,7 @@ mod tests {
             let mut f = Frame {
                 time: i as f64 / 60.0,
                 geom_poses: Vec::new(),
+                body_poses: Vec::new(),
             };
             for g in 0..geoms {
                 f.push_geom([g as f32, 0.0, i as f32], [1.0, 0.0, 0.0, 0.0]);

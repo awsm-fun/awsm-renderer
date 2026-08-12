@@ -992,6 +992,20 @@ pub async fn import_capture(
     if binding.is_empty() {
         return Err("that instance has no geom nodes to drive".to_string());
     }
+    // The body binding, for a capture that carries the deformable channel. A
+    // capture recorded from a rigid model has `body_count == 0` and this stays
+    // empty, which bakes exactly the clip it did before.
+    let mut body_binding = std::collections::HashMap::new();
+    if capture.body_count > 0 {
+        collect_bodies(instance, &mut body_binding);
+        if body_binding.is_empty() {
+            return Err(
+                "that capture carries body poses (a deformable) but the instance has no \
+                 body-bound nodes — re-import it from a build that imports flexes"
+                    .to_string(),
+            );
+        }
+    }
 
     let name = capture
         .source
@@ -1000,7 +1014,7 @@ pub async fn import_capture(
         .next()
         .unwrap_or("capture")
         .to_string();
-    bake::bake(&capture, &binding, name, reduction).map_err(|e| e.to_string())
+    bake::bake(&capture, &binding, &body_binding, name, reduction).map_err(|e| e.to_string())
 }
 
 fn collect_geoms(
@@ -1012,5 +1026,19 @@ fn collect_geoms(
             out.insert(g.geom_id, child.id);
         }
         collect_geoms(child, out);
+    }
+}
+
+/// The body id space — a flex's skin joints. Separate from the geom space, and
+/// both are dense from zero, so the two must never share a map.
+fn collect_bodies(
+    node: &Arc<Node>,
+    out: &mut std::collections::HashMap<u32, awsm_renderer_editor_protocol::NodeId>,
+) {
+    for child in node.children.lock_ref().iter() {
+        if let Some(MujocoComponent::Body(b)) = child.mujoco.get_cloned() {
+            out.insert(b.body_id, child.id);
+        }
+        collect_bodies(child, out);
     }
 }
