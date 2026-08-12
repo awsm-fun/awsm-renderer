@@ -149,8 +149,7 @@ fn skinning_reproduces_a_trilinear_flex() {
         let mut max_err = 0.0f64;
         let mut sum_err = 0.0f64;
         let mut span = 0.0f64;
-        for v in 0..vertnum {
-            let w = &weights[v];
+        for (v, w) in weights.iter().enumerate() {
             let mut predicted = [0.0f64; 3];
             for (n, slot) in corner.iter().enumerate() {
                 let p = cage_world[*slot];
@@ -243,7 +242,14 @@ fn a_body_attached_flex_is_a_one_influence_skin() {
 /// all survive the writer and mean what they should on the other side.
 #[test]
 fn the_exported_glb_deforms_like_mujoco() {
-    for (rel, expect_sets, expect_joints) in [("bunny.xml", 2usize, 8usize), ("flag.xml", 1, 171)] {
+    for (rel, expect_sets, expect_joints) in [
+        ("bunny.xml", 2usize, 8usize),
+        ("flag.xml", 1, 171),
+        // Quadratic cages: 27 influences packed into seven sets, the last
+        // carrying one spare slot at weight 0.
+        ("quadratic.xml", 7, 27),
+        ("bunny_quadratic.xml", 7, 27),
+    ] {
         let Some((lib, path)) = model(rel) else {
             return;
         };
@@ -339,5 +345,232 @@ fn the_exported_glb_deforms_like_mujoco() {
             "{rel}: exported skin drifts {:.4} mm from MuJoCo",
             max_err * 1000.0
         );
+    }
+}
+
+/// The 27 triquadratic weights for a vertex at normalized cage coordinates `t`,
+/// indexed `(i*3 + j)*3 + k` over the axis bins.
+///
+/// The 1D basis is quadratic **Lagrange** on nodes at `t = 0, ½, 1` — it
+/// interpolates the mid node, unlike Bernstein. The two are indistinguishable
+/// while the cage stays affine, which is why this is measured on a bent one.
+fn quadratic_weights(t: [f64; 3]) -> [f64; 27] {
+    let basis = |t: f64| {
+        [
+            (1.0 - t) * (1.0 - 2.0 * t),
+            4.0 * t * (1.0 - t),
+            t * (2.0 * t - 1.0),
+        ]
+    };
+    let (bx, by, bz) = (basis(t[0]), basis(t[1]), basis(t[2]));
+    let mut w = [0.0; 27];
+    for i in 0..3 {
+        for j in 0..3 {
+            for k in 0..3 {
+                w[(i * 3 + j) * 3 + k] = bx[i] * by[j] * bz[k];
+            }
+        }
+    }
+    w
+}
+
+/// The 3×3×3 node lattice, derived from rest positions (same reasoning as
+/// [`cage`]), indexed to match [`quadratic_weights`].
+fn quadratic_lattice(model: &Model<'_>, f: usize) -> [usize; 27] {
+    let adr = model.flex_nodeadr()[f] as usize;
+    let node0 = model.flex_node0();
+    let at = |n: usize| {
+        let o = (adr + n) * 3;
+        [node0[o], node0[o + 1], node0[o + 2]]
+    };
+    let mut lo = [f64::MAX; 3];
+    let mut hi = [f64::MIN; 3];
+    for n in 0..27 {
+        let p = at(n);
+        for k in 0..3 {
+            lo[k] = lo[k].min(p[k]);
+            hi[k] = hi[k].max(p[k]);
+        }
+    }
+    let mut lattice = [usize::MAX; 27];
+    for n in 0..27 {
+        let p = at(n);
+        let mut idx = 0usize;
+        for k in 0..3 {
+            let bin = (((p[k] - lo[k]) / (hi[k] - lo[k])) * 2.0).round() as usize;
+            idx = idx * 3 + bin.min(2);
+        }
+        lattice[idx] = n;
+    }
+    assert!(
+        lattice.iter().all(|n| *n != usize::MAX),
+        "the 27 cage nodes must occupy distinct lattice slots — got {lattice:?}"
+    );
+    lattice
+}
+
+/// The quadratic counterpart of [`skinning_reproduces_a_trilinear_flex`].
+///
+/// A 27-node cage is still a fixed-weight blend, so it is still exactly linear
+/// blend skinning — just seven influence sets instead of two.
+#[test]
+fn skinning_reproduces_a_quadratic_flex() {
+    for rel in ["quadratic.xml", "bunny_quadratic.xml"] {
+        let Some((lib, path)) = model(rel) else {
+            return;
+        };
+        let m = lib.load_model(&path).expect("compile");
+        let f = 0;
+        assert_eq!(m.flex_interp()[f], 2, "{rel} must be a quadratic flex");
+        assert_eq!(m.flex_nodenum()[f], 27, "{rel}: a 3×3×3 cage");
+
+        let vertadr = m.flex_vertadr()[f] as usize;
+        let vertnum = m.flex_vertnum()[f] as usize;
+        let lattice = quadratic_lattice(&m, f);
+
+        let vert0 = m.flex_vert0();
+        let weights: Vec<[f64; 27]> = (0..vertnum)
+            .map(|v| {
+                let o = (vertadr + v) * 3;
+                quadratic_weights([vert0[o], vert0[o + 1], vert0[o + 2]])
+            })
+            .collect();
+
+        // Partition of unity still holds — but NOT non-negativity, and that
+        // distinction is load-bearing downstream (unorm8 quantization cannot
+        // carry these, see glb-export's `weights_fit_unorm8`).
+        let mut min_w = f64::MAX;
+        for w in &weights {
+            let sum: f64 = w.iter().sum();
+            assert!(
+                (sum - 1.0).abs() < 1e-9,
+                "{rel}: quadratic weights must partition unity, got {sum}"
+            );
+            min_w = min_w.min(w.iter().copied().fold(f64::MAX, f64::min));
+        }
+        assert!(
+            min_w < -0.01,
+            "{rel}: the Lagrange basis must actually go negative (got min {min_w}) — if it \
+             does not, this model no longer pins the property the quantizer guard exists for"
+        );
+
+        let mut data = m.forward_at_initial_pose().expect("data");
+        for (label, steps) in [("rest", 0), ("settled", 400), ("late", 1200)] {
+            for _ in 0..steps {
+                data.step();
+            }
+            let cage_world: Vec<[f64; 3]> = (0..27).map(|n| node_world(&m, &data, f, n)).collect();
+
+            let truth = data.flexvert_xpos();
+            let mut max_err = 0.0f64;
+            for (v, w) in weights.iter().enumerate() {
+                let mut predicted = [0.0f64; 3];
+                for (n, slot) in lattice.iter().enumerate() {
+                    let p = cage_world[*slot];
+                    for k in 0..3 {
+                        predicted[k] += w[n] * p[k];
+                    }
+                }
+                let o = (vertadr + v) * 3;
+                let err = (0..3)
+                    .map(|k| (predicted[k] - truth[o + k]).powi(2))
+                    .sum::<f64>()
+                    .sqrt();
+                max_err = max_err.max(err);
+            }
+            println!(
+                "{rel:<22} {label:>8}: max {:.3} nm over {vertnum} verts (min weight {min_w:.4})",
+                max_err * 1.0e9
+            );
+            assert!(
+                max_err < 1.0e-9,
+                "{rel} {label}: skinning must reproduce the quadratic flex exactly, got {:.3} nm",
+                max_err * 1.0e9
+            );
+        }
+    }
+}
+
+/// The release path must not quantize a quadratic flex's weights away.
+///
+/// The editor's player-bundle export runs every mesh GLB through
+/// `compress_glb_with`, which packs skin weights into unorm8 — a representation
+/// that cannot hold the Lagrange basis's negative lobes. Clamping them would not
+/// error; it would just deform wrongly, forever. So this pins BOTH halves: the
+/// quadratic flex keeps f32 weights (negatives intact), and an ordinary
+/// trilinear one still quantizes, so the guard stays narrow.
+#[test]
+fn compression_keeps_quadratic_weights_but_still_quantizes_ordinary_ones() {
+    use awsm_renderer_glb_export::{compress_glb_with, CompressOptions, Quantization};
+
+    // meshopt off so the result is plain glTF the `gltf` crate can read; the
+    // weight-quantization decision under test is independent of it.
+    let options = CompressOptions {
+        meshopt: false,
+        quantization: Quantization::Always,
+    };
+
+    for (rel, expect_f32) in [("bunny_quadratic.xml", true), ("bunny.xml", false)] {
+        let Some((lib, path)) = model(rel) else {
+            return;
+        };
+        let m = lib.load_model(&path).expect("compile");
+        let src =
+            awsm_renderer_mujoco_export_cli::sidecar::fingerprint(&path, lib.version_string())
+                .unwrap();
+        let doc = awsm_renderer_mujoco_export_cli::sidecar::build(&m, src).unwrap();
+        let names: Vec<_> = doc.meshes.iter().map(|x| x.name.clone()).collect();
+        let data = m.forward_at_initial_pose().unwrap();
+        let scene = awsm_renderer_mujoco_export_cli::mesh::build(&m, &data, &names)
+            .unwrap()
+            .expect("a flex model bakes a surface");
+        let glb = awsm_renderer_glb_export::write_glb(&scene);
+        let packed = compress_glb_with(&glb, &options).expect("compress");
+
+        // Quantization declares KHR_mesh_quantization as REQUIRED, which the
+        // `gltf` crate's strict import refuses outright — the same lenient parse
+        // `compress_glb_with` itself uses is the way back in.
+        let gltf = gltf::Gltf::from_slice_without_validation(&packed).expect("loadable glTF");
+        let blob = gltf.blob.clone().expect("GLB bin chunk");
+        let node_name = doc.meshes[doc.flexes[0].mesh].node.as_deref().unwrap();
+        let node = gltf
+            .nodes()
+            .find(|n| n.name() == Some(node_name))
+            .expect("flex node");
+        let prim = node.mesh().unwrap().primitives().next().unwrap();
+
+        let acc = prim
+            .get(&gltf::Semantic::Weights(0))
+            .expect("WEIGHTS_0 must survive compression");
+        let is_f32 = acc.data_type() == gltf::accessor::DataType::F32;
+        assert_eq!(
+            is_f32,
+            expect_f32,
+            "{rel}: WEIGHTS_0 component type is {:?}; a quadratic flex must stay f32 and an \
+             ordinary skin must still quantize",
+            acc.data_type()
+        );
+
+        // Type alone is not enough — read the values back and confirm the
+        // negative lobes are actually still there.
+        if expect_f32 {
+            let reader = prim.reader(|_| Some(&blob));
+            let min = reader
+                .read_weights(0)
+                .expect("weights")
+                .into_f32()
+                .flatten()
+                .fold(f32::MAX, f32::min);
+            assert!(
+                min < -0.01,
+                "{rel}: the negative Lagrange weights must survive compression, got min {min}"
+            );
+            println!("{rel:<22} compressed, weights f32, min weight {min:.4}");
+        } else {
+            println!(
+                "{rel:<22} compressed, weights quantized to {:?}",
+                acc.data_type()
+            );
+        }
     }
 }

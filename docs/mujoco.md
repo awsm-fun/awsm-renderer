@@ -186,20 +186,34 @@ One mechanism covers both kinds:
 
 - **body-attached**: each vertex rides its own body, so it has ONE influence at
   weight 1 and the joint list is the vertex list.
-- **interpolated** (`trilinear`): every vertex is a blend of the cage's eight
-  corners — eight influences, two glTF joint sets. MuJoCo already stores each
-  vertex's position inside its cell as normalized coordinates in `flex_vert0`,
-  so the weights are products of numbers it computed: no cell search, no
-  geometry of ours. The corner-to-node mapping is *derived* from rest positions,
-  because MuJoCo promises no ordering and a wrong guess yields a mesh that looks
-  right at rest and inverts the moment it moves.
+- **interpolated**: every vertex is a fixed blend of a regular cage lattice.
+  MuJoCo already stores each vertex's position inside its cell as normalized
+  coordinates in `flex_vert0`, so the weights are products of numbers it
+  computed: no cell search, no geometry of ours. The lattice-to-node mapping is
+  *derived* from rest positions, because MuJoCo promises no ordering and a wrong
+  guess yields a mesh that looks right at rest and inverts the moment it moves.
+  Two orders exist, and they are the same code at different `order`:
+  - `trilinear` — a 2×2×2 cage, eight influences, two glTF joint sets.
+  - `quadratic` — a 3×3×3 cage, 27 influences, seven joint sets (the last has
+    one spare slot at weight 0).
 
 `joint_bodies` names the bodies in the skin's joint order; a stream drives them
 through [`apply_body_poses`]. The interpolated case is the cheapest to drive, not
 the hardest: eight joint matrices per frame deform 2,503 bunny vertices.
 
-Quadratic cages would need 27 influences and are refused loudly rather than
-approximated.
+**A quadratic cage's weights go negative.** Its 1D basis is quadratic *Lagrange*
+on nodes at `t = 0, ½, 1` — it interpolates the mid node, unlike Bernstein. The
+two are indistinguishable while the cage stays affine, so only a *bent* cage
+tells them apart (measured: Bernstein is 0.99 mm wrong on `bunny_quadratic.xml`,
+Lagrange exactly zero). Lagrange dips to −⅛ outside the middle third, so these
+weights partition unity without lying in `[0, 1]` — which is all linear blend
+skinning actually requires, but it does mean **a quadratic flex's weights cannot
+be quantized to unorm8**. `glb-export`'s `weights_fit_unorm8` guard keeps those
+accessors at f32; without it the player-bundle export would clamp the negative
+lobes to zero and deform subtly wrongly with no error anywhere.
+
+A cage that is neither 8 nor 27 nodes, or that is degenerate along an axis (so
+its nodes do not fill the lattice), is refused loudly rather than approximated.
 
 **`mjSkin` is not supported, on purpose.** It is MuJoCo's legacy deformable:
 `nskin` is 0 for every model shipped with 3.11 and every menagerie robot, and the

@@ -599,10 +599,18 @@ pub fn compress_glb_with(glb: &[u8], options: &CompressOptions) -> anyhow::Resul
             // no dequant carrier needed (absolute values), so the structural
             // mesh guards don't apply. gltfpack parity (plan F5): this was
             // 70% of the rig-size gap (f32 weights vs gltfpack's u8).
+            //
+            // Skipped when a weight falls outside `[0, 1]`: a MuJoCo quadratic
+            // flex blends its 27 cage nodes with a Lagrange basis that goes
+            // NEGATIVE (to −⅛) while still summing to 1, and unorm8 cannot hold
+            // that. Quantizing anyway would clamp the negatives to zero and dump
+            // the residual on the largest weight — geometry that is silently,
+            // subtly wrong, with no error anywhere. Those meshes keep f32.
             Role::Weights
                 if quantize_requested
                     && comp == accessor::ComponentType::F32
-                    && multiplicity == 4 =>
+                    && multiplicity == 4
+                    && weights_fit_unorm8(&data) =>
             {
                 let logical = quantize_weights_unorm8(&data, count);
                 let acc = &mut root.accessors[index];
@@ -1220,6 +1228,17 @@ fn quantize_snorm16(data: &[u8], count: usize, components: usize) -> Vec<u8> {
 fn joints_fit_u8(data: &[u8]) -> bool {
     data.chunks_exact(2)
         .all(|c| u16::from_le_bytes(c.try_into().unwrap()) < 256)
+}
+
+/// True when every skin weight lies in `[0, 1]` and so survives unorm8.
+///
+/// Ordinary rigs always pass. A MuJoCo **quadratic** flex does not: its 27-node
+/// Lagrange cage basis is negative outside the middle third, which is legitimate
+/// (the weights still partition unity) but unrepresentable as unorm8.
+fn weights_fit_unorm8(data: &[u8]) -> bool {
+    data.chunks_exact(4)
+        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+        .all(|w| (0.0..=1.0).contains(&w))
 }
 
 /// f32 VEC4 skin weights → u8-normalized VEC4, renormalized per vertex so the

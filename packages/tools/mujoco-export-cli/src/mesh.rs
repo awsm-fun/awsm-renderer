@@ -410,10 +410,17 @@ fn body_rest_pose(data: &Data<'_, '_>, body: usize) -> ([f32; 3], [f32; 4]) {
 ///
 /// - **body-attached**: each vertex rides its own body, so it has ONE influence
 ///   at weight 1 and the joint list is the vertex list.
-/// - **interpolated**: every vertex is a trilinear blend of the cage's eight
-///   corners. MuJoCo already stores each vertex's position inside its cell as
-///   normalized coordinates in `flex_vert0`, so the eight weights are products
-///   of numbers it already computed — no cell search, no geometry of ours.
+/// - **interpolated**: every vertex is a fixed blend of a regular cage lattice —
+///   `2×2×2` corners (trilinear) or `3×3×3` nodes (triquadratic). MuJoCo already
+///   stores each vertex's position inside its cell as normalized coordinates in
+///   `flex_vert0`, so the weights are products of numbers it already computed —
+///   no cell search, no geometry of ours.
+///
+/// Both interpolation orders are the SAME code at different `order`: the basis
+/// is a tensor product along the three axes, and the lattice index convention is
+/// shared between the weights and the node lookup. That sharing is load-bearing
+/// — a convention that disagreed between the two would look right at rest and
+/// deform wrongly, which is precisely what `tests/flex_skin.rs` measures.
 fn flex_influences(
     model: &Model<'_>,
     f: usize,
@@ -439,60 +446,119 @@ fn flex_influences(
         .iter()
         .map(|b| (*b).max(0) as usize)
         .collect();
-    if nnum != 8 {
-        // Only a trilinear cage (eight corners) is a fixed-weight blend we can
-        // bake. A quadratic cage would need 27 influences — seven sets — so it
-        // is refused loudly rather than approximated into something that looks
-        // nearly right and moves wrongly.
+
+    // 8 nodes ⇒ trilinear, 27 ⇒ triquadratic. Anything else is not a regular
+    // lattice and has no fixed-weight blend to bake, so it is refused loudly
+    // rather than approximated into something that looks nearly right and moves
+    // wrongly.
+    let order = match nnum {
+        8 => 2usize,
+        27 => 3,
+        _ => {
+            eprintln!(
+                "warning: flex {f} is interpolated with {nnum} cage nodes, which is neither a \
+                 trilinear (8) nor a quadratic (27) lattice, so this flex ships un-deformable"
+            );
+            return (Vec::new(), Vec::new());
+        }
+    };
+
+    let Some(lattice) = cage_lattice(model, f, order) else {
         eprintln!(
-            "warning: flex {f} is interpolated with {nnum} cage nodes, not 8; only \
-             trilinear cages bake to a skin, so this flex ships un-deformable"
+            "warning: flex {f}'s {nnum}-node cage is not a regular {order}×{order}×{order} \
+             lattice (it is degenerate along at least one axis), so this flex ships \
+             un-deformable"
         );
         return (Vec::new(), Vec::new());
-    }
-
-    let corner = cage_corners(model, f);
-    let vert0 = model.flex_vert0();
-    let mut a = SkinInfluenceSet {
-        joints: Vec::with_capacity(vertnum),
-        weights: Vec::with_capacity(vertnum),
     };
-    let mut b = a.clone();
+
+    // Four influences per set; 8 nodes fill two sets exactly, 27 fill seven with
+    // one spare slot that carries weight 0 (and so contributes nothing).
+    let influences = order.pow(3);
+    let nsets = influences.div_ceil(4);
+    let vert0 = model.flex_vert0();
+    let mut sets = vec![
+        SkinInfluenceSet {
+            joints: Vec::with_capacity(vertnum),
+            weights: Vec::with_capacity(vertnum),
+        };
+        nsets
+    ];
     for v in 0..vertnum {
         let o = (vertadr + v) * 3;
-        let t = [vert0[o], vert0[o + 1], vert0[o + 2]];
-        let mut w = [0.0f32; 8];
-        for (n, slot) in w.iter_mut().enumerate() {
-            *slot = (0..3)
-                .map(|k| if n >> k & 1 == 1 { t[k] } else { 1.0 - t[k] })
-                .product::<f64>() as f32;
+        let w = cage_weights(order, [vert0[o], vert0[o + 1], vert0[o + 2]]);
+        for (s, set) in sets.iter_mut().enumerate() {
+            let mut joints = [0u16; 4];
+            let mut weights = [0.0f32; 4];
+            for i in 0..4 {
+                let idx = s * 4 + i;
+                if idx < influences {
+                    joints[i] = lattice[idx] as u16;
+                    weights[i] = w[idx] as f32;
+                }
+            }
+            set.joints.push(joints);
+            set.weights.push(weights);
         }
-        a.joints.push([
-            corner[0] as u16,
-            corner[1] as u16,
-            corner[2] as u16,
-            corner[3] as u16,
-        ]);
-        a.weights.push([w[0], w[1], w[2], w[3]]);
-        b.joints.push([
-            corner[4] as u16,
-            corner[5] as u16,
-            corner[6] as u16,
-            corner[7] as u16,
-        ]);
-        b.weights.push([w[4], w[5], w[6], w[7]]);
     }
-    (bodies, vec![a, b])
+    (bodies, sets)
 }
 
-/// Which cage node sits at each corner, indexed by our own bit convention
-/// (bit `k` set ⇒ the high side of axis `k`).
+/// The cage's blend weights for a vertex at normalized cell coordinates `t`,
+/// in the lattice index convention (see [`cage_lattice`]).
 ///
-/// Derived from the rest positions rather than assumed: MuJoCo promises no
-/// corner ordering, and an assumed one produces a mesh that looks right at rest
-/// and turns inside out the moment it moves.
-fn cage_corners(model: &Model<'_>, f: usize) -> [usize; 8] {
+/// A tensor product of the 1D basis along each axis:
+///
+/// - `order` 2 — linear: `[1-t, t]`.
+/// - `order` 3 — quadratic **Lagrange** on nodes at `t = 0, ½, 1`, which
+///   INTERPOLATES the mid node. Not Bernstein: the two agree wherever the cage
+///   stays affine (so a rest pose cannot tell them apart), but they diverge once
+///   it bends — measured at 0.99 mm on `bunny_quadratic.xml`, against Lagrange's
+///   exact zero.
+///
+/// The Lagrange basis is NEGATIVE outside the middle third (down to −⅛), so
+/// these weights do not all lie in `[0, 1]` even though they still sum to 1.
+/// They partition unity, which is all linear blend skinning actually requires —
+/// but it does mean a quadratic flex's weights cannot be quantized to unorm8
+/// (see `glb-export`'s `weights_fit_unorm8`).
+fn cage_weights(order: usize, t: [f64; 3]) -> Vec<f64> {
+    let basis = |t: f64| -> Vec<f64> {
+        match order {
+            2 => vec![1.0 - t, t],
+            _ => vec![
+                (1.0 - t) * (1.0 - 2.0 * t),
+                4.0 * t * (1.0 - t),
+                t * (2.0 * t - 1.0),
+            ],
+        }
+    };
+    let (bx, by, bz) = (basis(t[0]), basis(t[1]), basis(t[2]));
+    let mut w = Vec::with_capacity(order.pow(3));
+    // x outermost, z innermost — the same nesting `cage_lattice` indexes by.
+    for wx in &bx {
+        for wy in &by {
+            for wz in &bz {
+                w.push(wx * wy * wz);
+            }
+        }
+    }
+    w
+}
+
+/// Which cage node sits at each lattice position, indexed `(i*order + j)*order + k`
+/// where `i`/`j`/`k` are the bins along axes x/y/z — the same order
+/// [`cage_weights`] emits.
+///
+/// Derived from the rest positions rather than assumed: MuJoCo promises no node
+/// ordering, and an assumed one produces a mesh that looks right at rest and
+/// turns inside out the moment it moves.
+///
+/// Returns `None` if the nodes do not land on a full lattice — a cage flattened
+/// along an axis collapses two bins into one and leaves holes, and a silently
+/// wrong node map is exactly the failure mode worth refusing.
+fn cage_lattice(model: &Model<'_>, f: usize, order: usize) -> Option<Vec<usize>> {
     let adr = model.flex_nodeadr()[f] as usize;
+    let num = order.pow(3);
     let node0 = model.flex_node0();
     let at = |n: usize| {
         let o = (adr + n) * 3;
@@ -500,23 +566,28 @@ fn cage_corners(model: &Model<'_>, f: usize) -> [usize; 8] {
     };
     let mut lo = [f64::MAX; 3];
     let mut hi = [f64::MIN; 3];
-    for n in 0..8 {
+    for n in 0..num {
         let p = at(n);
         for k in 0..3 {
             lo[k] = lo[k].min(p[k]);
             hi[k] = hi[k].max(p[k]);
         }
     }
-    let mut corner = [0usize; 8];
-    for n in 0..8 {
+    let mut lattice = vec![usize::MAX; num];
+    for n in 0..num {
         let p = at(n);
-        let mut bits = 0usize;
+        let mut idx = 0usize;
         for k in 0..3 {
-            if p[k] > (lo[k] + hi[k]) * 0.5 {
-                bits |= 1 << k;
+            let span = hi[k] - lo[k];
+            if span <= 0.0 {
+                return None;
             }
+            // Nodes sit on an even grid, so the normalized coordinate lands on
+            // a bin centre and rounding names it.
+            let bin = (((p[k] - lo[k]) / span) * (order - 1) as f64).round() as usize;
+            idx = idx * order + bin.min(order - 1);
         }
-        corner[bits] = n;
+        lattice[idx] = n;
     }
-    corner
+    lattice.iter().all(|n| *n != usize::MAX).then_some(lattice)
 }
