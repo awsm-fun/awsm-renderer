@@ -39,35 +39,115 @@ carrier to bias into. So: seven f32 VEC4 sets, 112 bytes of weights per vertex,
 A quadratic flex's 27 weights are a **pure function of 3 numbers** — the
 vertex's normalized cage coordinate, which MuJoCo already stores in
 `flex_vert0`. The tensor product of the 1D Lagrange basis reconstructs all 27
-exactly.
+exactly. Store the 3, drop the 54.
 
-Earlier note here proposed evaluating that basis in the vertex shader. **That is
-the wrong layer.** The renderer already reads joint indices and weights from a
-storage buffer, not from vertex attributes — the GLB is only transport. So the
-expansion can happen **at load**, on the CPU, filling the exact same skin buffer
-the GPU reads today:
+It does **not** need a shader change. The renderer reads joint indices and
+weights from a storage buffer, not from vertex attributes — the GLB is only
+transport — so the expansion happens on the CPU at load, filling the identical
+buffer the GPU reads today.
 
-- **on disk**: 3 values per vertex (12 bytes as f32, 6 as normalized u16 —
-  and these ARE in `[0,1]`, so unlike the weights they quantize cleanly)
-  replacing 27 weights + 27 indices, i.e. 172 bytes → 6.
+- **on disk**: 3 values per vertex (12 bytes f32, or 6 as normalized u16 — these
+  ARE in `[0,1]`, so unlike the weights they quantize cleanly) replacing 27
+  weights + 27 indices, i.e. 172 bytes → 6.
 - **at runtime**: byte-identical to today. No shader variant, no new skinning
-  path, no risk to anything already working.
+  path, nothing already working is at risk.
 - **estimated**: `bunny_quadratic` 259.5 KB → roughly 45 KB, in line with the
   trilinear bunny's 41.1 KB.
 
-What it costs: a marker on the rig GLB saying "this skin is a quadratic cage,
-expand it", plus the cage coordinate attribute — an awsm-specific addition to
-our own rig format, carried through exporter → glb-export schema → extractor →
-importer/loader. Four layers and a format addition, which is why it is its own
-change rather than a tail-end edit: the failure mode of getting it subtly wrong
-is, once again, geometry that looks plausible and deforms incorrectly.
+The same mechanism covers **trilinear** (8 weights from the same 3 numbers, 2
+sets → 1 attribute), so build it for `order` 2 and 3 at once — `cage_weights` in
+the exporter is already written that way.
 
-Worth noting the same trick applies to the **trilinear** case (8 weights from
-the same 3 numbers, 2 sets → 1 attribute), so the two would share one mechanism.
+### Where to put it — this is the part to get right
+
+The one real design question, already answered: **expand at
+`ExtractedSkin::packed_index_weights()`, and carry the compact form
+everywhere else.**
+
+`packed_index_weights()` (`glb-export/src/extract.rs:796`) is the SINGLE
+chokepoint both production consumers go through:
+
+- editor: `packages/frontend/editor/src/engine/bridge/node_sync.rs:1227`
+- player/loader: `packages/crates/scene-loader/src/lib.rs:3794`
+
+Expand there (plus `set_count()`, same file) and both paths get it for free,
+with no loader or editor change at all.
+
+**Do NOT expand inside the extractor's reader.** `reexport_clean`
+(`extract.rs:40`) is GLB → `GlbScene` → written back out, and the editor runs it
+on every save. Expanding on read means the re-export writes the fat form back
+and the entire saving evaporates on first save — silently. This is the same
+trap that produced the original dropped-`JOINTS_1` bug; `reexport_clean` must
+carry the compact encoding through untouched.
+
+So the compact form is a first-class field, parallel to
+`extra_influence_sets`:
+
+| layer | file | change |
+|---|---|---|
+| exporter | `packages/tools/mujoco-export-cli/src/mesh.rs` | `flex_influences` returns the cage encoding (coords + node list + `order`) instead of expanded sets; `cage_weights`/`cage_lattice` already exist and stay |
+| schema | `packages/crates/glb-export/src/lib.rs` | new field on `ExportNode` beside `extra_influence_sets` |
+| write | `packages/crates/glb-export/src/write.rs` | emit coords as an attribute + the marker (order + joint list) |
+| read | `packages/crates/glb-export/src/extract.rs` | read it back into the SAME field — that is what makes `reexport_clean` preserve it |
+| expand | `extract.rs` `packed_index_weights()` / `set_count()` | synthesize the 8 or 27 influences on demand |
+
+Keep the expanded path working too: a rig authored before this change, or any
+ordinary glTF skin, still arrives as real `JOINTS_n`/`WEIGHTS_n`.
+
+### Verification gates — all of these must hold
+
+1. `MUJOCO_DIR=~/.local/share/mujoco/3.11.0 cargo test -p awsm-renderer-mujoco-export-cli --test flex_skin`
+   — the nanometre oracle. `skinning_reproduces_a_quadratic_flex` and
+   `the_exported_glb_deforms_like_mujoco` must stay exact. If the expansion is
+   wrong by even a weight, these fail; they are the reason to trust this at all.
+2. `cargo test -p awsm-renderer-glb-export` — extend
+   `reexport_clean_preserves_skin_and_morph` (`extract.rs:1269`) with a cage
+   case, so the save-path trap above is pinned by a test rather than a comment.
+3. Sizes: re-measure with a throwaway test that calls `write_glb` then
+   `compress_glb_with(&glb, &CompressOptions::default())` — that is `shipped`.
+   Target ~45 KB for `bunny_quadratic`.
+4. On device: replay `examples/test-scenes/mujoco-flex/author.js` and confirm
+   the golden still reproduces **pixel-identically** (it did, exactly, through
+   the last writer change — so any drift is a real regression, not noise).
+   Note that scene is body-attached, so it exercises the trilinear/quadratic
+   path only if you also import `bunny_quadratic.xml`.
+5. `cargo clippy --all --all-features --tests -- -D warnings` — what CI runs.
+
+## Picking this up cold
+
+Environment:
+
+- `MUJOCO_DIR=~/.local/share/mujoco/3.11.0` (3.11.0, `model/flex/` has all the
+  demos). `MUJOCO_MENAGERIE_DIR=~/.local/share/mujoco_menagerie`. Without these
+  the MuJoCo tests SKIP rather than fail — check for `SKIP:` in the output
+  before believing a green run.
+- `task test-scenes` serves `examples/test-scenes` on **:9084** (fixtures are
+  fetched from there by `author.js`).
+- `task mcp-dev` runs the editor on **:9085** and the MCP server on **:9186**
+  (dev port, not the :9086 prod default). Open
+  `http://localhost:9085/?mcp=http://localhost:9186` to attach.
+- The template: `task dev` in `../templates/physics-mujoco`, app on **:9000**,
+  media on :9001. `?scene=flag` is the deformable.
+
+Tooling note: this session drove the MCP server with a small HTTP client at
+`/tmp/mcp.py`, which is **ephemeral and will be gone**. It is ~90 lines
+(initialize → keep the session id in `/tmp/mcp-sid` → `tools/call`, parsing SSE
+frames); rebuild it if the harness has not registered the awsm-scene tools.
+`screenshot_scene` returns base64 PNG in the tool result — decode it locally,
+never route image bytes back through the harness.
+
+Two behaviours that cost time this session and are not obvious:
+
+- **`load_player_bundle` is one-shot after an import.** import → export → load
+  → drive works; calling `load_player_bundle` a SECOND time clears the resolved
+  instances and `editor_apply_mujoco_bodies` then answers
+  `error: no sim instance 0`. Re-import to reset.
+- The editor's default project can be **empty**, so "wait until `scene_tree` is
+  non-empty" never returns. Wait on the snapshot query SUCCEEDING instead.
 
 ## Closed — do not redo
 
-- **Body-attached flex size, and every glTF we write** (`__SIZECOMMIT__`).
+- **Body-attached flex size, and every glTF we write** (`9bbffaab`).
   Two facts measured here: `flex_vert` is identically zero (every body-attached
   vertex sits exactly on its body's origin) and those bodies never rotate (0.00
   degrees after 400 real steps). So such a joint carries a translation and
