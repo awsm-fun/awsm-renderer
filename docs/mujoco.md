@@ -107,8 +107,10 @@ the whole robot, and the stream never has to know.
 `awsm_renderer_scene_loader::mujoco` is the entire MuJoCo runtime surface.
 
 ```rust
-// At load: walk the scene, resolve every instance's bindings.
-let mut instances = mujoco::resolve_instances(&scene.nodes, &handles);
+// At load: walk the scene, resolve every instance's bindings. `skin_joints`
+// comes from the loaded scene — a flex's bodies are skin bones, and a skin
+// reads the rig glb's baked joint transforms, not the bone nodes' own.
+let mut instances = mujoco::resolve_instances(&scene.nodes, &handles, &skin_joints);
 
 // Per frame, from wherever your poses come from:
 mujoco::apply_geom_poses(&mut renderer, &instances[0], &poses)?;
@@ -214,6 +216,23 @@ lobes to zero and deform subtly wrongly with no error anywhere.
 
 A cage that is neither 8 nor 27 nodes, or that is degenerate along an axis (so
 its nodes do not fill the lattice), is refused loudly rather than approximated.
+
+**What a flex costs on disk** (geometry GLB, uncompressed, from
+`model/flex/`):
+
+| model | kind | joints | sets | GLB |
+|---|---|---|---|---|
+| `flag.xml` | body-attached, 171 verts | 171 | 1 | 43.5 KB |
+| `poncho.xml` | body-attached | 2503 | 1 | 126.0 KB |
+| `bunny.xml` | trilinear | 8 | 2 | 237.5 KB |
+| `bunny_quadratic.xml` | quadratic | 27 | 7 | 536.1 KB |
+
+Body-attached flexes cost roughly 5x a plain mesh, because one joint node per
+vertex is inherently redundant when the mapping is the identity and glTF has no
+cheaper way to say so. Interpolated ones cost the influence sets: the same bunny
+is 2.3x larger as a quadratic than as a trilinear. Both trade disk for the thing
+that actually matters at runtime — 8 or 27 joint matrices per frame instead of
+2,503 vertex positions.
 
 **`mjSkin` is not supported, on purpose.** It is MuJoCo's legacy deformable:
 `nskin` is 0 for every model shipped with 3.11 and every menagerie robot, and the
