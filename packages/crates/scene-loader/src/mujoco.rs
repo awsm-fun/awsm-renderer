@@ -359,10 +359,11 @@ pub fn apply_tendon_waypoints(
 pub fn resolve_instances(
     nodes: &[EditorNode],
     handles: &HashMap<NodeId, crate::NodeHandles>,
+    skin_joints: &HashMap<NodeId, awsm_renderer::transforms::TransformKey>,
 ) -> Vec<MujocoInstance> {
     let mut out = Vec::new();
     for node in nodes {
-        walk(node, handles, &mut out);
+        walk(node, handles, skin_joints, &mut out);
     }
     out
 }
@@ -370,6 +371,7 @@ pub fn resolve_instances(
 fn walk(
     node: &EditorNode,
     handles: &HashMap<NodeId, crate::NodeHandles>,
+    skin_joints: &HashMap<NodeId, awsm_renderer::transforms::TransformKey>,
     out: &mut Vec<MujocoInstance>,
 ) {
     if let Some(MujocoComponent::Instance(inst)) = &node.mujoco {
@@ -391,6 +393,7 @@ fn walk(
         collect_geoms(
             node,
             handles,
+            skin_joints,
             &mut geoms,
             &mut sites,
             &mut tendons,
@@ -410,13 +413,14 @@ fn walk(
         return;
     }
     for child in &node.children {
-        walk(child, handles, out);
+        walk(child, handles, skin_joints, out);
     }
 }
 
 fn collect_geoms(
     node: &EditorNode,
     handles: &HashMap<NodeId, crate::NodeHandles>,
+    skin_joints: &HashMap<NodeId, awsm_renderer::transforms::TransformKey>,
     geoms: &mut [Option<awsm_renderer::transforms::TransformKey>],
     sites: &mut [Option<awsm_renderer::transforms::TransformKey>],
     tendons: &mut [TendonSlots],
@@ -452,12 +456,25 @@ fn collect_geoms(
             }
             Some(MujocoComponent::Body(b)) => {
                 if let Some(slot) = bodies.get_mut(b.body_id as usize) {
-                    *slot = handles.get(&child.id).map(|h| h.transform);
+                    // A flex's bodies are SKIN BONES, and a skin reads the rig
+                    // glb's own baked joint transform — NOT the bone node's
+                    // scene transform (see `LoadedScene::skin_joints`). Writing
+                    // the latter moves a real transform that nothing is skinned
+                    // to: every pose applies, no error is raised anywhere, and
+                    // the mesh sits at its bind pose forever.
+                    //
+                    // Falls back to the node's own transform for a body that is
+                    // not a skin bone — the channel is deliberately general, and
+                    // a mocap marker or attachment point IS its scene node.
+                    *slot = skin_joints
+                        .get(&child.id)
+                        .copied()
+                        .or_else(|| handles.get(&child.id).map(|h| h.transform));
                 }
             }
             _ => {}
         }
-        collect_geoms(child, handles, geoms, sites, tendons, bodies);
+        collect_geoms(child, handles, skin_joints, geoms, sites, tendons, bodies);
     }
 }
 
@@ -502,6 +519,104 @@ mod tests {
             tendons: vec![slots(6), slots(6), slots(10), slots(0)],
         };
         assert_eq!(inst.tendon_frame_len(), 19 + 19 + 31 + 1);
+    }
+
+    /// Mint a distinct `TransformKey` without a GPU (see the dev-dependency note).
+    fn tk(n: u64) -> awsm_renderer::transforms::TransformKey {
+        slotmap::KeyData::from_ffi((1u64 << 32) | n).into()
+    }
+
+    fn handles_at(transform: awsm_renderer::transforms::TransformKey) -> crate::NodeHandles {
+        crate::NodeHandles {
+            transform,
+            ..Default::default()
+        }
+    }
+
+    fn node(id: NodeId, name: &str, mujoco: Option<MujocoComponent>) -> EditorNode {
+        EditorNode {
+            id,
+            name: name.to_string(),
+            transform: Default::default(),
+            kind: awsm_renderer_scene::NodeKind::Group,
+            locked: false,
+            visible: true,
+            prefab: false,
+            physics: None,
+            mujoco,
+            children: Vec::new(),
+        }
+    }
+
+    /// A flex's bodies are SKIN BONES, and a skin reads the rig glb's baked
+    /// joint transform — not the bone node's own scene transform.
+    ///
+    /// Binding the wrong one is invisible: every pose applies to a real
+    /// transform, nothing errors, and the mesh sits at its bind pose forever.
+    /// That is exactly what happened, and it made a wind-blown flag render
+    /// perfectly still in the player.
+    #[test]
+    fn a_body_bound_to_a_skin_joint_resolves_the_joint_the_skin_reads() {
+        let (bone_scene_tk, rig_joint_tk, marker_tk) = (tk(1), tk(2), tk(3));
+        let (bone_id, marker_id) = (NodeId::new(), NodeId::new());
+
+        let mut root = node(
+            NodeId::new(),
+            "Flag",
+            Some(MujocoComponent::Instance(
+                awsm_renderer_scene::mujoco::MujocoInstance {
+                    source: Source {
+                        filename: "flag.xml".into(),
+                        sha256: "x".into(),
+                        mujoco_version: "3.11.0".into(),
+                    },
+                    model_name: None,
+                    geom_count: 0,
+                    site_count: 0,
+                    tendon_capacity: Vec::new(),
+                    flex_vertex_counts: Vec::new(),
+                    body_count: 2,
+                    visible_groups: Vec::new(),
+                },
+            )),
+        );
+        root.children = vec![
+            node(
+                bone_id,
+                "flag joint 0",
+                Some(MujocoComponent::Body(
+                    awsm_renderer_scene::mujoco::MujocoBody { body_id: 0 },
+                )),
+            ),
+            node(
+                marker_id,
+                "marker",
+                Some(MujocoComponent::Body(
+                    awsm_renderer_scene::mujoco::MujocoBody { body_id: 1 },
+                )),
+            ),
+        ];
+
+        let handles = HashMap::from([
+            (bone_id, handles_at(bone_scene_tk)),
+            (marker_id, handles_at(marker_tk)),
+        ]);
+        // Only the bone is a skin joint.
+        let skin_joints = HashMap::from([(bone_id, rig_joint_tk)]);
+
+        let out = resolve_instances(std::slice::from_ref(&root), &handles, &skin_joints);
+        assert_eq!(out.len(), 1);
+        assert_eq!(
+            out[0].bodies[0],
+            Some(rig_joint_tk),
+            "a skin bone must resolve to the rig joint the SKIN reads, not the bone's \
+             own scene transform — writing the latter deforms nothing, silently"
+        );
+        assert_eq!(
+            out[0].bodies[1],
+            Some(marker_tk),
+            "a body that is NOT a skin bone still resolves to its own scene transform"
+        );
     }
 
     #[test]

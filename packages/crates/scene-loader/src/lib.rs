@@ -1267,7 +1267,9 @@ pub async fn load_scene_for_player(
     // Resolve each MuJoCo sim instance's geom_id→transform binding, now that
     // every node has a transform key. Derived from the tree rather than read
     // from a stored map, so it cannot drift from the subtree it describes.
-    loaded.mujoco = mujoco::resolve_instances(&scene.nodes, &loaded.nodes);
+    // `skin_joints` matters here: a flex's bodies ARE skin bones, and the skin
+    // reads the rig glb's baked joint transforms, not the bones' scene ones.
+    loaded.mujoco = mujoco::resolve_instances(&scene.nodes, &loaded.nodes, &maps.skin_joints);
 
     // ── Phase 3b: load animation clips + the NLA mixer ────────────────────────
     // Now that every node's transform / material / light / camera / mesh key

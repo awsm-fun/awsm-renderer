@@ -58,3 +58,9 @@ serde_json = { workspace = true }
 # Parse the `.lod.toml` LOD manifests baked into the bundle.
 toml = "0.8"
 tracing = { workspace = true }
+
+[dev-dependencies]
+# Mint bare `TransformKey`s in unit tests: the real ones come from `Transforms`,
+# which needs a GPU device, and the MuJoCo binding tests only care about WHICH
+# key a body resolves to — never about dereferencing it.
+slotmap = { workspace = true }
