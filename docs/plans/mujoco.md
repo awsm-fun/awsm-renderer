@@ -6,52 +6,107 @@ feature works lives in `docs/mujoco.md` and should stay there.
 Branch `mujoco`, never pushed, `main` untouched. Templates work is in
 `../templates/physics-mujoco`, its own repo, also unpushed.
 
-**Two items remain, both needing David.** Everything else on this plan is
-closed — see "Closed" below before re-litigating anything.
+**One item remains.** Everything else on this plan is closed — see "Closed"
+below before re-litigating anything.
 
-## Open 1 — file the parry3d issue
+## Open — flex GLB cost: investigated, needs a call on which fix
 
-Drafted and fact-checked against the 0.28.0 source at
-`docs/plans/parry3d-issue-draft.md`; needs a go-ahead to post to
-`dimforge/parry` under David's account (`gh` is authenticated).
+David's call: the cost is **not acceptable as-is**. Investigated; the findings
+below say what to do, but each option trades bytes against something real, so
+the choice is his.
 
-`bvh_binned_build.rs:60` computes `(k1 * (centroid - min)) as usize` and indexes
-an 8-bin array with it, unclamped. Re-verified: for any well-formed leaf set the
-value tops out at exactly `7.999920` at any scale (the range cancels), the
-`1e-5` relative guard is ~170x `f32::EPSILON` so rounding cannot close it, and a
-zero extent yields `NaN`, which `as usize` saturates to 0. So an out-of-bounds
-index means malformed input, not drifting arithmetic — a one-line
-`.min(NUM_BINS - 1)` makes it unreachable.
+### What ships today
 
-We saw the panic once (`index out of bounds: the len is 8 but the index is 8`),
-never reproduced. `dde3bf98` added a `debug_assert` at `to_parry_aabb` — the
-single funnel into parry — so next time the malformed box gets named instead of
-parry taking the blame.
+`raw` is the exporter's GLB; `shipped` is after the bundle's meshopt +
+quantization, which is what a player downloads.
 
-## Open 2 — ratify the flex GLB cost
-
-Not a blocker for anything; it is a "is this acceptable" call that nobody has
-made. Measured (geometry GLB, uncompressed):
-
-| model | kind | joints | sets | GLB |
+| model | kind | raw | shipped | ratio |
 |---|---|---|---|---|
-| `flag.xml` | body-attached, 171 verts | 171 | 1 | 43.5 KB |
-| `poncho.xml` | body-attached | 2503 | 1 | 126.0 KB |
-| `bunny.xml` | trilinear | 8 | 2 | 237.5 KB |
-| `bunny_quadratic.xml` | quadratic | 27 | 7 | 536.1 KB |
+| `flag.xml` | body-attached, 171 verts | 43.5 KB | **24.7 KB** | 1.76x |
+| `poncho.xml` | body-attached, 484 verts | 126.0 KB | **71.3 KB** | 1.77x |
+| `bunny.xml` | trilinear | 237.5 KB | **41.6 KB** | 5.71x |
+| `bunny_quadratic.xml` | quadratic | 536.1 KB | **260.9 KB** | 2.05x |
 
-Body-attached flexes cost ~5x a plain mesh (one joint node per vertex is
-inherently redundant when the mapping is the identity, and glTF has no cheaper
-way to say so). Interpolated ones cost their influence sets — the same bunny is
-2.3x larger as a quadratic than as a trilinear. Absolute sizes stay small, and
-both trade disk for the thing that matters at runtime: 8 or 27 joint matrices
-per frame instead of 2,503 vertex positions.
+The two kinds have **different problems**, and neither is "the geometry is big".
 
-The numbers are already recorded in `docs/mujoco.md`; ratifying just means
-deciding this needs no further work, at which point this doc can be deleted.
+### Body-attached: half the file is JSON
+
+| | flag | poncho |
+|---|---|---|
+| glTF JSON chunk | 21.4 KB (49%) | 62.6 KB (50%) |
+| inverse bind matrices | 10.7 KB | 30.2 KB |
+| all actual geometry | 8.7 KB | 25.7 KB |
+
+The JSON is one glTF node per vertex — `name` + `translation` + `rotation`,
+about 130 bytes each. Two measured facts make most of that removable:
+
+- **`flex_vert` is identically zero.** Every body-attached vertex sits exactly
+  at its body's origin (checked on flag and poncho: max `|flex_vert|` = 0.000000
+  m, 0 of 171 and 0 of 484 nonzero).
+- **The bodies never rotate.** A flexcomp vertex body is a pure point mass:
+  `|1-|w||` is 0 at rest and the max rotation after 400 steps of real simulation
+  is 0.00 degrees, on both models.
+
+So a body-attached joint carries **a translation and nothing else**, and its
+inverse bind matrix is a pure inverse-translation. Options, largest first:
+
+1. **Omit `rotation` on joint nodes** (~13 KB on poncho). Free — it is provably
+   identity for this flex kind. Low risk.
+2. **Drop joint node NAMES** (~16 KB on poncho). The importer currently finds
+   joints by the `{mesh}_joint_{i}` naming rule, but the skin's own `joints`
+   array is already index-aligned with the sidecar's `flex.joint_bodies`, so the
+   names are redundant with an ordering we already rely on. Medium risk: it
+   changes the import contract.
+3. **Omit `inverseBindMatrices`** by baking vertex positions in body-local space
+   (~30 KB on poncho). Since `flex_vert` is zero, POSITION becomes **all zeros**
+   and compresses to nothing too. But it leaves a bind-pose mesh that is a
+   degenerate point at the origin — every tool that reads the bind pose (a glTF
+   viewer, the LOD baker, MikkTSpace, any bounds code not already skin-aware)
+   sees garbage. Biggest win, biggest robustness cost. **Recommend against
+   unless bytes matter more than the artifact being sane on its own.**
+
+1 + 2 take poncho's raw from 126 KB to roughly 97 KB with no loss of anything;
+adding 3 would reach ~62 KB at the cost above.
+
+### Quadratic: seven f32 weight sets, and the joint indices are all identical
+
+`bunny_quadratic` is 6.3x the shipped size of the same mesh as a trilinear
+(260.9 vs 41.6 KB). Two causes, both structural:
+
+- **The weights cannot be quantized** — that is the `weights_fit_unorm8` guard,
+  and it is correct: Lagrange goes negative and glTF's WEIGHTS_n allows only
+  FLOAT, normalized UNSIGNED_BYTE, or normalized UNSIGNED_SHORT. There is no
+  signed option and no scale/offset carrier to bias into, so f32 is the only
+  spec-valid choice. The trilinear bunny quantizes to u8 and that is most of its
+  5.71x.
+- **`JOINTS_0..6` are 137 KB of pure repetition** — every vertex names the same
+  27 cage nodes in the same lattice order. glTF cannot express a constant
+  attribute, and meshopt only partly exploits it.
+
+The real fix for both is that a quadratic flex's 27 weights are a **pure
+function of 3 numbers** — the vertex's normalized cage coordinate, which MuJoCo
+already stores in `flex_vert0`. Storing those 3 floats and evaluating the basis
+in the vertex shader replaces 27 weights + 27 indices per vertex (172 bytes)
+with 12 bytes, and needs no joint indices at all. That is a custom vertex-shader
+path, not a format tweak — **a separate plan, not this one**.
+
+Interim, cheap: emit `JOINTS_n` as `UNSIGNED_BYTE` at export when the cage has
+under 256 nodes (it always does — 8 or 27), halving 137 KB to 68 KB raw. The
+bundle compressor already does exactly this (`joints_fit_u8`); the exporter does
+not.
 
 ## Closed — do not redo
 
+- **The parry3d issue is filed**: https://github.com/dimforge/parry/issues/438
+  (`bvh_binned_build.rs:60` indexes an 8-bin array unclamped). Re-verified
+  against the 0.28.0 source before filing: for any well-formed leaf set the
+  value tops out at exactly `7.999920` at any scale (the range cancels), the
+  `1e-5` relative guard is ~170x `f32::EPSILON` so rounding cannot close it, and
+  a zero extent yields `NaN`, which `as usize` saturates to 0 — so an
+  out-of-bounds index means malformed input, not drifting arithmetic. We saw the
+  panic once, never reproduced; `dde3bf98`'s `debug_assert` at `to_parry_aabb`
+  is our own defence meanwhile. Draft kept at
+  `docs/plans/parry3d-issue-draft.md`.
 - **Quadratic cages are supported**, not refused (`648127ed`). 27 influences in
   seven joint sets. The basis is quadratic *Lagrange*, not Bernstein — only a
   bent cage distinguishes them (Bernstein is 0.99 mm wrong on
