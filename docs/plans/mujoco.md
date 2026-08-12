@@ -9,94 +9,72 @@ Branch `mujoco`, never pushed, `main` untouched. Templates work is in
 **One item remains.** Everything else on this plan is closed — see "Closed"
 below before re-litigating anything.
 
-## Open — flex GLB cost: investigated, needs a call on which fix
+## Open — quadratic flex weights are still 7x f32 per vertex
 
-David's call: the cost is **not acceptable as-is**. Investigated; the findings
-below say what to do, but each option trades bytes against something real, so
-the choice is his.
+Body-attached flexes are **done** (see Closed). What remains is the quadratic
+case, which no format tweak reaches.
 
-### What ships today
+### Where it stands
 
-`raw` is the exporter's GLB; `shipped` is after the bundle's meshopt +
-quantization, which is what a player downloads.
+`shipped` is after the bundle's meshopt + quantization — what a player actually
+downloads.
 
-| model | kind | raw | shipped | ratio |
-|---|---|---|---|---|
-| `flag.xml` | body-attached, 171 verts | 43.5 KB | **24.7 KB** | 1.76x |
-| `poncho.xml` | body-attached, 484 verts | 126.0 KB | **71.3 KB** | 1.77x |
-| `bunny.xml` | trilinear | 237.5 KB | **41.6 KB** | 5.71x |
-| `bunny_quadratic.xml` | quadratic | 536.1 KB | **260.9 KB** | 2.05x |
+| model | kind | shipped before | shipped now |
+|---|---|---|---|
+| `flag.xml` | body-attached | 24.7 KB | **16.1 KB** (−35%) |
+| `poncho.xml` | body-attached | 71.3 KB | **47.1 KB** (−34%) |
+| `bunny.xml` | trilinear | 41.6 KB | 41.1 KB |
+| `bunny_quadratic.xml` | quadratic | 260.9 KB | **259.5 KB** |
 
-The two kinds have **different problems**, and neither is "the geometry is big".
+Quadratic did not move, and that is expected: the export-side joint narrowing
+only recovered what the bundle compressor was already doing (`joints_fit_u8`).
+The remaining cost is the **weights**, and they cannot be quantized — Lagrange
+goes negative, and glTF's `WEIGHTS_n` allows only FLOAT, normalized
+UNSIGNED_BYTE, or normalized UNSIGNED_SHORT. No signed option, no scale/offset
+carrier to bias into. So: seven f32 VEC4 sets, 112 bytes of weights per vertex,
+274 KB raw on a 2503-vertex bunny.
 
-### Body-attached: half the file is JSON
+### The fix, and why it is not a shader change
 
-| | flag | poncho |
-|---|---|---|
-| glTF JSON chunk | 21.4 KB (49%) | 62.6 KB (50%) |
-| inverse bind matrices | 10.7 KB | 30.2 KB |
-| all actual geometry | 8.7 KB | 25.7 KB |
+A quadratic flex's 27 weights are a **pure function of 3 numbers** — the
+vertex's normalized cage coordinate, which MuJoCo already stores in
+`flex_vert0`. The tensor product of the 1D Lagrange basis reconstructs all 27
+exactly.
 
-The JSON is one glTF node per vertex — `name` + `translation` + `rotation`,
-about 130 bytes each. Two measured facts make most of that removable:
+Earlier note here proposed evaluating that basis in the vertex shader. **That is
+the wrong layer.** The renderer already reads joint indices and weights from a
+storage buffer, not from vertex attributes — the GLB is only transport. So the
+expansion can happen **at load**, on the CPU, filling the exact same skin buffer
+the GPU reads today:
 
-- **`flex_vert` is identically zero.** Every body-attached vertex sits exactly
-  at its body's origin (checked on flag and poncho: max `|flex_vert|` = 0.000000
-  m, 0 of 171 and 0 of 484 nonzero).
-- **The bodies never rotate.** A flexcomp vertex body is a pure point mass:
-  `|1-|w||` is 0 at rest and the max rotation after 400 steps of real simulation
-  is 0.00 degrees, on both models.
+- **on disk**: 3 values per vertex (12 bytes as f32, 6 as normalized u16 —
+  and these ARE in `[0,1]`, so unlike the weights they quantize cleanly)
+  replacing 27 weights + 27 indices, i.e. 172 bytes → 6.
+- **at runtime**: byte-identical to today. No shader variant, no new skinning
+  path, no risk to anything already working.
+- **estimated**: `bunny_quadratic` 259.5 KB → roughly 45 KB, in line with the
+  trilinear bunny's 41.1 KB.
 
-So a body-attached joint carries **a translation and nothing else**, and its
-inverse bind matrix is a pure inverse-translation. Options, largest first:
+What it costs: a marker on the rig GLB saying "this skin is a quadratic cage,
+expand it", plus the cage coordinate attribute — an awsm-specific addition to
+our own rig format, carried through exporter → glb-export schema → extractor →
+importer/loader. Four layers and a format addition, which is why it is its own
+change rather than a tail-end edit: the failure mode of getting it subtly wrong
+is, once again, geometry that looks plausible and deforms incorrectly.
 
-1. **Omit `rotation` on joint nodes** (~13 KB on poncho). Free — it is provably
-   identity for this flex kind. Low risk.
-2. **Drop joint node NAMES** (~16 KB on poncho). The importer currently finds
-   joints by the `{mesh}_joint_{i}` naming rule, but the skin's own `joints`
-   array is already index-aligned with the sidecar's `flex.joint_bodies`, so the
-   names are redundant with an ordering we already rely on. Medium risk: it
-   changes the import contract.
-3. **Omit `inverseBindMatrices`** by baking vertex positions in body-local space
-   (~30 KB on poncho). Since `flex_vert` is zero, POSITION becomes **all zeros**
-   and compresses to nothing too. But it leaves a bind-pose mesh that is a
-   degenerate point at the origin — every tool that reads the bind pose (a glTF
-   viewer, the LOD baker, MikkTSpace, any bounds code not already skin-aware)
-   sees garbage. Biggest win, biggest robustness cost. **Recommend against
-   unless bytes matter more than the artifact being sane on its own.**
-
-1 + 2 take poncho's raw from 126 KB to roughly 97 KB with no loss of anything;
-adding 3 would reach ~62 KB at the cost above.
-
-### Quadratic: seven f32 weight sets, and the joint indices are all identical
-
-`bunny_quadratic` is 6.3x the shipped size of the same mesh as a trilinear
-(260.9 vs 41.6 KB). Two causes, both structural:
-
-- **The weights cannot be quantized** — that is the `weights_fit_unorm8` guard,
-  and it is correct: Lagrange goes negative and glTF's WEIGHTS_n allows only
-  FLOAT, normalized UNSIGNED_BYTE, or normalized UNSIGNED_SHORT. There is no
-  signed option and no scale/offset carrier to bias into, so f32 is the only
-  spec-valid choice. The trilinear bunny quantizes to u8 and that is most of its
-  5.71x.
-- **`JOINTS_0..6` are 137 KB of pure repetition** — every vertex names the same
-  27 cage nodes in the same lattice order. glTF cannot express a constant
-  attribute, and meshopt only partly exploits it.
-
-The real fix for both is that a quadratic flex's 27 weights are a **pure
-function of 3 numbers** — the vertex's normalized cage coordinate, which MuJoCo
-already stores in `flex_vert0`. Storing those 3 floats and evaluating the basis
-in the vertex shader replaces 27 weights + 27 indices per vertex (172 bytes)
-with 12 bytes, and needs no joint indices at all. That is a custom vertex-shader
-path, not a format tweak — **a separate plan, not this one**.
-
-Interim, cheap: emit `JOINTS_n` as `UNSIGNED_BYTE` at export when the cage has
-under 256 nodes (it always does — 8 or 27), halving 137 KB to 68 KB raw. The
-bundle compressor already does exactly this (`joints_fit_u8`); the exporter does
-not.
+Worth noting the same trick applies to the **trilinear** case (8 weights from
+the same 3 numbers, 2 sets → 1 attribute), so the two would share one mechanism.
 
 ## Closed — do not redo
 
+- **Body-attached flex size, and every glTF we write** (`__SIZECOMMIT__`).
+  Two facts measured here: `flex_vert` is identically zero (every body-attached
+  vertex sits exactly on its body's origin) and those bodies never rotate (0.00
+  degrees after 400 real steps). So such a joint carries a translation and
+  nothing else. The writer now omits node TRS components equal to glTF's own
+  defaults — free, spec-correct, and it shrinks EVERY export, not just flexes —
+  and narrows `JOINTS_n` to `u8` when the skin has under 256 joints. Shipped:
+  flag 24.7 → 16.1 KB, poncho 71.3 → 47.1 KB, both −34%.
 - **The parry3d issue is filed**: https://github.com/dimforge/parry/issues/438
   (`bvh_binned_build.rs:60` indexes an 8-bin array unclamped). Re-verified
   against the 0.28.0 source before filing: for any well-formed leaf set the

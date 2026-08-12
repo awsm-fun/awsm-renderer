@@ -19,6 +19,12 @@ use crate::{
 
 const GLB_VERSION: u32 = 2;
 
+/// glTF's own node-transform defaults. A component equal to one of these is
+/// omitted from the JSON entirely — see the note at the node build site.
+const DEFAULT_TRANSLATION: [f32; 3] = [0.0, 0.0, 0.0];
+const DEFAULT_ROTATION: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
+const DEFAULT_SCALE: [f32; 3] = [1.0, 1.0, 1.0];
+
 const LIGHTS_PUNCTUAL: &str = "KHR_lights_punctual";
 const MATERIALS_UNLIT: &str = "KHR_materials_unlit";
 
@@ -107,9 +113,17 @@ impl Builder {
                 matrix: None,
                 mesh: mesh_idx[i],
                 name: Some(n.name.clone()),
-                rotation: Some(scene::UnitQuaternion(n.transform.rotation)),
-                scale: Some(n.transform.scale),
-                translation: Some(n.transform.translation),
+                // Components equal to glTF's own defaults are OMITTED, not
+                // written out. A reader that sees no `rotation` uses identity,
+                // which is exactly what we would have spelled — so this is free,
+                // and it is not a micro-optimization: node TRS is JSON text, and
+                // the JSON chunk is HALF of a body-attached MuJoCo flex's file
+                // (one joint node per vertex, none of which ever rotate).
+                rotation: (n.transform.rotation != DEFAULT_ROTATION)
+                    .then_some(scene::UnitQuaternion(n.transform.rotation)),
+                scale: (n.transform.scale != DEFAULT_SCALE).then_some(n.transform.scale),
+                translation: (n.transform.translation != DEFAULT_TRANSLATION)
+                    .then_some(n.transform.translation),
                 skin: n.skin.map(|s| skin_idx[s]),
                 weights: None,
             };
@@ -300,22 +314,23 @@ impl Builder {
             attributes.insert(Checked::Valid(mesh::Semantic::Tangents), acc);
         }
 
-        // JOINTS_0 / WEIGHTS_0 (skinned meshes). u16 joint indices + f32 weights,
-        // one vec4 per vertex.
+        // JOINTS_0 / WEIGHTS_0 (skinned meshes). Joint indices are u8 when every
+        // index fits in one (a CORE glTF component type, so this needs no
+        // extension and no dequant carrier), else u16; weights are f32.
+        //
+        // The narrowing matters most exactly where a skin is largest per byte of
+        // geometry: a MuJoCo quadratic flex names its 27 cage nodes in SEVEN
+        // joint sets on every vertex, which is 56 bytes a vertex at u16 and 28 at
+        // u8. The bundle compressor already narrowed these; the exporter's own
+        // artifact did not, so the editor carried the wide copy all session.
         if let (Some(joints), Some(weights)) = (src.joints, src.weights) {
             if joints.len() == vcount && weights.len() == vcount {
-                let jbytes: Vec<u8> = joints
-                    .iter()
-                    .flat_map(|j| j.iter().flat_map(|v| v.to_le_bytes()))
-                    .collect();
-                let jacc = self.push_accessor(
-                    &jbytes,
-                    vcount,
-                    accessor::ComponentType::U16,
-                    accessor::Type::Vec4,
-                    None,
-                    None,
-                );
+                let narrow = joints_fit_u8(joints)
+                    && src
+                        .extra_influence_sets
+                        .iter()
+                        .all(|e| joints_fit_u8(&e.joints));
+                let jacc = self.push_joints(joints, vcount, narrow);
                 attributes.insert(Checked::Valid(mesh::Semantic::Joints(0)), jacc);
                 let wacc = self.push_accessor(
                     &flatten_f32x4(weights),
@@ -334,19 +349,7 @@ impl Builder {
                     if extra.joints.len() != vcount || extra.weights.len() != vcount {
                         continue;
                     }
-                    let jbytes: Vec<u8> = extra
-                        .joints
-                        .iter()
-                        .flat_map(|j| j.iter().flat_map(|v| v.to_le_bytes()))
-                        .collect();
-                    let jacc = self.push_accessor(
-                        &jbytes,
-                        vcount,
-                        accessor::ComponentType::U16,
-                        accessor::Type::Vec4,
-                        None,
-                        None,
-                    );
+                    let jacc = self.push_joints(&extra.joints, vcount, narrow);
                     attributes.insert(Checked::Valid(mesh::Semantic::Joints(set)), jacc);
                     let wacc = self.push_accessor(
                         &flatten_f32x4(&extra.weights),
@@ -785,6 +788,29 @@ impl Builder {
         self.root.push(view)
     }
 
+    /// One `JOINTS_n` accessor, `u8` when `narrow` (every index < 256) else `u16`.
+    ///
+    /// A skin's joint set must use ONE width across all of its sets — a reader
+    /// picking up a u8 set and a u16 set for the same vertex would be fine per
+    /// the spec, but our own narrowing decision is per-primitive, so it is taken
+    /// once over every set and passed in.
+    fn push_joints(&mut self, joints: &[[u16; 4]], vcount: usize, narrow: bool) -> Index<Accessor> {
+        let (bytes, component) = match narrow {
+            true => (
+                joints.iter().flat_map(|j| j.map(|v| v as u8)).collect(),
+                accessor::ComponentType::U8,
+            ),
+            false => (
+                joints
+                    .iter()
+                    .flat_map(|j| j.iter().flat_map(|v| v.to_le_bytes()))
+                    .collect::<Vec<u8>>(),
+                accessor::ComponentType::U16,
+            ),
+        };
+        self.push_accessor(&bytes, vcount, component, accessor::Type::Vec4, None, None)
+    }
+
     fn push_accessor(
         &mut self,
         data: &[u8],
@@ -977,6 +1003,11 @@ fn flatten_f32x3(v: &[[f32; 3]]) -> Vec<u8> {
 }
 fn flatten_f32x4(v: &[[f32; 4]]) -> Vec<u8> {
     v.iter().flatten().flat_map(|f| f.to_le_bytes()).collect()
+}
+
+/// True when every joint index fits in a `u8` (< 256 joints in the skin).
+fn joints_fit_u8(joints: &[[u16; 4]]) -> bool {
+    joints.iter().all(|j| j.iter().all(|v| *v < 256))
 }
 
 #[cfg(test)]
