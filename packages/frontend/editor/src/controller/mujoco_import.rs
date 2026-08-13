@@ -42,10 +42,25 @@ use crate::prelude::*;
 
 /// Fetch + validate a sidecar and its GLB, and build the instance subtree.
 ///
-/// Returns the root node; the caller inserts it and owns the undo entry.
-pub async fn import(sidecar_url: &str) -> Result<Arc<Node>, String> {
+/// Returns the root node plus the import report the MCP `import_mujoco_from_url`
+/// tool hands back inline (its doc promises one — before this, the mujoco path
+/// never published a report, so the tool returned `null` on a first import or,
+/// worse, the *previous glTF import's* report); the caller inserts the node and
+/// owns the undo entry.
+pub async fn import(sidecar_url: &str) -> Result<(Arc<Node>, serde_json::Value), String> {
     let (doc, meshes, rig) = fetch(sidecar_url).await?;
-    Ok(build_subtree(&doc, &meshes, &rig))
+    let root = build_subtree(&doc, &meshes, &rig);
+    let report = serde_json::json!({
+        "display_name": root.name.get_cloned(),
+        "roots": [{ "id": root.id.to_string(), "name": root.name.get_cloned() }],
+        "node_count": 1 + root.children.lock_ref().len(),
+        "geoms": doc.geoms.len(),
+        "sites": doc.sites.len(),
+        "flexes": doc.flexes.len(),
+        "bodies": doc.bodies.len(),
+        "source": { "filename": doc.source.filename.clone(), "sha256": doc.source.sha256.clone() },
+    });
+    Ok((root, report))
 }
 
 /// Re-import into an existing instance, in place.
@@ -985,6 +1000,17 @@ pub async fn import_capture(
             capture.geom_count, inst.geom_count
         ));
     }
+    // Same guard for the BODY channel when the capture carries one. The
+    // fingerprint already pins the model, but a third-party recorder of the
+    // same model may dump only the bodies it tracked — internally consistent
+    // (so `validate` passes) yet narrower than this instance's flex bindings,
+    // which would leave a flex frozen at bind pose with no error anywhere.
+    if capture.body_count > 0 && capture.body_count != inst.body_count {
+        return Err(format!(
+            "capture records {} bodies, the instance has {}",
+            capture.body_count, inst.body_count
+        ));
+    }
 
     // The binding is derived from the live tree, not from a stored map.
     let mut binding = std::collections::HashMap::new();
@@ -1030,14 +1056,17 @@ fn collect_geoms(
 }
 
 /// The body id space — a flex's skin joints. Separate from the geom space, and
-/// both are dense from zero, so the two must never share a map.
+/// both are dense from zero, so the two must never share a map. One body can be
+/// ridden by SEVERAL joint nodes (each flex mints its own joint per body), so
+/// every node is collected — keeping only the last would silently freeze every
+/// other flex at bind pose.
 fn collect_bodies(
     node: &Arc<Node>,
-    out: &mut std::collections::HashMap<u32, awsm_renderer_editor_protocol::NodeId>,
+    out: &mut std::collections::HashMap<u32, Vec<awsm_renderer_editor_protocol::NodeId>>,
 ) {
     for child in node.children.lock_ref().iter() {
         if let Some(MujocoComponent::Body(b)) = child.mujoco.get_cloned() {
-            out.insert(b.body_id, child.id);
+            out.entry(b.body_id).or_default().push(child.id);
         }
         collect_bodies(child, out);
     }

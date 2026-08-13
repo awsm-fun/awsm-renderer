@@ -1183,18 +1183,13 @@ fn mesh_shadow_flags_from_config(
 /// joint can't be resolved to its bone yet — callers then fall back to the
 /// template-reuse path.
 fn raw_mesh_from_rig(skin: &awsm_renderer_editor_protocol::SkinnedMeshRef) -> Option<RawMeshData> {
-    let decode = super::skinned_bake_cache::get_rig_node_decode(
+    let Some(decode) = super::skinned_bake_cache::get_rig_node_decode(
         skin.source,
         skin.rig_node_index,
         skin.primitive_index,
-    );
-    if decode.is_none() {
-        tracing::warn!(
-            "raw_mesh_from_rig: no rig decode for rig_node_index={}",
-            skin.rig_node_index
-        );
-    }
-    let Some(decode) = decode else {
+    ) else {
+        // debug, not warn: this fires on the LEGITIMATE fallback path (rig not
+        // cached yet → template-reuse), not only on failures.
         tracing::debug!(
             "raw_mesh_from_rig: no rig decode for {:?} rig_node_index={}",
             skin.source,
@@ -1497,18 +1492,11 @@ async fn materialize_skinned_duplicate(
     // can't take this path. A MORPH-ONLY node (rig decode has no skin) shares
     // geometry too — it skips the skin clone and mints only a fresh
     // morph-weights instance (`duplicate_mesh_with_transform`).
-    let decode = super::skinned_bake_cache::get_rig_node_decode(
+    let Some(decode) = super::skinned_bake_cache::get_rig_node_decode(
         skin.source,
         skin.rig_node_index,
         skin.primitive_index,
-    );
-    if decode.is_none() {
-        tracing::warn!(
-            "raw_mesh_from_rig: no rig decode for rig_node_index={}",
-            skin.rig_node_index
-        );
-    }
-    let Some(decode) = decode else {
+    ) else {
         return false;
     };
     // Skinned: resolve the donor skin + this node's cloned joints up front

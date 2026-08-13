@@ -206,7 +206,9 @@ impl Library {
             let ptr = unsafe { self.mj.mj_loadModel(c_path.as_ptr(), std::ptr::null()) };
             (ptr, String::from("mj_loadModel returned NULL"))
         } else {
-            let mut err = vec![0i8; 1024];
+            // `c_char` is `i8` on x86_64/mac but `u8` on aarch64 Linux — spell
+            // the platform type so the pointer cast compiles everywhere.
+            let mut err = vec![0 as std::os::raw::c_char; 1024];
             let ptr = unsafe {
                 self.mj.mj_loadXML(
                     c_path.as_ptr(),
@@ -608,6 +610,21 @@ impl<'lib> Model<'lib> {
     }
 
     fn make_data<'m>(&'m self, key: Option<i32>) -> Result<Data<'m, 'lib>, Error> {
+        // mj_resetDataKeyframe's documented contract is to SILENTLY ignore an
+        // out-of-range key and leave the data at `qpos0` — a recorder pointed
+        // at a missing keyframe would then record the robot collapsed at its
+        // defaults with no error anywhere. Refuse instead.
+        if let Some(k) = key {
+            let nkey = self.raw().nkey;
+            if k < 0 || i64::from(k) >= nkey {
+                return Err(Error::LoadFailed {
+                    path: PathBuf::from("<mjData>"),
+                    message: format!(
+                        "keyframe {k} does not exist: this model has {nkey} keyframe(s)"
+                    ),
+                });
+            }
+        }
         let ptr = unsafe { (self.lib.mj.mj_makeData)(self.ptr) };
         if ptr.is_null() {
             return Err(Error::LoadFailed {

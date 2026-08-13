@@ -74,9 +74,14 @@ pub struct MujocoInstance {
     pub sites: Vec<Option<awsm_renderer::transforms::TransformKey>>,
     /// `tendon_id → ` that tendon's segment pool. A third id space again.
     pub tendons: Vec<TendonSlots>,
-    /// `body_id → ` that body's transform. Sparse by nature: most bodies have
-    /// no node, and the ones that do are a flex's skin joints.
-    pub bodies: Vec<Option<awsm_renderer::transforms::TransformKey>>,
+    /// `body_id → ` every transform bound to that body. Sparse by nature: most
+    /// bodies have no node, and the ones that do are a flex's skin joints. A
+    /// `Vec` per slot rather than an `Option` because one body can drive
+    /// SEVERAL nodes — each flex mints its own joint node per body, so two
+    /// flexes pinned to the same body are two joints riding one pose (a
+    /// single-slot map kept only the tree-last one and froze the other flex at
+    /// bind pose, silently).
+    pub bodies: Vec<Vec<awsm_renderer::transforms::TransformKey>>,
 }
 
 /// One tendon's preallocated chain of segment nodes.
@@ -225,24 +230,33 @@ fn write_poses(
     for (geom_id, key) in slots.iter().enumerate() {
         let Some(key) = key else { continue };
         let p = &poses[geom_id * FLOATS_PER_GEOM..(geom_id + 1) * FLOATS_PER_GEOM];
-        // Read-modify-write so the node's authored SCALE survives: an ellipsoid
-        // geom is a unit sphere scaled per axis, and a frame carries no scale.
-        let scale = renderer
-            .transforms
-            .get_local(*key)
-            .map(|t| t.scale)
-            .unwrap_or(Vec3::ONE);
-        let _ = renderer.transforms.set_local(
-            *key,
-            Transform {
-                translation: Vec3::new(p[0], p[1], p[2]),
-                // MuJoCo quaternions are [w, x, y, z]; glam's are [x, y, z, w].
-                rotation: Quat::from_xyzw(p[4], p[5], p[6], p[3]),
-                scale,
-            },
-        );
+        write_pose(renderer, *key, p);
     }
     Ok(())
+}
+
+/// Write one `[x, y, z, qw, qx, qy, qz]` world pose onto a transform.
+fn write_pose(
+    renderer: &mut AwsmRenderer,
+    key: awsm_renderer::transforms::TransformKey,
+    p: &[f32],
+) {
+    // Read-modify-write so the node's authored SCALE survives: an ellipsoid
+    // geom is a unit sphere scaled per axis, and a frame carries no scale.
+    let scale = renderer
+        .transforms
+        .get_local(key)
+        .map(|t| t.scale)
+        .unwrap_or(Vec3::ONE);
+    let _ = renderer.transforms.set_local(
+        key,
+        Transform {
+            translation: Vec3::new(p[0], p[1], p[2]),
+            // MuJoCo quaternions are [w, x, y, z]; glam's are [x, y, z, w].
+            rotation: Quat::from_xyzw(p[4], p[5], p[6], p[3]),
+            scale,
+        },
+    );
 }
 
 /// Apply one frame of site world poses — the optional site channel.
@@ -266,7 +280,21 @@ pub fn apply_body_poses(
     instance: &MujocoInstance,
     poses: &[f32],
 ) -> Result<(), PoseError> {
-    write_poses(renderer, &instance.bodies, poses)
+    let expected = instance.bodies.len() * FLOATS_PER_GEOM;
+    if poses.len() != expected {
+        return Err(PoseError::WrongLength {
+            got: poses.len(),
+            expected,
+        });
+    }
+    for (body_id, keys) in instance.bodies.iter().enumerate() {
+        let p = &poses[body_id * FLOATS_PER_GEOM..(body_id + 1) * FLOATS_PER_GEOM];
+        // Every joint riding this body — see `MujocoInstance::bodies`.
+        for key in keys {
+            write_pose(renderer, *key, p);
+        }
+    }
+    Ok(())
 }
 
 /// Apply one frame of tendon waypoints — the optional tendon channel.
@@ -377,7 +405,7 @@ fn walk(
     if let Some(MujocoComponent::Instance(inst)) = &node.mujoco {
         let mut geoms = vec![None; inst.geom_count as usize];
         let mut sites = vec![None; inst.site_count as usize];
-        let mut bodies = vec![None; inst.body_count as usize];
+        let mut bodies = vec![Vec::new(); inst.body_count as usize];
         // Pool sizes come from the instance, not from counting nodes: a hidden
         // group can leave a pool with no nodes at all, and the frame layout
         // still has to reserve its slots.
@@ -424,7 +452,7 @@ fn collect_geoms(
     geoms: &mut [Option<awsm_renderer::transforms::TransformKey>],
     sites: &mut [Option<awsm_renderer::transforms::TransformKey>],
     tendons: &mut [TendonSlots],
-    bodies: &mut [Option<awsm_renderer::transforms::TransformKey>],
+    bodies: &mut [Vec<awsm_renderer::transforms::TransformKey>],
 ) {
     for child in &node.children {
         match &child.mujoco {
@@ -466,10 +494,16 @@ fn collect_geoms(
                     // Falls back to the node's own transform for a body that is
                     // not a skin bone — the channel is deliberately general, and
                     // a mocap marker or attachment point IS its scene node.
-                    *slot = skin_joints
+                    //
+                    // PUSHED, not assigned: each flex mints its own joint node
+                    // per body, so one body id can drive several joints.
+                    if let Some(tk) = skin_joints
                         .get(&child.id)
                         .copied()
-                        .or_else(|| handles.get(&child.id).map(|h| h.transform));
+                        .or_else(|| handles.get(&child.id).map(|h| h.transform))
+                    {
+                        slot.push(tk);
+                    }
                 }
             }
             _ => {}
@@ -608,13 +642,13 @@ mod tests {
         assert_eq!(out.len(), 1);
         assert_eq!(
             out[0].bodies[0],
-            Some(rig_joint_tk),
+            vec![rig_joint_tk],
             "a skin bone must resolve to the rig joint the SKIN reads, not the bone's \
              own scene transform — writing the latter deforms nothing, silently"
         );
         assert_eq!(
             out[0].bodies[1],
-            Some(marker_tk),
+            vec![marker_tk],
             "a body that is NOT a skin bone still resolves to its own scene transform"
         );
     }

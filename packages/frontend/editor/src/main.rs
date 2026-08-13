@@ -473,7 +473,7 @@ pub fn editor_mujoco_instances() -> String {
                 "tendon_capacity": i.tendons.iter().map(|t| t.capacity).collect::<Vec<_>>(),
                 "tendon_frame_len": i.tendon_frame_len(),
                 "body_frame_len": i.body_frame_len(),
-                "bound_bodies": i.bodies.iter().filter(|b| b.is_some()).count(),
+                "bound_bodies": i.bodies.iter().filter(|b| !b.is_empty()).count(),
             })
         })
         .collect();

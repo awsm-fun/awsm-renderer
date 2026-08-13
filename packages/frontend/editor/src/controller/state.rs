@@ -4119,7 +4119,7 @@ impl EditorController {
                     self.dirty.set_neq(true);
                     return Ok(None);
                 }
-                let root = crate::controller::mujoco_import::import(&sidecar_url)
+                let (root, report) = crate::controller::mujoco_import::import(&sidecar_url)
                     .await
                     .map_err(|e| {
                         // Same CORS trap as the model import: the editor is a
@@ -4135,6 +4135,10 @@ impl EditorController {
                     })?;
                 let node_id = root.id;
                 mutate::insert_under(&self.scene, None, root);
+                // Publish the report the MCP tool returns inline — the mujoco
+                // path must not leave a previous glTF import's report (or
+                // `null`) as the answer to "what did this import create".
+                self.last_import_report.set(Some(report));
                 self.scene.bump_revision();
                 self.dirty.set_neq(true);
                 Ok(Some(EditorCommand::Delete { id: node_id }))
