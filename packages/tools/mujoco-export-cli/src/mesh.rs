@@ -101,8 +101,7 @@ pub fn build(
                 // implementation, so the GLB is transport only.
                 FlexInfluences::Cage(cage) => node.cage_influences = Some(cage),
                 FlexInfluences::Direct(sets) => {
-                    node.joints =
-                        Some(sets.first().map(|s| s.joints.clone()).unwrap_or_default());
+                    node.joints = Some(sets.first().map(|s| s.joints.clone()).unwrap_or_default());
                     node.weights =
                         Some(sets.first().map(|s| s.weights.clone()).unwrap_or_default());
                     node.extra_influence_sets = sets.into_iter().skip(1).collect();
@@ -491,11 +490,7 @@ fn flex_influences(model: &Model<'_>, f: usize, vertnum: usize) -> (Vec<usize>, 
     let coords: Vec<[f32; 3]> = (0..vertnum)
         .map(|v| {
             let o = (vertadr + v) * 3;
-            [
-                vert0[o] as f32,
-                vert0[o + 1] as f32,
-                vert0[o + 2] as f32,
-            ]
+            [vert0[o] as f32, vert0[o + 1] as f32, vert0[o + 2] as f32]
         })
         .collect();
     let cage = CageInfluences {

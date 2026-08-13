@@ -214,10 +214,7 @@ mod tests {
         }
         // Lagrange must go negative — the property the unorm8 quantizer guard
         // (`weights_fit_unorm8`) exists for.
-        let min = cage
-            .weights_f64(0)
-            .into_iter()
-            .fold(f64::MAX, f64::min);
+        let min = cage.weights_f64(0).into_iter().fold(f64::MAX, f64::min);
         assert!(min < -0.01, "expected a negative lobe, got min {min}");
     }
 

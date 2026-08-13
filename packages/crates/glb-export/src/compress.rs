@@ -1416,8 +1416,7 @@ mod tests {
         let marker = prim
             .extension_value(crate::AWSM_CAGE_INFLUENCES)
             .expect("cage marker must survive compression");
-        let back =
-            CageInfluences::from_marker(marker, cage.coords.clone()).expect("marker parses");
+        let back = CageInfluences::from_marker(marker, cage.coords.clone()).expect("marker parses");
         assert_eq!(back, cage);
         assert!(prim.get(&gltf::Semantic::Joints(0)).is_none());
     }

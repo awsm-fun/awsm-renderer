@@ -263,10 +263,7 @@ async fn free_rig_if_unused(rig: &FlexRig, root: &Arc<Node>) {
                 return true;
             }
         }
-        node.children
-            .lock_ref()
-            .iter()
-            .any(|c| references(c, aid))
+        node.children.lock_ref().iter().any(|c| references(c, aid))
     }
     if references(root, aid) {
         return;
@@ -853,8 +850,7 @@ fn build_subtree(
             None => {
                 // Only the fallback mints the captured-mesh asset (guarded
                 // above: `meshes` carries this flex's surface).
-                let Some(mesh) = mesh_asset_for(&mut mesh_assets, meshes, doc, flex.mesh)
-                else {
+                let Some(mesh) = mesh_asset_for(&mut mesh_assets, meshes, doc, flex.mesh) else {
                     continue;
                 };
                 Node::new_with_transform_and_kind(

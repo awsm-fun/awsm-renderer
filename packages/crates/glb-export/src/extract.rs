@@ -1468,9 +1468,7 @@ mod tests {
             nodes: vec![
                 ExportNode {
                     name: "Cage".into(),
-                    children: (0..27)
-                        .map(|j| ExportNode::new(format!("J{j}")))
-                        .collect(),
+                    children: (0..27).map(|j| ExportNode::new(format!("J{j}"))).collect(),
                     ..Default::default()
                 },
                 ExportNode {

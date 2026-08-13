@@ -73,7 +73,9 @@ pub enum Error {
     /// binding it is supposed to drive. Loud on purpose: skipping the track
     /// would bake a clip where that node silently never moves, which reads as
     /// a physics bug (a frozen flex, a stuck link) rather than a data bug.
-    ChannelMissing { id: u32 },
+    ChannelMissing {
+        id: u32,
+    },
 }
 
 impl std::fmt::Display for Error {
@@ -695,10 +697,17 @@ mod tests {
         // baked track's linear interpolation (small slack for f32 lerp).
         for i in 0..n {
             let time = i as f64 / 60.0;
-            let seg = t.times.windows(2).position(|w| w[0] <= time && time <= w[1]);
+            let seg = t
+                .times
+                .windows(2)
+                .position(|w| w[0] <= time && time <= w[1]);
             let Some(s) = seg else { continue };
             let (t0, t1) = (t.times[s], t.times[s + 1]);
-            let f = if t1 > t0 { ((time - t0) / (t1 - t0)) as f32 } else { 0.0 };
+            let f = if t1 > t0 {
+                ((time - t0) / (t1 - t0)) as f32
+            } else {
+                0.0
+            };
             let (a, b) = match (&t.keys[s].value, &t.keys[s + 1].value) {
                 (TrackValue::Vec3(a), TrackValue::Vec3(b)) => (*a, *b),
                 _ => panic!("expected translation keys"),
