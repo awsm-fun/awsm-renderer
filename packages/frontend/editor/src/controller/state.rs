@@ -2,7 +2,6 @@ use std::cell::{Cell, OnceCell, RefCell};
 use std::rc::Rc;
 
 use awsm_renderer_web_shared::prelude::{Mutable, MutableVec, Toast};
-use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::spawn_local;
 
 use super::animation::{find_clip, CustomAnimation as CA};
@@ -6985,6 +6984,10 @@ impl EditorController {
                 // toward the ~2 GB realloc cliff.
                 #[cfg(any(debug_assertions, feature = "harden-diag"))]
                 {
+                    // Imported HERE, not at the top of the file: `dyn_into` is
+                    // this cfg block's only use, and a top-level import warns as
+                    // unused in every release build without `harden-diag`.
+                    use wasm_bindgen::JsCast;
                     let wasm_heap_bytes = wasm_bindgen::memory()
                         .dyn_into::<js_sys::WebAssembly::Memory>()
                         .ok()
