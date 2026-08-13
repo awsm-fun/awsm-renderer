@@ -210,29 +210,52 @@ tells them apart (measured: Bernstein is 0.99 mm wrong on `bunny_quadratic.xml`,
 Lagrange exactly zero). Lagrange dips to −⅛ outside the middle third, so these
 weights partition unity without lying in `[0, 1]` — which is all linear blend
 skinning actually requires, but it does mean **a quadratic flex's weights cannot
-be quantized to unorm8**. `glb-export`'s `weights_fit_unorm8` guard keeps those
-accessors at f32; without it the player-bundle export would clamp the negative
+be quantized to unorm8**. `glb-export`'s `weights_fit_unorm8` guard keeps any
+expanded accessors at f32; without it a bundle export would clamp the negative
 lobes to zero and deform subtly wrongly with no error anywhere.
+
+**A quadratic flex ships in cage form, not as expanded weights.** All 27 weights
+are a pure function of the vertex's normalized cage coordinate (3 numbers MuJoCo
+already stores in `flex_vert0`), so the GLB carries exactly those: a
+`_AWSM_CAGE_COORDS` f32 `VEC3` attribute plus an `AWSM_cage_influences`
+primitive extension (`order` + the lattice-position → skin-joint map) instead of
+seven `JOINTS_n`/`WEIGHTS_n` pairs — 12 bytes a vertex instead of 172. Every
+consumer expands through the ONE shared implementation
+(`glb-export::CageInfluences`) into the identical skin storage buffer the GPU
+read before, so the compact form is transport only: no shader change, no new
+skinning path. The editor's clean re-export (`reexport_clean`) carries the field
+through *compact* — expanding on read would silently fatten the file back on
+first save. The bundle compressor never touches the coords (unknown vertex
+attributes meshopt-encode losslessly), which keeps the reconstruction
+deterministic and byte-identical between editor and player (pinned by
+`cage_skin_survives_the_compressed_wire_byte_identically`).
+
+**Trilinear flexes deliberately stay expanded.** Their weights sit in `[0, 1]`,
+so the bundle compressor packs them to unorm8 + u8 joints — 16 low-entropy bytes
+a vertex that meshopt compresses better than 12 bytes of high-entropy f32
+coords. Measured: bunny ships 41.1 KB expanded vs 50.7 KB as a cage, while
+bunny_quadratic ships 52.7 KB as a cage vs 259.5 KB expanded. The choice lives
+in one place (the exporter's `flex_influences`) and both forms load everywhere;
+which one ships is a size measurement, not a principle.
 
 A cage that is neither 8 nor 27 nodes, or that is degenerate along an axis (so
 its nodes do not fill the lattice), is refused loudly rather than approximated.
 
-**What a flex costs on disk** (geometry GLB, uncompressed, from
-`model/flex/`):
+**What a flex costs shipped** (after the bundle's meshopt + quantization —
+what a player downloads; `shipped_sizes_stay_compact` pins the ceilings):
 
-| model | kind | joints | sets | GLB |
-|---|---|---|---|---|
-| `flag.xml` | body-attached, 171 verts | 171 | 1 | 43.5 KB |
-| `poncho.xml` | body-attached | 2503 | 1 | 126.0 KB |
-| `bunny.xml` | trilinear | 8 | 2 | 237.5 KB |
-| `bunny_quadratic.xml` | quadratic | 27 | 7 | 536.1 KB |
+| model | kind | joints | shipped |
+|---|---|---|---|
+| `flag.xml` | body-attached, 171 verts | 171 | 16.1 KB |
+| `poncho.xml` | body-attached | 2503 | 47.1 KB |
+| `bunny.xml` | trilinear (expanded) | 8 | 41.1 KB |
+| `bunny_quadratic.xml` | quadratic (cage) | 27 | 52.7 KB |
 
-Body-attached flexes cost roughly 5x a plain mesh, because one joint node per
-vertex is inherently redundant when the mapping is the identity and glTF has no
-cheaper way to say so. Interpolated ones cost the influence sets: the same bunny
-is 2.3x larger as a quadratic than as a trilinear. Both trade disk for the thing
-that actually matters at runtime — 8 or 27 joint matrices per frame instead of
-2,503 vertex positions.
+Body-attached flexes cost one joint node per vertex — inherently redundant when
+the mapping is the identity, and glTF has no cheaper way to say so (the writer
+already omits every default TRS component, which is half the file for these).
+All of them trade disk for the thing that actually matters at runtime — 8 or 27
+joint matrices per frame instead of 2,503 vertex positions.
 
 **`mjSkin` is not supported, on purpose.** It is MuJoCo's legacy deformable:
 `nskin` is 0 for every model shipped with 3.11 and every menagerie robot, and the

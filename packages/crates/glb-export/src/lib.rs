@@ -31,6 +31,7 @@
 //!   *assigned* materials use, so reassigning a lighter material drops the heavy
 //!   textures with no special "slim" flag.
 
+mod cage;
 mod compress;
 mod extract;
 mod quant;
@@ -38,6 +39,7 @@ mod tangents;
 mod write;
 
 pub use awsm_renderer_meshgen::MeshData;
+pub use cage::{CageInfluences, AWSM_CAGE_INFLUENCES, CAGE_COORDS_ATTRIBUTE};
 pub use compress::{
     compress_glb, compress_glb_with, strip_materials_and_images, CompressOptions, Quantization,
 };
@@ -166,6 +168,16 @@ pub struct ExportNode {
     /// The renderer's skinning shader accumulates sets in a loop with the first
     /// two unrolled, so two sets (eight influences) cost no dynamic branching.
     pub extra_influence_sets: Vec<SkinInfluenceSet>,
+    /// Skin influences in compact **cage** form (interpolated MuJoCo flexes):
+    /// 3 normalized coordinates per vertex instead of 8/27 expanded
+    /// `(joint, weight)` pairs — see [`CageInfluences`]. Mutually exclusive
+    /// with [`Self::joints`]/[`Self::weights`] in everything we produce; the
+    /// writer emits it as the `_AWSM_CAGE_COORDS` attribute + the
+    /// [`AWSM_CAGE_INFLUENCES`] primitive extension, and the extractor reads
+    /// it back into this SAME field so `reexport_clean` (the editor's every
+    /// save) carries the compact encoding through untouched — expanding on
+    /// read would silently fatten the file back on first save.
+    pub cage_influences: Option<CageInfluences>,
     /// Per-vertex `TANGENT` (vec4: xyz + handedness), one per mesh vertex, carried
     /// from the source glTF's AUTHORED tangent attribute. `Some` ⇒ the writer emits
     /// these verbatim instead of regenerating via MikkTSpace, so a save→reload
@@ -201,6 +213,7 @@ impl Default for ExportNode {
             material: None,
             skin: None,
             extra_influence_sets: Vec::new(),
+            cage_influences: None,
             joints: None,
             weights: None,
             tangents: None,

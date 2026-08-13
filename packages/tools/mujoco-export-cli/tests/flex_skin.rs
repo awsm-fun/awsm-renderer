@@ -278,6 +278,29 @@ fn the_exported_glb_deforms_like_mujoco() {
             .expect("extract");
         let skin = ex.skin.expect("the flex must export AS A SKIN");
 
+        // QUADRATIC flexes must actually ship the COMPACT cage form (their
+        // Lagrange weights can never quantize, so expanded is 6× the size);
+        // trilinear and body-attached ship the classic expanded form, which
+        // the bundle compressor packs smaller than f32 coords (measured — see
+        // the exporter's shipping-form note).
+        let expect_cage = expect_joints == 27;
+        assert_eq!(
+            skin.cage.is_some(),
+            expect_cage,
+            "{rel}: cage form iff quadratic"
+        );
+        // Expand exactly as every consumer does — through the one shared
+        // `CageInfluences` implementation (`packed_index_weights` is proven
+        // byte-identical to `expand_sets` by glb-export's unit tests).
+        let (skin_joints, skin_weights, extra_sets) = match &skin.cage {
+            Some(cage) => cage.expand_sets(),
+            None => (
+                skin.joints.clone(),
+                skin.weights.clone(),
+                skin.extra_sets.clone(),
+            ),
+        };
+
         assert_eq!(skin.set_count(), expect_sets, "{rel}: influence sets");
         assert_eq!(
             skin.joint_node_indices.len(),
@@ -302,11 +325,8 @@ fn the_exported_glb_deforms_like_mujoco() {
             let mut acc = glam::Mat4::ZERO;
             for s in 0..skin.set_count() {
                 let (js, ws) = match s {
-                    0 => (skin.joints[v], skin.weights[v]),
-                    _ => (
-                        skin.extra_sets[s - 1].joints[v],
-                        skin.extra_sets[s - 1].weights[v],
-                    ),
+                    0 => (skin_joints[v], skin_weights[v]),
+                    _ => (extra_sets[s - 1].joints[v], extra_sets[s - 1].weights[v]),
                 };
                 for i in 0..4 {
                     if ws[i] == 0.0 {
@@ -491,26 +511,39 @@ fn skinning_reproduces_a_quadratic_flex() {
     }
 }
 
-/// The release path must not quantize a quadratic flex's weights away.
+/// The release path must carry a flex's skin binding through compression
+/// intact — in whichever form it ships.
 ///
-/// The editor's player-bundle export runs every mesh GLB through
-/// `compress_glb_with`, which packs skin weights into unorm8 — a representation
-/// that cannot hold the Lagrange basis's negative lobes. Clamping them would not
-/// error; it would just deform wrongly, forever. So this pins BOTH halves: the
-/// quadratic flex keeps f32 weights (negatives intact), and an ordinary
-/// trilinear one still quantizes, so the guard stays narrow.
+/// An interpolated flex now ships the COMPACT cage encoding (no `WEIGHTS_0` at
+/// all): the coords attribute must survive as untouched f32 with its marker, or
+/// the player loads a cloth that never moves — no error anywhere. A
+/// body-attached flex still ships classic expanded weights, and those must
+/// still quantize to unorm8, so the compressor's narrowing stays exercised on a
+/// real artifact. (The negative-Lagrange-weights-stay-f32 guard is pinned
+/// synthetically in glb-export's compress tests, since no MuJoCo artifact
+/// carries expanded quadratic weights anymore.)
 #[test]
-fn compression_keeps_quadratic_weights_but_still_quantizes_ordinary_ones() {
-    use awsm_renderer_glb_export::{compress_glb_with, CompressOptions, Quantization};
+fn compression_preserves_the_cage_and_still_quantizes_body_attached_weights() {
+    use awsm_renderer_glb_export::{
+        compress_glb_with, CageInfluences, CompressOptions, Quantization, AWSM_CAGE_INFLUENCES,
+        CAGE_COORDS_ATTRIBUTE,
+    };
 
     // meshopt off so the result is plain glTF the `gltf` crate can read; the
-    // weight-quantization decision under test is independent of it.
+    // quantization decisions under test are independent of it.
     let options = CompressOptions {
         meshopt: false,
         quantization: Quantization::Always,
     };
 
-    for (rel, expect_f32) in [("bunny_quadratic.xml", true), ("bunny.xml", false)] {
+    for (rel, expect_cage) in [
+        ("bunny_quadratic.xml", true),
+        // Trilinear + body-attached ship expanded weights in [0,1] — those
+        // must still narrow to unorm8 (that packing is exactly why expanded
+        // beats the cage for them).
+        ("bunny.xml", false),
+        ("flag.xml", false),
+    ] {
         let Some((lib, path)) = model(rel) else {
             return;
         };
@@ -539,38 +572,106 @@ fn compression_keeps_quadratic_weights_but_still_quantizes_ordinary_ones() {
             .expect("flex node");
         let prim = node.mesh().unwrap().primitives().next().unwrap();
 
-        let acc = prim
-            .get(&gltf::Semantic::Weights(0))
-            .expect("WEIGHTS_0 must survive compression");
-        let is_f32 = acc.data_type() == gltf::accessor::DataType::F32;
-        assert_eq!(
-            is_f32,
-            expect_f32,
-            "{rel}: WEIGHTS_0 component type is {:?}; a quadratic flex must stay f32 and an \
-             ordinary skin must still quantize",
-            acc.data_type()
-        );
-
-        // Type alone is not enough — read the values back and confirm the
-        // negative lobes are actually still there.
-        if expect_f32 {
-            let reader = prim.reader(|_| Some(&blob));
-            let min = reader
-                .read_weights(0)
-                .expect("weights")
-                .into_f32()
-                .flatten()
-                .fold(f32::MAX, f32::min);
-            assert!(
-                min < -0.01,
-                "{rel}: the negative Lagrange weights must survive compression, got min {min}"
+        if expect_cage {
+            let acc = prim
+                .get(&gltf::Semantic::Extras(CAGE_COORDS_ATTRIBUTE.to_string()))
+                .expect("cage coords must survive compression");
+            assert_eq!(
+                acc.data_type(),
+                gltf::accessor::DataType::F32,
+                "{rel}: cage coords must stay f32 (never quantized)"
             );
-            println!("{rel:<22} compressed, weights f32, min weight {min:.4}");
+            let marker = prim
+                .extension_value(AWSM_CAGE_INFLUENCES)
+                .expect("cage marker must survive compression");
+            let raw = vec![blob.clone()];
+            let ex = awsm_renderer_glb_export::extract_node_mesh(
+                &gltf.document,
+                &raw,
+                node.index() as u32,
+                None,
+            )
+            .expect("extract compressed flex");
+            let cage = ex.skin.expect("skin").cage.expect("cage form");
+            assert!(
+                CageInfluences::from_marker(marker, cage.coords.clone()).is_some(),
+                "{rel}: marker must parse back"
+            );
+            assert!(
+                prim.get(&gltf::Semantic::Weights(0)).is_none(),
+                "{rel}: an interpolated flex must not carry expanded weights"
+            );
+            println!(
+                "{rel:<22} compressed, cage form intact ({} joints, order {})",
+                cage.joints.len(),
+                cage.order
+            );
         } else {
+            let acc = prim
+                .get(&gltf::Semantic::Weights(0))
+                .expect("WEIGHTS_0 must survive compression");
+            assert_eq!(
+                acc.data_type(),
+                gltf::accessor::DataType::U8,
+                "{rel}: ordinary body-attached weights must still quantize"
+            );
             println!(
                 "{rel:<22} compressed, weights quantized to {:?}",
                 acc.data_type()
             );
         }
+    }
+}
+
+/// Gate 3 — the point of the whole exercise, measured on the real release
+/// path (`write_glb` → default `compress_glb_with`): what a player actually
+/// downloads. Ceilings are generous (the measured sizes sit far below) — they
+/// exist to catch the encoding silently falling back to the expanded form,
+/// which would read as "tests green, artifact 6× bigger".
+#[test]
+fn shipped_sizes_stay_compact() {
+    use awsm_renderer_glb_export::{compress_glb_with, CompressOptions};
+
+    for (rel, ceiling) in [
+        ("flag.xml", 25_000usize),
+        ("bunny.xml", 50_000),
+        ("bunny_quadratic.xml", 80_000),
+    ] {
+        let Some((lib, path)) = model(rel) else {
+            return;
+        };
+        let m = lib.load_model(&path).expect("compile");
+        let src =
+            awsm_renderer_mujoco_export_cli::sidecar::fingerprint(&path, lib.version_string())
+                .unwrap();
+        let doc = awsm_renderer_mujoco_export_cli::sidecar::build(&m, src).unwrap();
+        let names: Vec<_> = doc.meshes.iter().map(|x| x.name.clone()).collect();
+        let data = m.forward_at_initial_pose().unwrap();
+        let scene = awsm_renderer_mujoco_export_cli::mesh::build(&m, &data, &names)
+            .unwrap()
+            .expect("a flex model bakes a surface");
+        let glb = awsm_renderer_glb_export::write_glb(&scene);
+        let shipped = compress_glb_with(&glb, &CompressOptions::default())
+            .expect("compress")
+            .len();
+        println!(
+            "{rel:<22} raw {:>8.1} KB   shipped {:>7.1} KB",
+            glb.len() as f64 / 1024.0,
+            shipped as f64 / 1024.0
+        );
+        if let Some(dir) = std::env::var_os("FLEX_SIZE_DUMP_DIR") {
+            let base = std::path::Path::new(&dir).join(rel.replace(".xml", ""));
+            std::fs::write(base.with_extension("glb"), &glb).unwrap();
+            std::fs::write(
+                base.with_extension("shipped.glb"),
+                compress_glb_with(&glb, &CompressOptions::default()).unwrap(),
+            )
+            .unwrap();
+        }
+        assert!(
+            shipped < ceiling,
+            "{rel}: shipped {shipped} bytes ≥ ceiling {ceiling} — the compact cage \
+             encoding has regressed to something expanded"
+        );
     }
 }

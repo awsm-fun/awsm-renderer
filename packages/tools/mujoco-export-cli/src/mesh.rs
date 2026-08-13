@@ -14,7 +14,9 @@
 use std::collections::HashMap;
 
 use anyhow::{ensure, Result};
-use awsm_renderer_glb_export::{ExportNode, ExportSkin, GlbScene, MeshData, SkinInfluenceSet, Trs};
+use awsm_renderer_glb_export::{
+    CageInfluences, ExportNode, ExportSkin, GlbScene, MeshData, SkinInfluenceSet, Trs,
+};
 use awsm_renderer_mujoco_sys::{Data, Model};
 
 /// Build the geometry library. Returns `None` when the model has no meshes at all
@@ -92,19 +94,20 @@ pub fn build(
 
         if !joint_bodies.is_empty() && vertnum > 0 {
             node.skin = Some(scene.skins.len());
-            node.joints = Some(
-                influences
-                    .first()
-                    .map(|s| s.joints.clone())
-                    .unwrap_or_default(),
-            );
-            node.weights = Some(
-                influences
-                    .first()
-                    .map(|s| s.weights.clone())
-                    .unwrap_or_default(),
-            );
-            node.extra_influence_sets = influences.into_iter().skip(1).collect();
+            match influences {
+                // Interpolated flexes ship the COMPACT cage form: 3 coords a
+                // vertex instead of 8/27 expanded (joint, weight) pairs. The
+                // consumers expand through the one shared `CageInfluences`
+                // implementation, so the GLB is transport only.
+                FlexInfluences::Cage(cage) => node.cage_influences = Some(cage),
+                FlexInfluences::Direct(sets) => {
+                    node.joints =
+                        Some(sets.first().map(|s| s.joints.clone()).unwrap_or_default());
+                    node.weights =
+                        Some(sets.first().map(|s| s.weights.clone()).unwrap_or_default());
+                    node.extra_influence_sets = sets.into_iter().skip(1).collect();
+                }
+            }
         }
         scene.nodes.push(node);
 
@@ -404,7 +407,19 @@ fn body_rest_pose(data: &Data<'_, '_>, body: usize) -> ([f32; 3], [f32; 4]) {
     )
 }
 
-/// The flex's joint bodies and the per-vertex influence sets that bind to them.
+/// A flex's per-vertex skin binding, in whichever shape it ships.
+enum FlexInfluences {
+    /// Expanded four-influence sets — the body-attached case (one influence at
+    /// weight 1 per vertex; the joint list IS the vertex list).
+    Direct(Vec<SkinInfluenceSet>),
+    /// Compact cage form — the interpolated case. See
+    /// [`awsm_renderer_glb_export::CageInfluences`]: 3 normalized coordinates
+    /// per vertex reconstruct all 8/27 weights exactly, so the GLB carries 12
+    /// bytes a vertex instead of up to 172.
+    Cage(CageInfluences),
+}
+
+/// The flex's joint bodies and the per-vertex influences that bind to them.
 ///
 /// Two shapes, one mechanism:
 ///
@@ -413,19 +428,15 @@ fn body_rest_pose(data: &Data<'_, '_>, body: usize) -> ([f32; 3], [f32; 4]) {
 /// - **interpolated**: every vertex is a fixed blend of a regular cage lattice —
 ///   `2×2×2` corners (trilinear) or `3×3×3` nodes (triquadratic). MuJoCo already
 ///   stores each vertex's position inside its cell as normalized coordinates in
-///   `flex_vert0`, so the weights are products of numbers it already computed —
-///   no cell search, no geometry of ours.
+///   `flex_vert0` — those three numbers ARE the shipped encoding; the tensor
+///   product of the 1D Lagrange basis (implemented once, in
+///   `glb_export::CageInfluences`) reconstructs every weight exactly at load.
 ///
-/// Both interpolation orders are the SAME code at different `order`: the basis
-/// is a tensor product along the three axes, and the lattice index convention is
-/// shared between the weights and the node lookup. That sharing is load-bearing
-/// — a convention that disagreed between the two would look right at rest and
-/// deform wrongly, which is precisely what `tests/flex_skin.rs` measures.
-fn flex_influences(
-    model: &Model<'_>,
-    f: usize,
-    vertnum: usize,
-) -> (Vec<usize>, Vec<SkinInfluenceSet>) {
+/// The lattice index convention is shared between the weight basis and the node
+/// lookup ([`cage_lattice`]). That sharing is load-bearing — a convention that
+/// disagreed between the two would look right at rest and deform wrongly, which
+/// is precisely what `tests/flex_skin.rs` measures.
+fn flex_influences(model: &Model<'_>, f: usize, vertnum: usize) -> (Vec<usize>, FlexInfluences) {
     let vertadr = model.flex_vertadr()[f] as usize;
 
     if model.flex_interp()[f] == 0 {
@@ -437,7 +448,7 @@ fn flex_influences(
             joints: (0..vertnum).map(|v| [v as u16, 0, 0, 0]).collect(),
             weights: vec![[1.0, 0.0, 0.0, 0.0]; vertnum],
         };
-        return (bodies, vec![set]);
+        return (bodies, FlexInfluences::Direct(vec![set]));
     }
 
     let nadr = model.flex_nodeadr()[f] as usize;
@@ -459,7 +470,7 @@ fn flex_influences(
                 "warning: flex {f} is interpolated with {nnum} cage nodes, which is neither a \
                  trilinear (8) nor a quadratic (27) lattice, so this flex ships un-deformable"
             );
-            return (Vec::new(), Vec::new());
+            return (Vec::new(), FlexInfluences::Direct(Vec::new()));
         }
     };
 
@@ -469,85 +480,58 @@ fn flex_influences(
              lattice (it is degenerate along at least one axis), so this flex ships \
              un-deformable"
         );
-        return (Vec::new(), Vec::new());
+        return (Vec::new(), FlexInfluences::Direct(Vec::new()));
     };
 
-    // Four influences per set; 8 nodes fill two sets exactly, 27 fill seven with
-    // one spare slot that carries weight 0 (and so contributes nothing).
-    let influences = order.pow(3);
-    let nsets = influences.div_ceil(4);
+    // `flex_vert0` is the vertex's normalized position inside its cell — in
+    // [0,1]³, already computed by MuJoCo. The f64 → f32 narrowing here is the
+    // only precision the encoding gives up, and it lands far below the f32
+    // GLB's own tolerance (`the_exported_glb_deforms_like_mujoco` pins it).
     let vert0 = model.flex_vert0();
-    let mut sets = vec![
-        SkinInfluenceSet {
-            joints: Vec::with_capacity(vertnum),
-            weights: Vec::with_capacity(vertnum),
-        };
-        nsets
-    ];
-    for v in 0..vertnum {
-        let o = (vertadr + v) * 3;
-        let w = cage_weights(order, [vert0[o], vert0[o + 1], vert0[o + 2]]);
-        for (s, set) in sets.iter_mut().enumerate() {
-            let mut joints = [0u16; 4];
-            let mut weights = [0.0f32; 4];
-            for i in 0..4 {
-                let idx = s * 4 + i;
-                if idx < influences {
-                    joints[i] = lattice[idx] as u16;
-                    weights[i] = w[idx] as f32;
-                }
-            }
-            set.joints.push(joints);
-            set.weights.push(weights);
-        }
-    }
-    (bodies, sets)
-}
-
-/// The cage's blend weights for a vertex at normalized cell coordinates `t`,
-/// in the lattice index convention (see [`cage_lattice`]).
-///
-/// A tensor product of the 1D basis along each axis:
-///
-/// - `order` 2 — linear: `[1-t, t]`.
-/// - `order` 3 — quadratic **Lagrange** on nodes at `t = 0, ½, 1`, which
-///   INTERPOLATES the mid node. Not Bernstein: the two agree wherever the cage
-///   stays affine (so a rest pose cannot tell them apart), but they diverge once
-///   it bends — measured at 0.99 mm on `bunny_quadratic.xml`, against Lagrange's
-///   exact zero.
-///
-/// The Lagrange basis is NEGATIVE outside the middle third (down to −⅛), so
-/// these weights do not all lie in `[0, 1]` even though they still sum to 1.
-/// They partition unity, which is all linear blend skinning actually requires —
-/// but it does mean a quadratic flex's weights cannot be quantized to unorm8
-/// (see `glb-export`'s `weights_fit_unorm8`).
-fn cage_weights(order: usize, t: [f64; 3]) -> Vec<f64> {
-    let basis = |t: f64| -> Vec<f64> {
-        match order {
-            2 => vec![1.0 - t, t],
-            _ => vec![
-                (1.0 - t) * (1.0 - 2.0 * t),
-                4.0 * t * (1.0 - t),
-                t * (2.0 * t - 1.0),
-            ],
-        }
+    let coords: Vec<[f32; 3]> = (0..vertnum)
+        .map(|v| {
+            let o = (vertadr + v) * 3;
+            [
+                vert0[o] as f32,
+                vert0[o + 1] as f32,
+                vert0[o + 2] as f32,
+            ]
+        })
+        .collect();
+    let cage = CageInfluences {
+        order,
+        joints: lattice.iter().map(|n| *n as u16).collect(),
+        coords,
     };
-    let (bx, by, bz) = (basis(t[0]), basis(t[1]), basis(t[2]));
-    let mut w = Vec::with_capacity(order.pow(3));
-    // x outermost, z innermost — the same nesting `cage_lattice` indexes by.
-    for wx in &bx {
-        for wy in &by {
-            for wz in &bz {
-                w.push(wx * wy * wz);
-            }
-        }
+
+    // Which form SHIPS is a measured size call, not a principle (both load
+    // everywhere; the runtime buffers are identical):
+    //
+    // - **quadratic** ships the cage: its Lagrange weights go negative, so the
+    //   expanded form can never quantize and costs 112 f32 bytes a vertex —
+    //   bunny_quadratic shipped 259.5 KB expanded vs ~51 KB as a cage.
+    // - **trilinear** ships EXPANDED: its weights sit in [0,1], so the bundle
+    //   compressor packs them to unorm8 + u8 joints (16 low-entropy bytes a
+    //   vertex that meshopt loves), which measured SMALLER than 12 bytes of
+    //   high-entropy f32 coords — bunny 41.1 KB expanded vs 50.7 KB as a cage.
+    //   (Quantizing the coords instead would sail too close to the 1e-5 m
+    //   deformation oracle to trust.)
+    //
+    // Both expansions are the same shared `CageInfluences` math, so the two
+    // forms cannot drift apart.
+    if order == 3 {
+        (bodies, FlexInfluences::Cage(cage))
+    } else {
+        let (joints, weights, extra) = cage.expand_sets();
+        let mut sets = vec![SkinInfluenceSet { joints, weights }];
+        sets.extend(extra);
+        (bodies, FlexInfluences::Direct(sets))
     }
-    w
 }
 
 /// Which cage node sits at each lattice position, indexed `(i*order + j)*order + k`
-/// where `i`/`j`/`k` are the bins along axes x/y/z — the same order
-/// [`cage_weights`] emits.
+/// where `i`/`j`/`k` are the bins along axes x/y/z — the same order the
+/// `CageInfluences` weight basis emits.
 ///
 /// Derived from the rest positions rather than assumed: MuJoCo promises no node
 /// ordering, and an assumed one produces a mesh that looks right at rest and

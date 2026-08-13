@@ -48,6 +48,10 @@ struct PrimSource<'a> {
     morph_targets: &'a [MorphTarget],
     /// Influence sets beyond the first; see `ExportNode::extra_influence_sets`.
     extra_influence_sets: &'a [crate::SkinInfluenceSet],
+    /// Compact cage-form skin (see `ExportNode::cage_influences`) — emitted as
+    /// the `_AWSM_CAGE_COORDS` attribute + `AWSM_cage_influences` extension
+    /// instead of `JOINTS_n`/`WEIGHTS_n`. Main primitive only.
+    cage_influences: Option<&'a crate::CageInfluences>,
 }
 
 pub fn write_glb(scene: &GlbScene) -> Vec<u8> {
@@ -174,6 +178,7 @@ impl Builder {
                 tangents: n.tangents.as_deref(),
                 morph_targets: &n.morph_targets,
                 extra_influence_sets: &n.extra_influence_sets,
+                cage_influences: n.cage_influences.as_ref(),
             },
             texture_indices,
         )];
@@ -187,8 +192,10 @@ impl Builder {
                     tangents: ep.tangents.as_deref(),
                     morph_targets: &ep.morph_targets,
                     // Extra primitives are a multi-material split of ONE source
-                    // mesh; >4 influences on those is not a shape we produce.
+                    // mesh; >4 influences on those is not a shape we produce,
+                    // and neither is a cage.
                     extra_influence_sets: &[],
+                    cage_influences: None,
                 },
                 texture_indices,
             ));
@@ -364,6 +371,42 @@ impl Builder {
             }
         }
 
+        // Cage-form skin (interpolated MuJoCo flexes): the per-vertex
+        // normalized cage coordinate as a custom attribute, plus the
+        // order + lattice→joint map as a primitive extension. This REPLACES
+        // `JOINTS_n`/`WEIGHTS_n` — 12 bytes a vertex instead of 8/27 expanded
+        // influences, and the consumers expand through the one shared
+        // `CageInfluences` implementation. Coords stay f32: the bundle
+        // compressor meshopt-encodes unknown attributes losslessly, so the
+        // reconstruction is deterministic on every path.
+        let cage_ext = match src.cage_influences {
+            Some(cage) if cage.coords.len() == vcount && cage.is_valid() => {
+                let bytes: Vec<u8> = cage
+                    .coords
+                    .iter()
+                    .flatten()
+                    .flat_map(|f| f.to_le_bytes())
+                    .collect();
+                let acc = self.push_accessor(
+                    &bytes,
+                    vcount,
+                    accessor::ComponentType::F32,
+                    accessor::Type::Vec3,
+                    None,
+                    None,
+                );
+                attributes.insert(
+                    Checked::Valid(mesh::Semantic::Extras(
+                        crate::CAGE_COORDS_ATTRIBUTE.to_string(),
+                    )),
+                    acc,
+                );
+                self.use_extension(crate::AWSM_CAGE_INFLUENCES);
+                Some(cage.marker_json())
+            }
+            _ => None,
+        };
+
         // Morph targets (position / optional normal deltas).
         let mut targets: Vec<mesh::MorphTarget> = Vec::new();
         for t in src.morph_targets {
@@ -412,12 +455,22 @@ impl Builder {
         );
 
         // Material → either a glTF material index or the AWSM_materials_none ext.
-        let (material_index, primitive_ext) = match src.material {
+        let (material_index, mut primitive_ext) = match src.material {
             Some(ExportMaterial::Pbr(p)) => (Some(self.build_pbr(p, texture_indices)), None),
             Some(ExportMaterial::Unlit(u)) => (Some(self.build_unlit(u, texture_indices)), None),
             Some(ExportMaterial::None { id }) => (None, Some(self.none_extension(id.as_deref()))),
             None => (None, None),
         };
+        // The cage marker shares the primitive's `extensions` object with
+        // AWSM_materials_none — merge rather than overwrite.
+        if let Some(marker) = cage_ext {
+            primitive_ext
+                .get_or_insert_with(|| extensions::mesh::Primitive {
+                    others: serde_json::Map::new(),
+                })
+                .others
+                .insert(crate::AWSM_CAGE_INFLUENCES.to_string(), marker);
+        }
 
         mesh::Primitive {
             attributes,

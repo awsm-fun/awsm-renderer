@@ -494,6 +494,23 @@ fn extract_material(
     }))
 }
 
+/// Read a primitive's compact cage-form skin, if it carries one: the
+/// `AWSM_cage_influences` marker (order + lattice→joint map) plus the
+/// `_AWSM_CAGE_COORDS` attribute. `None` when either half is absent or the
+/// marker is malformed.
+fn read_cage(
+    primitive: &gltf::Primitive<'_>,
+    buffers: &[Vec<u8>],
+) -> Option<crate::CageInfluences> {
+    let marker = primitive.extension_value(crate::AWSM_CAGE_INFLUENCES)?;
+    let coords = crate::quant::read_attr_f32::<3>(
+        primitive,
+        &gltf::Semantic::Extras(crate::CAGE_COORDS_ATTRIBUTE.to_string()),
+        buffers,
+    )?;
+    crate::CageInfluences::from_marker(marker, coords)
+}
+
 /// One node → a clean `ExportNode`: geometry + skin attrs + morph targets +
 /// per-primitive materials. The FIRST primitive fills the node's own
 /// mesh/material slots; further primitives become
@@ -623,6 +640,10 @@ fn build_clean_node(
                 out.joints = joints;
                 out.weights = weights;
                 out.extra_influence_sets = extra_influence_sets;
+                // Cage-form skin reads back into the SAME compact field — that
+                // is what makes `reexport_clean` (the editor's every save)
+                // preserve the encoding instead of silently expanding it.
+                out.cage_influences = read_cage(&primitive, buffers);
                 out.tangents = tangents;
                 out.morph_targets = morph_targets;
                 out.morph_weights = mesh.weights().map(|w| w.to_vec()).unwrap_or_default();
@@ -781,6 +802,13 @@ pub struct ExtractedSkin {
     pub weights: Vec<[f32; 4]>,
     /// Influence sets beyond the first, in `JOINTS_1`, `JOINTS_2`, … order.
     pub extra_sets: Vec<crate::SkinInfluenceSet>,
+    /// Compact cage-form influences (interpolated MuJoCo flexes) — present
+    /// when the primitive carried `_AWSM_CAGE_COORDS` + the
+    /// `AWSM_cage_influences` marker instead of `JOINTS_n`/`WEIGHTS_n`. When
+    /// set, [`Self::joints`]/[`Self::weights`]/[`Self::extra_sets`] are empty
+    /// and [`Self::packed_index_weights`]/[`Self::set_count`] expand from the
+    /// cage on demand, so consumers see the exact same buffer either way.
+    pub cage: Option<crate::CageInfluences>,
 }
 
 impl ExtractedSkin {
@@ -794,6 +822,12 @@ impl ExtractedSkin {
     /// the renderer resolves them against `RawSkin.joints` (the editor `TransformKey`s
     /// the caller maps from `joint_node_indices`).
     pub fn packed_index_weights(&self) -> Vec<u8> {
+        // Cage form expands here — the one chokepoint every production
+        // consumer (editor materialiser, player loader, LOD chains) reads
+        // through, so none of them carry a cage-specific path.
+        if let Some(cage) = &self.cage {
+            return cage.packed_index_weights();
+        }
         let sets = self.set_count();
         let mut out = Vec::with_capacity(self.joints.len() * 32 * sets);
         for v in 0..self.joints.len() {
@@ -818,6 +852,9 @@ impl ExtractedSkin {
 
     /// How many four-influence sets this skin carries (at least one).
     pub fn set_count(&self) -> usize {
+        if let Some(cage) = &self.cage {
+            return cage.set_count();
+        }
         1 + self
             .extra_sets
             .iter()
@@ -856,6 +893,11 @@ pub fn extract_node_mesh(
     let mut all_have_colors = true;
     let mut all_have_skin = true;
     let mut extra_sets: Vec<crate::SkinInfluenceSet> = Vec::new();
+    // Cage-form skin (compact interpolated-flex encoding): kept only when
+    // EVERY contributing primitive supplies the same (order, joints) cage —
+    // coords concatenate vertex-aligned like every other channel.
+    let mut cage_acc: Option<crate::CageInfluences> = None;
+    let mut all_have_cage = true;
     let mut all_have_tangents = true;
     // Morph targets, accumulated per-target across primitives (vertex-aligned with
     // `positions`). The first contributing primitive fixes the target count; a
@@ -917,6 +959,16 @@ pub fn extract_node_mesh(
                 weights.extend(w.into_f32());
             }
             _ => all_have_skin = false,
+        }
+        match read_cage(&primitive, buffers) {
+            Some(c) if c.coords.len() == vert_count => match &mut cage_acc {
+                None => cage_acc = Some(c),
+                Some(acc) if acc.order == c.order && acc.joints == c.joints => {
+                    acc.coords.extend(c.coords);
+                }
+                _ => all_have_cage = false,
+            },
+            _ => all_have_cage = false,
         }
         // Sets beyond the first. glTF numbers them contiguously, so the first
         // gap ends the run — reading past it would misalign every later set.
@@ -990,10 +1042,16 @@ pub fn extract_node_mesh(
         }
     }
 
-    // Skin: only when the node binds one AND every read primitive supplied skin.
-    // The skin's joint node-indices + inverse-bind matrices are NODE-level (read
+    // Skin: only when the node binds one AND every read primitive supplied skin
+    // data — classic `JOINTS_n`/`WEIGHTS_n`, or the compact cage form. The
+    // skin's joint node-indices + inverse-bind matrices are NODE-level (read
     // once from `node.skin()`); the per-vertex joints/weights were merged above.
-    let skin = match (node.skin(), all_have_skin && !joints.is_empty()) {
+    let has_classic = all_have_skin && !joints.is_empty();
+    let cage = match (all_have_cage, cage_acc) {
+        (true, Some(c)) if c.coords.len() == positions.len() => Some(c),
+        _ => None,
+    };
+    let skin = match (node.skin(), has_classic || cage.is_some()) {
         (Some(s), true) => {
             let joint_node_indices: Vec<usize> = s.joints().map(|j| j.index()).collect();
             let sreader = s.reader(|b| buffers.get(b.index()).map(|v| v.as_slice()));
@@ -1011,12 +1069,16 @@ pub fn extract_node_mesh(
                     .collect()
                 })
                 .unwrap_or_default();
+            // Classic wins when a file somehow carries both (we never write
+            // both): the expanded data is the authored ground truth there.
+            let cage = if has_classic { None } else { cage };
             Some(ExtractedSkin {
                 joint_node_indices,
                 inverse_bind_matrices,
-                joints,
-                weights,
-                extra_sets,
+                joints: if has_classic { joints } else { Vec::new() },
+                weights: if has_classic { weights } else { Vec::new() },
+                extra_sets: if has_classic { extra_sets } else { Vec::new() },
+                cage,
             })
         }
         _ => None,
@@ -1195,6 +1257,7 @@ mod tests {
                 joints: vec![[4u16, 5, 6, 7], [4, 5, 6, 7]],
                 weights: vec![[0.0f32; 4], [0.0; 4]],
             }],
+            cage: None,
         };
         assert_eq!(skin.set_count(), 2);
         let got = skin.packed_index_weights();
@@ -1216,6 +1279,7 @@ mod tests {
             joints: vec![[0u16, 1, 2, 3], [3, 0, 0, 0]],
             weights: vec![[0.5f32, 0.25, 0.125, 0.125], [1.0, 0.0, 0.0, 0.0]],
             extra_sets: Vec::new(),
+            cage: None,
         };
         let got = skin.packed_index_weights();
 
@@ -1368,6 +1432,106 @@ mod tests {
         assert_eq!(&packed[8..12], &0.0f32.to_le_bytes());
         assert_eq!(&packed[12..40], &[0u8; 28]);
         assert_eq!(morph.weights_bytes(), 0.0f32.to_le_bytes().to_vec());
+    }
+
+    /// The save-path trap, pinned: a cage-form skin must survive
+    /// write → `reexport_clean` → write with the COMPACT encoding intact.
+    /// `reexport_clean` runs on every editor save — if the reader expanded the
+    /// cage into `JOINTS_n`/`WEIGHTS_n`, the re-export would write the fat
+    /// form back and the entire size saving would evaporate on first save,
+    /// silently (the same trap that produced the original dropped-`JOINTS_1`
+    /// bug).
+    #[test]
+    fn reexport_clean_preserves_cage_encoding() {
+        use crate::{CageInfluences, ExportSkin};
+
+        let tri = MeshData {
+            positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            normals: Some(vec![[0.0, 0.0, 1.0]; 3]),
+            uvs: vec![],
+            colors: None,
+            indices: vec![0, 1, 2],
+        };
+        let ident = [
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ];
+        // A quadratic cage: 27 joints in a scrambled (non-identity) lattice
+        // order, so a lost permutation cannot hide behind an identity map.
+        let mut lattice: Vec<u16> = (0..27).collect();
+        lattice.reverse();
+        let cage = CageInfluences {
+            order: 3,
+            joints: lattice,
+            coords: vec![[0.1, 0.4, 0.9], [0.5, 0.5, 0.5], [1.0, 0.0, 0.25]],
+        };
+        let src = GlbScene {
+            nodes: vec![
+                ExportNode {
+                    name: "Cage".into(),
+                    children: (0..27)
+                        .map(|j| ExportNode::new(format!("J{j}")))
+                        .collect(),
+                    ..Default::default()
+                },
+                ExportNode {
+                    name: "Flex".into(),
+                    mesh: Some(tri),
+                    skin: Some(0),
+                    cage_influences: Some(cage.clone()),
+                    ..Default::default()
+                },
+            ],
+            skins: vec![ExportSkin {
+                joints: (1..28).collect(),
+                inverse_bind_matrices: vec![ident; 27],
+                skeleton: Some(0),
+            }],
+            ..Default::default()
+        };
+        let glb = write_glb(&src);
+
+        // The written primitive carries the coords attribute + marker, and NO
+        // JOINTS_0/WEIGHTS_0 (that is the whole size win).
+        let (doc, buffers, _) = gltf::import_slice(&glb).expect("parse");
+        let prim = doc.meshes().next().unwrap().primitives().next().unwrap();
+        assert!(prim.get(&gltf::Semantic::Joints(0)).is_none());
+        assert!(prim.get(&gltf::Semantic::Weights(0)).is_none());
+        assert!(prim
+            .get(&gltf::Semantic::Extras(
+                crate::CAGE_COORDS_ATTRIBUTE.to_string()
+            ))
+            .is_some());
+
+        // Round 1: reexport_clean carries the compact field through.
+        let clean = reexport_clean(&glb).expect("reexport");
+        let flex = clean
+            .nodes
+            .iter()
+            .find(|n| n.name == "Flex")
+            .expect("flex node");
+        assert_eq!(flex.cage_influences.as_ref(), Some(&cage));
+        assert!(flex.joints.is_none(), "must NOT expand on read");
+
+        // Round 2: writing the clean scene and re-reading is byte-stable —
+        // the compact form survives an arbitrary number of saves.
+        let glb2 = write_glb(&clean);
+        let clean2 = reexport_clean(&glb2).expect("reexport twice");
+        let flex2 = clean2.nodes.iter().find(|n| n.name == "Flex").unwrap();
+        assert_eq!(flex2.cage_influences.as_ref(), Some(&cage));
+
+        // The materialiser's read: extract_node_mesh returns a cage skin whose
+        // expansion equals expanding the cage directly.
+        let raw: Vec<Vec<u8>> = buffers.iter().map(|b| b.0.clone()).collect();
+        let node_index = doc
+            .nodes()
+            .find(|n| n.name() == Some("Flex"))
+            .unwrap()
+            .index() as u32;
+        let ex = extract_node_mesh(&doc, &raw, node_index, None).expect("extract");
+        let skin = ex.skin.expect("cage skin");
+        assert_eq!(skin.set_count(), 7);
+        assert_eq!(skin.packed_index_weights(), cage.packed_index_weights());
+        assert_eq!(skin.joint_node_indices.len(), 27);
     }
 
     /// `reexport_clean` PRESERVES each node's local transform (it does not bake
