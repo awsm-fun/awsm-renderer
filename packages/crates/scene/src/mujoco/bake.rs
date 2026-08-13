@@ -69,6 +69,11 @@ pub enum Error {
         instance: String,
     },
     Empty,
+    /// A bound id has no pose in some frame — the channel is narrower than the
+    /// binding it is supposed to drive. Loud on purpose: skipping the track
+    /// would bake a clip where that node silently never moves, which reads as
+    /// a physics bug (a frozen flex, a stuck link) rather than a data bug.
+    ChannelMissing { id: u32 },
 }
 
 impl std::fmt::Display for Error {
@@ -80,6 +85,12 @@ impl std::fmt::Display for Error {
                  the instance was imported from {instance}"
             ),
             Error::Empty => write!(f, "the capture has no frames"),
+            Error::ChannelMissing { id } => write!(
+                f,
+                "the capture's channel does not cover bound id {id} in every \
+                 frame — it was recorded over fewer entities than this \
+                 instance binds"
+            ),
         }
     }
 }
@@ -99,7 +110,7 @@ impl std::error::Error for Error {}
 pub fn bake(
     capture: &Capture,
     binding: &HashMap<u32, NodeId>,
-    body_binding: &HashMap<u32, NodeId>,
+    body_binding: &HashMap<u32, Vec<NodeId>>,
     name: impl Into<String>,
     reduction: Reduction,
 ) -> Result<StoredAnimation, Error> {
@@ -110,27 +121,34 @@ pub fn bake(
     let times: Vec<f64> = capture.frames.iter().map(|f| f.time - t0).collect();
 
     let mut tracks = Vec::new();
+    let geom_pairs: Vec<(u32, NodeId)> = binding.iter().map(|(id, n)| (*id, *n)).collect();
     append_tracks(
         &mut tracks,
         capture,
-        binding,
+        &geom_pairs,
         &times,
         reduction,
         |frame, id| frame.geom(id),
-    );
+    )?;
     // The BODY channel, when the capture has one — the same mechanism against a
     // different id space. A flex is skinned to the bodies its cage rides, so
     // tracks on those joint nodes ARE the deformation: after this bake there is
-    // no deformable left in the result either, just a clip moving joints.
+    // no deformable left in the result either, just a clip moving joints. One
+    // body can drive SEVERAL nodes (each flex mints its own joint per body), so
+    // the binding is id → nodes and every node gets its tracks.
     if capture.body_count > 0 {
+        let body_pairs: Vec<(u32, NodeId)> = body_binding
+            .iter()
+            .flat_map(|(id, nodes)| nodes.iter().map(|n| (*id, *n)))
+            .collect();
         append_tracks(
             &mut tracks,
             capture,
-            body_binding,
+            &body_pairs,
             &times,
             reduction,
             |frame, id| frame.body(id),
-        );
+        )?;
     }
     // Deterministic output: a HashMap iterates in an arbitrary order, and a clip
     // whose track order changed between runs would defeat golden comparison.
@@ -163,32 +181,30 @@ pub fn bake(
 fn append_tracks(
     tracks: &mut Vec<StoredTrack>,
     capture: &Capture,
-    binding: &HashMap<u32, NodeId>,
+    binding: &[(u32, NodeId)],
     times: &[f64],
     reduction: Reduction,
     pose_of: impl Fn(
         &awsm_renderer_mujoco_format::capture::Frame,
         usize,
     ) -> Option<([f32; 3], [f32; 4])>,
-) {
+) -> Result<(), Error> {
     for (id, node) in binding {
         let mut positions: Vec<[f32; 3]> = Vec::with_capacity(capture.frames.len());
         let mut rotations: Vec<[f32; 4]> = Vec::with_capacity(capture.frames.len());
-        let mut complete = true;
         for frame in &capture.frames {
+            // A frame that doesn't cover this bound id. `Capture::validate`
+            // pins internal consistency (every frame matches the DECLARED
+            // counts), but a capture can be internally consistent and still
+            // narrower than this instance — e.g. recorded over a subset of
+            // the model's bodies. Refuse rather than skip: a skipped track is
+            // a node that silently never moves.
             let Some((pos, quat)) = pose_of(frame, *id as usize) else {
-                complete = false;
-                break;
+                return Err(Error::ChannelMissing { id: *id });
             };
             positions.push(pos);
             // MuJoCo quaternions are [w, x, y, z]; ours are [x, y, z, w].
             rotations.push([quat[1], quat[2], quat[3], quat[0]]);
-        }
-        if !complete {
-            // A frame too short to cover this id. `Capture::validate` already
-            // rejects that, so reaching here means an unvalidated capture —
-            // skip it rather than bake half a track.
-            continue;
         }
         make_continuous(&mut rotations);
 
@@ -212,6 +228,7 @@ fn append_tracks(
             ));
         }
     }
+    Ok(())
 }
 
 /// Resolve the geom_id→node binding by walking an instance's subtree.
@@ -241,10 +258,13 @@ pub fn binding_of(instance: &crate::tree::EditorNode) -> HashMap<u32, NodeId> {
 /// zero — so a body pose applied through a geom binding would drive a real node
 /// with a real pose belonging to something else, which looks like a physics bug
 /// rather than a mix-up. Today these nodes are a flex's skin joints.
-pub fn body_binding_of(instance: &crate::tree::EditorNode) -> HashMap<u32, NodeId> {
-    fn walk(node: &crate::tree::EditorNode, out: &mut HashMap<u32, NodeId>) {
+pub fn body_binding_of(instance: &crate::tree::EditorNode) -> HashMap<u32, Vec<NodeId>> {
+    fn walk(node: &crate::tree::EditorNode, out: &mut HashMap<u32, Vec<NodeId>>) {
         if let Some(super::MujocoComponent::Body(b)) = &node.mujoco {
-            out.insert(b.body_id, node.id);
+            // One body can be ridden by several joint nodes (one per flex
+            // bound to it) — collect them all; keeping only the last would
+            // silently freeze every other flex at bind pose.
+            out.entry(b.body_id).or_default().push(node.id);
         }
         for c in &node.children {
             walk(c, out);
@@ -295,12 +315,19 @@ fn rotates(rotations: &[[f32; 4]], eps: f32) -> bool {
 
 /// Which frames survive reduction.
 ///
-/// A frame is dropped when BOTH its position and its rotation lie within
-/// tolerance of the straight line between the last kept frame and the next
-/// candidate — evaluated against the kept frame, not the original neighbours, so
-/// error cannot accumulate across a long run of dropped keys. Position and
-/// rotation share one mask because they share the clip's `times` array; keeping a
-/// key for one and not the other would need two time bases per geom.
+/// A frame is dropped when EVERY frame the drop would commit to linear
+/// interpolation — all of `(anchor, next)`, not just the newest one — lies
+/// within tolerance of the chord from the last kept frame to the next
+/// candidate. Testing only the newest interior point looks equivalent but is
+/// not: on a smoothly curving trajectory (the normal case for physics) each
+/// extension nudges the chord a little while the sag at the span's middle
+/// grows quadratically, so the played-back error could exceed the tolerance a
+/// thousandfold before any single tail test failed. Re-testing the whole span
+/// makes the tolerance a true playback-error bound; the extra cost is O(span)
+/// per extension in an import-time bake, and straight-line motion (where
+/// spans actually grow long) passes each re-test in one comparison. Position
+/// and rotation share one mask because they share the clip's `times` array;
+/// keeping a key for one and not the other would need two time bases per geom.
 fn keep_mask(
     times: &[f64],
     positions: &[[f32; 3]],
@@ -318,48 +345,50 @@ fn keep_mask(
         return vec![true; n];
     }
 
-    let mut anchor = 0usize;
-    for i in 1..n - 1 {
-        let next = i + 1;
+    // True when frame `here` lies within tolerance of the chord anchor→next.
+    let on_chord = |anchor: usize, next: usize, here: usize| -> bool {
         let span = times[next] - times[anchor];
         let t = if span.abs() < f64::EPSILON {
             0.0
         } else {
-            ((times[i] - times[anchor]) / span) as f32
+            ((times[here] - times[anchor]) / span) as f32
         };
 
-        let mut ok = true;
-        for ((from, to), here) in positions[anchor]
+        for ((from, to), h) in positions[anchor]
             .iter()
             .zip(positions[next].iter())
-            .zip(positions[i].iter())
+            .zip(positions[here].iter())
         {
-            if (here - (from + (to - from) * t)).abs() > reduction.position {
-                ok = false;
-                break;
+            if (h - (from + (to - from) * t)).abs() > reduction.position {
+                return false;
             }
         }
-        if ok {
-            // nlerp is enough to *measure* deviation: over a span small enough to
-            // be a drop candidate it differs from slerp by far less than the
-            // tolerance being tested.
-            let mut lerped = [0.0f32; 4];
-            for a in 0..4 {
-                lerped[a] = rotations[anchor][a] + (rotations[next][a] - rotations[anchor][a]) * t;
-            }
-            let len = dot(lerped, lerped).sqrt();
-            if len > 1e-6 {
-                for v in &mut lerped {
-                    *v /= len;
-                }
-                let angle = 2.0 * dot(lerped, rotations[i]).abs().clamp(0.0, 1.0).acos();
-                if angle > reduction.rotation {
-                    ok = false;
-                }
-            }
+        // nlerp is enough to *measure* deviation: over a span small enough to
+        // be a drop candidate it differs from slerp by far less than the
+        // tolerance being tested.
+        let mut lerped = [0.0f32; 4];
+        for a in 0..4 {
+            lerped[a] = rotations[anchor][a] + (rotations[next][a] - rotations[anchor][a]) * t;
         }
-        if !ok {
-            keep[i] = true;
+        let len = dot(lerped, lerped).sqrt();
+        if len <= 1e-6 {
+            // Near-antipodal endpoints: the interpolation direction is
+            // undefined, so the deviation is unmeasurable — refuse the drop
+            // rather than treat "can't measure" as "within tolerance".
+            return false;
+        }
+        for v in &mut lerped {
+            *v /= len;
+        }
+        let angle = 2.0 * dot(lerped, rotations[here]).abs().clamp(0.0, 1.0).acos();
+        angle <= reduction.rotation
+    };
+
+    let mut anchor = 0usize;
+    for (i, keep_slot) in keep.iter_mut().enumerate().take(n - 1).skip(1) {
+        let next = i + 1;
+        if !(anchor + 1..=i).all(|j| on_chord(anchor, next, j)) {
+            *keep_slot = true;
             anchor = i;
         }
     }
@@ -474,7 +503,7 @@ mod tests {
         let clip = bake(
             &c,
             &HashMap::from([(0, geom_node)]),
-            &HashMap::from([(0, still_body), (1, moving_body)]),
+            &HashMap::from([(0, vec![still_body]), (1, vec![moving_body])]),
             "wave",
             Reduction::default(),
         )
@@ -525,7 +554,7 @@ mod tests {
         let clip = bake(
             &c,
             &HashMap::from([(0, geom_node)]),
-            &HashMap::from([(0, body_node)]),
+            &HashMap::from([(0, vec![body_node])]),
             "wave",
             Reduction::default(),
         )
@@ -618,6 +647,91 @@ mod tests {
         let (bind, _, _) = binding();
         let clip = bake(&capture(60), &bind, &HashMap::new(), "run", Reduction::NONE).unwrap();
         assert_eq!(clip.tracks[0].times.len(), 60);
+    }
+
+    /// The tolerance must bound the PLAYED-BACK error, not just each frame's
+    /// deviation from the chord at the moment it was dropped. On a smooth arc,
+    /// testing only the newest point lets the chord's midpoint sag far past
+    /// tolerance while every individual tail test passes — a curved trajectory
+    /// visibly cutting the corner. Bake a circle and verify every dropped
+    /// frame linearly interpolates within tolerance of where it actually was.
+    #[test]
+    fn reduction_bounds_playback_error_on_curved_motion() {
+        // 1 m radius, 6°/s, 60 Hz — slow smooth motion, the pathological case.
+        let n = 400usize;
+        let mut c = Capture::new(source("m.xml"), 1);
+        let pos_at = |i: usize| {
+            let a = (i as f32) * (6.0f32.to_radians() / 60.0);
+            [a.cos(), a.sin(), 0.0]
+        };
+        for i in 0..n {
+            let mut f = Frame {
+                time: i as f64 / 60.0,
+                geom_poses: Vec::new(),
+                body_poses: Vec::new(),
+            };
+            f.push_geom(pos_at(i), [1.0, 0.0, 0.0, 0.0]);
+            c.frames.push(f);
+        }
+        let node = NodeId::new();
+        let reduction = Reduction {
+            position: 0.001,
+            rotation: 0.002,
+        };
+        let clip = bake(
+            &c,
+            &HashMap::from([(0, node)]),
+            &HashMap::new(),
+            "arc",
+            reduction,
+        )
+        .unwrap();
+        let t = &clip.tracks[0];
+        assert!(
+            t.times.len() < n,
+            "an arc within tolerance must still drop frames"
+        );
+        // Replay: every original sample must lie within tolerance of the
+        // baked track's linear interpolation (small slack for f32 lerp).
+        for i in 0..n {
+            let time = i as f64 / 60.0;
+            let seg = t.times.windows(2).position(|w| w[0] <= time && time <= w[1]);
+            let Some(s) = seg else { continue };
+            let (t0, t1) = (t.times[s], t.times[s + 1]);
+            let f = if t1 > t0 { ((time - t0) / (t1 - t0)) as f32 } else { 0.0 };
+            let (a, b) = match (&t.keys[s].value, &t.keys[s + 1].value) {
+                (TrackValue::Vec3(a), TrackValue::Vec3(b)) => (*a, *b),
+                _ => panic!("expected translation keys"),
+            };
+            let played = [
+                a[0] + (b[0] - a[0]) * f,
+                a[1] + (b[1] - a[1]) * f,
+                a[2] + (b[2] - a[2]) * f,
+            ];
+            let truth = pos_at(i);
+            let err = (0..3)
+                .map(|k| (played[k] - truth[k]).powi(2))
+                .sum::<f32>()
+                .sqrt();
+            assert!(
+                err <= reduction.position * 1.5,
+                "frame {i}: played back {err} m from truth, tolerance {}",
+                reduction.position
+            );
+        }
+    }
+
+    /// A capture whose channel is narrower than the binding (recorded over a
+    /// subset of the model's entities) must refuse to bake — a skipped track
+    /// is a node that silently never moves, which reads as a physics bug.
+    #[test]
+    fn a_channel_narrower_than_the_binding_is_refused() {
+        let c = capture(10); // 2 geoms recorded
+        let wide: HashMap<u32, NodeId> =
+            HashMap::from([(0, NodeId::new()), (1, NodeId::new()), (2, NodeId::new())]);
+        let err = bake(&c, &wide, &HashMap::new(), "run", Reduction::NONE)
+            .expect_err("binding id 2 is not covered by the capture");
+        assert_eq!(err, Error::ChannelMissing { id: 2 });
     }
 
     /// The single most likely way baked physics looks broken: a simulator emits

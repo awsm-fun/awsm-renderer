@@ -137,10 +137,10 @@ fn a_recorded_flex_bakes_into_a_deforming_clip() {
 
     // One node per body, as the importer mints for a flex's skin joints.
     let nodes: Vec<NodeId> = (0..c.body_count).map(|_| NodeId::new()).collect();
-    let body_binding: HashMap<u32, NodeId> = nodes
+    let body_binding: HashMap<u32, Vec<NodeId>> = nodes
         .iter()
         .enumerate()
-        .map(|(i, n)| (i as u32, *n))
+        .map(|(i, n)| (i as u32, vec![*n]))
         .collect();
 
     let clip = bake(
