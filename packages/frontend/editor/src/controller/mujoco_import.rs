@@ -50,6 +50,10 @@ use crate::prelude::*;
 pub async fn import(sidecar_url: &str) -> Result<(Arc<Node>, serde_json::Value), String> {
     let (doc, meshes, rig) = fetch(sidecar_url).await?;
     let root = build_subtree(&doc, &meshes, &rig);
+    // A rig that ended up with NO skinned node (every flex fell back to a
+    // bind-pose mesh — short joint bind) would strand its template + asset
+    // forever: nothing references it, so the delete-side reclaim never sees it.
+    free_rig_if_unused(&rig, &root).await;
     let report = serde_json::json!({
         "display_name": root.name.get_cloned(),
         "roots": [{ "id": root.id.to_string(), "name": root.name.get_cloned() }],
@@ -86,6 +90,13 @@ pub async fn reimport(sidecar_url: &str, target: &Arc<Node>) -> Result<(), Strin
     // than diffing two live trees — the build path is the one that is already
     // exercised, and a second "update" path would be free to drift from it.
     let fresh = build_subtree(&doc, &meshes, &rig);
+    free_rig_if_unused(&rig, &fresh).await;
+
+    // What the OLD subtree minted. The transplant below replaces every child,
+    // and the fresh build minted its own mesh + rig assets — without this the
+    // previous import's entries stay in `scene.assets` forever, and every save
+    // and bundle carries the dead geometry (each re-import adds another copy).
+    let (old_meshes, old_rigs) = subtree_asset_ids(target);
 
     // What the user owns on each surviving geom, keyed by geom id.
     let mut kept: HashMap<u32, awsm_renderer_editor_protocol::NodeKind> = HashMap::new();
@@ -134,7 +145,149 @@ pub async fn reimport(sidecar_url: &str, target: &Arc<Node>) -> Result<(), Strin
     target.mujoco.set(fresh.mujoco.get_cloned());
     let new_children: Vec<_> = fresh.children.lock_ref().to_vec();
     target.children.lock_mut().replace_cloned(new_children);
+
+    // Free what the old subtree minted and nothing references anymore. AFTER
+    // the transplant, so the reference scan sees the final scene (a duplicate
+    // of this instance elsewhere still holds its shared assets). The renderer-
+    // side rig template is reclaimed by the node-removal observers (the same
+    // path a delete takes); this cleans the PERSISTED side: asset entries and
+    // captured-mesh bytes.
+    free_orphaned_import_assets(old_meshes, old_rigs);
     Ok(())
+}
+
+/// The mesh + rig asset ids a MuJoCo subtree's nodes reference — what a
+/// re-import must consider freeing once the subtree is replaced.
+fn subtree_asset_ids(
+    root: &Arc<Node>,
+) -> (
+    std::collections::HashSet<AssetId>,
+    std::collections::HashSet<AssetId>,
+) {
+    use awsm_renderer_editor_protocol::NodeKind;
+    fn walk(
+        node: &Arc<Node>,
+        meshes: &mut std::collections::HashSet<AssetId>,
+        rigs: &mut std::collections::HashSet<AssetId>,
+    ) {
+        match node.kind.get_cloned() {
+            NodeKind::Mesh { mesh, .. } => {
+                meshes.insert(mesh.0);
+            }
+            NodeKind::SkinnedMesh { skin, .. } => {
+                rigs.insert(skin.source);
+            }
+            _ => {}
+        }
+        for c in node.children.lock_ref().iter() {
+            walk(c, meshes, rigs);
+        }
+    }
+    let mut meshes = std::collections::HashSet::new();
+    let mut rigs = std::collections::HashSet::new();
+    for c in root.children.lock_ref().iter() {
+        walk(c, &mut meshes, &mut rigs);
+    }
+    (meshes, rigs)
+}
+
+/// Remove candidate asset entries (and their captured-mesh bytes) that no node
+/// anywhere in the scene references anymore. Reference = a `Mesh` node's
+/// `MeshRef` or a `SkinnedMesh` node's `skin.source` — assets are shareable
+/// (duplicated instances), so this scans the whole scene, not the subtree.
+fn free_orphaned_import_assets(
+    mut meshes: std::collections::HashSet<AssetId>,
+    mut rigs: std::collections::HashSet<AssetId>,
+) {
+    use awsm_renderer_editor_protocol::NodeKind;
+    fn drop_referenced(
+        node: &Arc<Node>,
+        meshes: &mut std::collections::HashSet<AssetId>,
+        rigs: &mut std::collections::HashSet<AssetId>,
+    ) {
+        match node.kind.get_cloned() {
+            NodeKind::Mesh { mesh, .. } => {
+                meshes.remove(&mesh.0);
+            }
+            NodeKind::SkinnedMesh { skin, .. } => {
+                rigs.remove(&skin.source);
+            }
+            _ => {}
+        }
+        for c in node.children.lock_ref().iter() {
+            drop_referenced(c, meshes, rigs);
+        }
+    }
+    let ctrl = crate::controller::controller();
+    for n in ctrl.scene.nodes.lock_ref().iter() {
+        drop_referenced(n, &mut meshes, &mut rigs);
+    }
+    if meshes.is_empty() && rigs.is_empty() {
+        return;
+    }
+    let mut assets = ctrl.scene.assets.lock().unwrap();
+    for id in &meshes {
+        // A collapsed/sculpted mesh's frozen snapshot rides a DISTINCT cache id
+        // (`MeshBase::Captured` inside the def) — free it with the asset.
+        if let Some(entry) = assets.entries.remove(id) {
+            if let SceneAssetSource::Mesh(def) = &entry.source {
+                if let awsm_renderer_editor_protocol::MeshBase::Captured(MeshRef(snap)) =
+                    def.stack.base
+                {
+                    crate::engine::bridge::mesh_cache::remove(snap);
+                }
+            }
+        }
+        crate::engine::bridge::mesh_cache::remove(*id);
+    }
+    for id in &rigs {
+        assets.entries.remove(id);
+    }
+    tracing::debug!(
+        "mujoco re-import freed {} mesh asset(s) + {} rig asset(s) from the previous import",
+        meshes.len(),
+        rigs.len()
+    );
+}
+
+/// Free a rig whose subtree ended up with no `SkinnedMesh` referencing it —
+/// the every-flex-fell-back case. The populate copy, the template, the bake
+/// cache and the asset entry would otherwise all outlive anything that could
+/// ever reach them.
+async fn free_rig_if_unused(rig: &FlexRig, root: &Arc<Node>) {
+    use awsm_renderer_editor_protocol::NodeKind;
+    let Some(aid) = rig.asset_id else { return };
+    fn references(node: &Arc<Node>, aid: AssetId) -> bool {
+        if let NodeKind::SkinnedMesh { skin, .. } = node.kind.get_cloned() {
+            if skin.source == aid {
+                return true;
+            }
+        }
+        node.children
+            .lock_ref()
+            .iter()
+            .any(|c| references(c, aid))
+    }
+    if references(root, aid) {
+        return;
+    }
+    crate::controller::controller()
+        .scene
+        .assets
+        .lock()
+        .unwrap()
+        .entries
+        .remove(&aid);
+    let bridge = crate::engine::bridge::bridge();
+    if let Some(template) = bridge.get_template(aid) {
+        crate::engine::context::with_renderer_mut(move |r| {
+            crate::engine::bridge::asset_template::remove_template_meshes(r, &template);
+        })
+        .await;
+    }
+    bridge.remove_template(aid);
+    crate::engine::bridge::skinned_bake_cache::remove(aid);
+    tracing::debug!("mujoco import: freed unused rig {aid:?} (no skinned node bound it)");
 }
 
 /// What a flex needs to become a real skinned node: the GLB registered as an
@@ -235,6 +388,18 @@ async fn fetch_meshes(
         }
         rig.asset_id = Some(asset_id);
         collect_rig_nodes(&import.template.roots, &import.node_flat_indices, &mut rig);
+    } else {
+        // No deformable → nothing will ever reference the populate-baked copy
+        // (geoms become editable captured meshes, not template clones), and
+        // without a registered template the delete-side reclaim can't see it
+        // either. Free the hidden renderer meshes NOW, or every import — and
+        // every re-import — leaks a full hidden copy of the model's geometry
+        // for the rest of the session.
+        let template = import.template.clone();
+        crate::engine::context::with_renderer_mut(move |r| {
+            crate::engine::bridge::asset_template::remove_template_meshes(r, &template);
+        })
+        .await;
     }
 
     let mut by_name: HashMap<&str, u32> = HashMap::new();
@@ -336,14 +501,12 @@ fn build_subtree(
     // One mesh ASSET per MuJoCo mesh, shared by every geom that uses it — many
     // geoms reference the same mesh (Go2's four legs are one set of parts), and
     // minting a copy each would multiply the geometry by the instance count.
+    // Minted LAZILY on first real use ([`mesh_asset_for`]): a mesh nothing ends
+    // up referencing — a flex surface that imports as a SKINNED node (its
+    // captured-mesh fallback never taken), or a mesh only hidden groups use —
+    // must not strand an asset in the project. Every save carries every asset
+    // entry, so an eager mint here leaked one dead copy per (re)import.
     let mut mesh_assets: HashMap<usize, MeshRef> = HashMap::new();
-    for (i, mesh) in meshes {
-        let label = doc.meshes[*i]
-            .name
-            .clone()
-            .unwrap_or_else(|| format!("mesh {i}"));
-        mesh_assets.insert(*i, mint_mesh(&label, mesh));
-    }
 
     // One library material per sidecar material, minted up front so every geom
     // that shares a MuJoCo material shares ours (editing "metal" once repaints
@@ -430,7 +593,10 @@ fn build_subtree(
             // after compile), so they take the mesh path — nothing in the editor
             // or the scene format knows what a heightfield is.
             GeomKind::Mesh | GeomKind::Hfield => {
-                match geom.mesh.and_then(|m| mesh_assets.get(&m)).cloned() {
+                match geom
+                    .mesh
+                    .and_then(|m| mesh_asset_for(&mut mesh_assets, meshes, doc, m))
+                {
                     Some(mesh) => NodeKind::Mesh {
                         mesh,
                         material_variants,
@@ -565,10 +731,13 @@ fn build_subtree(
         if !visible.contains(&flex.group) {
             continue;
         }
-        let Some(&mesh) = mesh_assets.get(&flex.mesh) else {
-            // dim == 1 (a rope) bakes no surface, so there is nothing to draw.
+        // dim == 1 (a rope) bakes no surface, so there is nothing to draw. The
+        // ASSET is only minted if the bind-pose FALLBACK below is actually
+        // taken — a flex that imports skinned references the rig glb, not a
+        // captured mesh, and minting one anyway would strand it.
+        if !meshes.contains_key(&flex.mesh) {
             continue;
-        };
+        }
         let material = match flex.material.and_then(|m| mat_assets.get(m)).copied() {
             Some(id) => id,
             None => {
@@ -681,17 +850,25 @@ fn build_subtree(
                     },
                 )
             }
-            None => Node::new_with_transform_and_kind(
-                label,
-                Trs::default(),
-                NodeKind::Mesh {
-                    mesh,
-                    material_variants,
-                    selected_variant,
-                    shadow: Default::default(),
-                    lod: Default::default(),
-                },
-            ),
+            None => {
+                // Only the fallback mints the captured-mesh asset (guarded
+                // above: `meshes` carries this flex's surface).
+                let Some(mesh) = mesh_asset_for(&mut mesh_assets, meshes, doc, flex.mesh)
+                else {
+                    continue;
+                };
+                Node::new_with_transform_and_kind(
+                    label,
+                    Trs::default(),
+                    NodeKind::Mesh {
+                        mesh,
+                        material_variants,
+                        selected_variant,
+                        shadow: Default::default(),
+                        lod: Default::default(),
+                    },
+                )
+            }
         };
         node.mujoco.set(Some(MujocoComponent::Flex(MujocoFlex {
             flex_id: flex_id as u32,
@@ -802,6 +979,28 @@ fn build_subtree(
         );
     }
     root
+}
+
+/// The shared mesh ASSET for sidecar mesh `i`, minted on first use (see the
+/// `mesh_assets` note in [`build_subtree`]). `None` when the GLB carried no
+/// geometry for that index.
+fn mesh_asset_for(
+    cache: &mut HashMap<usize, MeshRef>,
+    meshes: &HashMap<usize, awsm_renderer_glb_export::MeshData>,
+    doc: &Sidecar,
+    i: usize,
+) -> Option<MeshRef> {
+    if let Some(m) = cache.get(&i) {
+        return Some(*m);
+    }
+    let mesh = meshes.get(&i)?;
+    let label = doc.meshes[i]
+        .name
+        .clone()
+        .unwrap_or_else(|| format!("mesh {i}"));
+    let minted = mint_mesh(&label, mesh);
+    cache.insert(i, minted);
+    Some(minted)
 }
 
 /// Register one captured-geometry mesh asset. Mirrors the glTF importer's
