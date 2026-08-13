@@ -221,7 +221,7 @@ tasks:
       - echo "✅ v{{.VERSION}} tag (re)pushed at $(git rev-parse --short HEAD) — MCP/LOD binary build running on CI."
 
   crates-publish:
-    desc: "Publish the 14 awsm-renderer library crates to crates.io (dependency-ordered)."
+    desc: "Publish the 17 awsm-renderer library crates to crates.io (dependency-ordered)."
     cmds:
       - task: _crates-publish
         vars:
@@ -243,8 +243,10 @@ tasks:
     # exactly the contents of packages/crates/ (all public); everything excluded is
     # `publish = false`: the two frontends (awsm-renderer-editor, awsm-renderer-model-tests),
     # awsm-renderer-web-shared, awsm-renderer-render-worker-example, awsm-renderer-debugging, awsm-renderer-scene-mcp
-    # (ships via cargo-dist, not crates.io), and awsm-renderer-editor-protocol (internal
-    # editor↔server glue under packages/mcp/).
+    # (ships via cargo-dist, not crates.io), awsm-renderer-editor-protocol (internal
+    # editor↔server glue under packages/mcp/), and the native MuJoCo tools
+    # (awsm-renderer-mujoco-sys + awsm-renderer-mujoco-export-cli — they dlopen
+    # libmujoco, so they build from the repo, not crates.io).
     #
     # Published one crate at a time, dependency-leaf-first. `cargo publish` waits
     # for crates.io to index each crate before returning, so a dependent's verify
@@ -264,7 +266,12 @@ tasks:
         # awsm-renderer dev-depends on awsm-renderer-lod-bake (a cluster-DAG test),
         # and a dev-dep carrying a `version` stays in the published manifest, so
         # lod-bake must be on crates.io before awsm-renderer packages.
-        CRATES="awsm-renderer-codec-meshopt awsm-renderer-codec-basis awsm-renderer-curves awsm-renderer-geometry awsm-renderer-tangents awsm-renderer-scene awsm-renderer-core awsm-renderer-materials awsm-renderer-particles awsm-renderer-meshgen awsm-renderer-glb-export awsm-renderer-gltf-convert awsm-renderer-lod-bake awsm-renderer awsm-renderer-gltf awsm-renderer-scene-loader"
+        # awsm-renderer-mujoco-format precedes awsm-renderer-scene (scene embeds its
+        # sidecar/capture types in the per-node mujoco component). It is the ONLY
+        # published mujoco crate: mujoco-sys and the export CLI are native tools
+        # against libmujoco (`publish = false`), like the MCP server they ship
+        # outside crates.io.
+        CRATES="awsm-renderer-codec-meshopt awsm-renderer-codec-basis awsm-renderer-curves awsm-renderer-geometry awsm-renderer-tangents awsm-renderer-mujoco-format awsm-renderer-scene awsm-renderer-core awsm-renderer-materials awsm-renderer-particles awsm-renderer-meshgen awsm-renderer-glb-export awsm-renderer-gltf-convert awsm-renderer-lod-bake awsm-renderer awsm-renderer-gltf awsm-renderer-scene-loader"
         # Workspace version (first `version = "…"` inside [workspace.package]).
         VERSION="$(awk '/^\[workspace\.package\]/{f=1} f&&/^version = /{gsub(/[",]/,"");print $3;exit}' Cargo.toml)"
         case "{{.PUBLISH_ARGS}}" in *--dry-run*) DRY=1;; *) DRY=0;; esac
