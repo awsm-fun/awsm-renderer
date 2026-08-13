@@ -86,11 +86,19 @@ pub struct AnimResolveMaps {
     /// `(glb leaf, first joint scene NodeId)` — one rig instance per
     /// PLACED rig (several sibling `SkinnedMesh` nodes share one rig;
     /// two placed dancers each get their own). Values: the instance's
-    /// glb-node-index → joint TransformKey map + glb-node-index → mesh
-    /// keys map (for per-scene-node material rebinding).
+    /// glb-node-index → joint TransformKey map, the glTF-MESH-index →
+    /// mesh-keys map (the `primitive_index` flatten base), and the
+    /// glTF-NODE-index → mesh-keys map (a node's OWN primitives — the
+    /// `primitive_index: None` selection base).
     #[allow(clippy::type_complexity)]
-    pub rig_cache:
-        HashMap<(String, NodeId), (HashMap<usize, TransformKey>, HashMap<usize, Vec<MeshKey>>)>,
+    pub rig_cache: HashMap<
+        (String, NodeId),
+        (
+            HashMap<usize, TransformKey>,
+            HashMap<usize, Vec<MeshKey>>,
+            HashMap<usize, Vec<MeshKey>>,
+        ),
+    >,
     /// Mesh/skinned nodes → the material key built for them (BuiltinParam target).
     pub node_materials: HashMap<NodeId, MaterialKey>,
     /// Custom-WGSL material asset → the shader id it registered as (Phase 0).
@@ -360,6 +368,8 @@ mod tests {
 
     fn node(id: NodeId, children: Vec<EditorNode>) -> EditorNode {
         EditorNode {
+            physics: None,
+            mujoco: None,
             id,
             name: String::new(),
             transform: Default::default(),

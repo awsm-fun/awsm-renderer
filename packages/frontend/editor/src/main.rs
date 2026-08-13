@@ -379,6 +379,107 @@ pub async fn editor_dispatch_json(cmd_json: String) -> String {
     }
 }
 
+/// Test seam for the scene-loader **pose sink** — the renderer's whole contract
+/// with an external simulator.
+///
+/// Applies one frame of raw MuJoCo world poses (`7 * geom_count` f32:
+/// `[px, py, pz, qw, qx, qy, qz]` per geom, indexed by geom id) to the
+/// `instance`-th sim instance resolved by the last `LoadPlayerBundle` reload,
+/// then refreshes world transforms.
+///
+/// Deliberately reads from the BUNDLE reload rather than the editor scene: after
+/// a reload the scene exists only in the renderer, exactly as it does for a
+/// player, so driving it here exercises the same path a game would. The editor
+/// never calls this itself; a real player calls
+/// `awsm_renderer_scene_loader::mujoco::apply_geom_poses` directly against its
+/// own `LoadedScene`.
+///
+/// `"ok"` or `"error: …"`.
+#[wasm_bindgen]
+pub async fn editor_apply_mujoco_poses(instance: usize, poses: Vec<f32>) -> String {
+    let instances = controller::bundle_mujoco_instances();
+    let Some(inst) = instances.get(instance) else {
+        return format!(
+            "error: no sim instance {instance} (the last bundle reload resolved {})",
+            instances.len()
+        );
+    };
+    let handle = crate::engine::context::renderer_handle();
+    let mut r = handle.lock().await;
+    if let Err(e) = awsm_renderer_scene_loader::mujoco::apply_geom_poses(&mut r, inst, &poses) {
+        return format!("error: {e}");
+    }
+    r.update_transforms();
+    "ok".to_string()
+}
+
+/// Test seam: apply one frame of TENDON waypoints to a resolved sim instance.
+///
+/// `frame` is, per tendon in id order, a live waypoint count followed by that
+/// tendon's full waypoint capacity as xyz triples — see
+/// `awsm_renderer_scene_loader::mujoco::apply_tendon_waypoints`.
+#[wasm_bindgen]
+pub async fn editor_apply_mujoco_tendons(instance: usize, frame: Vec<f32>) -> String {
+    let handle = crate::engine::context::renderer_handle();
+    let mut r = handle.lock().await;
+    let applied = controller::with_bundle_mujoco_instance_mut(instance, |inst| {
+        awsm_renderer_scene_loader::mujoco::apply_tendon_waypoints(&mut r, inst, &frame)
+    });
+    match applied {
+        None => format!("error: no sim instance {instance}"),
+        Some(Err(e)) => format!("error: {e}"),
+        Some(Ok(())) => {
+            r.update_transforms();
+            "ok".to_string()
+        }
+    }
+}
+
+/// Test seam: apply one frame of BODY world poses to a resolved sim instance.
+///
+/// This is the channel that deforms a flex — a deformable is skinned to the
+/// bodies that move it, so driving those bodies moves the surface on the GPU.
+#[wasm_bindgen]
+pub async fn editor_apply_mujoco_bodies(instance: usize, poses: Vec<f32>) -> String {
+    let instances = controller::bundle_mujoco_instances();
+    let Some(inst) = instances.get(instance) else {
+        return format!("error: no sim instance {instance}");
+    };
+    let handle = crate::engine::context::renderer_handle();
+    let mut r = handle.lock().await;
+    if let Err(e) = awsm_renderer_scene_loader::mujoco::apply_body_poses(&mut r, inst, &poses) {
+        return format!("error: {e}");
+    }
+    r.update_transforms();
+    "ok".to_string()
+}
+
+/// Test seam: how many sim instances the last `LoadPlayerBundle` reload resolved,
+/// and how long a pose frame must be for each.
+#[wasm_bindgen]
+pub fn editor_mujoco_instances() -> String {
+    let instances = controller::bundle_mujoco_instances();
+    let list: Vec<_> = instances
+        .iter()
+        .map(|i| {
+            serde_json::json!({
+                "model_name": i.model_name,
+                "filename": i.source.filename,
+                "sha256": i.source.sha256,
+                "geom_count": i.geoms.len(),
+                "bound_geoms": i.geoms.iter().filter(|g| g.is_some()).count(),
+                "frame_len": i.frame_len(),
+                "site_frame_len": i.site_frame_len(),
+                "tendon_capacity": i.tendons.iter().map(|t| t.capacity).collect::<Vec<_>>(),
+                "tendon_frame_len": i.tendon_frame_len(),
+                "body_frame_len": i.body_frame_len(),
+                "bound_bodies": i.bodies.iter().filter(|b| !b.is_empty()).count(),
+            })
+        })
+        .collect();
+    serde_json::to_string(&list).unwrap_or_else(|e| format!("error: {e}"))
+}
+
 /// Test seam: advance the renderer's animation clock by `dt_ms`, then refresh world
 /// transforms. Lets a scriptable driver tick a scene whose clips live only in the
 /// renderer with no editor transport — notably a `LoadPlayerBundle` runtime reload

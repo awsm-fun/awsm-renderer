@@ -457,6 +457,45 @@ pub enum EditorCommand {
     /// adds a movable node. View-only: a cluster mesh has no editable geometry stack.
     ImportClusterAsset { clusters_url: String },
 
+    /// Set (or clear) a collider node's contact parameters — the universal core
+    /// plus an optional per-engine extension block.
+    ///
+    /// Whole-value replace, not a patch: the params are a small, fully-specified
+    /// struct whose fields interact (MuJoCo's torsional/rolling friction are
+    /// inert below their `condim` thresholds), so merging half of one authored
+    /// block into another is more confusing than restating it. `params: None`
+    /// clears the block back to the engine's defaults.
+    /// Inverse: restore the previous params.
+    SetPhysicsParams {
+        node: NodeId,
+        #[serde(default)]
+        params: Option<awsm_renderer_scene::collider::PhysicsParams>,
+    },
+
+    /// Import a compiled MuJoCo model from an `awsm-renderer-mujoco-export`
+    /// sidecar (`<name>.mujoco.json`), plus the companion geometry GLB the
+    /// sidecar names.
+    ///
+    /// Mints a **sim instance root** — user-placeable, carrying the Z-up→Y-up
+    /// convention rotation and the model's fingerprint — with one node per geom
+    /// beneath it, each stamped with its MuJoCo geom id so a running simulation
+    /// can bind to it. Geoms outside the instance's visible groups are skipped
+    /// for rendering but still counted in the id space the stream addresses.
+    ///
+    /// We never read MJCF/URDF: the sidecar and GLB are what MuJoCo's own
+    /// compiler produced, via the offline exporter.
+    ImportMujocoFromUrl {
+        sidecar_url: String,
+        /// `None` adds a NEW instance — which is what composing two robots into
+        /// one world needs, so importing the same model twice is never
+        /// second-guessed. `Some(node)` re-imports into that existing instance
+        /// in place, refreshing everything the model owns (poses, geometry,
+        /// fingerprint) while keeping the user's placement and per-geom material
+        /// assignments.
+        #[serde(default)]
+        reimport: Option<NodeId>,
+    },
+
     /// Import a glTF model from a locally-picked file. `url` is a `blob:` object
     /// URL minted from the picked `File`; `name` is the real filename (used for
     /// `.glb`/`.gltf` type inference — blob URLs have no extension — and the
@@ -1334,6 +1373,31 @@ pub enum EditorCommand {
         #[serde(default)]
         name: Option<String>,
     },
+    /// Import a recorded MuJoCo **capture** and bake it into an ordinary
+    /// animation clip driving a sim instance's geom nodes.
+    ///
+    /// The capture's model fingerprint must match the instance's, or this fails
+    /// loudly — baking a mismatch would drive the wrong robot with individually
+    /// plausible poses, which is close to undiagnosable. After the bake the
+    /// result is a normal clip: scrub, mix, save and bundle it like any other,
+    /// and the capture file is disposable.
+    ImportMujocoCapture {
+        /// URL of a `<name>.capture.json` (see `awsm-renderer-mujoco-record`).
+        capture_url: String,
+        /// The sim instance root whose geoms the clip should drive.
+        instance: NodeId,
+        /// Clip name; defaults to the capture's model name.
+        #[serde(default)]
+        name: Option<String>,
+        /// Keyframe-reduction tolerance in metres (default 0.001). `0` keeps
+        /// every recorded frame.
+        #[serde(default)]
+        position_epsilon: Option<f32>,
+        /// Keyframe-reduction tolerance in radians (default 0.002, ~0.1°).
+        #[serde(default)]
+        rotation_epsilon: Option<f32>,
+    },
+
     /// Delete a clip from the library. Lifecycle.
     DeleteClip { id: AssetId },
     /// Duplicate a clip (deep copy, fresh id) and select it. Lifecycle.
@@ -1605,8 +1669,10 @@ impl EditorCommand {
                 | EditorCommand::LoadProjectFromUrl { .. }
                 | EditorCommand::ImportModelFromUrl { .. }
                 | EditorCommand::ImportModelFromFile { .. }
+                | EditorCommand::ImportMujocoFromUrl { .. }
                 // Active clip set + clip params that the group lowers.
                 | EditorCommand::AddClip { .. }
+                | EditorCommand::ImportMujocoCapture { .. }
                 | EditorCommand::DeleteClip { .. }
                 | EditorCommand::DuplicateClip { .. }
                 | EditorCommand::SetCurrentClip { .. }
@@ -1707,6 +1773,8 @@ impl EditorCommand {
             EditorCommand::LoadProjectFromUrl { .. } => "Load project",
             EditorCommand::ImportModelFromUrl { .. } => "Import model",
             EditorCommand::ImportClusterAsset { .. } => "Import cluster asset",
+            EditorCommand::ImportMujocoFromUrl { .. } => "Import MuJoCo model",
+            EditorCommand::SetPhysicsParams { .. } => "Set physics params",
             EditorCommand::ImportModelFromFile { .. } => "Import model",
             EditorCommand::ImportTextureFromUrl { .. } => "Import texture",
             EditorCommand::ImportKtxEnvFromUrl { .. } => "Import environment",
@@ -1787,6 +1855,7 @@ impl EditorCommand {
             EditorCommand::SetMorphWeight { .. } => "Set morph weight",
             EditorCommand::SetSkinWeights { .. } => "Edit skin weights",
             EditorCommand::AddClip { .. } => "New clip",
+            EditorCommand::ImportMujocoCapture { .. } => "Import MuJoCo capture",
             EditorCommand::DeleteClip { .. } => "Delete clip",
             EditorCommand::DuplicateClip { .. } => "Duplicate clip",
             EditorCommand::SetCurrentClip { .. } => "Select clip",

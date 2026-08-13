@@ -365,3 +365,204 @@ mod tests {
         assert_eq!(back, doc);
     }
 }
+
+// ─────────────────────────── physics parameters ────────────────────────────
+
+/// Contact parameters for a collider: a **universal core** every engine
+/// understands, plus an optional per-engine extension block.
+///
+/// Two-tier on purpose. The core is what an author actually reasons about
+/// ("slippery", "bouncy", "what does this hit"), and it means the same thing
+/// everywhere. The extension blocks hold the knobs that only exist in one
+/// engine's contact model and have no honest cross-engine equivalent — putting
+/// them in the core would imply a portability that isn't there.
+///
+/// **Portability caveat**: engines combine *pairwise* friction differently —
+/// MuJoCo takes the element-wise max (modulo geom priority), Rapier averages,
+/// Box2D takes the geometric mean. Identical authored values therefore do NOT
+/// produce identical contact behaviour across engines, and no amount of schema
+/// design fixes that; it is a property of the solvers.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub struct PhysicsParams {
+    /// Sliding (tangential) friction coefficient. 0 = frictionless.
+    #[serde(default = "default_friction")]
+    pub friction: f32,
+    /// Bounciness, 0..1.
+    ///
+    /// **MuJoCo has no restitution parameter at all** — bounce and softness live
+    /// in its soft-constraint model (`solref`/`solimp`), so a harness maps this
+    /// only approximately. It is in the core anyway because every other engine
+    /// does have it and authors expect it.
+    #[serde(default)]
+    pub restitution: f32,
+    /// Which collision layers this collider belongs to (bitmask).
+    /// A MuJoCo harness encodes this as `contype`.
+    #[serde(default = "default_mask")]
+    pub layer: u32,
+    /// Which layers this collider collides WITH (bitmask).
+    /// A MuJoCo harness encodes this as `conaffinity`.
+    #[serde(default = "default_mask")]
+    pub mask: u32,
+    /// kg/m³. Reserved for future dynamic bodies — static colliders ignore it.
+    /// `None` leaves the engine's default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub density: Option<f32>,
+    /// MuJoCo-specific contact parameters. Absent ⇒ MuJoCo's own defaults.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mujoco: Option<MujocoPhysics>,
+}
+
+fn default_friction() -> f32 {
+    1.0
+}
+
+/// Layer/mask default: in every layer, colliding with every layer — matching
+/// MuJoCo's own `contype`/`conaffinity` default of 1 broadened to "everything",
+/// so an author who never touches layers gets collisions rather than silence.
+fn default_mask() -> u32 {
+    u32::MAX
+}
+
+impl Default for PhysicsParams {
+    fn default() -> Self {
+        Self {
+            friction: default_friction(),
+            restitution: 0.0,
+            layer: default_mask(),
+            mask: default_mask(),
+            density: None,
+            mujoco: None,
+        }
+    }
+}
+
+/// MuJoCo's contact knobs that have no cross-engine equivalent.
+///
+/// Defaults here are MuJoCo's own, so an authored block that touches one field
+/// doesn't silently re-specify the rest.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub struct MujocoPhysics {
+    /// Torsional friction — resists spinning about the contact normal. Only has
+    /// an effect at `condim` >= 4.
+    #[serde(default = "default_torsional")]
+    pub torsional_friction: f32,
+    /// Rolling friction — resists rolling. Only has an effect at `condim` 6.
+    #[serde(default = "default_rolling")]
+    pub rolling_friction: f32,
+    /// Contact dimensionality: 1 (frictionless), 3 (sliding), 4 (+ torsional),
+    /// 6 (+ rolling). The torsional/rolling coefficients above are inert below
+    /// their respective thresholds, which is the usual reason a "sticky" value
+    /// appears to do nothing.
+    #[serde(default = "default_condim")]
+    pub condim: u32,
+    /// Constraint solver reference `[timeconst, dampratio]` — where MuJoCo's
+    /// bounce and softness actually live (see [`PhysicsParams::restitution`]).
+    #[serde(default = "default_solref")]
+    pub solref: [f32; 2],
+    /// Constraint solver impedance `[dmin, dmax, width, midpoint, power]`.
+    #[serde(default = "default_solimp")]
+    pub solimp: [f32; 5],
+    /// Contact detection margin, metres. Contacts are generated at this
+    /// distance; those closer than `gap` are detected but not enforced.
+    #[serde(default)]
+    pub margin: f32,
+    /// Of the `margin` band, how much is detection-only (no force).
+    #[serde(default)]
+    pub gap: f32,
+    /// Geom priority. When two geoms differ in priority, the higher one's
+    /// friction wins outright instead of being combined — the escape hatch from
+    /// the element-wise-max rule.
+    #[serde(default)]
+    pub priority: i32,
+}
+
+fn default_torsional() -> f32 {
+    0.005
+}
+fn default_rolling() -> f32 {
+    0.0001
+}
+fn default_condim() -> u32 {
+    3
+}
+fn default_solref() -> [f32; 2] {
+    [0.02, 1.0]
+}
+fn default_solimp() -> [f32; 5] {
+    [0.9, 0.95, 0.001, 0.5, 2.0]
+}
+
+impl Default for MujocoPhysics {
+    fn default() -> Self {
+        Self {
+            torsional_friction: default_torsional(),
+            rolling_friction: default_rolling(),
+            condim: default_condim(),
+            solref: default_solref(),
+            solimp: default_solimp(),
+            margin: 0.0,
+            gap: 0.0,
+            priority: 0,
+        }
+    }
+}
+
+#[cfg(test)]
+mod physics_tests {
+    use super::*;
+
+    #[test]
+    fn defaults_are_mujocos_own() {
+        let m = MujocoPhysics::default();
+        assert_eq!(m.condim, 3);
+        assert_eq!(m.solref, [0.02, 1.0]);
+        assert_eq!(m.solimp, [0.9, 0.95, 0.001, 0.5, 2.0]);
+        // An author who never touches layers must get collisions, not silence.
+        let p = PhysicsParams::default();
+        assert_eq!(p.layer, u32::MAX);
+        assert_eq!(p.mask, u32::MAX);
+        assert_eq!(p.friction, 1.0);
+    }
+
+    /// A block that sets ONE field must not silently re-specify the rest.
+    #[test]
+    fn partial_blocks_fill_in_from_mujocos_defaults() {
+        let m: MujocoPhysics = serde_json::from_str(r#"{"condim": 6}"#).unwrap();
+        assert_eq!(m.condim, 6);
+        assert_eq!(m.solref, default_solref());
+        assert_eq!(m.rolling_friction, default_rolling());
+    }
+
+    #[test]
+    fn round_trips_through_toml_and_json() {
+        let p = PhysicsParams {
+            friction: 0.6,
+            restitution: 0.2,
+            layer: 0b0101,
+            mask: 0b0011,
+            density: Some(900.0),
+            mujoco: Some(MujocoPhysics {
+                condim: 6,
+                priority: 2,
+                margin: 0.001,
+                ..MujocoPhysics::default()
+            }),
+        };
+        let json = serde_json::to_string(&p).unwrap();
+        assert_eq!(serde_json::from_str::<PhysicsParams>(&json).unwrap(), p);
+        let t = toml::to_string(&p).unwrap();
+        assert_eq!(toml::from_str::<PhysicsParams>(&t).unwrap(), p);
+    }
+
+    /// Colliders authored before this feature have no `physics` key at all.
+    #[test]
+    fn absent_block_is_the_default() {
+        let p: PhysicsParams = serde_json::from_str("{}").unwrap();
+        assert_eq!(p, PhysicsParams::default());
+        assert!(p.mujoco.is_none(), "no mujoco block unless authored");
+    }
+}

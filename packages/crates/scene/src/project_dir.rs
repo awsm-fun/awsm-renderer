@@ -129,6 +129,8 @@ mod tests {
         );
         // A mesh node referencing the glb mesh + material.
         scene.nodes.push(EditorNode {
+            physics: None,
+            mujoco: None,
             id: NodeId::new(),
             name: "Hero".into(),
             transform: Default::default(),

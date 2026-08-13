@@ -40,6 +40,13 @@ pub struct Node {
     /// any descendant may itself be marked to create a nested prefab.
     /// Persists across save/load.
     pub prefab: Mutable<bool>,
+    /// What this node is to a MuJoCo simulation (instance root / geom / nothing).
+    /// Reactive because the inspector reads it to show the "driven by sim"
+    /// indicator and to disable the transform gizmo. Persists across save/load.
+    pub mujoco: Mutable<Option<awsm_renderer_editor_protocol::MujocoComponent>>,
+    /// Collider contact parameters (universal core + per-engine block).
+    /// Reactive so the inspector can bind to it. Persists across save/load.
+    pub physics: Mutable<Option<awsm_renderer_editor_protocol::collider::PhysicsParams>>,
 }
 
 impl Node {
@@ -55,6 +62,8 @@ impl Node {
             locked: Mutable::new(false),
             visible: Mutable::new(true),
             prefab: Mutable::new(false),
+            mujoco: Mutable::new(None),
+            physics: Mutable::new(None),
         })
     }
 
@@ -242,6 +251,8 @@ impl Node {
             locked: Mutable::new(false),
             visible: Mutable::new(true),
             prefab: Mutable::new(false),
+            mujoco: Mutable::new(None),
+            physics: Mutable::new(None),
         })
     }
 
@@ -281,6 +292,8 @@ impl Node {
             locked: Mutable::new(self.locked.get()),
             visible: Mutable::new(self.visible.get()),
             prefab: Mutable::new(self.prefab.get()),
+            mujoco: Mutable::new(self.mujoco.get_cloned()),
+            physics: Mutable::new(self.physics.get_cloned()),
         })
     }
 }

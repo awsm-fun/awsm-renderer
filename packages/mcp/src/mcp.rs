@@ -686,6 +686,49 @@ pub struct UrlParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ImportMujocoParams {
+    /// URL of a `<name>.mujoco.json` sidecar produced by the
+    /// `awsm-renderer-mujoco-export` CLI. The editor fetches it plus the geometry
+    /// GLB the sidecar names (resolved relative to this URL).
+    pub sidecar_url: String,
+    /// Omit to ADD a new instance (import the same model twice to compose two
+    /// robots into one world). Pass an existing instance root's node id to
+    /// re-import into it in place instead: poses, geometry and the fingerprint
+    /// refresh; the instance's placement and each geom's material assignment are
+    /// preserved.
+    #[serde(default)]
+    pub reimport: Option<awsm_renderer_editor_protocol::NodeId>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct SetPhysicsParamsParams {
+    /// The collider node to parameterize.
+    pub node: awsm_renderer_editor_protocol::NodeId,
+    /// The whole params block; omit to CLEAR it back to engine defaults.
+    #[serde(default)]
+    pub params: Option<awsm_renderer_scene::collider::PhysicsParams>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct ImportMujocoCaptureParams {
+    /// URL of a `<name>.capture.json` recorded by `awsm-renderer-mujoco-record`
+    /// (or by any harness writing the same documented format).
+    pub capture_url: String,
+    /// Node id of the sim instance root whose geoms the baked clip should drive.
+    pub instance: awsm_renderer_editor_protocol::NodeId,
+    /// Clip name. Defaults to the capture's source model filename.
+    #[serde(default)]
+    pub name: Option<String>,
+    /// Keyframe-reduction tolerance in METRES (default 0.001). Pass 0 to keep
+    /// every recorded frame.
+    #[serde(default)]
+    pub position_epsilon: Option<f32>,
+    /// Keyframe-reduction tolerance in RADIANS (default 0.002, about 0.1 degrees).
+    #[serde(default)]
+    pub rotation_epsilon: Option<f32>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ImportClusterParams {
     /// URL of a pre-baked cluster-LOD DAG file (`<id>.clusters.bin`) produced by the
     /// `awsm-renderer-lod-bake` CLI. The editor fetches + renders it as a view-only cluster mesh.
@@ -2995,6 +3038,76 @@ impl EditorMcp {
         // then return WHAT the import created instead of a bare "ok".
         self.dispatch(EditorCommand::ImportModelFromUrl { url: p.url })
             .await?;
+        self.query(EditorQuery::LastImportReport).await
+    }
+
+    #[tool(
+        description = "Set a collider node's contact parameters: the universal core \
+        (friction, restitution, collision layer/mask, optional density) plus an optional \
+        `mujoco` block (torsional/rolling friction, condim, solref/solimp, margin/gap, \
+        priority). WHOLE-VALUE replace, not a patch — omit `params` to clear back to engine \
+        defaults. Two gotchas worth knowing: MuJoCo has NO restitution parameter (bounce \
+        lives in solref/solimp, so the universal value maps only approximately), and \
+        MuJoCo's torsional/rolling friction are inert below condim 4 and 6 respectively, \
+        which is the usual reason a value appears to do nothing. Engines also combine \
+        pairwise friction differently (MuJoCo: element-wise max modulo priority; Rapier: \
+        average; Box2D: geometric mean), so identical values do not give identical contact \
+        behaviour across engines."
+    )]
+    async fn set_physics_params(
+        &self,
+        Parameters(p): Parameters<SetPhysicsParamsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::SetPhysicsParams {
+            node: p.node,
+            params: p.params,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Import a recorded MuJoCo CAPTURE and bake it into an ordinary animation \
+        clip driving a sim instance's geom nodes. The capture's model fingerprint must match the \
+        instance's or this fails loudly — baking a mismatch drives the wrong robot with \
+        individually plausible poses. After the bake the result is a NORMAL clip: scrub it, mix \
+        it, save it, ship it in a bundle; the capture file is disposable. Geoms that never move \
+        get no tracks, and keyframes are reduced (defaults 1mm / ~0.1deg). Same CORS requirement \
+        as the other import tools."
+    )]
+    async fn import_mujoco_capture(
+        &self,
+        Parameters(p): Parameters<ImportMujocoCaptureParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::ImportMujocoCapture {
+            capture_url: p.capture_url,
+            instance: p.instance,
+            name: p.name,
+            position_epsilon: p.position_epsilon,
+            rotation_epsilon: p.rotation_epsilon,
+        })
+        .await
+    }
+
+    #[tool(
+        description = "Import a compiled MuJoCo model from an `awsm-renderer-mujoco-export` \
+        sidecar (`<name>.mujoco.json`) plus the geometry GLB it names. Creates a placeable \
+        SIM INSTANCE ROOT carrying the model's fingerprint (source filename + content hash) \
+        and the Z-up->Y-up convention rotation, with one node per geom beneath it, each \
+        stamped with its MuJoCo geom id so an external simulation can bind its pose stream. \
+        Geoms outside MuJoCo's default visible groups (0-2) are skipped — that is what \
+        renders a menagerie robot rather than its collision capsules. We never read \
+        MJCF/URDF: run the offline exporter first. Same CORS requirement as \
+        `import_model_from_url`. Returns the import report."
+    )]
+    async fn import_mujoco_from_url(
+        &self,
+        Parameters(p): Parameters<ImportMujocoParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::ImportMujocoFromUrl {
+            sidecar_url: p.sidecar_url,
+            reimport: p.reimport,
+        })
+        .await?;
         self.query(EditorQuery::LastImportReport).await
     }
 

@@ -1624,6 +1624,7 @@ impl EditorController {
                     // Track the direct inserts so the NEXT reset removes them
                     // (they're outside the bridge's per-node teardown).
                     set_bundle_resources(loaded.meshes, loaded.lights, loaded.clips);
+                    LAST_BUNDLE_MUJOCO.with(|c| *c.borrow_mut() = loaded.mujoco);
                 }
                 self.project_name.set("round-trip.awsm".to_string());
                 self.dirty.set_neq(false);
@@ -4069,6 +4070,79 @@ impl EditorController {
                     .map_err(|e| crate::error::EditorError::msg(format!("import failed: {e}")))?;
                 Ok(None)
             }
+            // Import a compiled MuJoCo model (sidecar + geometry GLB from the
+            // offline `awsm-renderer-mujoco-export`). Mints a placeable sim
+            // instance root with one geom-id-stamped node beneath it per geom —
+            // the subtree a running simulation binds its pose stream to.
+            EditorCommand::SetPhysicsParams { node, params } => {
+                match mutate::find_by_id(&self.scene, node) {
+                    Some(n) => {
+                        let prev = n.physics.get_cloned();
+                        n.physics.set(params);
+                        self.scene.bump_revision();
+                        self.dirty.set_neq(true);
+                        Ok(Some(EditorCommand::SetPhysicsParams {
+                            node,
+                            params: prev,
+                        }))
+                    }
+                    None => Err(crate::error::EditorError::msg(
+                        "target id not found — command not applied (check ids against get_snapshot)",
+                    )),
+                }
+            }
+            EditorCommand::ImportMujocoFromUrl {
+                sidecar_url,
+                reimport,
+            } => {
+                // Settle-visibility front guard, same as ImportModelFromUrl: the
+                // fetch + glTF populate must hold the barrier for a driver
+                // dispatching through the fire-and-forget seam.
+                let _load_guard = CompileGuard::new();
+                let _activity = crate::engine::activity::begin_activity("Importing MuJoCo model…");
+                // Re-import into an existing instance, when asked. The undo
+                // inverse of a re-import would be the WHOLE previous subtree, so
+                // this returns None (not undoable) rather than pretending — the
+                // same call the glTF re-import path makes.
+                if let Some(id) = reimport {
+                    let node = mutate::find_by_id(&self.scene, id).ok_or_else(|| {
+                        crate::error::EditorError::msg(
+                            "reimport target not found (check ids against get_snapshot)",
+                        )
+                    })?;
+                    crate::controller::mujoco_import::reimport(&sidecar_url, &node)
+                        .await
+                        .map_err(|e| {
+                            crate::error::EditorError::msg(format!("mujoco re-import failed: {e}"))
+                        })?;
+                    self.scene.bump_revision();
+                    self.dirty.set_neq(true);
+                    return Ok(None);
+                }
+                let (root, report) = crate::controller::mujoco_import::import(&sidecar_url)
+                    .await
+                    .map_err(|e| {
+                        // Same CORS trap as the model import: the editor is a
+                        // browser app, so a plain file server without CORS
+                        // headers surfaces only as "Failed to fetch".
+                        let hint = if e.contains("Failed to fetch") {
+                            "\n(likely CORS: the editor is a browser app, so the file \
+                             server must send `Access-Control-Allow-Origin`)"
+                        } else {
+                            ""
+                        };
+                        crate::error::EditorError::msg(format!("mujoco import failed: {e}{hint}"))
+                    })?;
+                let node_id = root.id;
+                mutate::insert_under(&self.scene, None, root);
+                // Publish the report the MCP tool returns inline — the mujoco
+                // path must not leave a previous glTF import's report (or
+                // `null`) as the answer to "what did this import create".
+                self.last_import_report.set(Some(report));
+                self.scene.bump_revision();
+                self.dirty.set_neq(true);
+                Ok(Some(EditorCommand::Delete { id: node_id }))
+            }
             // Import a PRE-BAKED cluster asset (awsm-renderer-lod-bake CLI output) as a
             // VIEW-ONLY ClusterMesh node, rendered via the bounded cluster pipeline
             // (the player path). No in-editor bake, no dense explode — large meshes
@@ -4105,6 +4179,8 @@ impl EditorController {
                             locked: false,
                             visible: true,
                             prefab: false,
+                            mujoco: None,
+                            physics: None,
                             children: vec![],
                         };
                         let node = crate::controller::node_spec::node_from_spec(&spec);
@@ -4225,6 +4301,60 @@ impl EditorController {
                 Ok(Some(EditorCommand::DeleteAsset { id }))
             }
             // ───────────────────── Animation: clip lifecycle ─────────────────
+            // Import a recorded capture and bake it into an ordinary clip. After
+            // this the result is indistinguishable from a hand-authored clip —
+            // that is the point: "trajectory" is a bake step, not a concept the
+            // rest of the editor carries.
+            EditorCommand::ImportMujocoCapture {
+                capture_url,
+                instance,
+                name,
+                position_epsilon,
+                rotation_epsilon,
+            } => {
+                let _activity =
+                    crate::engine::activity::begin_activity("Importing MuJoCo capture…");
+                let node = mutate::find_by_id(&self.scene, instance).ok_or_else(|| {
+                    crate::error::EditorError::msg(
+                        "instance not found (check ids against get_snapshot)",
+                    )
+                })?;
+                let default = awsm_renderer_editor_protocol::mujoco::bake::Reduction::default();
+                let reduction = awsm_renderer_editor_protocol::mujoco::bake::Reduction {
+                    position: position_epsilon.unwrap_or(default.position),
+                    rotation: rotation_epsilon.unwrap_or(default.rotation),
+                };
+                let mut stored = crate::controller::mujoco_import::import_capture(
+                    &capture_url,
+                    &node,
+                    reduction,
+                )
+                .await
+                .map_err(|e| {
+                    let hint = if e.contains("Failed to fetch") {
+                        "\n(likely CORS: the editor is a browser app, so the file \
+                                 server must send `Access-Control-Allow-Origin`)"
+                    } else {
+                        ""
+                    };
+                    crate::error::EditorError::msg(format!("capture import failed: {e}{hint}"))
+                })?;
+                if let Some(n) = name.filter(|n| !n.trim().is_empty()) {
+                    stored.name = n;
+                }
+                let id = stored.id;
+                let clip = crate::controller::animation::stored_to_live(&stored);
+                self.custom_animations.lock_mut().push_cloned(clip);
+                self.current_clip.set(Some(id));
+                self.anim_revision.replace_with(|v| v.wrapping_add(1));
+                self.dirty.set_neq(true);
+                Toast::info(format!(
+                    "Baked {} tracks over {:.2}s",
+                    stored.tracks.len(),
+                    stored.duration
+                ));
+                Ok(Some(EditorCommand::DeleteClip { id }))
+            }
             EditorCommand::AddClip { id, name } => {
                 // Idempotent: a cross-tab relay replays this; if the clip id
                 // already exists (or a self-echo slips through) it's a no-op.
@@ -7624,6 +7754,30 @@ thread_local! {
         Vec<awsm_renderer::lights::LightKey>,
         Vec<awsm_renderer::animation::AnimationClipKey>,
     )> = const { RefCell::new((Vec::new(), Vec::new(), Vec::new())) };
+
+    /// The MuJoCo sim instances a `LoadPlayerBundle` populate resolved, retained
+    /// so a scriptable driver can feed them pose frames. The editor itself never
+    /// drives these — it is the TEST SEAM for the scene-loader pose sink, the
+    /// same role `editor_tick_animation` plays for clips: after a bundle reload
+    /// the scene lives only in the renderer, so this is the only way to exercise
+    /// the sink through the real player path.
+    static LAST_BUNDLE_MUJOCO: RefCell<Vec<awsm_renderer_scene_loader::mujoco::MujocoInstance>> =
+        const { RefCell::new(Vec::new()) };
+}
+
+/// The sim instances the last bundle reload resolved (see `LAST_BUNDLE_MUJOCO`).
+pub fn bundle_mujoco_instances() -> Vec<awsm_renderer_scene_loader::mujoco::MujocoInstance> {
+    LAST_BUNDLE_MUJOCO.with(|c| c.borrow().clone())
+}
+
+/// Drive ONE retained sim instance in place. The tendon channel edge-triggers
+/// segment visibility, so it needs the instance that persists between frames —
+/// a clone would forget what it last showed and re-assert it every call.
+pub fn with_bundle_mujoco_instance_mut<T>(
+    index: usize,
+    f: impl FnOnce(&mut awsm_renderer_scene_loader::mujoco::MujocoInstance) -> T,
+) -> Option<T> {
+    LAST_BUNDLE_MUJOCO.with(|c| c.borrow_mut().get_mut(index).map(f))
 }
 
 /// Fetch + parse a pre-baked cluster-LOD ("cluster") DAG (`<id>.clusters.bin`, JSON)

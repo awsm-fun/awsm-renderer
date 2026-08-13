@@ -1188,6 +1188,8 @@ fn raw_mesh_from_rig(skin: &awsm_renderer_editor_protocol::SkinnedMeshRef) -> Op
         skin.rig_node_index,
         skin.primitive_index,
     ) else {
+        // debug, not warn: this fires on the LEGITIMATE fallback path (rig not
+        // cached yet → template-reuse), not only on failures.
         tracing::debug!(
             "raw_mesh_from_rig: no rig decode for {:?} rig_node_index={}",
             skin.source,
@@ -1210,7 +1212,13 @@ fn raw_mesh_from_rig(skin: &awsm_renderer_editor_protocol::SkinnedMeshRef) -> Op
             Some(RawSkin {
                 joints,
                 inverse_bind_matrices,
-                set_count: 1,
+                // Ask the EXTRACTED skin, don't assume. `packed_index_weights`
+                // emits every set it has, and the shader strides by
+                // `vertex_index * set_count * 8` floats — so a hardcoded 1 walks
+                // a two-set buffer one set at a time and every vertex past the
+                // first reads its neighbour's joints. Four influences covers
+                // authored rigs; a MuJoCo trilinear flex needs eight.
+                set_count: ext_skin.set_count(),
                 index_weights: ext_skin.packed_index_weights(),
             })
         }

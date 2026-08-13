@@ -57,6 +57,8 @@ pub fn spec_from_node(node: &Node) -> NodeSpec {
         locked: node.locked.get(),
         visible: node.visible.get(),
         prefab: node.prefab.get(),
+        mujoco: node.mujoco.get_cloned(),
+        physics: node.physics.get_cloned(),
         children: node
             .children
             .lock_ref()
@@ -79,5 +81,7 @@ pub fn node_from_spec(spec: &NodeSpec) -> Arc<Node> {
         locked: Mutable::new(spec.locked),
         visible: Mutable::new(spec.visible),
         prefab: Mutable::new(spec.prefab),
+        mujoco: Mutable::new(spec.mujoco.clone()),
+        physics: Mutable::new(spec.physics.clone()),
     })
 }

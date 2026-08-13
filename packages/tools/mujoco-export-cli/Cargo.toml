@@ -1,0 +1,52 @@
+[package]
+# Takes the `-cli` suffix like `lod-bake-cli` / `env-bake-cli`; the shipped binary
+# is `awsm-renderer-mujoco-export` (see the `[[bin]]` section).
+name = "awsm-renderer-mujoco-export-cli"
+version.workspace = true
+edition = "2021"
+description = "Offline CLI that compiles a MuJoCo model (MJCF/URDF/mjb) with MuJoCo's own compiler and exports it as a geometry GLB + a mujoco.json sidecar for the editor to import."
+license = "MIT OR Apache-2.0"
+publish = false
+
+# Deliberately NOT opted into cargo-dist (unlike lod-bake-cli / env-bake-cli): a
+# prebuilt binary is useless without a matching local MuJoCo install, and shipping
+# one would imply we redistribute MuJoCo. Users build it themselves.
+
+[lib]
+# The bin is a thin CLI shell over this; the tests drive the library directly
+# against real models rather than shelling out.
+name = "awsm_renderer_mujoco_export_cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "awsm-renderer-mujoco-export"
+path = "src/main.rs"
+
+# The reference capture RECORDER. Separate binary because it is a separate job
+# (run a sim, record poses) that happens to need the same model loading — and
+# because a capture producer is meant to be copyable, not privileged.
+[[bin]]
+name = "awsm-renderer-mujoco-record"
+path = "src/bin/record.rs"
+
+[dependencies]
+glam = { workspace = true }
+awsm-renderer-mujoco-sys = { workspace = true }
+awsm-renderer-mujoco-format = { workspace = true }
+# The geometry half of the export. Same writer the editor's model export uses, so
+# the GLB we emit is exactly the shape the importer already knows how to read.
+awsm-renderer-glb-export = { workspace = true }
+anyhow = { workspace = true }
+clap = { version = "4.5", features = ["derive"] }
+serde_json = { workspace = true }
+# Source fingerprinting. Same crate the editor hashes assets with.
+sha2 = "0.10.8"
+
+[dev-dependencies]
+# The capture->clip bake, so the recorder can be tested against the thing that
+# actually consumes its output rather than against its own output shape.
+awsm-renderer-scene = { workspace = true }
+toml = "0.8"
+# Read the emitted GLB back with the same reader the renderer imports with — the
+# only way to know the writer produced a real, loadable glTF and not just bytes.
+gltf = { workspace = true }

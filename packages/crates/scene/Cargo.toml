@@ -8,6 +8,10 @@ authors.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+# The MuJoCo seam schema (sidecar `Source` fingerprint + `GeomKind`), reused by
+# the per-node mujoco component rather than re-declared. Pure serde, no MuJoCo
+# dependency, so this stays wasm-safe.
+awsm-renderer-mujoco-format = { workspace = true }
 glam = { workspace = true, features = ["serde"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, optional = true }
@@ -22,7 +26,7 @@ schemars = { version = "1", optional = true }
 [features]
 default = []
 fs-loader = ["dep:serde_json"]
-schemars = ["dep:schemars"]
+schemars = ["dep:schemars", "awsm-renderer-mujoco-format/schemars"]
 
 [dev-dependencies]
 bitcode = { version = "0.6.9", features = ["serde", "uuid"] }

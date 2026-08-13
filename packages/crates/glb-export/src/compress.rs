@@ -599,10 +599,18 @@ pub fn compress_glb_with(glb: &[u8], options: &CompressOptions) -> anyhow::Resul
             // no dequant carrier needed (absolute values), so the structural
             // mesh guards don't apply. gltfpack parity (plan F5): this was
             // 70% of the rig-size gap (f32 weights vs gltfpack's u8).
+            //
+            // Skipped when a weight falls outside `[0, 1]`: a MuJoCo quadratic
+            // flex blends its 27 cage nodes with a Lagrange basis that goes
+            // NEGATIVE (to −⅛) while still summing to 1, and unorm8 cannot hold
+            // that. Quantizing anyway would clamp the negatives to zero and dump
+            // the residual on the largest weight — geometry that is silently,
+            // subtly wrong, with no error anywhere. Those meshes keep f32.
             Role::Weights
                 if quantize_requested
                     && comp == accessor::ComponentType::F32
-                    && multiplicity == 4 =>
+                    && multiplicity == 4
+                    && weights_fit_unorm8(&data) =>
             {
                 let logical = quantize_weights_unorm8(&data, count);
                 let acc = &mut root.accessors[index];
@@ -1222,6 +1230,17 @@ fn joints_fit_u8(data: &[u8]) -> bool {
         .all(|c| u16::from_le_bytes(c.try_into().unwrap()) < 256)
 }
 
+/// True when every skin weight lies in `[0, 1]` and so survives unorm8.
+///
+/// Ordinary rigs always pass. A MuJoCo **quadratic** flex does not: its 27-node
+/// Lagrange cage basis is negative outside the middle third, which is legitimate
+/// (the weights still partition unity) but unrepresentable as unorm8.
+fn weights_fit_unorm8(data: &[u8]) -> bool {
+    data.chunks_exact(4)
+        .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
+        .all(|w| (0.0..=1.0).contains(&w))
+}
+
 /// f32 VEC4 skin weights → u8-normalized VEC4, renormalized per vertex so the
 /// quantized weights sum to exactly 255 (the rounding residual lands on the
 /// largest weight) — skinning keeps its partition of unity. All-zero weight
@@ -1309,5 +1328,146 @@ fn encode_indices(logical: &[u8], count: usize, index_size: usize) -> Vec<u8> {
             ffi::meshopt_encodeIndexBuffer(out.as_mut_ptr(), bound, indices.as_ptr(), count);
         out.truncate(written);
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{write_glb, CageInfluences, ExportNode, ExportSkin, GlbScene, MeshData};
+
+    fn tri() -> MeshData {
+        MeshData {
+            positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            normals: Some(vec![[0.0, 0.0, 1.0]; 3]),
+            uvs: vec![],
+            colors: None,
+            indices: vec![0, 1, 2],
+        }
+    }
+
+    fn skinned_scene(node: ExportNode, joints: usize) -> GlbScene {
+        let ident = [
+            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+        ];
+        GlbScene {
+            nodes: vec![
+                ExportNode {
+                    name: "Rig".into(),
+                    children: (0..joints)
+                        .map(|j| ExportNode::new(format!("J{j}")))
+                        .collect(),
+                    ..Default::default()
+                },
+                node,
+            ],
+            skins: vec![ExportSkin {
+                joints: (1..joints + 1).collect(),
+                inverse_bind_matrices: vec![ident; joints],
+                skeleton: Some(0),
+            }],
+            ..Default::default()
+        }
+    }
+
+    /// The bundle compressor must carry the cage encoding through UNTOUCHED:
+    /// coords stay f32 (an unknown vertex attribute is meshopt-lossless, never
+    /// quantized) and the primitive marker survives the JSON round-trip. If
+    /// either broke, the player would load the flex as a static mesh — no
+    /// error, a cloth that never moves.
+    #[test]
+    fn compression_preserves_cage_attribute_and_marker() {
+        let cage = CageInfluences {
+            order: 3,
+            joints: (0..27).collect(),
+            coords: vec![[0.1, 0.2, 0.3], [0.5, 0.5, 0.5], [0.9, 0.1, 0.4]],
+        };
+        let scene = skinned_scene(
+            ExportNode {
+                name: "Flex".into(),
+                mesh: Some(tri()),
+                skin: Some(0),
+                cage_influences: Some(cage.clone()),
+                ..Default::default()
+            },
+            27,
+        );
+        let packed = compress_glb(&write_glb(&scene)).expect("compress");
+
+        // The compressed file declares meshopt as required, which the strict
+        // parse refuses — the same lenient parse the pipeline itself uses.
+        let gltf = gltf::Gltf::from_slice_without_validation(&packed).expect("parse");
+        let prim = gltf
+            .nodes()
+            .find(|n| n.name() == Some("Flex"))
+            .unwrap()
+            .mesh()
+            .unwrap()
+            .primitives()
+            .next()
+            .unwrap();
+        let acc = prim
+            .get(&gltf::Semantic::Extras(
+                crate::CAGE_COORDS_ATTRIBUTE.to_string(),
+            ))
+            .expect("cage coords must survive compression");
+        assert_eq!(acc.data_type(), gltf::accessor::DataType::F32);
+        assert!(!acc.normalized());
+        let marker = prim
+            .extension_value(crate::AWSM_CAGE_INFLUENCES)
+            .expect("cage marker must survive compression");
+        let back = CageInfluences::from_marker(marker, cage.coords.clone()).expect("marker parses");
+        assert_eq!(back, cage);
+        assert!(prim.get(&gltf::Semantic::Joints(0)).is_none());
+    }
+
+    /// `weights_fit_unorm8` — negative weights (a quadratic flex's Lagrange
+    /// lobes, or any authored skin outside `[0,1]`) must keep f32 through
+    /// quantization, while an ordinary skin still narrows to unorm8. The
+    /// MuJoCo quadratic models used to pin this; they now ship in cage form
+    /// (no `WEIGHTS_0` at all), so the guard is pinned synthetically here.
+    #[test]
+    fn quantization_keeps_negative_weights_f32_but_narrows_ordinary_ones() {
+        let options = CompressOptions {
+            meshopt: false,
+            quantization: Quantization::Always,
+        };
+        for (name, weights, expect) in [
+            (
+                "negative",
+                vec![[1.125f32, -0.125, 0.0, 0.0]; 3],
+                gltf::accessor::DataType::F32,
+            ),
+            (
+                "ordinary",
+                vec![[0.75f32, 0.25, 0.0, 0.0]; 3],
+                gltf::accessor::DataType::U8,
+            ),
+        ] {
+            let scene = skinned_scene(
+                ExportNode {
+                    name: "Skinned".into(),
+                    mesh: Some(tri()),
+                    skin: Some(0),
+                    joints: Some(vec![[0, 1, 0, 0]; 3]),
+                    weights: Some(weights),
+                    ..Default::default()
+                },
+                2,
+            );
+            let packed = compress_glb_with(&write_glb(&scene), &options).expect("compress");
+            let gltf = gltf::Gltf::from_slice_without_validation(&packed).expect("parse");
+            let prim = gltf
+                .nodes()
+                .find(|n| n.name() == Some("Skinned"))
+                .unwrap()
+                .mesh()
+                .unwrap()
+                .primitives()
+                .next()
+                .unwrap();
+            let acc = prim.get(&gltf::Semantic::Weights(0)).expect("weights");
+            assert_eq!(acc.data_type(), expect, "{name} weights component type");
+        }
     }
 }

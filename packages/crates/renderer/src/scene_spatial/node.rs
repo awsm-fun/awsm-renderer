@@ -60,7 +60,21 @@ pub struct SceneNode {
 }
 
 /// Our exact [`Aabb`] → a parry AABB (component-wise; see module docs).
+///
+/// This is the ONLY place an AABB crosses into parry — insert, update, the
+/// `maintain` rebuild and every query all funnel through here — which is why the
+/// sanity check lives here and nowhere else.
 pub(crate) fn to_parry_aabb(aabb: &Aabb) -> parry3d::bounding_volume::Aabb {
+    debug_assert!(
+        aabb.min.is_finite() && aabb.max.is_finite() && aabb.min.cmple(aabb.max).all(),
+        "non-finite or inverted AABB entering the spatial index: {:?} .. {:?}. \
+         parry's binned BVH build indexes a bin array with an unclamped \
+         `(k1 * (centroid - min)) as usize`, so malformed geometry surfaces there \
+         as an out-of-bounds panic that names parry rather than whatever produced \
+         this box",
+        aabb.min,
+        aabb.max
+    );
     parry3d::bounding_volume::Aabb::new(
         parry3d::math::Vector::new(aabb.min.x, aabb.min.y, aabb.min.z),
         parry3d::math::Vector::new(aabb.max.x, aabb.max.y, aabb.max.z),

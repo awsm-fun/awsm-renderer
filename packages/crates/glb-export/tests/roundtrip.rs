@@ -479,3 +479,107 @@ fn scene_complete_light_node() {
     // No mesh ⇒ no BIN chunk.
     assert!(v.get("buffers").is_none() || v["buffers"].as_array().unwrap().is_empty());
 }
+
+#[test]
+fn eight_influences_round_trip_through_two_joint_sets() {
+    // A MuJoCo trilinear flex needs eight influences — one per corner of its
+    // cage — so the writer must emit JOINTS_1/WEIGHTS_1 and the extractor must
+    // read them back. Four would silently drop half the cage and deform the
+    // mesh toward whichever corners happened to survive.
+    use awsm_renderer_glb_export::{ExportNode, ExportSkin, GlbScene, MeshData, SkinInfluenceSet};
+
+    let verts = 3;
+    let mesh = MeshData {
+        positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+        indices: vec![0, 1, 2],
+        ..Default::default()
+    };
+
+    let mut node = ExportNode {
+        name: "flex".into(),
+        mesh: Some(mesh),
+        skin: Some(0),
+        joints: Some(vec![[0, 1, 2, 3]; verts]),
+        // All EIGHT influences partition unity between them — the trilinear
+        // basis at a cell centre, which is the worst case for truncating to 4.
+        weights: Some(vec![[0.125, 0.125, 0.125, 0.125]; verts]),
+        ..Default::default()
+    };
+    node.extra_influence_sets = vec![SkinInfluenceSet {
+        joints: vec![[4, 5, 6, 7]; verts],
+        weights: vec![[0.125, 0.125, 0.125, 0.125]; verts],
+    }];
+
+    let joint_nodes: Vec<ExportNode> = (0..8)
+        .map(|i| ExportNode {
+            name: format!("cage{i}"),
+            ..Default::default()
+        })
+        .collect();
+    let mut scene = GlbScene {
+        nodes: std::iter::once(node).chain(joint_nodes).collect(),
+        ..Default::default()
+    };
+    scene.skins = vec![ExportSkin {
+        joints: (1..9).collect(),
+        inverse_bind_matrices: vec![],
+        ..Default::default()
+    }];
+
+    let glb = awsm_renderer_glb_export::write_glb(&scene);
+    let (doc, buffers, _) = gltf::import_slice(&glb).expect("a loadable glTF");
+    let raw: Vec<Vec<u8>> = buffers.iter().map(|b| b.0.clone()).collect();
+    let node_index = doc
+        .nodes()
+        .find(|n| n.name() == Some("flex"))
+        .expect("flex node")
+        .index() as u32;
+    let ex =
+        awsm_renderer_glb_export::extract_node_mesh(&doc, &raw, node_index, None).expect("extract");
+    let skin = ex.skin.expect("skin");
+
+    assert_eq!(skin.set_count(), 2, "both influence sets must survive");
+    assert_eq!(skin.joints[0], [0, 1, 2, 3]);
+    assert_eq!(skin.extra_sets[0].joints[0], [4, 5, 6, 7]);
+    // Weights across BOTH sets partition unity — the invariant that makes the
+    // eight-corner reconstruction exact.
+    let total: f32 =
+        skin.weights[0].iter().sum::<f32>() + skin.extra_sets[0].weights[0].iter().sum::<f32>();
+    assert!(
+        (total - 1.0).abs() < 1e-6,
+        "weights must sum to 1, got {total}"
+    );
+    assert_eq!(skin.packed_index_weights().len(), verts * 2 * 8 * 4);
+
+    // The CLEAN RE-EXPORT is what the editor's materialiser actually decodes, so
+    // it has to carry both sets too. Dropping them here is invisible in the
+    // source GLB and collapses the mesh at runtime.
+    let clean = awsm_renderer_glb_export::reexport_clean(&glb).expect("clean re-export");
+    let flex_node = clean
+        .nodes
+        .iter()
+        .find(|n| n.name == "flex")
+        .expect("flex node survives the clean re-export");
+    assert_eq!(
+        flex_node.extra_influence_sets.len(),
+        1,
+        "the second influence set must survive reexport_clean"
+    );
+    assert_eq!(flex_node.extra_influence_sets[0].joints[0], [4, 5, 6, 7]);
+
+    let clean_glb = awsm_renderer_glb_export::write_glb(&clean);
+    let (cdoc, cbuf, _) = gltf::import_slice(&clean_glb).expect("loadable clean glTF");
+    let craw: Vec<Vec<u8>> = cbuf.iter().map(|b| b.0.clone()).collect();
+    let cindex = cdoc
+        .nodes()
+        .find(|n| n.name() == Some("flex"))
+        .expect("flex node")
+        .index() as u32;
+    let cex = awsm_renderer_glb_export::extract_node_mesh(&cdoc, &craw, cindex, None)
+        .expect("extract from clean");
+    assert_eq!(
+        cex.skin.expect("clean skin").set_count(),
+        2,
+        "a full write -> clean re-export -> write -> read cycle must keep both sets"
+    );
+}

@@ -2143,7 +2143,54 @@ impl Meshes {
             });
         self.skip_skins_scratch = skip_skins;
 
+        // A SKINNED mesh's drawable ignores its own node transform — the joints
+        // place it — so the AABB computed above (local box × an identity
+        // transform) describes the BIND pose, not where the mesh actually is.
+        // Any rig whose bones carry it away from its bind pose is then culled
+        // against the wrong box: it vanishes when the camera looks at the
+        // geometry and appears when it looks at empty space where the bind pose
+        // used to be.
+        //
+        // The skin matrices are exactly `joint_world × inverse_bind`, so the
+        // union of the local box under each of them contains every deformed
+        // vertex: a vertex is a convex combination of those transformed points,
+        // and a convex combination lies inside the union's AABB.
+        for mesh_key in self.skinned_mesh_keys() {
+            let Some(Some(skin_key)) = self.mesh_skin_key(mesh_key) else {
+                continue;
+            };
+            let Some(aabb) = self.resource(mesh_key).ok().and_then(|r| r.aabb.clone()) else {
+                continue;
+            };
+            let Ok(matrices) = self.skins.read_joint_matrices(skin_key) else {
+                continue;
+            };
+            let mut combined: Option<crate::bounds::Aabb> = None;
+            for m in &matrices {
+                let t = aabb.transformed(m);
+                match &mut combined {
+                    Some(c) => c.extend(&t),
+                    None => combined = Some(t),
+                }
+            }
+            if let Some(world_aabb) = combined {
+                if let Some(mesh) = self.list.get_mut(mesh_key) {
+                    mesh.world_aabb = Some(world_aabb);
+                    touched.push(mesh_key);
+                }
+            }
+        }
+
         touched
+    }
+
+    /// Every mesh currently bound to a skin.
+    fn skinned_mesh_keys(&self) -> Vec<MeshKey> {
+        self.list
+            .iter()
+            .filter(|(key, _)| matches!(self.mesh_skin_key(*key), Some(Some(_))))
+            .map(|(key, _)| key)
+            .collect()
     }
 
     /// Return the `touched` list handed out by [`Self::update_world`] so

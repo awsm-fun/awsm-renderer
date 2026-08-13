@@ -53,6 +53,16 @@ pub struct NodeSpec {
     pub locked: bool,
     pub visible: bool,
     pub prefab: bool,
+    /// The node's MuJoCo role, if any. Carried here as well as on `EditorNode`
+    /// because this spec — not `EditorNode` — is what the editor's internal tree
+    /// converts through; a field missing here is silently dropped on save.
+    #[serde(default)]
+    pub mujoco: Option<awsm_renderer_scene::mujoco::MujocoComponent>,
+    /// Collider contact parameters. Carried here for the same reason as
+    /// `mujoco`: this spec, not `EditorNode`, is what the editor's tree
+    /// converts through, so a field missing here is silently dropped on save.
+    #[serde(default)]
+    pub physics: Option<awsm_renderer_scene::collider::PhysicsParams>,
     pub children: Vec<NodeSpec>,
 }
 
@@ -61,6 +71,8 @@ impl NodeSpec {
     /// persistence). The two are field-identical; this is a structural map.
     pub fn to_editor_node(&self) -> EditorNode {
         EditorNode {
+            mujoco: self.mujoco.clone(),
+            physics: self.physics.clone(),
             id: self.id,
             name: self.name.clone(),
             transform: self.transform,
@@ -82,6 +94,8 @@ impl NodeSpec {
             locked: node.locked,
             visible: node.visible,
             prefab: node.prefab,
+            mujoco: node.mujoco.clone(),
+            physics: node.physics.clone(),
             children: node.children.iter().map(Self::from_editor_node).collect(),
         }
     }

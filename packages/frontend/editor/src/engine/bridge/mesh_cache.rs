@@ -71,6 +71,14 @@ pub fn has_captured_bytes(id: AssetId) -> bool {
     CAPTURED.with(|c| c.borrow().get(&id).is_some_and(|m| !m.positions.is_empty()))
 }
 
+/// Drop one captured mesh — for an asset being freed (e.g. a MuJoCo re-import
+/// replacing the previous import's minted meshes). Removing the `scene.assets`
+/// entry alone already keeps the bytes out of every save; this also releases
+/// the session copy.
+pub fn remove(id: AssetId) {
+    CAPTURED.with(|c| c.borrow_mut().remove(&id));
+}
+
 /// Drop every captured mesh. Only the `VerifyRoundtrip` self-test calls this:
 /// a normal reload keeps the cache warm (its bytes ARE the persisted
 /// `.mesh.bin` side files), but the end-to-end losslessness proof must model a

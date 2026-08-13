@@ -19,6 +19,12 @@ use crate::{
 
 const GLB_VERSION: u32 = 2;
 
+/// glTF's own node-transform defaults. A component equal to one of these is
+/// omitted from the JSON entirely — see the note at the node build site.
+const DEFAULT_TRANSLATION: [f32; 3] = [0.0, 0.0, 0.0];
+const DEFAULT_ROTATION: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
+const DEFAULT_SCALE: [f32; 3] = [1.0, 1.0, 1.0];
+
 const LIGHTS_PUNCTUAL: &str = "KHR_lights_punctual";
 const MATERIALS_UNLIT: &str = "KHR_materials_unlit";
 
@@ -40,6 +46,12 @@ struct PrimSource<'a> {
     /// writer emits these instead of regenerating via MikkTSpace.
     tangents: Option<&'a [[f32; 4]]>,
     morph_targets: &'a [MorphTarget],
+    /// Influence sets beyond the first; see `ExportNode::extra_influence_sets`.
+    extra_influence_sets: &'a [crate::SkinInfluenceSet],
+    /// Compact cage-form skin (see `ExportNode::cage_influences`) — emitted as
+    /// the `_AWSM_CAGE_COORDS` attribute + `AWSM_cage_influences` extension
+    /// instead of `JOINTS_n`/`WEIGHTS_n`. Main primitive only.
+    cage_influences: Option<&'a crate::CageInfluences>,
 }
 
 pub fn write_glb(scene: &GlbScene) -> Vec<u8> {
@@ -105,9 +117,17 @@ impl Builder {
                 matrix: None,
                 mesh: mesh_idx[i],
                 name: Some(n.name.clone()),
-                rotation: Some(scene::UnitQuaternion(n.transform.rotation)),
-                scale: Some(n.transform.scale),
-                translation: Some(n.transform.translation),
+                // Components equal to glTF's own defaults are OMITTED, not
+                // written out. A reader that sees no `rotation` uses identity,
+                // which is exactly what we would have spelled — so this is free,
+                // and it is not a micro-optimization: node TRS is JSON text, and
+                // the JSON chunk is HALF of a body-attached MuJoCo flex's file
+                // (one joint node per vertex, none of which ever rotate).
+                rotation: (n.transform.rotation != DEFAULT_ROTATION)
+                    .then_some(scene::UnitQuaternion(n.transform.rotation)),
+                scale: (n.transform.scale != DEFAULT_SCALE).then_some(n.transform.scale),
+                translation: (n.transform.translation != DEFAULT_TRANSLATION)
+                    .then_some(n.transform.translation),
                 skin: n.skin.map(|s| skin_idx[s]),
                 weights: None,
             };
@@ -157,6 +177,8 @@ impl Builder {
                 weights: n.weights.as_deref(),
                 tangents: n.tangents.as_deref(),
                 morph_targets: &n.morph_targets,
+                extra_influence_sets: &n.extra_influence_sets,
+                cage_influences: n.cage_influences.as_ref(),
             },
             texture_indices,
         )];
@@ -169,6 +191,11 @@ impl Builder {
                     weights: ep.weights.as_deref(),
                     tangents: ep.tangents.as_deref(),
                     morph_targets: &ep.morph_targets,
+                    // Extra primitives are a multi-material split of ONE source
+                    // mesh; >4 influences on those is not a shape we produce,
+                    // and neither is a cage.
+                    extra_influence_sets: &[],
+                    cage_influences: None,
                 },
                 texture_indices,
             ));
@@ -294,22 +321,23 @@ impl Builder {
             attributes.insert(Checked::Valid(mesh::Semantic::Tangents), acc);
         }
 
-        // JOINTS_0 / WEIGHTS_0 (skinned meshes). u16 joint indices + f32 weights,
-        // one vec4 per vertex.
+        // JOINTS_0 / WEIGHTS_0 (skinned meshes). Joint indices are u8 when every
+        // index fits in one (a CORE glTF component type, so this needs no
+        // extension and no dequant carrier), else u16; weights are f32.
+        //
+        // The narrowing matters most exactly where a skin is largest per byte of
+        // geometry: a MuJoCo quadratic flex names its 27 cage nodes in SEVEN
+        // joint sets on every vertex, which is 56 bytes a vertex at u16 and 28 at
+        // u8. The bundle compressor already narrowed these; the exporter's own
+        // artifact did not, so the editor carried the wide copy all session.
         if let (Some(joints), Some(weights)) = (src.joints, src.weights) {
             if joints.len() == vcount && weights.len() == vcount {
-                let jbytes: Vec<u8> = joints
-                    .iter()
-                    .flat_map(|j| j.iter().flat_map(|v| v.to_le_bytes()))
-                    .collect();
-                let jacc = self.push_accessor(
-                    &jbytes,
-                    vcount,
-                    accessor::ComponentType::U16,
-                    accessor::Type::Vec4,
-                    None,
-                    None,
-                );
+                let narrow = joints_fit_u8(joints)
+                    && src
+                        .extra_influence_sets
+                        .iter()
+                        .all(|e| joints_fit_u8(&e.joints));
+                let jacc = self.push_joints(joints, vcount, narrow);
                 attributes.insert(Checked::Valid(mesh::Semantic::Joints(0)), jacc);
                 let wacc = self.push_accessor(
                     &flatten_f32x4(weights),
@@ -320,8 +348,64 @@ impl Builder {
                     None,
                 );
                 attributes.insert(Checked::Valid(mesh::Semantic::Weights(0)), wacc);
+
+                // Sets beyond the first. glTF numbers them contiguously from 0,
+                // so a gap here would silently drop every later set on import.
+                for (i, extra) in src.extra_influence_sets.iter().enumerate() {
+                    let set = i as u32 + 1;
+                    if extra.joints.len() != vcount || extra.weights.len() != vcount {
+                        continue;
+                    }
+                    let jacc = self.push_joints(&extra.joints, vcount, narrow);
+                    attributes.insert(Checked::Valid(mesh::Semantic::Joints(set)), jacc);
+                    let wacc = self.push_accessor(
+                        &flatten_f32x4(&extra.weights),
+                        vcount,
+                        accessor::ComponentType::F32,
+                        accessor::Type::Vec4,
+                        None,
+                        None,
+                    );
+                    attributes.insert(Checked::Valid(mesh::Semantic::Weights(set)), wacc);
+                }
             }
         }
+
+        // Cage-form skin (interpolated MuJoCo flexes): the per-vertex
+        // normalized cage coordinate as a custom attribute, plus the
+        // order + lattice→joint map as a primitive extension. This REPLACES
+        // `JOINTS_n`/`WEIGHTS_n` — 12 bytes a vertex instead of 8/27 expanded
+        // influences, and the consumers expand through the one shared
+        // `CageInfluences` implementation. Coords stay f32: the bundle
+        // compressor meshopt-encodes unknown attributes losslessly, so the
+        // reconstruction is deterministic on every path.
+        let cage_ext = match src.cage_influences {
+            Some(cage) if cage.coords.len() == vcount && cage.is_valid() => {
+                let bytes: Vec<u8> = cage
+                    .coords
+                    .iter()
+                    .flatten()
+                    .flat_map(|f| f.to_le_bytes())
+                    .collect();
+                let acc = self.push_accessor(
+                    &bytes,
+                    vcount,
+                    accessor::ComponentType::F32,
+                    accessor::Type::Vec3,
+                    None,
+                    None,
+                );
+                attributes.insert(
+                    Checked::Valid(mesh::Semantic::Extras(
+                        crate::CAGE_COORDS_ATTRIBUTE.to_string(),
+                    )),
+                    acc,
+                );
+                self.use_extension(crate::AWSM_CAGE_INFLUENCES);
+                Some(cage.marker_json())
+            }
+            _ => None,
+        };
 
         // Morph targets (position / optional normal deltas).
         let mut targets: Vec<mesh::MorphTarget> = Vec::new();
@@ -371,12 +455,22 @@ impl Builder {
         );
 
         // Material → either a glTF material index or the AWSM_materials_none ext.
-        let (material_index, primitive_ext) = match src.material {
+        let (material_index, mut primitive_ext) = match src.material {
             Some(ExportMaterial::Pbr(p)) => (Some(self.build_pbr(p, texture_indices)), None),
             Some(ExportMaterial::Unlit(u)) => (Some(self.build_unlit(u, texture_indices)), None),
             Some(ExportMaterial::None { id }) => (None, Some(self.none_extension(id.as_deref()))),
             None => (None, None),
         };
+        // The cage marker shares the primitive's `extensions` object with
+        // AWSM_materials_none — merge rather than overwrite.
+        if let Some(marker) = cage_ext {
+            primitive_ext
+                .get_or_insert_with(|| extensions::mesh::Primitive {
+                    others: serde_json::Map::new(),
+                })
+                .others
+                .insert(crate::AWSM_CAGE_INFLUENCES.to_string(), marker);
+        }
 
         mesh::Primitive {
             attributes,
@@ -747,6 +841,29 @@ impl Builder {
         self.root.push(view)
     }
 
+    /// One `JOINTS_n` accessor, `u8` when `narrow` (every index < 256) else `u16`.
+    ///
+    /// A skin's joint set must use ONE width across all of its sets — a reader
+    /// picking up a u8 set and a u16 set for the same vertex would be fine per
+    /// the spec, but our own narrowing decision is per-primitive, so it is taken
+    /// once over every set and passed in.
+    fn push_joints(&mut self, joints: &[[u16; 4]], vcount: usize, narrow: bool) -> Index<Accessor> {
+        let (bytes, component) = match narrow {
+            true => (
+                joints.iter().flat_map(|j| j.map(|v| v as u8)).collect(),
+                accessor::ComponentType::U8,
+            ),
+            false => (
+                joints
+                    .iter()
+                    .flat_map(|j| j.iter().flat_map(|v| v.to_le_bytes()))
+                    .collect::<Vec<u8>>(),
+                accessor::ComponentType::U16,
+            ),
+        };
+        self.push_accessor(&bytes, vcount, component, accessor::Type::Vec4, None, None)
+    }
+
     fn push_accessor(
         &mut self,
         data: &[u8],
@@ -939,6 +1056,11 @@ fn flatten_f32x3(v: &[[f32; 3]]) -> Vec<u8> {
 }
 fn flatten_f32x4(v: &[[f32; 4]]) -> Vec<u8> {
     v.iter().flatten().flat_map(|f| f.to_le_bytes()).collect()
+}
+
+/// True when every joint index fits in a `u8` (< 256 joints in the skin).
+fn joints_fit_u8(joints: &[[u16; 4]]) -> bool {
+    joints.iter().all(|j| j.iter().all(|v| *v < 256))
 }
 
 #[cfg(test)]

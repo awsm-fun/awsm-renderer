@@ -107,6 +107,11 @@ pub struct GltfKeyLookups {
     pub mesh_primitives: HashMap<String, Vec<MeshKey>>,
     pub node_index_to_transform: HashMap<GltfIndex, TransformKey>,
     pub all_mesh_keys: HashMap<GltfIndex, Vec<MeshKey>>,
+    /// glTF NODE index → the mesh keys of that node's primitives, in primitive
+    /// order. `all_mesh_keys` above is keyed by MESH index, which cannot answer
+    /// "which primitives belong to THIS node" when several nodes share a mesh —
+    /// the scene-loader's skinned-mesh selection needs the node-keyed view.
+    pub node_index_meshes: HashMap<GltfIndex, Vec<MeshKey>>,
     /// For each renderer `MeshKey` produced by the glTF populate pass,
     /// the originating glTF material index (`None` if the primitive had
     /// no material set, which glTF treats as the spec default material).
@@ -132,6 +137,10 @@ impl GltfKeyLookups {
     pub fn insert_mesh(&mut self, node: &gltf::Node, mesh: &gltf::Mesh, mesh_key: MeshKey) {
         self.all_mesh_keys
             .entry(mesh.index())
+            .or_default()
+            .push(mesh_key);
+        self.node_index_meshes
+            .entry(node.index())
             .or_default()
             .push(mesh_key);
 
