@@ -5,6 +5,9 @@
 name = "awsm-renderer-env-bake-cli"
 version.workspace = true
 edition = "2021"
+# Inherit the workspace MSRV like the library crates: without it clippy
+# assumes latest-stable and demands post-MSRV APIs (e.g. `as_chunks`, 1.88+).
+rust-version.workspace = true
 description = "Offline CLI that packs cmgen's EXR cubemap faces into the skybox/specular/irradiance KTX2 cubemaps the renderer loads — including BC6H, which the Khronos `ktx` CLI cannot encode."
 license = "MIT OR Apache-2.0"
 publish = false

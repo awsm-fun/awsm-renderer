@@ -471,8 +471,7 @@ impl PipelineScheduler {
     /// Stage 1.8 fully: scheduler-internal driver). No-op if the id
     /// doesn't exist or is already `Ready`. Emits a status event.
     pub fn mark_ready(&mut self, id: PipelineGroupId) {
-        let label;
-        match id {
+        let label = match id {
             PipelineGroupId::Material(mid) => {
                 let Some(state) = self.materials.get_mut(mid) else {
                     return;
@@ -481,7 +480,7 @@ impl PipelineScheduler {
                     return;
                 }
                 state.status = PipelineGroupStatus::Ready;
-                label = format!("material:{:?}", mid);
+                format!("material:{:?}", mid)
             }
             PipelineGroupId::Pass(kind) => {
                 let Some(state) = self.passes.get_mut(&kind) else {
@@ -491,9 +490,9 @@ impl PipelineScheduler {
                     return;
                 }
                 state.status = PipelineGroupStatus::Ready;
-                label = format!("pass:{:?}", kind);
+                format!("pass:{:?}", kind)
             }
-        }
+        };
         self.events.push(StatusEvent {
             id,
             status: PipelineGroupStatus::Ready,
@@ -510,23 +509,22 @@ impl PipelineScheduler {
     /// `PipelineVariantNotCompiled` placeholder error — consumers
     /// query [`Self::pipeline_group_status`] for the full error.
     pub fn mark_failed(&mut self, id: PipelineGroupId, error: AwsmError) {
-        let label;
-        match id {
+        let label = match id {
             PipelineGroupId::Material(mid) => {
                 let Some(state) = self.materials.get_mut(mid) else {
                     return;
                 };
                 state.status = PipelineGroupStatus::Failed { error };
-                label = format!("material:{:?}", mid);
+                format!("material:{:?}", mid)
             }
             PipelineGroupId::Pass(kind) => {
                 let Some(state) = self.passes.get_mut(&kind) else {
                     return;
                 };
                 state.status = PipelineGroupStatus::Failed { error };
-                label = format!("pass:{:?}", kind);
+                format!("pass:{:?}", kind)
             }
-        }
+        };
         self.events.push(StatusEvent {
             id,
             status: PipelineGroupStatus::Failed {
