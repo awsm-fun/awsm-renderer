@@ -39,7 +39,13 @@ use crate::assets::SceneAssets;
 /// Fetches overlap on the network (HTTP/2 multiplexes; HTTP/1.1 pools ~6 per
 /// origin) and `createImageBitmap` decodes on browser-internal threads, so
 /// this bounds resource pressure, not parallelism opportunity.
-const PREFETCH_CONCURRENCY: usize = 8;
+///
+/// Measured against the prod CDN (2026-08-23, edge HITs, latency-isolated):
+/// request wall time scales near-linearly with the pool to 32 wide, flat
+/// beyond. Textures sit one notch below the mesh seed's 32 because each
+/// completion also decodes (`createImageBitmap` / the Basis worker), so the
+/// pool bounds decode memory pressure too, not just sockets.
+const PREFETCH_CONCURRENCY: usize = 24;
 
 /// Per-load texture state: decoded images plus pool-entry dedupe.
 ///

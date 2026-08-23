@@ -66,6 +66,9 @@ pub fn project_to_scene(project: &EditorProject) -> Scene {
         // framing composed in the editor is the framing the player renders
         // instead of being re-derived as constants in player code.
         active_camera: project.active_camera,
+        // Lowering emits a loose-file scene; the export bake's final packing
+        // step (`assemble_bundle_packed`) fills this in.
+        pack: None,
     }
 }
 

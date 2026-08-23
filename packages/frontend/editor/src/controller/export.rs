@@ -83,6 +83,10 @@ pub async fn export_scene_glb(ctrl: &super::EditorController) -> Result<Vec<u8>,
 /// `RuntimeMesh::Glb` — bare primitives stay procedural in `scene.toml`; no
 /// materials/animations in the glb, those are ours); `assets/materials/<name>/…`
 /// (custom-material wgsl + sidecars); `assets/<id>.png` (referenced textures).
+/// The final packing step then concatenates those asset files into a few
+/// `assets/pack-<n>.bin` blobs indexed from `scene.toml` (`Scene::pack`) —
+/// cluster DAGs stay loose — so a cold player load is a handful of
+/// bandwidth-bound fetches instead of one request per file.
 ///
 /// Skinned/morph meshes re-export a clean rig glb from their source (skeleton +
 /// mesh + skin + morph, built at import via `reexport_clean_scene`); the
@@ -96,7 +100,7 @@ pub async fn bake_player_bundle(
     progress: &dyn Fn(&str),
 ) -> Result<Vec<awsm_renderer_editor_protocol::BundleFile>, String> {
     use awsm_renderer_editor_protocol::{
-        assemble_bundle, mesh_glb_filename, BundleFile, RuntimeMesh,
+        assemble_bundle_packed, mesh_glb_filename, BundleFile, RuntimeMesh,
     };
     use awsm_renderer_editor_protocol::{lower_mesh, project_to_scene};
 
@@ -930,7 +934,14 @@ pub async fn bake_player_bundle(
     //    untextured in the player, silently. Fail the export loudly instead.
     verify_texture_refs_shipped(&scene, &files)?;
 
-    assemble_bundle(&scene, files).map_err(|e| e.to_string())
+    // 9. Pack. Concatenate the asset files into a few `assets/pack-<n>.bin`
+    //    blobs with the index in `scene.toml` (cluster DAGs stay loose — they
+    //    stream on demand), so a cold player load is a handful of
+    //    bandwidth-bound fetches instead of one latency-bound request per
+    //    mesh. The loader falls back to loose per-path fetching whenever the
+    //    index is absent, so pre-pack bundles and the dev route are untouched.
+    progress("packing asset blobs");
+    assemble_bundle_packed(&mut scene, files).map_err(|e| e.to_string())
 }
 
 /// Bundle-completeness guard: every texture asset referenced by the baked

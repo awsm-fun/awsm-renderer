@@ -1037,9 +1037,24 @@ pub async fn load_scene_for_player(
     // glbs, their LOD manifests, the environment cubemaps — are fetched
     // concurrently now and served from memory when the (serial, renderer-
     // holding) walk below consumes them. The wrapper also dedupes: a glb
-    // shared by N nodes downloads once, not N times. Texture images aren't
-    // seeded here — they have their own decode-level prefetch below.
+    // shared by N nodes downloads once, not N times.
+    //
+    // A PACKED bundle (`scene.pack`, written by the bake) short-circuits the
+    // whole per-file story: a handful of `assets/pack-<n>.bin` blobs fetch
+    // bandwidth-bound and slice into the cache — meshes, LODs, env cubemaps
+    // AND texture images. The per-path seeding below still runs either way:
+    // on a packed bundle everything it wants is already cached so it's a
+    // no-op, and on a loose-file bundle (every pre-pack release, the editor's
+    // dev route) it is exactly the old path. Loose-file texture images aren't
+    // path-seeded — they have their own decode-level prefetch below.
     let assets = &crate::assets::PrefetchedAssets::new(assets);
+    if let Some(pack) = &scene.pack {
+        assets
+            .seed_packs(pack, |done, total| {
+                on_phase(LoadPhase::FetchingAssets { done, total })
+            })
+            .await;
+    }
     {
         let mut paths: Vec<String> = scene
             .environment
