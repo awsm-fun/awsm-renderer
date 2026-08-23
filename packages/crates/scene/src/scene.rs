@@ -64,4 +64,13 @@ pub struct Scene {
     /// free-cam) is free to ignore it.
     #[serde(default)]
     pub active_camera: Option<crate::tree::NodeId>,
+    /// The bundle's asset-pack index, when the bake packed its `assets/` files
+    /// into a few concatenated `assets/pack-<n>.bin` blobs (see
+    /// [`crate::project_dir::ScenePack`]). `None` = a loose-file bundle: every
+    /// asset ships as its own file and the loader fetches per path — what every
+    /// pre-pack bundle (and the editor's dev route) deserializes to, so this is
+    /// additive in both directions (old parsers ignore the unknown key; the
+    /// loader treats `None` as "fetch loose").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pack: Option<crate::project_dir::ScenePack>,
 }
