@@ -76,7 +76,14 @@ impl SceneAssets for HashMap<String, Vec<u8>> {
 /// How many seed fetches [`PrefetchedAssets::seed`] drives concurrently —
 /// bounds resource pressure, not parallelism opportunity (HTTP/2 multiplexes;
 /// HTTP/1.1 pools ~6 per origin).
-const SEED_CONCURRENCY: usize = 8;
+///
+/// Measured against the prod CDN (2026-08-23, 277-file world, edge HITs,
+/// latency-isolated via ranged requests): wall time scales near-linearly with
+/// this pool up to 32 wide (~3× vs 8) with per-request latency flat, and goes
+/// flat-to-worse beyond. A loose-file bundle's seed is hundreds of small
+/// latency-bound files, so the pool IS the fetch phase's wall clock on
+/// high-latency links.
+const SEED_CONCURRENCY: usize = 32;
 
 /// A [`SceneAssets`] wrapper that concurrently pre-fetches a KNOWN set of
 /// bundle paths and serves them from memory.
@@ -97,6 +104,14 @@ const SEED_CONCURRENCY: usize = 8;
 /// double-buffered. Seed failures are cached too — the consumption site sees
 /// the same `Err` it would have seen fetching directly (e.g. a missing LOD
 /// manifest still means "no LOD"), without paying the round trip again.
+///
+/// A PACKED bundle ([`Scene::pack`](awsm_renderer_scene::Scene)) seeds through
+/// [`Self::seed_packs`] instead: a few concatenated blobs fetch
+/// bandwidth-bound and slice into this same cache — including texture images,
+/// which loose-file seeding deliberately leaves out. Those images are held
+/// here for the load's duration on top of the decoded-image cache; that
+/// transient double-buffering is the price of collapsing hundreds of
+/// latency-bound texture/mesh round trips into a handful of blob fetches.
 pub struct PrefetchedAssets<'a, A: SceneAssets> {
     inner: &'a A,
     /// path → fetched bytes (`None` = the seed fetch failed).
@@ -108,6 +123,74 @@ impl<'a, A: SceneAssets> PrefetchedAssets<'a, A> {
         Self {
             inner,
             cache: RefCell::new(HashMap::new()),
+        }
+    }
+
+    /// Concurrently fetch a packed bundle's `assets/pack-<n>.bin` blobs and
+    /// slice every member file into the cache, reporting `(done, total)` per
+    /// BLOB completion (a packed bundle's fetch phase is a handful of
+    /// bandwidth-bound blobs, so blob granularity is the honest unit).
+    ///
+    /// Failure semantics mirror [`Self::seed`]'s per-file caching: a blob that
+    /// fails to fetch leaves its members UNCACHED (the consumption site falls
+    /// through to a loose fetch and surfaces its ordinary missing-asset
+    /// error), while a member whose recorded range doesn't fit its blob is
+    /// cached as a failure — same `Err` a lost file would produce, without
+    /// re-paying a doomed round trip.
+    pub async fn seed_packs(
+        &self,
+        pack: &awsm_renderer_scene::ScenePack,
+        mut on_progress: impl FnMut(usize, usize),
+    ) {
+        use futures::StreamExt;
+        let total = pack.packs.len();
+        if total == 0 {
+            return;
+        }
+        on_progress(0, total);
+        let mut blobs: Vec<Option<Vec<u8>>> = Vec::new();
+        blobs.resize_with(total, || None);
+        let mut stream = futures::stream::iter((0..total).map(|i| async move {
+            let path = awsm_renderer_scene::pack_path(i);
+            (i, self.inner.fetch(&path).await)
+        }))
+        .buffer_unordered(SEED_CONCURRENCY);
+        let mut done = 0;
+        while let Some((i, fetched)) = stream.next().await {
+            match fetched {
+                Ok(bytes) => {
+                    if bytes.len() as u64 != pack.packs[i] {
+                        tracing::warn!(
+                            "scene-loader: pack blob {i} is {} bytes, index says {} — \
+                             slicing what fits",
+                            bytes.len(),
+                            pack.packs[i]
+                        );
+                    }
+                    blobs[i] = Some(bytes);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "scene-loader: pack blob {i} unavailable ({e}) — its members fall \
+                         back to loose fetches"
+                    );
+                }
+            }
+            done += 1;
+            on_progress(done, total);
+        }
+        let mut cache = self.cache.borrow_mut();
+        for (i, blob) in blobs.iter().enumerate() {
+            let Some(blob) = blob else { continue };
+            for (path, bytes) in pack.slice_blob(i, blob) {
+                if bytes.is_none() {
+                    tracing::warn!(
+                        "scene-loader: packed file `{path}` has an out-of-range index entry — \
+                         treating as missing"
+                    );
+                }
+                cache.insert(path.to_string(), bytes.map(|b| b.to_vec()));
+            }
         }
     }
 
@@ -156,11 +239,15 @@ impl<A: SceneAssets> SceneAssets for PrefetchedAssets<'_, A> {
     }
 
     fn asset_url(&self, path: &str) -> Option<String> {
-        // Texture images aren't seeded into this byte cache (see the struct
-        // docs — only glbs / buffers / material files are), so there is nothing
-        // to serve from memory for an image path. Expose the inner source's URL
-        // so the loader keeps its zero-copy image decode instead of falling back
-        // to a wasm byte round trip.
+        // A path in the cache is served from memory — for a PACKED bundle that
+        // includes texture images, and the loose per-file URL may not even
+        // exist, so never hand it out. Everything else (loose-file bundles
+        // never cache images here — only glbs / buffers / material files are
+        // path-seeded) exposes the inner source's URL so the loader keeps its
+        // zero-copy image decode instead of a wasm byte round trip.
+        if self.cache.borrow().contains_key(path) {
+            return None;
+        }
         self.inner.asset_url(path)
     }
 }
