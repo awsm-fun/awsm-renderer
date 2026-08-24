@@ -1110,6 +1110,10 @@ async fn env_ktx_bundle_files(
 ) -> Result<Vec<awsm_renderer_editor_protocol::BundleFile>, String> {
     use awsm_renderer_editor_protocol::{env_ktx_path, BundleFile};
     let env = ctrl.scene.environment.get_cloned();
+    // Streaming-ladder levels ship UNCAPPED: they exist precisely to carry
+    // resolutions above the base slots' cap, and the player fetches them
+    // lazily after load — capping them would quietly defeat the ladder.
+    let stream_ids: std::collections::HashSet<_> = env.stream.asset_ids().copied().collect();
     let mut out = Vec::new();
     for id in env.ktx_asset_ids() {
         let bytes = match crate::engine::bridge::env_sync::ktx_bytes(id) {
@@ -1145,7 +1149,7 @@ async fn env_ktx_bundle_files(
         // mip levels (container surgery, no re-encode — a 4k-face BC6H
         // skybox is ~128 MB; from mip 2 down the SAME file is ~8 MB). Any
         // parse refusal (BasisLZ, unexpected layout) ships verbatim.
-        let bytes = match max_face_size {
+        let bytes = match max_face_size.filter(|_| !stream_ids.contains(&id)) {
             Some(cap) => {
                 match crate::controller::ktx2_shrink::truncate_ktx2_to_max_size(&bytes, cap) {
                     Some(crate::controller::ktx2_shrink::Shrink::Truncated {

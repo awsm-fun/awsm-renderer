@@ -25,6 +25,6 @@ pub use model::{Scene, SceneStats};
 pub use node::{Node, NodeId};
 #[allow(unused_imports)]
 pub use types::{
-    AssetStatus, CameraConfig, CameraProjection, ColliderShape, EnvRotation, EnvSlot,
+    AssetStatus, CameraConfig, CameraProjection, ColliderShape, EnvRotation, EnvSlot, EnvStream,
     EnvironmentConfig, LightConfig, LightKind, NodeKind, ReflectionProbe, Trs,
 };

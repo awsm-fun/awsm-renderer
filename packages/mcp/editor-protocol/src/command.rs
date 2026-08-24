@@ -659,6 +659,17 @@ pub enum EditorCommand {
         specular_rotation: Option<[f32; 3]>,
         #[serde(default)]
         irradiance_rotation: Option<[f32; 3]>,
+        /// Per-slot progressive-streaming ladders (ascending-quality KTX2
+        /// cubemap assets; players apply the slot's base first and stream
+        /// these in). `None` PRESERVES that slot's current ladder;
+        /// `Some(vec![])` clears it. `#[serde(default)]` keeps older wire
+        /// payloads deserializing.
+        #[serde(default)]
+        skybox_stream: Option<Vec<AssetId>>,
+        #[serde(default)]
+        specular_stream: Option<Vec<AssetId>>,
+        #[serde(default)]
+        irradiance_stream: Option<Vec<AssetId>>,
     },
 
     /// Patch the renderer-wide shadow config on `scene.shadows` (persisted into
