@@ -363,7 +363,6 @@ mod tests {
 
         // PACKED assembly: the streamed level must stay a LOOSE file (it is
         // fetched on demand after load), while the base env cubemaps pack.
-        let mut scene = scene;
         let env_files: Vec<BundleFile> = scene
             .environment
             .ktx_asset_ids()
