@@ -3540,6 +3540,9 @@ impl EditorController {
                 skybox_rotation,
                 specular_rotation,
                 irradiance_rotation,
+                skybox_stream,
+                specular_stream,
+                irradiance_stream,
             } => {
                 // Partial update: `None` slots PRESERVE the current config, so
                 // setting just one slot (skybox / specular / irradiance) doesn't
@@ -3558,6 +3561,14 @@ impl EditorController {
                         skybox: skybox_rotation.unwrap_or(prev.rotation.skybox),
                         specular: specular_rotation.unwrap_or(prev.rotation.specular),
                         irradiance: irradiance_rotation.unwrap_or(prev.rotation.irradiance),
+                    },
+                    // Per-slot like the rotations: omitted preserves THAT
+                    // slot's ladder; an explicit empty vec clears it.
+                    stream: crate::engine::scene::EnvStream {
+                        skybox: skybox_stream.unwrap_or_else(|| prev.stream.skybox.clone()),
+                        specular: specular_stream.unwrap_or_else(|| prev.stream.specular.clone()),
+                        irradiance: irradiance_stream
+                            .unwrap_or_else(|| prev.stream.irradiance.clone()),
                     },
                 };
                 self.scene.environment.set(next);

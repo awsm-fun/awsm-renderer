@@ -362,6 +362,37 @@ impl Slot {
             skybox_rotation: None,
             specular_rotation: None,
             irradiance_rotation: None,
+            skybox_stream: None,
+            specular_stream: None,
+            irradiance_stream: None,
+        }
+    }
+    /// This slot's current streaming ladder out of an environment config.
+    fn get_stream(self, env: &crate::engine::scene::EnvironmentConfig) -> Vec<AssetId> {
+        match self {
+            Slot::Skybox => env.stream.skybox.clone(),
+            Slot::Specular => env.stream.specular.clone(),
+            Slot::Irradiance => env.stream.irradiance.clone(),
+        }
+    }
+    /// A `PatchEnvironment` replacing ONLY this slot's streaming ladder.
+    fn patch_stream(self, levels: Vec<AssetId>) -> EditorCommand {
+        let (skybox_stream, specular_stream, irradiance_stream) = match self {
+            Slot::Skybox => (Some(levels), None, None),
+            Slot::Specular => (None, Some(levels), None),
+            Slot::Irradiance => (None, None, Some(levels)),
+        };
+        EditorCommand::PatchEnvironment {
+            skybox: None,
+            specular: None,
+            irradiance: None,
+            probe: None,
+            skybox_rotation: None,
+            specular_rotation: None,
+            irradiance_rotation: None,
+            skybox_stream,
+            specular_stream,
+            irradiance_stream,
         }
     }
 }
@@ -373,6 +404,7 @@ fn environment_row() -> Dom {
         .child(env_slot_picker(Slot::Specular))
         .child(env_slot_picker(Slot::Irradiance))
         .child(env_rotation_button())
+        .child(env_stream_button())
     })
 }
 
@@ -426,6 +458,9 @@ impl RotSlot {
             skybox_rotation,
             specular_rotation,
             irradiance_rotation,
+            skybox_stream: None,
+            specular_stream: None,
+            irradiance_stream: None,
         }
     }
 }
@@ -523,6 +558,9 @@ fn open_env_rotation() {
                                 skybox_rotation: zero,
                                 specular_rotation: zero,
                                 irradiance_rotation: zero,
+                                skybox_stream: None,
+                                specular_stream: None,
+                                irradiance_stream: None,
                             }).await {
                                 tracing::error!("ribbon: env rotation reset failed: {err}");
                             }
@@ -530,6 +568,198 @@ fn open_env_rotation() {
                     }).render())
                 .child(Btn::new().label("Done").variant(BtnVariant::Primary)
                     .on_click(Modal::close).render())
+            }))
+            .render()
+    });
+}
+
+/// Ribbon trigger for the progressive-streaming modal. Reports whether ANY
+/// slot has a ladder, exactly like the rotation button.
+fn env_stream_button() -> Dom {
+    html!("span", {
+        .child_signal(controller().scene.environment.signal_ref(|env| {
+            let empty = env.stream.is_empty();
+            Some(
+                Btn::new()
+                    .label(if empty { "Streaming\u{2026}" } else { "Streaming \u{25CF}" })
+                    .icon("env")
+                    .size(BtnSize::Sm)
+                    .variant(if empty { BtnVariant::Ghost } else { BtnVariant::Primary })
+                    .on_click(open_env_stream)
+                    .render(),
+            )
+        }))
+    })
+}
+
+/// Per-slot progressive-streaming ladders (§ progressive environments).
+///
+/// Each slot's base stays what a player load BLOCKS on — author it small —
+/// and the ladder lists higher-resolution cubemaps in ASCENDING quality; the
+/// player streams them in after load and swaps each one as it decodes.
+/// Every row tracks `scene.environment`, so it reflects each write path
+/// (this modal, MCP `set_environment`, project load).
+fn open_env_stream() {
+    Modal::open(|| {
+        let section = |slot: Slot| {
+            html!("div", {
+                .style("display", "flex").style("flex-direction", "column").style("gap", "4px")
+                .child(html!("span", {
+                    .style("font-size", "12.5px").style("color", "var(--text-1)")
+                    .text(slot.title())
+                }))
+                .child_signal(controller().scene.environment.signal_cloned().map(move |env| {
+                    let levels = slot.get_stream(&env);
+                    Some(html!("div", {
+                        .style("display", "flex").style("flex-direction", "column").style("gap", "3px")
+                        .children(levels.iter().enumerate().map(|(i, id)| {
+                            let id = *id;
+                            let levels_up = levels.clone();
+                            let levels_rm = levels.clone();
+                            html!("div", {
+                                .style("display", "flex").style("align-items", "center").style("gap", "6px")
+                                .child(html!("span", {
+                                    .style("font-size", "11.5px").style("color", "var(--text-2)")
+                                    .style("min-width", "40px")
+                                    .text(&format!("L{}", i + 1))
+                                }))
+                                .child(html!("span", {
+                                    .style("font-size", "12px").style("color", "var(--text-1)")
+                                    .style("flex", "1").style("overflow", "hidden")
+                                    .style("text-overflow", "ellipsis").style("white-space", "nowrap")
+                                    .text(&env_asset_label(id))
+                                }))
+                                .child(Btn::new().label("\u{2191}").size(BtnSize::Sm).variant(BtnVariant::Ghost)
+                                    .on_click(move || {
+                                        if i == 0 { return; }
+                                        let mut next = levels_up.clone();
+                                        next.swap(i, i - 1);
+                                        patch_env_stream(slot, next);
+                                    }).render())
+                                .child(Btn::new().label("\u{2715}").size(BtnSize::Sm).variant(BtnVariant::Ghost)
+                                    .on_click(move || {
+                                        let mut next = levels_rm.clone();
+                                        next.remove(i);
+                                        patch_env_stream(slot, next);
+                                    }).render())
+                            })
+                        }).collect::<Vec<_>>())
+                        .child(env_stream_add_button(slot, levels))
+                    }))
+                }))
+            })
+        };
+
+        ModalCard::new("Progressive environment streaming")
+            .width(520.0)
+            .child(html!("div", {
+                .style("display", "flex").style("flex-direction", "column").style("gap", "14px")
+                .child(html!("span", {
+                    .style("font-size", "12.5px").style("color", "var(--text-2)").style("line-height", "1.5")
+                    .text("Each slot's BASE cubemap is what a player load waits on \u{2014} keep it small. \
+                           Levels below stream in AFTER load, lowest first, each swapped in as it \
+                           decodes, so the background and reflections sharpen while play has already \
+                           begun. Bundle exports ship these levels at full resolution (the \
+                           env_max_face_size cap applies only to the base slots). The editor \
+                           previews each slot at its TOP level.")
+                }))
+                .child(section(Slot::Skybox))
+                .child(section(Slot::Specular))
+                .child(section(Slot::Irradiance))
+            }))
+            .footer(html!("div", {
+                .style("display", "flex").style("gap", "8px")
+                .child(Btn::new().label("Done").variant(BtnVariant::Primary)
+                    .on_click(Modal::close).render())
+            }))
+            .render()
+    });
+}
+
+/// "Add level" menu for one slot's ladder: every imported env cubemap asset,
+/// plus a fresh-file import that registers the asset and appends in one step.
+fn env_stream_add_button(slot: Slot, levels: Vec<AssetId>) -> Dom {
+    DropButton::new()
+        .label("Add level\u{2026}")
+        .icon("sphere")
+        .size(BtnSize::Sm)
+        .items(move |close: Close| {
+            let mut rows = Vec::new();
+            for (id, name) in collect_env_assets() {
+                let mut next = levels.clone();
+                rows.push(
+                    MenuItem::new(name)
+                        .on_click(clone!(close => move || {
+                            next.push(id);
+                            patch_env_stream(slot, std::mem::take(&mut next));
+                            (close.borrow_mut())();
+                        }))
+                        .render(),
+                );
+            }
+            if !rows.is_empty() {
+                rows.push(menu_sep());
+            }
+            let levels = levels.clone();
+            rows.push(
+                MenuItem::new("Import .ktx2\u{2026}")
+                    .icon("sphere")
+                    .on_click(clone!(close => move || {
+                        import_env_stream_level(slot, levels.clone());
+                        (close.borrow_mut())();
+                    }))
+                    .render(),
+            );
+            rows
+        })
+        .render()
+}
+
+/// Dispatch a ladder replacement for one slot.
+fn patch_env_stream(slot: Slot, levels: Vec<AssetId>) {
+    spawn_local(async move {
+        if let Err(err) = controller().dispatch(slot.patch_stream(levels)).await {
+            tracing::error!("ribbon: PatchEnvironment (stream) failed: {err}");
+        }
+    });
+}
+
+/// Import a `.ktx2` and APPEND it to `slot`'s streaming ladder (the ladder
+/// sibling of [`import_env_ktx`], which assigns a base slot).
+fn import_env_stream_level(slot: Slot, levels: Vec<AssetId>) {
+    Modal::open(move || {
+        let file: Mutable<Option<web_sys::File>> = Mutable::new(None);
+        let levels = levels.clone();
+        ModalCard::new(format!("Import .ktx2 \u{2192} {} stream", slot.title()))
+            .width(480.0)
+            .child(html!("div", {
+                .style("display", "flex").style("flex-direction", "column").style("gap", "10px")
+                .child(html!("span", { .style("font-size", "12.5px").style("color", "var(--text-2)").style("line-height", "1.5")
+                    .text("Pick a .ktx2 cubemap to append as this slot's next streaming level \
+                           (levels apply lowest-quality first, so append in ascending quality).") }))
+                .child(env_file_row(".ktx2 cubemap", file.clone()))
+            }))
+            .footer(html!("div", {
+                .style("display", "flex").style("gap", "8px")
+                .child(Btn::new().label("Cancel").variant(BtnVariant::Ghost).on_click(Modal::close).render())
+                .child(Btn::new().label("Import").icon("sphere").variant(BtnVariant::Primary)
+                    .on_click(clone!(file, levels => move || {
+                        let Some(f) = file.get_cloned() else {
+                            Toast::error("Pick a .ktx2 file.");
+                            return;
+                        };
+                        let mut levels = levels.clone();
+                        spawn_local(async move {
+                            match import_env_file(f).await {
+                                Ok(id) => {
+                                    levels.push(id);
+                                    patch_env_stream(slot, levels);
+                                    Modal::close();
+                                }
+                                Err(e) => Toast::error(format!("Import failed: {e}")),
+                            }
+                        });
+                    })).render())
             }))
             .render()
     });

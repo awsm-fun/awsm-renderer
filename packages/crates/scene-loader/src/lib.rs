@@ -253,6 +253,13 @@ pub struct LoadedScene {
     /// [`mujoco::apply_geom_poses`]). Empty for scenes with no sim instances,
     /// which is almost all of them.
     pub mujoco: Vec<mujoco::MujocoInstance>,
+    /// The environment's progressive-streaming handle (§ progressive
+    /// environments): the base slots applied during the load; any authored
+    /// higher-resolution ladders wait in here. Hosts that want backgrounds /
+    /// reflections to sharpen in drive it after load (fetch outside the
+    /// renderer borrow, apply inside); hosts that ignore it simply keep the
+    /// base quality. Empty (and inert) for scenes with no ladders.
+    pub env_stream: environment::EnvironmentStream,
 }
 
 /// One pre-built entry of a mesh's material palette — see
@@ -1303,7 +1310,7 @@ pub async fn load_scene_for_player(
     //    for a procedural one. Every scene has an environment config (absent ⇒
     //    built-in default), so there is no legitimate can't-apply case to
     //    degrade through.
-    environment::apply_environment(renderer, &scene.environment, assets)
+    loaded.env_stream = environment::apply_environment(renderer, &scene.environment, assets)
         .await
         .map_err(|err| {
             err.context("scene environment failed to load — refusing to silently render with the default environment")

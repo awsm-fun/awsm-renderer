@@ -23,6 +23,16 @@ pub struct EnvironmentConfig {
     pub irradiance: EnvSlot,
     #[serde(default)]
     pub probe: ReflectionProbe,
+    /// Per-slot resolution STREAMING ladders (§ progressive environments).
+    /// Each slot's base (`skybox` / `specular` / `irradiance`) stays the
+    /// thing a load BLOCKS on — author it small. `stream` then lists
+    /// higher-resolution KTX2 cubemaps for that slot in ASCENDING quality
+    /// order; players fetch them after load and swap each in as it decodes,
+    /// so the background/reflections sharpen progressively while play has
+    /// already begun. Empty ladders (the default) mean no streaming — every
+    /// pre-feature document parses to that.
+    #[serde(default)]
+    pub stream: EnvStream,
     /// Per-slot rigid rotation of the environment cubemaps. PER SLOT, and
     /// deliberately so: pointing the background one way while the reflections
     /// or the ambient come from another is a real authoring move (aim a bake's
@@ -32,6 +42,42 @@ pub struct EnvironmentConfig {
     /// everywhere else in this struct.
     #[serde(default)]
     pub rotation: EnvRotation,
+}
+
+/// Per-slot streaming ladders, mirroring the slot fields on
+/// [`EnvironmentConfig`] one-for-one (the same shape discipline as
+/// [`EnvRotation`]). Entries are KTX2 cubemap assets in ASCENDING quality
+/// order; the slot's base asset is NOT repeated here. Only file-based
+/// levels exist — procedural slots have nothing to stream.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub struct EnvStream {
+    /// Higher-res background cubemaps, streamed after load.
+    #[serde(default)]
+    pub skybox: Vec<AssetId>,
+    /// Higher-res prefiltered (specular) maps — reflections sharpen in.
+    #[serde(default)]
+    pub specular: Vec<AssetId>,
+    /// Higher-res irradiance maps. Rarely worth a ladder (irradiance is
+    /// tiny), present for slot uniformity.
+    #[serde(default)]
+    pub irradiance: Vec<AssetId>,
+}
+
+impl EnvStream {
+    /// Whether no slot has a ladder.
+    pub fn is_empty(&self) -> bool {
+        self.skybox.is_empty() && self.specular.is_empty() && self.irradiance.is_empty()
+    }
+
+    /// Every asset id in every ladder, in slot order then ladder order.
+    pub fn asset_ids(&self) -> impl Iterator<Item = &AssetId> {
+        self.skybox
+            .iter()
+            .chain(self.specular.iter())
+            .chain(self.irradiance.iter())
+    }
 }
 
 /// Euler-degree rotations for the three environment slots, mirroring the slot
@@ -94,6 +140,7 @@ impl EnvironmentConfig {
                 EnvSlot::Ktx { asset_id } => Some(*asset_id),
                 _ => None,
             })
+            .chain(self.stream.asset_ids().copied())
             .collect()
     }
 }
@@ -230,14 +277,40 @@ half_extents = [3.4, 2.0, 2.3]
                 specular: [0.0, 44.0, 0.0],
                 irradiance: [-8.0, 0.0, 190.0],
             },
+            stream: EnvStream {
+                skybox: vec![AssetId::new(), AssetId::new()],
+                specular: vec![AssetId::new()],
+                irradiance: vec![],
+            },
         };
         let toml = toml::to_string_pretty(&cfg).unwrap();
         let back: EnvironmentConfig = toml::from_str(&toml).unwrap();
         assert_eq!(cfg, back, "mixed per-slot env round-trips");
         assert_eq!(
             cfg.ktx_asset_ids().len(),
-            1,
-            "only the KTX slot carries bytes"
+            4,
+            "the KTX slot AND every streaming-ladder level carry bytes"
+        );
+    }
+
+    /// `stream` is `#[serde(default)]`: every environment block written before
+    /// streaming ladders existed still deserializes, to EMPTY ladders — no
+    /// phantom levels, no parse failure.
+    #[test]
+    fn stream_defaults_to_empty_for_pre_feature_documents() {
+        let legacy = r#"
+            [skybox]
+            built_in_default = {}
+            [specular]
+            built_in_default = {}
+            [irradiance]
+            built_in_default = {}
+        "#;
+        let cfg: EnvironmentConfig =
+            toml::from_str(legacy).expect("pre-stream environment still deserializes");
+        assert!(
+            cfg.stream.is_empty(),
+            "a document with no stream key means NO ladders on every slot"
         );
     }
 

@@ -1308,6 +1308,21 @@ pub struct EnvironmentParams {
     /// `[0,0,0]` to clear.
     #[serde(default)]
     pub irradiance_rotation: Option<[f32; 3]>,
+    /// SKYBOX progressive-streaming ladder: higher-resolution background
+    /// cubemaps in ASCENDING quality order (each a KTX asset UUID or a
+    /// https:// .ktx2 URL). Players apply the base `skybox` first — author it
+    /// small — then stream these in and swap each as it decodes. Omit to keep
+    /// the current ladder; `[]` clears it.
+    #[serde(default)]
+    pub skybox_stream: Option<Vec<String>>,
+    /// SPECULAR (prefiltered IBL) streaming ladder — reflections sharpen in.
+    /// Same semantics as `skybox_stream`.
+    #[serde(default)]
+    pub specular_stream: Option<Vec<String>>,
+    /// IRRADIANCE streaming ladder. Rarely worth it (irradiance maps are
+    /// tiny); present for slot uniformity. Same semantics as `skybox_stream`.
+    #[serde(default)]
+    pub irradiance_stream: Option<Vec<String>>,
     /// Agent-authored sky-gradient nadir (ground) color, linear-RGB `[r,g,b]`.
     /// Pairs with `zenith`.
     #[serde(default)]
@@ -4626,7 +4641,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Set the scene environment. THREE INDEPENDENT slots — skybox (background), specular (the prefiltered/roughness-mipped IBL map that drives reflections), and irradiance (the diffuse-convolved IBL map that drives ambient light). Two ways: (1) `zenith` + `nadir` ([r,g,b] linear) sets ALL THREE to a two-color SKY GRADIENT — author dusk / overcast / night / studio from your own colors (no hosting needed). (2) Otherwise each of skybox / specular / irradiance accepts: 'builtin' for the built-in default sky, an existing KTX cubemap asset UUID, OR a https:// URL to a .ktx2 cubemap. PARTIAL UPDATE: an OMITTED slot keeps its current config (pass 'builtin' to explicitly reset one) — so e.g. keeping default-sky irradiance while overriding just specular is one call, and slots never silently reset each other across sequential calls. Slots are fully decoupled (unlike before, specular and irradiance are set separately). URL cubemaps are fetched AND parse-validated here — a non-cubemap/bad .ktx2 fails this call instead of silently keeping the previous environment. Precedence: zenith/nadir > per-slot args. `probe` sets the box-projected reflection probe ({enabled, center, half_extents} — parallax-anchors specular env lookups to the scene bounds; omit to preserve it). `skybox_rotation` / `specular_rotation` / `irradiance_rotation` ([x,y,z] Euler DEGREES, applied X then Y then Z) turn each cubemap INDEPENDENTLY — background, reflections and ambient can deliberately point different ways. Use them to aim an interesting part of a bake at the camera (or swing a distracting one out of shot) without re-baking; `y` spins the room horizontally and is the usual knob. Set all three the same to turn the whole room. Each omitted rotation is PRESERVED; [0,0,0] clears one. CAVEAT: the zenith/nadir gradient shortcut FULL-REPLACES the environment and resets an enabled probe to OFF and every slot rotation to zero unless the call also passes `probe` / the `*_rotation` args. A fresh scene already seeds the built-in environment. Use get_snapshot (project.environment, incl. environment.probe) to read what is currently set."
+        description = "Set the scene environment. THREE INDEPENDENT slots — skybox (background), specular (the prefiltered/roughness-mipped IBL map that drives reflections), and irradiance (the diffuse-convolved IBL map that drives ambient light). Two ways: (1) `zenith` + `nadir` ([r,g,b] linear) sets ALL THREE to a two-color SKY GRADIENT — author dusk / overcast / night / studio from your own colors (no hosting needed). (2) Otherwise each of skybox / specular / irradiance accepts: 'builtin' for the built-in default sky, an existing KTX cubemap asset UUID, OR a https:// URL to a .ktx2 cubemap. PARTIAL UPDATE: an OMITTED slot keeps its current config (pass 'builtin' to explicitly reset one) — so e.g. keeping default-sky irradiance while overriding just specular is one call, and slots never silently reset each other across sequential calls. Slots are fully decoupled (unlike before, specular and irradiance are set separately). URL cubemaps are fetched AND parse-validated here — a non-cubemap/bad .ktx2 fails this call instead of silently keeping the previous environment. Precedence: zenith/nadir > per-slot args. `probe` sets the box-projected reflection probe ({enabled, center, half_extents} — parallax-anchors specular env lookups to the scene bounds; omit to preserve it). `skybox_rotation` / `specular_rotation` / `irradiance_rotation` ([x,y,z] Euler DEGREES, applied X then Y then Z) turn each cubemap INDEPENDENTLY — background, reflections and ambient can deliberately point different ways. Use them to aim an interesting part of a bake at the camera (or swing a distracting one out of shot) without re-baking; `y` spins the room horizontally and is the usual knob. Set all three the same to turn the whole room. Each omitted rotation is PRESERVED; [0,0,0] clears one. CAVEAT: the zenith/nadir gradient shortcut FULL-REPLACES the environment and resets an enabled probe to OFF and every slot rotation to zero unless the call also passes `probe` / the `*_rotation` args. A fresh scene already seeds the built-in environment. PROGRESSIVE STREAMING: `skybox_stream` / `specular_stream` / `irradiance_stream` each take an array of KTX asset UUIDs or https:// .ktx2 URLs in ASCENDING quality — the slot's base stays what a player load BLOCKS on (author it small), and players stream the ladder in afterwards, swapping each level as it decodes (background/reflections sharpen while play has begun). Omit a ladder to preserve it, [] to clear; the gradient shortcut clears all ladders. Bundle exports ship ladder levels UNCAPPED by env_max_face_size (they are deliberately high-res). Use get_snapshot (project.environment, incl. environment.probe + environment.stream) to read what is currently set."
     )]
     async fn set_environment(
         &self,
@@ -4651,6 +4666,10 @@ impl EditorMcp {
                             specular: p.specular_rotation.unwrap_or_default(),
                             irradiance: p.irradiance_rotation.unwrap_or_default(),
                         },
+                        // Full-replace semantics: the gradient shortcut also
+                        // clears any streaming ladders (nothing to stream for
+                        // a procedural sky).
+                        stream: Default::default(),
                     },
                 })
                 .await;
@@ -4701,6 +4720,26 @@ impl EditorMcp {
         let skybox = resolve_slot!(p.skybox);
         let specular = resolve_slot!(p.specular);
         let irradiance = resolve_slot!(p.irradiance);
+        // Streaming ladders: every entry resolves like a slot's KTX arg
+        // (asset UUID, or URL registered + validated now). `None` preserves
+        // the slot's ladder; an empty vec clears it.
+        macro_rules! resolve_stream {
+            ($arg:expr) => {
+                match $arg {
+                    None => None,
+                    Some(entries) => {
+                        let mut ids = Vec::with_capacity(entries.len());
+                        for entry in &entries {
+                            ids.push(resolve_ktx!(entry.as_str()));
+                        }
+                        Some(ids)
+                    }
+                }
+            };
+        }
+        let skybox_stream = resolve_stream!(p.skybox_stream);
+        let specular_stream = resolve_stream!(p.specular_stream);
+        let irradiance_stream = resolve_stream!(p.irradiance_stream);
         self.dispatch(EditorCommand::PatchEnvironment {
             skybox,
             specular,
@@ -4709,6 +4748,9 @@ impl EditorMcp {
             skybox_rotation: p.skybox_rotation,
             specular_rotation: p.specular_rotation,
             irradiance_rotation: p.irradiance_rotation,
+            skybox_stream,
+            specular_stream,
+            irradiance_stream,
         })
         .await
     }

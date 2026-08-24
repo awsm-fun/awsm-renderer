@@ -317,6 +317,12 @@ mod tests {
             },
             probe: Default::default(),
             rotation: Default::default(),
+            // A skybox streaming ladder: its levels must ship in the bundle
+            // exactly like the base slots' files.
+            stream: crate::EnvStream {
+                skybox: vec![AssetId::new()],
+                ..Default::default()
+            },
         };
         // The bake emits one file per env KTX id, at the shared convention path.
         let env_files: Vec<BundleFile> = scene
@@ -325,7 +331,11 @@ mod tests {
             .into_iter()
             .map(|id| BundleFile::new(env_ktx_path(id), vec![0xAB]))
             .collect();
-        assert_eq!(env_files.len(), 3, "skybox + prefiltered + irradiance");
+        assert_eq!(
+            env_files.len(),
+            4,
+            "skybox + prefiltered + irradiance + one streamed skybox level"
+        );
         let files = assemble_bundle(&scene, env_files).unwrap();
 
         // Player side: parse scene.toml back and resolve every env KTX id to a
@@ -462,6 +472,7 @@ mod tests {
             specular: grad,
             irradiance: grad,
             probe: Default::default(),
+            stream: Default::default(),
             // Per-slot rotations must survive the SAME scene.toml the player
             // bundle carries — the bundle half of "authored in the editor,
             // seen in the player". Deliberately DIFFERENT per slot, so a

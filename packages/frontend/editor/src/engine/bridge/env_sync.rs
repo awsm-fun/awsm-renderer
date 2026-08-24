@@ -135,21 +135,32 @@ pub fn start() {
 /// a failed fetch/upload stays dirty and the next emission — even of the
 /// identical config — retries instead of silently no-op'ing.
 async fn sync_env(env: &EnvironmentConfig) {
+    // The EDITOR previews each slot at its streaming ladder's TOP level (the
+    // quality a player ends up at) — the base slot is a player LOAD concern.
+    // A slot with no ladder previews its base, exactly as before.
+    fn effective(base: EnvSlot, ladder: &[awsm_renderer_editor_protocol::AssetId]) -> EnvSlot {
+        match ladder.last() {
+            Some(id) => EnvSlot::Ktx { asset_id: *id },
+            None => base,
+        }
+    }
+    let sky = effective(env.skybox, &env.stream.skybox);
+    let spec = effective(env.specular, &env.stream.specular);
+    let irr = effective(env.irradiance, &env.stream.irradiance);
     let (sky_changed, ibl_changed, probe_changed, rotation_changed) = LIVE.with(|l| {
         let l = l.borrow();
         (
-            l.skybox.as_ref() != Some(&env.skybox),
+            l.skybox.as_ref() != Some(&sky),
             // IBL re-applies if EITHER the specular (prefiltered) or the
             // irradiance slot changed — both feed a single `set_ibl`.
-            l.specular.as_ref() != Some(&env.specular)
-                || l.irradiance.as_ref() != Some(&env.irradiance),
+            l.specular.as_ref() != Some(&spec) || l.irradiance.as_ref() != Some(&irr),
             l.probe.as_ref() != Some(&env.probe),
             l.rotation != Some(env.rotation),
         )
     });
     if sky_changed {
-        match apply_skybox(&env.skybox).await {
-            Ok(()) => LIVE.with(|l| l.borrow_mut().skybox = Some(env.skybox)),
+        match apply_skybox(&sky).await {
+            Ok(()) => LIVE.with(|l| l.borrow_mut().skybox = Some(sky)),
             Err(err) => {
                 tracing::error!("skybox apply failed: {err}");
                 Toast::error(format!("Skybox failed: {err}"));
@@ -157,11 +168,11 @@ async fn sync_env(env: &EnvironmentConfig) {
         }
     }
     if ibl_changed {
-        match apply_ibl(&env.specular, &env.irradiance).await {
+        match apply_ibl(&spec, &irr).await {
             Ok(()) => LIVE.with(|l| {
                 let mut l = l.borrow_mut();
-                l.specular = Some(env.specular);
-                l.irradiance = Some(env.irradiance);
+                l.specular = Some(spec);
+                l.irradiance = Some(irr);
             }),
             Err(err) => {
                 tracing::error!("ibl apply failed: {err}");

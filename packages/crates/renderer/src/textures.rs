@@ -1594,6 +1594,20 @@ impl Textures {
         self.cubemaps.insert(texture)
     }
 
+    /// Removes a cubemap texture, destroying its GPU resource. Returns
+    /// whether the key was live. Callers own the ordering — remove a cubemap
+    /// only after nothing binds it (e.g. a streamed environment level freeing
+    /// its predecessor AFTER the replacement skybox is set).
+    pub fn remove_cubemap(&mut self, key: CubemapTextureKey) -> bool {
+        match self.cubemaps.remove(key) {
+            Some(texture) => {
+                texture.destroy();
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Returns a cubemap texture by key.
     pub fn get_cubemap(&self, key: CubemapTextureKey) -> Result<&web_sys::GpuTexture> {
         self.cubemaps
