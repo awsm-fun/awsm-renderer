@@ -1063,9 +1063,11 @@ pub async fn load_scene_for_player(
             .await;
     }
     {
+        // BASE env cubemaps only: streaming-ladder levels fetch on demand
+        // after load — prefetching them would defeat the ladder.
         let mut paths: Vec<String> = scene
             .environment
-            .ktx_asset_ids()
+            .base_ktx_asset_ids()
             .into_iter()
             .map(awsm_renderer_scene::env_ktx_path)
             .collect();

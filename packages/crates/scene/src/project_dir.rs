@@ -148,19 +148,29 @@ impl ScenePack {
 /// `scene.toml` (now carrying the [`ScenePack`] index) first, then the
 /// `assets/pack-<n>.bin` blobs, then whatever stayed loose.
 ///
-/// What packs: every `assets/` file EXCEPT `.clusters.bin` DAGs — cluster
-/// meshes stream on demand by design (the prefetch collector skips them for
-/// the same reason), so packing them would front-load bytes the load may
-/// never need. Blob assignment is deterministic (size-descending greedy onto
-/// the lightest blob, ties broken by path), so re-exporting an unchanged
-/// scene is byte-stable.
+/// What packs: every `assets/` file EXCEPT `.clusters.bin` DAGs and the
+/// environment STREAMING-ladder cubemaps — both stream on demand by design
+/// (clusters via the DAG walk, env ladders via the post-load environment
+/// stream), so packing either would front-load bytes the load may never
+/// need (a 2048-face skybox level is the entire point of NOT blocking on
+/// it). Blob assignment is deterministic (size-descending greedy onto the
+/// lightest blob, ties broken by path), so re-exporting an unchanged scene
+/// is byte-stable.
 pub fn assemble_bundle_packed(
     scene: &mut Scene,
     assets: impl IntoIterator<Item = BundleFile>,
 ) -> Result<Vec<BundleFile>, toml::ser::Error> {
-    let (packable, loose): (Vec<BundleFile>, Vec<BundleFile>) = assets
-        .into_iter()
-        .partition(|f| f.path.starts_with(ASSETS_DIR) && !f.path.ends_with(".clusters.bin"));
+    let stream_paths: std::collections::HashSet<String> = scene
+        .environment
+        .stream
+        .asset_ids()
+        .map(|id| env_ktx_path(*id))
+        .collect();
+    let (packable, loose): (Vec<BundleFile>, Vec<BundleFile>) = assets.into_iter().partition(|f| {
+        f.path.starts_with(ASSETS_DIR)
+            && !f.path.ends_with(".clusters.bin")
+            && !stream_paths.contains(&f.path)
+    });
 
     if packable.is_empty() {
         scene.pack = None;
@@ -350,6 +360,22 @@ mod tests {
                 "bundle must contain {path}"
             );
         }
+
+        // PACKED assembly: the streamed level must stay a LOOSE file (it is
+        // fetched on demand after load), while the base env cubemaps pack.
+        let mut scene = scene;
+        let env_files: Vec<BundleFile> = scene
+            .environment
+            .ktx_asset_ids()
+            .into_iter()
+            .map(|id| BundleFile::new(env_ktx_path(id), vec![0xAB]))
+            .collect();
+        let stream_path = env_ktx_path(scene.environment.stream.skybox[0]);
+        let packed = assemble_bundle_packed(&mut scene, env_files).unwrap();
+        assert!(
+            packed.iter().any(|f| f.path == stream_path),
+            "streamed env level must ship as a loose file, not inside a pack blob"
+        );
     }
 
     /// Packed-bundle round trip END-TO-END at the file level: assemble with

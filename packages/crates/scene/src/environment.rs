@@ -133,6 +133,20 @@ impl EnvironmentConfig {
     /// / sky-gradient) reference no assets. Duplicates are preserved so the count
     /// reflects the referencing slots, but callers that dedup (bundle/save) are
     /// free to collect into a set.
+    /// The BASE slots' KTX ids only — what a LOAD blocks on. Streaming-ladder
+    /// levels are deliberately absent: they are fetched on demand after load
+    /// (prefetching them would re-serialize the load behind the very bytes
+    /// the ladder exists to defer).
+    pub fn base_ktx_asset_ids(&self) -> Vec<AssetId> {
+        [&self.skybox, &self.specular, &self.irradiance]
+            .into_iter()
+            .filter_map(|slot| match slot {
+                EnvSlot::Ktx { asset_id } => Some(*asset_id),
+                _ => None,
+            })
+            .collect()
+    }
+
     pub fn ktx_asset_ids(&self) -> Vec<AssetId> {
         [&self.skybox, &self.specular, &self.irradiance]
             .into_iter()
