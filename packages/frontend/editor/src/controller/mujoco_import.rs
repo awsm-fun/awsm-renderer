@@ -48,8 +48,8 @@ use crate::prelude::*;
 /// worse, the *previous glTF import's* report); the caller inserts the node and
 /// owns the undo entry.
 pub async fn import(sidecar_url: &str) -> Result<(Arc<Node>, serde_json::Value), String> {
-    let (doc, meshes, rig) = fetch(sidecar_url).await?;
-    let root = build_subtree(&doc, &meshes, &rig);
+    let (doc, meshes, rig, textures) = fetch(sidecar_url).await?;
+    let root = build_subtree(&doc, &meshes, &rig, &textures);
     // A rig that ended up with NO skinned node (every flex fell back to a
     // bind-pose mesh — short joint bind) would strand its template + asset
     // forever: nothing references it, so the delete-side reclaim never sees it.
@@ -62,6 +62,7 @@ pub async fn import(sidecar_url: &str) -> Result<(Arc<Node>, serde_json::Value),
         "sites": doc.sites.len(),
         "flexes": doc.flexes.len(),
         "bodies": doc.bodies.len(),
+        "textures": textures.len(),
         "source": { "filename": doc.source.filename.clone(), "sha256": doc.source.sha256.clone() },
     });
     Ok((root, report))
@@ -84,12 +85,12 @@ pub async fn reimport(sidecar_url: &str, target: &Arc<Node>) -> Result<(), Strin
     let Some(MujocoComponent::Instance(_)) = target.mujoco.get_cloned() else {
         return Err("that node is not a MuJoCo sim instance".to_string());
     };
-    let (doc, meshes, rig) = fetch(sidecar_url).await?;
+    let (doc, meshes, rig, textures) = fetch(sidecar_url).await?;
 
     // Build the fresh subtree, then transplant it onto the existing root rather
     // than diffing two live trees — the build path is the one that is already
     // exercised, and a second "update" path would be free to drift from it.
-    let fresh = build_subtree(&doc, &meshes, &rig);
+    let fresh = build_subtree(&doc, &meshes, &rig, &textures);
     free_rig_if_unused(&rig, &fresh).await;
 
     // What the OLD subtree minted. The transplant below replaces every child,
@@ -300,6 +301,9 @@ pub struct FlexRig {
     pub nodes: HashMap<String, (u32, u32, awsm_renderer::transforms::Transform)>,
 }
 
+/// Sidecar texture image path → the texture asset it was registered as.
+type TextureAssets = HashMap<String, AssetId>;
+
 async fn fetch(
     sidecar_url: &str,
 ) -> Result<
@@ -307,6 +311,7 @@ async fn fetch(
         Sidecar,
         HashMap<usize, awsm_renderer_glb_export::MeshData>,
         FlexRig,
+        TextureAssets,
     ),
     String,
 > {
@@ -321,7 +326,142 @@ async fn fetch(
         }
         None => (HashMap::new(), FlexRig::default()),
     };
-    Ok((doc, meshes, rig))
+    let textures = fetch_textures(sidecar_url, &doc).await?;
+    Ok((doc, meshes, rig, textures))
+}
+
+/// Register every texture image the sidecar's materials reference as a
+/// texture asset, BEFORE the materials that bind them are minted.
+///
+/// Content-addressed: an image whose bytes an existing texture asset already
+/// holds reuses that asset. That is what keeps a re-import idempotent — the
+/// same model recompiled produces identical material definitions, so
+/// [`mint_material`] finds and reuses them instead of stranding a second set.
+///
+/// All new images upload in ONE batch with each slot's colour space (a normal
+/// or metallic-roughness map must not be sRGB-decoded), then one
+/// `commit_load` recompiles the texture-pool-baked pipelines once, not once per
+/// image. A MuJoCo sidecar has no textures and returns here untouched.
+async fn fetch_textures(sidecar_url: &str, doc: &Sidecar) -> Result<TextureAssets, String> {
+    use awsm_renderer_editor_protocol::material::{TextureColorKind, TextureDef};
+
+    // Each image once, with the role of its first use.
+    let mut wanted: Vec<(String, TextureColorKind)> = Vec::new();
+    for m in &doc.materials {
+        let t = &m.textures;
+        for (tex, kind) in [
+            (&t.base_color, TextureColorKind::Albedo),
+            (&t.metallic_roughness, TextureColorKind::MetallicRoughness),
+            (&t.normal, TextureColorKind::Normal),
+            (&t.occlusion, TextureColorKind::Occlusion),
+            (&t.emissive, TextureColorKind::Emissive),
+        ] {
+            if let Some(tex) = tex {
+                if !wanted.iter().any(|(p, _)| *p == tex.image) {
+                    wanted.push((tex.image.clone(), kind));
+                }
+            }
+        }
+    }
+    let mut out = TextureAssets::new();
+    if wanted.is_empty() {
+        return Ok(out);
+    }
+
+    // Fetch concurrently. A missing image fails the import loudly: a sidecar
+    // that names a texture it does not ship is a broken export, and importing
+    // it untextured would look like a renderer bug.
+    let fetches = wanted.iter().map(|(rel, kind)| async move {
+        let url = resolve(sidecar_url, rel)?;
+        let resp = gloo_net::http::Request::get(&url)
+            .send()
+            .await
+            .map_err(|e| format!("fetch {url}: {e}"))?;
+        if !resp.ok() {
+            return Err(format!("fetch {url}: HTTP {}", resp.status()));
+        }
+        let bytes = resp
+            .binary()
+            .await
+            .map_err(|e| format!("read {url}: {e}"))?;
+        Ok::<_, String>((rel.clone(), *kind, bytes))
+    });
+    let fetched = futures::future::join_all(fetches).await;
+
+    let ctrl = crate::controller::controller();
+    let mut uploads = Vec::new();
+    for res in fetched {
+        let (rel, kind, bytes) = res?;
+        let mime =
+            sniff_image_mime(&bytes).ok_or_else(|| format!("{rel}: not a PNG or JPEG image"))?;
+        let hash = content_hash(&bytes);
+        let existing = {
+            let assets = ctrl.scene.assets.lock().unwrap();
+            assets
+                .entries
+                .iter()
+                .find(|(_, e)| {
+                    e.content_hash == hash
+                        && matches!(
+                            e.source,
+                            SceneAssetSource::Texture(TextureDef::Raster { .. })
+                        )
+                })
+                .map(|(id, _)| *id)
+        };
+        if let Some(id) = existing {
+            out.insert(rel, id);
+            continue;
+        }
+        let id = AssetId::new();
+        let stem = rel
+            .rsplit('/')
+            .next()
+            .and_then(|f| f.rsplit_once('.').map(|(s, _)| s))
+            .unwrap_or("texture");
+        crate::engine::bridge::texture_cache::store(id, bytes.clone(), mime);
+        ctrl.scene.assets.lock().unwrap().entries.insert(
+            id,
+            AssetEntry::new_with_hash(
+                SceneAssetSource::Texture(TextureDef::Raster {
+                    display_name: format!("{stem}.{}", mime.ext()),
+                    color_kind: Some(kind),
+                }),
+                hash,
+            ),
+        );
+        uploads.push((id, bytes, mime.as_str().to_string(), kind));
+        out.insert(rel, id);
+    }
+    if !uploads.is_empty() {
+        crate::engine::bridge::material::restore_raster_textures(uploads).await;
+        let handle = crate::engine::context::renderer_handle();
+        let mut r = handle.lock().await;
+        r.commit_load(crate::engine::activity::commit_phase_handler())
+            .await
+            .map_err(|e| format!("commit_load: {e}"))?;
+    }
+    Ok(out)
+}
+
+/// PNG or JPEG, by magic bytes — the two formats a sidecar texture may be.
+fn sniff_image_mime(bytes: &[u8]) -> Option<awsm_renderer_glb_export::ImageMime> {
+    use awsm_renderer_glb_export::ImageMime;
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        Some(ImageMime::Png)
+    } else if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        Some(ImageMime::Jpeg)
+    } else {
+        None
+    }
+}
+
+fn content_hash(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 async fn fetch_sidecar(url: &str) -> Result<Sidecar, String> {
@@ -474,6 +614,7 @@ fn build_subtree(
     doc: &Sidecar,
     meshes: &HashMap<usize, awsm_renderer_glb_export::MeshData>,
     rig: &FlexRig,
+    textures: &TextureAssets,
 ) -> Arc<Node> {
     let model_name = doc
         .model_name
@@ -516,7 +657,7 @@ fn build_subtree(
         .map(|(i, m)| {
             mint_material(
                 m.name.clone().unwrap_or_else(|| format!("material {i}")),
-                pbr_from_mujoco(m),
+                pbr_from_mujoco(m, textures),
             )
         })
         .collect();
@@ -1048,17 +1189,70 @@ fn mint_mesh(label: &str, mesh: &awsm_renderer_glb_export::MeshData) -> MeshRef 
 /// specular intensity of a dielectric is fixed, and folding MuJoCo's value into
 /// metallic would make every menagerie part (which sets `specular = 0.5` by
 /// default) read as half-metal.
-fn pbr_from_mujoco(m: &MujocoMaterial) -> MaterialDef {
+///
+/// A sidecar from a richer producer (the Isaac / USD exporter) may also carry
+/// an explicit `emissive` colour, an `alpha_mode`, `double_sided`, and texture
+/// maps with glTF semantics; each maps one-to-one onto the `MaterialDef` slot of the same
+/// name, with the textures registered by [`fetch_textures`]. A MuJoCo sidecar
+/// has none of them and maps exactly as described above.
+fn pbr_from_mujoco(m: &MujocoMaterial, textures: &TextureAssets) -> MaterialDef {
+    use awsm_renderer_editor_protocol::material::MaterialAlphaMode;
+    use awsm_renderer_editor_protocol::mujoco::{
+        MujocoAlphaMode as AlphaMode, MujocoMaterialTexture as MaterialTexture, MujocoWrap as Wrap,
+    };
+    use awsm_renderer_editor_protocol::primitive::{
+        TextureRef, TextureSampler, TextureTransform, TextureWrap,
+    };
+
+    // A texture slot: the registered asset, plus the sidecar's UV transform and
+    // wrap modes. The sidecar's transform is already glTF's, in the GLB's UV
+    // space, so it carries over verbatim.
+    let slot = |t: &Option<MaterialTexture>| -> Option<TextureRef> {
+        let t = t.as_ref()?;
+        let asset = *textures.get(&t.image)?;
+        let wrap = |w: Wrap| match w {
+            Wrap::Repeat => TextureWrap::Repeat,
+            Wrap::Mirror => TextureWrap::MirroredRepeat,
+            Wrap::Clamp => TextureWrap::ClampToEdge,
+        };
+        Some(TextureRef {
+            transform: t.transform.map(|x| TextureTransform {
+                offset: x.offset,
+                rotation: x.rotation,
+                scale: x.scale,
+            }),
+            sampler: (t.wrap != [Wrap::Repeat; 2]).then(|| TextureSampler {
+                wrap_u: wrap(t.wrap[0]),
+                wrap_v: wrap(t.wrap[1]),
+                ..TextureSampler::default()
+            }),
+            ..TextureRef::new(asset)
+        })
+    };
+    let tex = &m.textures;
     MaterialDef {
         base_color: m.rgba,
+        base_color_texture: slot(&tex.base_color),
         metallic: m.reflectance.clamp(0.0, 1.0),
         roughness: (1.0_f32 - m.shininess).clamp(0.0, 1.0),
-        emissive: [
+        metallic_roughness_texture: slot(&tex.metallic_roughness),
+        emissive: m.emissive.unwrap_or([
             m.rgba[0] * m.emission,
             m.rgba[1] * m.emission,
             m.rgba[2] * m.emission,
-        ],
-        alpha_mode: alpha_mode(m.rgba[3]),
+        ]),
+        emissive_texture: slot(&tex.emissive),
+        normal_texture: slot(&tex.normal),
+        normal_scale: tex.normal_scale,
+        occlusion_texture: slot(&tex.occlusion),
+        occlusion_strength: tex.occlusion_strength,
+        double_sided: m.double_sided,
+        alpha_mode: match m.alpha_mode {
+            Some(AlphaMode::Opaque) => MaterialAlphaMode::Opaque,
+            Some(AlphaMode::Mask { cutoff }) => MaterialAlphaMode::Mask { cutoff },
+            Some(AlphaMode::Blend) => MaterialAlphaMode::Blend,
+            None => alpha_mode(m.rgba[3]),
+        },
         ..MaterialDef::default()
     }
 }

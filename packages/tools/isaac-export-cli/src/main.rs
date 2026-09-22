@@ -80,6 +80,17 @@ fn main() -> Result<()> {
         None => None,
     };
 
+    // Texture files, at the sidecar-relative paths its materials reference.
+    let mut image_bytes = 0usize;
+    for (rel, bytes) in &out.images {
+        let path = args.out_dir.join(rel);
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+        }
+        std::fs::write(&path, bytes).with_context(|| format!("writing {}", path.display()))?;
+        image_bytes += bytes.len();
+    }
+
     let json_path = args.out_dir.join(format!("{name}.mujoco.json"));
     // Pretty-printed: the sidecar is a documented format people read and diff.
     let json = serde_json::to_string_pretty(&doc)?;
@@ -106,6 +117,12 @@ fn main() -> Result<()> {
         );
         println!("  materials  {}", doc.materials.len());
         println!("  meshes     {}", doc.meshes.len());
+        println!(
+            "  textures   {} ({} KiB, under {}/)",
+            out.images.len(),
+            image_bytes / 1024,
+            awsm_renderer_isaac_export_cli::texture::DIR
+        );
         match &glb_path {
             Some((p, len)) => println!("  glb        {} ({} KiB)", p.display(), len / 1024),
             None => println!("  glb        (none — no mesh geometry)"),

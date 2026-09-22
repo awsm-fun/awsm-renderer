@@ -51,14 +51,14 @@ pub fn build(model: &Model<'_>, source: Source) -> Result<Sidecar> {
     }
 
     for m in 0..model.nmat() {
-        out.materials.push(Material {
-            name: model.name(mjtObj::mjOBJ_MATERIAL, m).map(str::to_string),
-            rgba: read4f(model.mat_rgba(), m),
-            specular: model.mat_specular()[m],
-            shininess: model.mat_shininess()[m],
-            reflectance: model.mat_reflectance()[m],
-            emission: model.mat_emission()[m],
-        });
+        out.materials.push(Material::phong(
+            model.name(mjtObj::mjOBJ_MATERIAL, m).map(str::to_string),
+            read4f(model.mat_rgba(), m),
+            model.mat_specular()[m],
+            model.mat_shininess()[m],
+            model.mat_reflectance()[m],
+            model.mat_emission()[m],
+        ));
     }
 
     for m in 0..model.nmesh() {

@@ -74,7 +74,7 @@ is the MuJoCo id**, which is what lets a stream address nodes without a map:
 | `source` | filename, sha256, MuJoCo version — the fingerprint |
 | `bodies` | parent, pose |
 | `geoms` | kind, group, size, world pose at `qpos0`, mesh/material refs, rgba |
-| `materials` | rgba, specular, shininess, reflectance, emission — MuJoCo's Phong-ish set, mapped onto PBR at import |
+| `materials` | rgba, specular, shininess, reflectance, emission — MuJoCo's Phong-ish set, mapped onto PBR at import. Optional `emissive`, `alpha_mode`, `double_sided` and glTF-slot `textures` (images relative to the sidecar) for richer producers — never written by the MuJoCo exporter; see [`isaac.md`](isaac.md) |
 | `meshes` | name + the GLB node that holds the geometry |
 | `sites` | massless marker frames, in their own id space |
 | `tendons` | group, width, rgba, `max_waypoints`, initial waypoints |

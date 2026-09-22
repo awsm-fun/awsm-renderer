@@ -429,7 +429,7 @@
         -6.19799027757422e-17
       ],
       "mesh": 5,
-      "material": 4,
+      "material": 1,
       "rgba": [
         0.7,
         0.7,
@@ -470,7 +470,7 @@
         -6.19799027757422e-17
       ],
       "mesh": 6,
-      "material": 5,
+      "material": 3,
       "rgba": [
         0.05,
         0.05,
@@ -511,7 +511,7 @@
         -2.6890988306564154e-17
       ],
       "mesh": 7,
-      "material": 6,
+      "material": 3,
       "rgba": [
         0.05,
         0.05,
@@ -552,7 +552,7 @@
         -2.6890988306564154e-17
       ],
       "mesh": 8,
-      "material": 7,
+      "material": 1,
       "rgba": [
         0.7,
         0.7,
@@ -593,7 +593,7 @@
         0.0
       ],
       "mesh": 9,
-      "material": 8,
+      "material": 0,
       "rgba": [
         0.9,
         0.9,
@@ -634,7 +634,7 @@
         0.0
       ],
       "mesh": 10,
-      "material": 9,
+      "material": 2,
       "rgba": [
         0.1,
         0.1,
@@ -675,7 +675,7 @@
         0.0
       ],
       "mesh": 11,
-      "material": 10,
+      "material": 1,
       "rgba": [
         0.7,
         0.7,
@@ -716,7 +716,7 @@
         0.0
       ],
       "mesh": 12,
-      "material": 8,
+      "material": 0,
       "rgba": [
         0.9,
         0.9,
@@ -757,7 +757,7 @@
         0.0
       ],
       "mesh": 13,
-      "material": 11,
+      "material": 4,
       "rgba": [
         0.0,
         0.0,
@@ -798,11 +798,11 @@
         0.0
       ],
       "mesh": 14,
-      "material": 12,
+      "material": 5,
       "rgba": [
-        0.0,
-        0.1,
         1.0,
+        0.99999,
+        0.99999,
         1.0
       ]
     },
@@ -839,7 +839,7 @@
         0.0
       ],
       "mesh": 15,
-      "material": 13,
+      "material": 1,
       "rgba": [
         0.7,
         0.7,
@@ -880,7 +880,7 @@
         1.3597309847595666e-7
       ],
       "mesh": 16,
-      "material": 14,
+      "material": 1,
       "rgba": [
         0.7,
         0.7,
@@ -921,7 +921,7 @@
         0.0
       ],
       "mesh": 17,
-      "material": 15,
+      "material": 1,
       "rgba": [
         0.7,
         0.7,
@@ -962,7 +962,7 @@
         0.0
       ],
       "mesh": 18,
-      "material": 15,
+      "material": 1,
       "rgba": [
         0.7,
         0.7,
@@ -1003,7 +1003,7 @@
         0.0
       ],
       "mesh": 19,
-      "material": 16,
+      "material": 2,
       "rgba": [
         0.1,
         0.1,
@@ -1044,7 +1044,7 @@
         -1.5273690612594787e-7
       ],
       "mesh": 20,
-      "material": 17,
+      "material": 1,
       "rgba": [
         0.7,
         0.7,
@@ -1085,7 +1085,7 @@
         -1.5273690612594787e-7
       ],
       "mesh": 21,
-      "material": 17,
+      "material": 1,
       "rgba": [
         0.7,
         0.7,
@@ -1126,7 +1126,7 @@
         -1.5273690612594787e-7
       ],
       "mesh": 22,
-      "material": 18,
+      "material": 2,
       "rgba": [
         0.1,
         0.1,
@@ -1167,7 +1167,7 @@
         0.0
       ],
       "mesh": 23,
-      "material": 19,
+      "material": 1,
       "rgba": [
         0.7,
         0.7,
@@ -1208,7 +1208,7 @@
         0.0
       ],
       "mesh": 24,
-      "material": 19,
+      "material": 1,
       "rgba": [
         0.7,
         0.7,
@@ -1249,7 +1249,7 @@
         0.0
       ],
       "mesh": 25,
-      "material": 20,
+      "material": 2,
       "rgba": [
         0.1,
         0.1,
@@ -1290,7 +1290,7 @@
         1.9324943933277992e-8
       ],
       "mesh": 26,
-      "material": 21,
+      "material": 1,
       "rgba": [
         0.7,
         0.7,
@@ -1331,7 +1331,7 @@
         1.9324943933277992e-8
       ],
       "mesh": 27,
-      "material": 22,
+      "material": 2,
       "rgba": [
         0.1,
         0.1,
@@ -1372,7 +1372,7 @@
         1.9324943933277992e-8
       ],
       "mesh": 28,
-      "material": 23,
+      "material": 6,
       "rgba": [
         0.9,
         0.9,
@@ -1413,7 +1413,7 @@
         1.9324943933277992e-8
       ],
       "mesh": 29,
-      "material": 22,
+      "material": 2,
       "rgba": [
         0.1,
         0.1,
@@ -1454,7 +1454,7 @@
         1.9324943933277992e-8
       ],
       "mesh": 30,
-      "material": 21,
+      "material": 1,
       "rgba": [
         0.7,
         0.7,
@@ -1495,7 +1495,7 @@
         1.9324943933277992e-8
       ],
       "mesh": 31,
-      "material": 21,
+      "material": 1,
       "rgba": [
         0.7,
         0.7,
@@ -1536,7 +1536,7 @@
         1.9324943933277992e-8
       ],
       "mesh": 32,
-      "material": 22,
+      "material": 2,
       "rgba": [
         0.1,
         0.1,
@@ -1577,7 +1577,7 @@
         1.9324943933277992e-8
       ],
       "mesh": 33,
-      "material": 24,
+      "material": 7,
       "rgba": [
         0.5,
         0.0,
@@ -1618,7 +1618,7 @@
         1.9324943933277992e-8
       ],
       "mesh": 34,
-      "material": 25,
+      "material": 8,
       "rgba": [
         0.0,
         0.5,
@@ -1659,11 +1659,11 @@
         1.9324943933277992e-8
       ],
       "mesh": 35,
-      "material": 26,
+      "material": 5,
       "rgba": [
-        0.0,
-        0.1,
         1.0,
+        0.99999,
+        0.99999,
         1.0
       ]
     },
@@ -1700,7 +1700,7 @@
         1.9324943933277992e-8
       ],
       "mesh": 36,
-      "material": 27,
+      "material": 3,
       "rgba": [
         0.05,
         0.05,
@@ -1741,7 +1741,7 @@
         1.9324943933277992e-8
       ],
       "mesh": 37,
-      "material": 22,
+      "material": 2,
       "rgba": [
         0.1,
         0.1,
@@ -1782,7 +1782,7 @@
         1.9324943933277992e-8
       ],
       "mesh": 38,
-      "material": 28,
+      "material": 9,
       "rgba": [
         0.2,
         0.2,
@@ -1823,7 +1823,7 @@
         1.9324943933277992e-8
       ],
       "mesh": 39,
-      "material": 28,
+      "material": 9,
       "rgba": [
         0.2,
         0.2,
@@ -1864,7 +1864,7 @@
         0.0
       ],
       "mesh": 40,
-      "material": 29,
+      "material": 0,
       "rgba": [
         0.9,
         0.9,
@@ -1905,7 +1905,7 @@
         0.0
       ],
       "mesh": 41,
-      "material": 30,
+      "material": 2,
       "rgba": [
         0.1,
         0.1,
@@ -1946,7 +1946,7 @@
         0.0
       ],
       "mesh": 42,
-      "material": 31,
+      "material": 1,
       "rgba": [
         0.7,
         0.7,
@@ -1987,7 +1987,7 @@
         0.0
       ],
       "mesh": 43,
-      "material": 29,
+      "material": 0,
       "rgba": [
         0.9,
         0.9,
@@ -2050,97 +2050,6 @@
       "emission": 0.0
     },
     {
-      "name": "PlasticWhite",
-      "rgba": [
-        0.7,
-        0.7,
-        0.7,
-        1.0
-      ],
-      "specular": 0.5,
-      "shininess": 0.82,
-      "reflectance": 0.0,
-      "emission": 0.0
-    },
-    {
-      "name": "RubberGray",
-      "rgba": [
-        0.05,
-        0.05,
-        0.05,
-        1.0
-      ],
-      "specular": 0.5,
-      "shininess": 0.5,
-      "reflectance": 0.0,
-      "emission": 0.0
-    },
-    {
-      "name": "RubberGray",
-      "rgba": [
-        0.05,
-        0.05,
-        0.05,
-        1.0
-      ],
-      "specular": 0.5,
-      "shininess": 0.5,
-      "reflectance": 0.0,
-      "emission": 0.0
-    },
-    {
-      "name": "PlasticWhite",
-      "rgba": [
-        0.7,
-        0.7,
-        0.7,
-        1.0
-      ],
-      "specular": 0.5,
-      "shininess": 0.82,
-      "reflectance": 0.0,
-      "emission": 0.0
-    },
-    {
-      "name": "Aluminum",
-      "rgba": [
-        0.9,
-        0.9,
-        0.9,
-        1.0
-      ],
-      "specular": 0.5,
-      "shininess": 0.899,
-      "reflectance": 0.899,
-      "emission": 0.0
-    },
-    {
-      "name": "PlasticGray",
-      "rgba": [
-        0.1,
-        0.1,
-        0.1,
-        1.0
-      ],
-      "specular": 0.5,
-      "shininess": 0.708,
-      "reflectance": 0.0,
-      "emission": 0.0
-    },
-    {
-      "name": "PlasticWhite",
-      "rgba": [
-        0.7,
-        0.7,
-        0.7,
-        1.0
-      ],
-      "specular": 0.5,
-      "shininess": 0.82,
-      "reflectance": 0.0,
-      "emission": 0.0
-    },
-    {
       "name": "PlasticBlack",
       "rgba": [
         0.0,
@@ -2156,145 +2065,20 @@
     {
       "name": "EmissiveBlue",
       "rgba": [
-        0.0,
-        0.1,
         1.0,
+        0.99999,
+        0.99999,
         1.0
       ],
       "specular": 0.5,
       "shininess": 0.702,
       "reflectance": 0.0,
-      "emission": 1.0
-    },
-    {
-      "name": "PlasticWhite",
-      "rgba": [
-        0.7,
-        0.7,
-        0.7,
-        1.0
-      ],
-      "specular": 0.5,
-      "shininess": 0.82,
-      "reflectance": 0.0,
-      "emission": 0.0
-    },
-    {
-      "name": "PlasticWhite",
-      "rgba": [
-        0.7,
-        0.7,
-        0.7,
-        1.0
-      ],
-      "specular": 0.5,
-      "shininess": 0.82,
-      "reflectance": 0.0,
-      "emission": 0.0
-    },
-    {
-      "name": "PlasticWhite",
-      "rgba": [
-        0.7,
-        0.7,
-        0.7,
-        1.0
-      ],
-      "specular": 0.5,
-      "shininess": 0.82,
-      "reflectance": 0.0,
-      "emission": 0.0
-    },
-    {
-      "name": "PlasticGray",
-      "rgba": [
-        0.1,
-        0.1,
+      "emission": 0.0,
+      "emissive": [
+        0.0,
         0.1,
         1.0
-      ],
-      "specular": 0.5,
-      "shininess": 0.708,
-      "reflectance": 0.0,
-      "emission": 0.0
-    },
-    {
-      "name": "PlasticWhite",
-      "rgba": [
-        0.7,
-        0.7,
-        0.7,
-        1.0
-      ],
-      "specular": 0.5,
-      "shininess": 0.82,
-      "reflectance": 0.0,
-      "emission": 0.0
-    },
-    {
-      "name": "PlasticGray",
-      "rgba": [
-        0.1,
-        0.1,
-        0.1,
-        1.0
-      ],
-      "specular": 0.5,
-      "shininess": 0.708,
-      "reflectance": 0.0,
-      "emission": 0.0
-    },
-    {
-      "name": "PlasticWhite",
-      "rgba": [
-        0.7,
-        0.7,
-        0.7,
-        1.0
-      ],
-      "specular": 0.5,
-      "shininess": 0.82,
-      "reflectance": 0.0,
-      "emission": 0.0
-    },
-    {
-      "name": "PlasticGray",
-      "rgba": [
-        0.1,
-        0.1,
-        0.1,
-        1.0
-      ],
-      "specular": 0.5,
-      "shininess": 0.708,
-      "reflectance": 0.0,
-      "emission": 0.0
-    },
-    {
-      "name": "PlasticWhite",
-      "rgba": [
-        0.7,
-        0.7,
-        0.7,
-        1.0
-      ],
-      "specular": 0.5,
-      "shininess": 0.82,
-      "reflectance": 0.0,
-      "emission": 0.0
-    },
-    {
-      "name": "PlasticGray",
-      "rgba": [
-        0.1,
-        0.1,
-        0.1,
-        1.0
-      ],
-      "specular": 0.5,
-      "shininess": 0.708,
-      "reflectance": 0.0,
-      "emission": 0.0
+      ]
     },
     {
       "name": "RubberWhite",
@@ -2336,32 +2120,6 @@
       "emission": 0.0
     },
     {
-      "name": "EmissiveBlue",
-      "rgba": [
-        0.0,
-        0.1,
-        1.0,
-        1.0
-      ],
-      "specular": 0.5,
-      "shininess": 0.702,
-      "reflectance": 0.0,
-      "emission": 1.0
-    },
-    {
-      "name": "RubberGray",
-      "rgba": [
-        0.05,
-        0.05,
-        0.05,
-        1.0
-      ],
-      "specular": 0.5,
-      "shininess": 0.5,
-      "reflectance": 0.0,
-      "emission": 0.0
-    },
-    {
       "name": "RubberLightGray",
       "rgba": [
         0.2,
@@ -2371,45 +2129,6 @@
       ],
       "specular": 0.5,
       "shininess": 0.5,
-      "reflectance": 0.0,
-      "emission": 0.0
-    },
-    {
-      "name": "Aluminum",
-      "rgba": [
-        0.9,
-        0.9,
-        0.9,
-        1.0
-      ],
-      "specular": 0.5,
-      "shininess": 0.899,
-      "reflectance": 0.899,
-      "emission": 0.0
-    },
-    {
-      "name": "PlasticGray",
-      "rgba": [
-        0.1,
-        0.1,
-        0.1,
-        1.0
-      ],
-      "specular": 0.5,
-      "shininess": 0.708,
-      "reflectance": 0.0,
-      "emission": 0.0
-    },
-    {
-      "name": "PlasticWhite",
-      "rgba": [
-        0.7,
-        0.7,
-        0.7,
-        1.0
-      ],
-      "specular": 0.5,
-      "shininess": 0.82,
       "reflectance": 0.0,
       "emission": 0.0
     }

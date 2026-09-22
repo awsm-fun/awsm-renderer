@@ -24,10 +24,10 @@
   read `delta_time` from `frame_globals()` so pause / time-scale /
   replay flow through automatically.
 - Isaac Sim / Isaac Lab robots ✅ — `awsm-renderer-isaac-export` reads USD
-  (pure-Rust `openusd`) into the MuJoCo sidecar + GLB seam; see
-  [`isaac.md`](isaac.md). Follow-ups: a live Isaac Lab streaming test (needs a
-  Linux/RTX box), captures recorded from Isaac Lab, and material textures
-  across the sidecar (an additive field on the published format).
+  (pure-Rust `openusd`) into the MuJoCo sidecar + GLB seam, texture maps
+  included (glTF slots on the sidecar material); see [`isaac.md`](isaac.md).
+  Follow-ups: a live Isaac Lab streaming test (needs a Linux/RTX box) and
+  captures recorded from Isaac Lab.
 - Make transparent meshes pickable
   - Maybe global "editor_mode" on renderer that toggles some less-efficient behavior
     - All meshes get both transparent and opaque geometry 

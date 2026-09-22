@@ -94,67 +94,598 @@ scattering_anisotropy = 0.30000001192092896
 volumetric_distance = 80.0
 volumetric_temporal = false
 
-[assets.26c30cbc-5f29-4f4d-b8e7-d0157dcc637c]
+[assets.357124cf-e13c-423c-94f2-0c982a4eee30]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
 lod = "none"
 
-[assets.26c30cbc-5f29-4f4d-b8e7-d0157dcc637c.source]
+[assets.357124cf-e13c-423c-94f2-0c982a4eee30.source]
 mesh = "glb"
 
-[assets.0cb716eb-3d4d-42c4-aa45-c6b24ec010c9]
+[assets.0cea5b8a-f624-4073-b5f5-f4f5a995aad2]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
 lod = "none"
 
-[assets.0cb716eb-3d4d-42c4-aa45-c6b24ec010c9.source]
+[assets.0cea5b8a-f624-4073-b5f5-f4f5a995aad2.source]
 mesh = "glb"
 
-[assets.f02a364f-ac50-4536-b41c-2e9470b6def9]
+[assets.48e87e95-5afb-4d16-b373-13eb0780732b]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+texture_encoding = "ktx2"
+lod = "none"
+
+[assets.48e87e95-5afb-4d16-b373-13eb0780732b.source.texture.raster]
+display_name = "hip-be5905b8.jpg"
+color_kind = "albedo"
+
+[assets.9aeacf59-a266-4516-ac48-5155d4bfc5f8]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
 lod = "none"
 
-[assets.f02a364f-ac50-4536-b41c-2e9470b6def9.source]
+[assets.9aeacf59-a266-4516-ac48-5155d4bfc5f8.source]
 mesh = "glb"
 
-[assets.420dec69-856a-411d-ad84-692045c74b0c]
+[assets.4bbf5c9f-237a-4b09-aa69-69f0861db917]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
 lod = "none"
 
-[assets.420dec69-856a-411d-ad84-692045c74b0c.source]
+[assets.4bbf5c9f-237a-4b09-aa69-69f0861db917.source]
 mesh = "glb"
 
-[assets.2987fed2-1200-44c1-ac3c-f7fbc5b6abfe]
+[assets.fa450df0-0fe1-4ec7-ab5c-3427ab6aa70d]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
 lod = "none"
 
-[assets.2987fed2-1200-44c1-ac3c-f7fbc5b6abfe.source]
+[assets.fa450df0-0fe1-4ec7-ab5c-3427ab6aa70d.source]
 mesh = "glb"
 
-[assets.14847690-5b86-42d1-be4a-9d5f09f1c477]
+[assets.f607c14c-2ca8-4a1c-a5c3-a4118b75519b]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
 lod = "none"
 
-[assets.14847690-5b86-42d1-be4a-9d5f09f1c477.source]
+[assets.f607c14c-2ca8-4a1c-a5c3-a4118b75519b.source]
 mesh = "glb"
 
-[assets.f84886f8-c3a9-4e12-a422-31529eb91cf9]
+[assets.c77e4981-55a8-4713-a166-b7ca27d7851e]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
 lod = "none"
 
-[assets.f84886f8-c3a9-4e12-a422-31529eb91cf9.source]
+[assets.c77e4981-55a8-4713-a166-b7ca27d7851e.source]
+mesh = "glb"
+
+[assets.b8b2ab91-dfda-4c3e-9032-a058ebce17b7]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.b8b2ab91-dfda-4c3e-9032-a058ebce17b7.source]
+mesh = "glb"
+
+[assets.b00c2e42-fa48-4bfd-9fd4-f2bb0e0749d1]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.b00c2e42-fa48-4bfd-9fd4-f2bb0e0749d1.source]
+mesh = "glb"
+
+[assets.70320aff-9c78-4233-8d87-cb54608ef745]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.70320aff-9c78-4233-8d87-cb54608ef745.source]
+mesh = "glb"
+
+[assets.57d724d1-b6b2-4a63-b563-b235aea3dd49]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.57d724d1-b6b2-4a63-b563-b235aea3dd49.source]
+mesh = "glb"
+
+[assets.df87cc50-dbce-46f3-84a4-50086bc63526]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.df87cc50-dbce-46f3-84a4-50086bc63526.source]
+mesh = "glb"
+
+[assets.8f8766d9-b2c3-4a2d-a4bd-be93a49f0660]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.8f8766d9-b2c3-4a2d-a4bd-be93a49f0660.source]
+mesh = "glb"
+
+[assets.b9a6ac76-2b9c-48a9-9808-ba2ed11311ba]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.b9a6ac76-2b9c-48a9-9808-ba2ed11311ba.source]
+mesh = "glb"
+
+[assets.cf910f61-1d48-4e5c-ab07-2bc9ded256ab]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+texture_encoding = "ktx2"
+lod = "none"
+
+[assets.cf910f61-1d48-4e5c-ab07-2bc9ded256ab.source.texture.raster]
+display_name = "shank-400f2987.jpg"
+color_kind = "albedo"
+
+[assets.627d5de3-8510-4ecc-859f-a6b11488018a]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.627d5de3-8510-4ecc-859f-a6b11488018a.source]
+mesh = "glb"
+
+[assets.9ad8f6d1-e54f-4e7a-ba27-e93a93b2b7d9]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.9ad8f6d1-e54f-4e7a-ba27-e93a93b2b7d9.source]
+mesh = "glb"
+
+[assets.d6a9515a-ecae-40be-9ca6-7a8e96ff5c92]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+texture_encoding = "ktx2"
+lod = "none"
+
+[assets.d6a9515a-ecae-40be-9ca6-7a8e96ff5c92.source.texture.raster]
+display_name = "base-e3a6fe11.jpg"
+color_kind = "albedo"
+
+[assets.31f85cd0-df3a-41b5-bec3-84a65e6a60b5]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+texture_encoding = "ktx2"
+lod = "none"
+
+[assets.31f85cd0-df3a-41b5-bec3-84a65e6a60b5.source.texture.raster]
+display_name = "battery-dc2968cc.jpg"
+color_kind = "albedo"
+
+[assets.8ae1b984-944a-401f-babb-dfed443cbd74]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+texture_encoding = "ktx2"
+lod = "none"
+
+[assets.8ae1b984-944a-401f-babb-dfed443cbd74.source.texture.raster]
+display_name = "thigh-bd152dbc.jpg"
+color_kind = "albedo"
+
+[assets.bfcc9f97-6f4a-4863-838e-6a6b575c37da]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.bfcc9f97-6f4a-4863-838e-6a6b575c37da.source]
+mesh = "glb"
+
+[assets.eb66536e-0ce3-445e-9da6-1ff23c2585a1]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.eb66536e-0ce3-445e-9da6-1ff23c2585a1.source]
+mesh = "glb"
+
+[assets.1d854b28-3926-4771-9f40-881cd256c0d0]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.1d854b28-3926-4771-9f40-881cd256c0d0.source]
+mesh = "glb"
+
+[assets.e5e4b3e4-2163-42a7-80e0-9bf6a605862a]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.e5e4b3e4-2163-42a7-80e0-9bf6a605862a.source]
+mesh = "glb"
+
+[assets.d94d8b4b-b701-4acf-8a43-9008127026a1]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.d94d8b4b-b701-4acf-8a43-9008127026a1.source]
+mesh = "glb"
+
+[assets.ff66ff31-097a-4c31-a55c-a194da9bcdb0]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.ff66ff31-097a-4c31-a55c-a194da9bcdb0.source]
+mesh = "glb"
+
+[assets.e5d5c2a1-1d29-4b17-8b1a-d26cf7f475d8]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.e5d5c2a1-1d29-4b17-8b1a-d26cf7f475d8.source]
+mesh = "glb"
+
+[assets.6312b22b-2f99-4824-96d0-94681ff97252]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.6312b22b-2f99-4824-96d0-94681ff97252.source]
+mesh = "glb"
+
+[assets.046a18cc-fce0-4498-a362-7f397a8e3636]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.046a18cc-fce0-4498-a362-7f397a8e3636.source]
+mesh = "glb"
+
+[assets.82fbdaf6-95a2-45ed-abdb-31594d0bc980]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.82fbdaf6-95a2-45ed-abdb-31594d0bc980.source]
+mesh = "glb"
+
+[assets.c644d98c-d359-4939-9e96-3c188637bacb]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.c644d98c-d359-4939-9e96-3c188637bacb.source]
+mesh = "glb"
+
+[assets.c8ed9b4f-a70b-487d-886d-adf3a1d5d0c2]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+texture_encoding = "ktx2"
+lod = "none"
+
+[assets.c8ed9b4f-a70b-487d-886d-adf3a1d5d0c2.source.texture.raster]
+display_name = "drive-bcf0cd84.jpg"
+color_kind = "albedo"
+
+[assets.ec6f1ea0-a6ac-4570-a955-c455c437b918]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.ec6f1ea0-a6ac-4570-a955-c455c437b918.source]
+mesh = "glb"
+
+[assets.3eee2106-3e47-4883-ae54-f3a8cc159634]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.3eee2106-3e47-4883-ae54-f3a8cc159634.source]
+mesh = "glb"
+
+[assets.ed079108-1694-4643-b3c2-f3f6588f717e]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.ed079108-1694-4643-b3c2-f3f6588f717e.source]
+mesh = "glb"
+
+[assets.5d363447-9993-44cc-aac4-ac711ddadcac]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.5d363447-9993-44cc-aac4-ac711ddadcac.source]
+mesh = "glb"
+
+[assets.2b0091dc-eea3-477a-9e15-71959225341f]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.2b0091dc-eea3-477a-9e15-71959225341f.source]
+mesh = "glb"
+
+[assets.35745375-84f1-463b-b7d2-8721bacb8f49]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.35745375-84f1-463b-b7d2-8721bacb8f49.source]
+mesh = "glb"
+
+[assets.c90234e8-46be-4ea1-9389-bcefee4fea7b]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.c90234e8-46be-4ea1-9389-bcefee4fea7b.source]
+mesh = "glb"
+
+[assets.94fc3029-af98-44ba-8c4b-af6960125faf]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.94fc3029-af98-44ba-8c4b-af6960125faf.source]
+mesh = "glb"
+
+[assets.901c904d-86a1-4c9b-9d53-589b6ff3f316]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.901c904d-86a1-4c9b-9d53-589b6ff3f316.source]
+mesh = "glb"
+
+[assets.0ef4a252-1bd3-4dbe-a9a3-24fa8589bac6]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.0ef4a252-1bd3-4dbe-a9a3-24fa8589bac6.source]
+mesh = "glb"
+
+[assets.7a8d3db1-1cf8-4e92-a4ef-3a98545f0cc1]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.7a8d3db1-1cf8-4e92-a4ef-3a98545f0cc1.source]
+mesh = "glb"
+
+[assets.def2f736-268b-4d97-bec8-44d1f8d101ff]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+texture_encoding = "ktx2"
+lod = "none"
+
+[assets.def2f736-268b-4d97-bec8-44d1f8d101ff.source.texture.raster]
+display_name = "top_shell-59696c6f.jpg"
+color_kind = "albedo"
+
+[assets.04eb2aa2-f8da-4f93-a8a8-608589410733]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.04eb2aa2-f8da-4f93-a8a8-608589410733.source]
+mesh = "glb"
+
+[assets.c773cfd7-a88a-4f17-9647-923564c342eb]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.c773cfd7-a88a-4f17-9647-923564c342eb.source]
+mesh = "glb"
+
+[assets.fb058639-7beb-44f2-b08b-b6008d1e0da6]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.fb058639-7beb-44f2-b08b-b6008d1e0da6.source]
+mesh = "glb"
+
+[assets.940e3031-cd90-4997-8215-59d377a037ff]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.940e3031-cd90-4997-8215-59d377a037ff.source]
+mesh = "glb"
+
+[assets.9d1055e9-7173-4f21-affc-2511e8f557a3]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.9d1055e9-7173-4f21-affc-2511e8f557a3.source]
+mesh = "glb"
+
+[assets.b01f0621-a72a-4258-a1ff-14e37b1f8042]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+texture_encoding = "ktx2"
+lod = "none"
+
+[assets.b01f0621-a72a-4258-a1ff-14e37b1f8042.source.texture.raster]
+display_name = "lidar_guard-a65c64db.jpg"
+color_kind = "albedo"
+
+[assets.3ef3fedc-e2af-488b-b0ce-df528ee8ef70]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.3ef3fedc-e2af-488b-b0ce-df528ee8ef70.source]
+mesh = "glb"
+
+[assets.58c9a102-be8b-424f-9ac3-c79c65923b34]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.58c9a102-be8b-424f-9ac3-c79c65923b34.source]
+mesh = "glb"
+
+[assets.19c814c4-1725-49f2-9fd8-fef1a2b62ee1]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.19c814c4-1725-49f2-9fd8-fef1a2b62ee1.source]
+mesh = "glb"
+
+[assets.c70412b5-410c-40d6-8d97-85e96fb036ae]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.c70412b5-410c-40d6-8d97-85e96fb036ae.source]
+mesh = "glb"
+
+[assets.a76f9459-1f77-4cae-873f-48d7de3d8a61]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.a76f9459-1f77-4cae-873f-48d7de3d8a61.source]
+mesh = "glb"
+
+[assets.ad098ae5-3ee1-4c80-9c25-2e2c8544c368]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.ad098ae5-3ee1-4c80-9c25-2e2c8544c368.source]
+mesh = "glb"
+
+[assets.2669130b-cf58-4d92-b4bf-7646472b0e3b]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.2669130b-cf58-4d92-b4bf-7646472b0e3b.source]
+mesh = "glb"
+
+[assets.ce3c1f30-7524-4a1a-a967-a85c049fb077]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+texture_encoding = "ktx2"
+lod = "none"
+
+[assets.ce3c1f30-7524-4a1a-a967-a85c049fb077.source.texture.raster]
+display_name = "foot-0617ab4a.jpg"
+color_kind = "albedo"
+
+[assets.8757e038-913d-414e-b00d-977e8599118a]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.8757e038-913d-414e-b00d-977e8599118a.source]
+mesh = "glb"
+
+[assets.7564818c-8d5f-490e-ad15-9f0e04cff13f]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.7564818c-8d5f-490e-ad15-9f0e04cff13f.source]
+mesh = "glb"
+
+[assets.173fe917-6195-4e5b-a375-b0858b4500ec]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.173fe917-6195-4e5b-a375-b0858b4500ec.source]
+mesh = "glb"
+
+[assets.f7d93916-0989-4fca-a458-89ad4c0c5c08]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.f7d93916-0989-4fca-a458-89ad4c0c5c08.source]
+mesh = "glb"
+
+[assets.12cce5b3-075c-4848-bb08-ec8a5ab8cfc0]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.12cce5b3-075c-4848-bb08-ec8a5ab8cfc0.source]
 mesh = "glb"
 
 [assets.00000000-0000-4000-8000-000000000001]
@@ -169,686 +700,309 @@ depth = 2.4000000953674316
 segments_x = 1
 segments_z = 1
 
-[assets.60bfe666-b536-4dab-9d1f-18c0db35f724]
+[assets.b1776a3c-098b-40f4-9ee9-72b1db24ad71]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
+texture_encoding = "ktx2"
 lod = "none"
 
-[assets.60bfe666-b536-4dab-9d1f-18c0db35f724.source]
-mesh = "glb"
-
-[assets.71a02bc9-fe0e-4364-8320-01c2166622e1]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-lod = "none"
-
-[assets.71a02bc9-fe0e-4364-8320-01c2166622e1.source]
-mesh = "glb"
-
-[assets.87bbae31-8096-4f28-bb74-c4ec07097e9f]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-lod = "none"
-
-[assets.87bbae31-8096-4f28-bb74-c4ec07097e9f.source]
-mesh = "glb"
-
-[assets.e5fa83bd-3aff-42ae-8a56-27e0cdd4195e]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-lod = "none"
-
-[assets.e5fa83bd-3aff-42ae-8a56-27e0cdd4195e.source]
-mesh = "glb"
-
-[assets.a5b20204-6912-4629-97f6-62cce31e5d50]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-lod = "none"
-
-[assets.a5b20204-6912-4629-97f6-62cce31e5d50.source]
-mesh = "glb"
-
-[assets.cbafafb7-3436-444f-883f-c63b16870b37]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-lod = "none"
-
-[assets.cbafafb7-3436-444f-883f-c63b16870b37.source]
-mesh = "glb"
-
-[assets.43e03dab-c070-415a-aaf6-31d1a1093b51]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-lod = "none"
-
-[assets.43e03dab-c070-415a-aaf6-31d1a1093b51.source]
-mesh = "glb"
-
-[assets.1f2c774d-ca36-4cb7-9154-b5f16d3c3aa0]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-lod = "none"
-
-[assets.1f2c774d-ca36-4cb7-9154-b5f16d3c3aa0.source]
-mesh = "glb"
-
-[assets.cd42f6c3-acb4-4abf-9472-6ce905a46e28]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-lod = "none"
-
-[assets.cd42f6c3-acb4-4abf-9472-6ce905a46e28.source]
-mesh = "glb"
-
-[assets.e9764f4b-0d9f-4b68-9419-75295ff8264b]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-lod = "none"
-
-[assets.e9764f4b-0d9f-4b68-9419-75295ff8264b.source]
-mesh = "glb"
-
-[assets.f328667f-9452-4197-9bee-d4e18f2c37c3]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-lod = "none"
-
-[assets.f328667f-9452-4197-9bee-d4e18f2c37c3.source]
-mesh = "glb"
-
-[assets.40c32da1-74fc-4a92-a456-391d0333df17]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-lod = "none"
-
-[assets.40c32da1-74fc-4a92-a456-391d0333df17.source]
-mesh = "glb"
-
-[assets.3eb43971-f9b5-44b3-bce1-05b790fa5dc7]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-lod = "none"
-
-[assets.3eb43971-f9b5-44b3-bce1-05b790fa5dc7.source]
-mesh = "glb"
-
-[assets.7834d5ac-e596-452f-bc82-623fab0b330a]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-lod = "none"
-
-[assets.7834d5ac-e596-452f-bc82-623fab0b330a.source]
-mesh = "glb"
-
-[assets.6c9c6fe7-cdae-4939-a06f-430032c19977]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-lod = "none"
-
-[assets.6c9c6fe7-cdae-4939-a06f-430032c19977.source]
-mesh = "glb"
-
-[assets.21b3a18f-f1ed-45c7-81b2-a4883afffd93]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-lod = "none"
-
-[assets.21b3a18f-f1ed-45c7-81b2-a4883afffd93.source]
-mesh = "glb"
-
-[assets.2b46c921-f118-47b9-90cf-95ec30cf4856]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-lod = "none"
-
-[assets.2b46c921-f118-47b9-90cf-95ec30cf4856.source]
-mesh = "glb"
-
-[assets.cd594a9b-2a31-44bd-96d7-e9b576a8e970]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-lod = "none"
-
-[assets.cd594a9b-2a31-44bd-96d7-e9b576a8e970.source]
-mesh = "glb"
-
-[assets.3c0a8479-f4dc-485f-b628-f81558126a04]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-lod = "none"
-
-[assets.3c0a8479-f4dc-485f-b628-f81558126a04.source]
-mesh = "glb"
-
-[assets.09a250e8-0fbd-471f-a170-b14bc4c045d1]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-lod = "none"
-
-[assets.09a250e8-0fbd-471f-a170-b14bc4c045d1.source]
-mesh = "glb"
-
-[assets.69d4f647-5dcc-4feb-8079-b282528fdff9]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-lod = "none"
-
-[assets.69d4f647-5dcc-4feb-8079-b282528fdff9.source]
-mesh = "glb"
-
-[assets.a811ad0c-6add-4f60-845b-229e3de803c3]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-lod = "none"
-
-[assets.a811ad0c-6add-4f60-845b-229e3de803c3.source]
-mesh = "glb"
-
-[assets.9e8d3cb0-cf77-41c0-b665-8cc1e3b8bd66]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-lod = "none"
+[assets.b1776a3c-098b-40f4-9ee9-72b1db24ad71.source.texture.raster]
+display_name = "face_shell-edd52422.jpg"
+color_kind = "albedo"
 
-[assets.9e8d3cb0-cf77-41c0-b665-8cc1e3b8bd66.source]
-mesh = "glb"
-
-[assets.117c0edf-17c4-46c9-9f2f-cca20aeb36b7]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-lod = "none"
-
-[assets.117c0edf-17c4-46c9-9f2f-cca20aeb36b7.source]
-mesh = "glb"
-
-[assets.90761c18-cdb1-40ef-9be3-eaebb7c38b9f]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-lod = "none"
-
-[assets.90761c18-cdb1-40ef-9be3-eaebb7c38b9f.source]
-mesh = "glb"
-
-[assets.bb87c9c0-b2a5-43d5-b58b-0d8299177ebc]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-lod = "none"
-
-[assets.bb87c9c0-b2a5-43d5-b58b-0d8299177ebc.source]
-mesh = "glb"
-
-[assets.ed378314-4746-4e3e-97d5-6c95a897ad54]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-lod = "none"
-
-[assets.ed378314-4746-4e3e-97d5-6c95a897ad54.source]
-mesh = "glb"
-
-[assets.a627b15d-555a-4ec2-9e49-9b50a25d43aa]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-lod = "none"
-
-[assets.a627b15d-555a-4ec2-9e49-9b50a25d43aa.source]
-mesh = "glb"
-
-[assets.24bb3965-b265-49da-906d-598f92413822]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-lod = "none"
-
-[assets.24bb3965-b265-49da-906d-598f92413822.source]
-mesh = "glb"
-
-[assets.c0493a26-9529-430d-97fa-81baf90c3aca]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-lod = "none"
-
-[assets.c0493a26-9529-430d-97fa-81baf90c3aca.source]
-mesh = "glb"
-
-[assets.c36ed063-8663-4570-b134-abc343fbf839]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-lod = "none"
-
-[assets.c36ed063-8663-4570-b134-abc343fbf839.source]
-mesh = "glb"
-
-[assets.37264ec2-f2ce-43c5-9739-52f2ea624e91]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-lod = "none"
-
-[assets.37264ec2-f2ce-43c5-9739-52f2ea624e91.source]
-mesh = "glb"
-
-[assets.e0e6fb14-85a0-4cb0-a1fe-d67c27ab1b33]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-lod = "none"
-
-[assets.e0e6fb14-85a0-4cb0-a1fe-d67c27ab1b33.source]
-mesh = "glb"
-
-[assets.e68425bf-8674-4ebe-bc59-8d69f0f2e6b7]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-lod = "none"
-
-[assets.e68425bf-8674-4ebe-bc59-8d69f0f2e6b7.source]
-mesh = "glb"
-
-[assets.754b55bf-c66d-4df9-a7a0-666e620bf56a]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-lod = "none"
-
-[assets.754b55bf-c66d-4df9-a7a0-666e620bf56a.source]
-mesh = "glb"
-
-[assets.8e8d482c-92c4-463a-b592-047021c6671f]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-lod = "none"
-
-[assets.8e8d482c-92c4-463a-b592-047021c6671f.source]
-mesh = "glb"
-
-[assets.e746aa8e-3434-4185-92f2-ad9689993c78]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-lod = "none"
-
-[assets.e746aa8e-3434-4185-92f2-ad9689993c78.source]
-mesh = "glb"
-
-[assets.81b7076c-64d7-4412-b010-cca0701b1b31]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-lod = "none"
-
-[assets.81b7076c-64d7-4412-b010-cca0701b1b31.source]
-mesh = "glb"
-
-[assets.b088c2c3-2758-4156-aadd-50e60c6277b4]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-lod = "none"
-
-[assets.b088c2c3-2758-4156-aadd-50e60c6277b4.source]
-mesh = "glb"
-
-[assets.3f7fd6d9-8358-42e2-9415-78cd385f2217]
+[assets.c1deff84-264c-45ad-91b8-7d5eb34b79fe]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
 lod = "none"
 
-[assets.3f7fd6d9-8358-42e2-9415-78cd385f2217.source]
+[assets.c1deff84-264c-45ad-91b8-7d5eb34b79fe.source]
 mesh = "glb"
 
-[assets.b3b8163d-7e45-424d-bf25-b9b86dacd2f0]
+[assets.8f17e13f-3403-4048-8c69-f03151ac8e4a]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
 lod = "none"
 
-[assets.b3b8163d-7e45-424d-bf25-b9b86dacd2f0.source]
+[assets.8f17e13f-3403-4048-8c69-f03151ac8e4a.source]
 mesh = "glb"
 
-[assets.5cc8af29-b711-434b-aefa-42bd20db4e49]
+[assets.7cd4273f-b936-4a9c-a6ae-a7162df13620]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
 lod = "none"
 
-[assets.5cc8af29-b711-434b-aefa-42bd20db4e49.source]
+[assets.7cd4273f-b936-4a9c-a6ae-a7162df13620.source]
 mesh = "glb"
 
-[assets.8f928554-653b-4c54-b688-839041a3a545]
+[assets.215419f8-0dec-4e41-89bd-529f9b69c8e9]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
 lod = "none"
 
-[assets.8f928554-653b-4c54-b688-839041a3a545.source]
+[assets.215419f8-0dec-4e41-89bd-529f9b69c8e9.source]
 mesh = "glb"
 
-[assets.b1975e47-c678-414b-ab25-60b36fe400bd]
+[assets.661e12ec-4853-474c-a695-e45e392e6a5e]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
+texture_encoding = "ktx2"
 lod = "none"
 
-[assets.b1975e47-c678-414b-ab25-60b36fe400bd.source]
-mesh = "glb"
-
-[assets.8b426e6d-e774-4cc2-937e-862498a4afc1]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-lod = "none"
-
-[assets.8b426e6d-e774-4cc2-937e-862498a4afc1.source]
-mesh = "glb"
-
-[assets.79c290f5-b211-4525-865c-9d3d018ac5ed]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-lod = "none"
-
-[assets.79c290f5-b211-4525-865c-9d3d018ac5ed.source]
-mesh = "glb"
-
-[assets.405499db-cfe3-4a54-8af5-23aa58c36a63]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-lod = "none"
-
-[assets.405499db-cfe3-4a54-8af5-23aa58c36a63.source]
-mesh = "glb"
-
-[assets.8b0dbed2-4a85-4f4f-9d33-38d754accb70]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-lod = "none"
-
-[assets.8b0dbed2-4a85-4f4f-9d33-38d754accb70.source]
-mesh = "glb"
+[assets.661e12ec-4853-474c-a695-e45e392e6a5e.source.texture.raster]
+display_name = "lidar-cf9fba85.jpg"
+color_kind = "albedo"
 
-[assets.73f60483-b65a-4419-b855-1a2d84a01c30]
+[assets.cfd0d356-e6a2-457f-9751-a0a81cf7ac51]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
 lod = "none"
 
-[assets.73f60483-b65a-4419-b855-1a2d84a01c30.source]
+[assets.cfd0d356-e6a2-457f-9751-a0a81cf7ac51.source]
 mesh = "glb"
 
-[assets.ce9b904c-6f8f-4388-90da-245422dcfb03]
+[assets.154084eb-82fd-4ce5-98d5-9d9ebc4269e7]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
 lod = "none"
 
-[assets.ce9b904c-6f8f-4388-90da-245422dcfb03.source]
+[assets.154084eb-82fd-4ce5-98d5-9d9ebc4269e7.source]
 mesh = "glb"
 
-[assets.18518759-dd95-4022-933c-a4e93fec7aca]
+[assets.28584b6d-5815-48fa-9b0e-274661a2013a]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
 lod = "none"
 
-[assets.18518759-dd95-4022-933c-a4e93fec7aca.source]
+[assets.28584b6d-5815-48fa-9b0e-274661a2013a.source]
 mesh = "glb"
 
-[assets.b1930933-9634-4492-97ec-c8b0f04159cb]
+[assets.113b79da-ea95-4e6f-88a7-91c4a2d6c10f]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
 lod = "none"
 
-[assets.b1930933-9634-4492-97ec-c8b0f04159cb.source]
+[assets.113b79da-ea95-4e6f-88a7-91c4a2d6c10f.source]
 mesh = "glb"
 
-[assets.45e6cf6a-bc83-4fde-b819-94d10a43212b]
+[assets.3d847357-e07c-4e47-aefc-ceeb09bc1f43]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
 lod = "none"
 
-[assets.45e6cf6a-bc83-4fde-b819-94d10a43212b.source]
+[assets.3d847357-e07c-4e47-aefc-ceeb09bc1f43.source]
 mesh = "glb"
 
-[assets.a0c8c40b-f9dc-4501-b65e-655fcf5e783b]
+[assets.17211569-b696-4b4c-a7af-3f4693153d79]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
 lod = "none"
 
-[assets.a0c8c40b-f9dc-4501-b65e-655fcf5e783b.source]
+[assets.17211569-b696-4b4c-a7af-3f4693153d79.source]
 mesh = "glb"
 
-[assets.4c975821-00cc-4590-b5d5-21a4bcfc9c49]
+[assets.94e57eaa-f959-4d08-8c7c-700c504badc2]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
+texture_encoding = "ktx2"
 lod = "none"
 
-[assets.4c975821-00cc-4590-b5d5-21a4bcfc9c49.source]
-mesh = "glb"
-
-[assets.4fb56b3c-f7b0-4908-8182-cbcd765a56cb]
-gltf_material_asset_ids = []
-gltf_image_asset_ids = []
-content_hash = ""
-lod = "none"
-
-[assets.4fb56b3c-f7b0-4908-8182-cbcd765a56cb.source]
-mesh = "glb"
+[assets.94e57eaa-f959-4d08-8c7c-700c504badc2.source.texture.raster]
+display_name = "docking_socket-8c18aa11.jpg"
+color_kind = "albedo"
 
-[assets.dc17212b-2efa-4348-96cc-94d8805b1ab8]
+[assets.137359a8-15f5-41a2-af8a-bbbcc4258173]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
 lod = "none"
 
-[assets.dc17212b-2efa-4348-96cc-94d8805b1ab8.source]
+[assets.137359a8-15f5-41a2-af8a-bbbcc4258173.source]
 mesh = "glb"
 
-[assets.3b6d13a2-6ea8-4349-a653-26930859f0e7]
+[assets.7281827b-e175-410b-b00f-13a1b4697231]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
 lod = "none"
 
-[assets.3b6d13a2-6ea8-4349-a653-26930859f0e7.source]
+[assets.7281827b-e175-410b-b00f-13a1b4697231.source]
 mesh = "glb"
 
-[assets.78f48c4f-6972-4f1b-bf6a-970197d14846]
+[assets.7e032ecf-04a5-4421-8e96-d6acd4860879]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
 lod = "none"
 
-[assets.78f48c4f-6972-4f1b-bf6a-970197d14846.source]
+[assets.7e032ecf-04a5-4421-8e96-d6acd4860879.source]
 mesh = "glb"
 
-[assets.aa261051-10d7-452d-88ef-12ad15b28c11]
+[assets.78776849-93ab-4077-a11f-5483bd37b60c]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
 lod = "none"
 
-[assets.aa261051-10d7-452d-88ef-12ad15b28c11.source]
+[assets.78776849-93ab-4077-a11f-5483bd37b60c.source]
 mesh = "glb"
 
-[assets.599aa449-a64e-4ff0-8d6a-59cc590838c4]
+[assets.f16e7413-a719-444b-8148-09469c42e748]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
+texture_encoding = "ktx2"
 lod = "none"
 
-[assets.599aa449-a64e-4ff0-8d6a-59cc590838c4.source]
-mesh = "glb"
+[assets.f16e7413-a719-444b-8148-09469c42e748.source.texture.raster]
+display_name = "bottom_shell-d3bd38b0.jpg"
+color_kind = "albedo"
 
-[assets.d9da26b8-bb60-4ce3-ba3f-a79407d33206]
+[assets.7ed3333a-dfcc-47a0-9ede-582ed21063b9]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
 lod = "none"
 
-[assets.d9da26b8-bb60-4ce3-ba3f-a79407d33206.source]
+[assets.7ed3333a-dfcc-47a0-9ede-582ed21063b9.source]
 mesh = "glb"
 
-[assets.b77f0105-48e6-43dd-9e98-eb5e82c0649a]
+[assets.5cef6e13-9fd2-4642-bffe-fda3ea84d1b9]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
 lod = "none"
 
-[assets.b77f0105-48e6-43dd-9e98-eb5e82c0649a.source]
+[assets.5cef6e13-9fd2-4642-bffe-fda3ea84d1b9.source]
 mesh = "glb"
 
-[assets.c4083989-967d-4dc6-a55b-a00d02a79e33]
+[assets.0d1a60da-d1e8-4fed-9f8c-0e47fb73a039]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
 lod = "none"
 
-[assets.c4083989-967d-4dc6-a55b-a00d02a79e33.source]
+[assets.0d1a60da-d1e8-4fed-9f8c-0e47fb73a039.source]
 mesh = "glb"
 
-[assets.a9569a5f-b9be-4e04-a3ef-812a454b39d2]
+[assets.ad6798f2-1515-4de9-92ad-160c1792f75d]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
 lod = "none"
 
-[assets.a9569a5f-b9be-4e04-a3ef-812a454b39d2.source]
+[assets.ad6798f2-1515-4de9-92ad-160c1792f75d.source]
 mesh = "glb"
 
-[assets.742dfac1-d5d5-49d4-99f2-f91d4c57ff69]
+[assets.e305e988-1e23-4f49-9cd9-219b7fb193f1]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
+texture_encoding = "ktx2"
 lod = "none"
 
-[assets.742dfac1-d5d5-49d4-99f2-f91d4c57ff69.source]
-mesh = "glb"
+[assets.e305e988-1e23-4f49-9cd9-219b7fb193f1.source.texture.raster]
+display_name = "mount-f5ceea0b.jpg"
+color_kind = "albedo"
 
-[assets.0ca1d98d-9e14-4bcf-8b89-4e6feecdccdf]
+[assets.9451ce74-85c0-4141-9084-304e79428479]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
 lod = "none"
 
-[assets.0ca1d98d-9e14-4bcf-8b89-4e6feecdccdf.source]
+[assets.9451ce74-85c0-4141-9084-304e79428479.source]
 mesh = "glb"
 
-[assets.33f2d4a4-dbc9-4638-8882-d5291aafe147]
+[assets.888db881-01e9-4bb1-af68-6d34104c0977]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
 lod = "none"
 
-[assets.33f2d4a4-dbc9-4638-8882-d5291aafe147.source]
+[assets.888db881-01e9-4bb1-af68-6d34104c0977.source]
 mesh = "glb"
 
-[assets.e26d3e9c-d27b-449b-9d0d-3e970fe402d0]
+[assets.cd9dc87b-27bb-48c3-b624-b080cdb2158b]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
 lod = "none"
 
-[assets.e26d3e9c-d27b-449b-9d0d-3e970fe402d0.source]
+[assets.cd9dc87b-27bb-48c3-b624-b080cdb2158b.source]
 mesh = "glb"
 
-[assets.139a6363-e72b-4a69-88b6-29ead99247ad]
+[assets.4250b720-c2a6-4716-960d-d35f7e169d05]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
 lod = "none"
 
-[assets.139a6363-e72b-4a69-88b6-29ead99247ad.source]
+[assets.4250b720-c2a6-4716-960d-d35f7e169d05.source]
 mesh = "glb"
 
-[assets.25c57ee7-99d5-49ef-b819-bbfc1da4a758]
+[assets.6dc8714c-a067-491a-b632-77e68478c55b]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
 lod = "none"
 
-[assets.25c57ee7-99d5-49ef-b819-bbfc1da4a758.source]
+[assets.6dc8714c-a067-491a-b632-77e68478c55b.source]
 mesh = "glb"
 
-[assets.b010be5c-4c64-409f-a471-e156d8276622]
+[assets.3e4cf571-8900-4387-8e89-59fd41139b81]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
 lod = "none"
 
-[assets.b010be5c-4c64-409f-a471-e156d8276622.source]
+[assets.3e4cf571-8900-4387-8e89-59fd41139b81.source]
 mesh = "glb"
 
-[assets.24dd24a8-a586-4dc7-88a5-334078733d49]
+[assets.cb08fb3d-1a22-46c5-a071-e6a97f1ef7fd]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
 lod = "none"
 
-[assets.24dd24a8-a586-4dc7-88a5-334078733d49.source]
+[assets.cb08fb3d-1a22-46c5-a071-e6a97f1ef7fd.source]
 mesh = "glb"
 
-[assets.a5a5b7a9-2ec3-48c3-95a8-bc72dee68439]
+[assets.d7ff4a12-626a-4452-96d0-545d0bc4942d]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
 lod = "none"
 
-[assets.a5a5b7a9-2ec3-48c3-95a8-bc72dee68439.source]
+[assets.d7ff4a12-626a-4452-96d0-545d0bc4942d.source]
 mesh = "glb"
 
-[assets.0f1e76f3-559c-465d-b15c-53dbae5701ee]
+[assets.1f6c6e3f-d8b0-4621-900a-1070600844c5]
 gltf_material_asset_ids = []
 gltf_image_asset_ids = []
 content_hash = ""
 lod = "none"
 
-[assets.0f1e76f3-559c-465d-b15c-53dbae5701ee.source]
+[assets.1f6c6e3f-d8b0-4621-900a-1070600844c5.source]
 mesh = "glb"
 
 [mixer]
 layers = []
 
 [[nodes]]
-id = "c8390fc3-d2b7-4430-8a04-5f0ade975426"
+id = "95783c74-3f19-40b6-9d5f-e827ec4b4bb1"
 name = "Directional Light"
 locked = false
 visible = true
@@ -899,7 +1053,7 @@ far_cascade_update_rate = "every4_frames"
 cube_face_update_rate = "every_frame"
 
 [[nodes]]
-id = "4ba07371-bb72-459b-b976-01dcb372a611"
+id = "dc951a65-f6a0-48f8-b105-9a0b1f893f2f"
 name = "panda"
 kind = "group"
 locked = false
@@ -943,7 +1097,7 @@ sha256 = "aa480a0c26cfacedd223259bd82b0825a44f857a27769db8be1d34c3f82c6d0f"
 mujoco_version = "none (USD, awsm-renderer-isaac-export)"
 
 [[nodes.children]]
-id = "ca20ac78-f237-43b6-aa7d-5fcc85a1cb49"
+id = "8b4e544c-b724-455d-ad8f-69085a7ab5c6"
 name = "panda_hand (Aluminum)"
 locked = true
 visible = true
@@ -969,15 +1123,15 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "90761c18-cdb1-40ef-9be3-eaebb7c38b9f"
-selected_variant = "b0be395e-6f8f-496c-a29f-273048940f20"
+mesh = "215419f8-0dec-4e41-89bd-529f9b69c8e9"
+selected_variant = "d85d0ce5-80ef-4a97-a489-3482c4f6b4f1"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "b0be395e-6f8f-496c-a29f-273048940f20"
+id = "d85d0ce5-80ef-4a97-a489-3482c4f6b4f1"
 name = "Aluminum"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "af8122c5-7a59-4226-b84f-0b0386ef67be"
+asset = "93b0636a-5d5b-4269-82ba-702bbf9eddcf"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "Aluminum"
@@ -1024,7 +1178,7 @@ kind = "mesh"
 body = 1
 
 [[nodes.children]]
-id = "63e9d948-361b-4d06-8b70-4c8dc067b579"
+id = "133800fb-d761-4a03-bb83-c25ae896d632"
 name = "panda_hand (PlasticWhite, subset_1)"
 locked = true
 visible = true
@@ -1050,15 +1204,15 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "f02a364f-ac50-4536-b41c-2e9470b6def9"
-selected_variant = "fe29c7e8-e19f-4e64-89c3-f190af2d5290"
+mesh = "357124cf-e13c-423c-94f2-0c982a4eee30"
+selected_variant = "a927d468-71cb-4cd6-9796-b319955db8d8"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "fe29c7e8-e19f-4e64-89c3-f190af2d5290"
+id = "a927d468-71cb-4cd6-9796-b319955db8d8"
 name = "PlasticWhite"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "c8744d97-86fe-4c47-b302-f0188396485e"
+asset = "07c1a49d-95b5-4288-8a01-10e01dbcea35"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "PlasticWhite"
@@ -1105,7 +1259,7 @@ kind = "mesh"
 body = 1
 
 [[nodes.children]]
-id = "eb74b8df-ee43-4709-acbe-e9acdebfccf9"
+id = "11c1ee59-2c61-41e4-89dd-a77c8d78a181"
 name = "panda_hand (PlasticWhite, subset_2)"
 locked = true
 visible = true
@@ -1131,15 +1285,15 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "ed378314-4746-4e3e-97d5-6c95a897ad54"
-selected_variant = "87e8cc8a-6c14-4217-beae-f2d58092188c"
+mesh = "58c9a102-be8b-424f-9ac3-c79c65923b34"
+selected_variant = "0200208f-5897-46cb-a42e-1fd597f181e9"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "87e8cc8a-6c14-4217-beae-f2d58092188c"
+id = "0200208f-5897-46cb-a42e-1fd597f181e9"
 name = "PlasticWhite"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "c8744d97-86fe-4c47-b302-f0188396485e"
+asset = "07c1a49d-95b5-4288-8a01-10e01dbcea35"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "PlasticWhite"
@@ -1186,7 +1340,7 @@ kind = "mesh"
 body = 1
 
 [[nodes.children]]
-id = "060e0927-d07b-4ac9-acfc-e8fdaee88feb"
+id = "c584f22a-cf58-4fd5-9b62-cb7997296131"
 name = "panda_hand (PlasticGray)"
 locked = true
 visible = true
@@ -1212,15 +1366,15 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "26c30cbc-5f29-4f4d-b8e7-d0157dcc637c"
-selected_variant = "4f5194d9-29c5-4811-ab46-fc8905bfe02c"
+mesh = "888db881-01e9-4bb1-af68-6d34104c0977"
+selected_variant = "1a324f55-97a3-490f-bfbe-5ca46ddeea5b"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "4f5194d9-29c5-4811-ab46-fc8905bfe02c"
+id = "1a324f55-97a3-490f-bfbe-5ca46ddeea5b"
 name = "PlasticGray"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "a3f71c8c-4fc2-4de4-b6a8-0acd8d95b6e9"
+asset = "472da4d7-98b3-40b8-b479-7b7cd538cce2"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "PlasticGray"
@@ -1267,7 +1421,7 @@ kind = "mesh"
 body = 1
 
 [[nodes.children]]
-id = "dbde5aca-0f22-445d-923b-8d1ac1985766"
+id = "f415a3ab-4e55-4330-9ab7-81dcd8125912"
 name = "panda_hand (RubberGray)"
 locked = true
 visible = true
@@ -1293,15 +1447,15 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "7834d5ac-e596-452f-bc82-623fab0b330a"
-selected_variant = "738f8243-b43f-471e-ad06-554fa555c24d"
+mesh = "0d1a60da-d1e8-4fed-9f8c-0e47fb73a039"
+selected_variant = "71d7a059-e0f7-48b5-a443-8f10e76b4c82"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "738f8243-b43f-471e-ad06-554fa555c24d"
+id = "71d7a059-e0f7-48b5-a443-8f10e76b4c82"
 name = "RubberGray"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "e9ab4d29-43bb-401a-a918-eecac75ea356"
+asset = "e178f084-c829-4b21-b612-8d73fb3a5f7b"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "RubberGray"
@@ -1348,7 +1502,7 @@ kind = "mesh"
 body = 1
 
 [[nodes.children]]
-id = "333c4e6d-24c0-4a81-ab93-1a72aaaaca75"
+id = "209eaa21-da85-4824-9a2c-c2daa8f3c01c"
 name = "panda_rightfinger (PlasticWhite)"
 locked = true
 visible = true
@@ -1374,15 +1528,15 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "21b3a18f-f1ed-45c7-81b2-a4883afffd93"
-selected_variant = "aa03646f-de5f-4247-a1fd-608cacda2310"
+mesh = "9d1055e9-7173-4f21-affc-2511e8f557a3"
+selected_variant = "198592bb-9a36-43d6-b313-6ccc297b7b28"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "aa03646f-de5f-4247-a1fd-608cacda2310"
+id = "198592bb-9a36-43d6-b313-6ccc297b7b28"
 name = "PlasticWhite"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "c8744d97-86fe-4c47-b302-f0188396485e"
+asset = "07c1a49d-95b5-4288-8a01-10e01dbcea35"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "PlasticWhite"
@@ -1429,7 +1583,7 @@ kind = "mesh"
 body = 2
 
 [[nodes.children]]
-id = "cc049aee-302c-4f3b-aadb-a6277aba7759"
+id = "84b214ec-4949-482b-9835-d39ef10d6a44"
 name = "panda_rightfinger (RubberGray)"
 locked = true
 visible = true
@@ -1455,15 +1609,15 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "8e8d482c-92c4-463a-b592-047021c6671f"
-selected_variant = "1ba08c49-3a4b-4982-8dd3-492c8239bbfe"
+mesh = "9ad8f6d1-e54f-4e7a-ba27-e93a93b2b7d9"
+selected_variant = "5ba57399-7892-48c7-94a1-3ae93298ff41"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "1ba08c49-3a4b-4982-8dd3-492c8239bbfe"
+id = "5ba57399-7892-48c7-94a1-3ae93298ff41"
 name = "RubberGray"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "e9ab4d29-43bb-401a-a918-eecac75ea356"
+asset = "e178f084-c829-4b21-b612-8d73fb3a5f7b"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "RubberGray"
@@ -1510,7 +1664,7 @@ kind = "mesh"
 body = 2
 
 [[nodes.children]]
-id = "babb1bef-4da0-4c4f-9705-25c96e1aab87"
+id = "7b29e109-fe69-49e4-93ec-6255b45be721"
 name = "panda_leftfinger (RubberGray)"
 locked = true
 visible = true
@@ -1536,15 +1690,15 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "cd42f6c3-acb4-4abf-9472-6ce905a46e28"
-selected_variant = "5cf68e61-e4d5-419e-9767-b2cb2ee3d219"
+mesh = "1f6c6e3f-d8b0-4621-900a-1070600844c5"
+selected_variant = "738e7a0e-2220-49ff-b57c-a7e6adff28f8"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "5cf68e61-e4d5-419e-9767-b2cb2ee3d219"
+id = "738e7a0e-2220-49ff-b57c-a7e6adff28f8"
 name = "RubberGray"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "e9ab4d29-43bb-401a-a918-eecac75ea356"
+asset = "e178f084-c829-4b21-b612-8d73fb3a5f7b"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "RubberGray"
@@ -1591,7 +1745,7 @@ kind = "mesh"
 body = 3
 
 [[nodes.children]]
-id = "44cb1794-3116-4988-9ebc-bec243d35669"
+id = "01c19332-2d61-424d-b3a0-c150dd4ce589"
 name = "panda_leftfinger (PlasticWhite)"
 locked = true
 visible = true
@@ -1617,15 +1771,15 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "60bfe666-b536-4dab-9d1f-18c0db35f724"
-selected_variant = "d6553eaa-bb42-4e85-83b1-ab8d442f06e2"
+mesh = "ec6f1ea0-a6ac-4570-a955-c455c437b918"
+selected_variant = "31f3f658-17cc-47b2-b21e-7b6027f88d03"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "d6553eaa-bb42-4e85-83b1-ab8d442f06e2"
+id = "31f3f658-17cc-47b2-b21e-7b6027f88d03"
 name = "PlasticWhite"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "c8744d97-86fe-4c47-b302-f0188396485e"
+asset = "07c1a49d-95b5-4288-8a01-10e01dbcea35"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "PlasticWhite"
@@ -1672,7 +1826,7 @@ kind = "mesh"
 body = 3
 
 [[nodes.children]]
-id = "573cffca-05d3-4b45-b281-c78cc369212c"
+id = "7b96a412-5fed-4441-bd15-09b6a647bfc3"
 name = "panda_link0 (Aluminum, subset)"
 locked = true
 visible = true
@@ -1698,15 +1852,15 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "9e8d3cb0-cf77-41c0-b665-8cc1e3b8bd66"
-selected_variant = "e880f4a7-2e51-41a1-8194-dcd778ab2b77"
+mesh = "4250b720-c2a6-4716-960d-d35f7e169d05"
+selected_variant = "f016abef-eefc-429f-ada5-dc2b0838779f"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "e880f4a7-2e51-41a1-8194-dcd778ab2b77"
+id = "f016abef-eefc-429f-ada5-dc2b0838779f"
 name = "Aluminum"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "af8122c5-7a59-4226-b84f-0b0386ef67be"
+asset = "93b0636a-5d5b-4269-82ba-702bbf9eddcf"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "Aluminum"
@@ -1753,7 +1907,7 @@ kind = "mesh"
 body = 4
 
 [[nodes.children]]
-id = "a3195f17-9c82-4124-aeba-5705eda85ee4"
+id = "aecb4b92-7503-4bc8-b5ff-c3119515d7de"
 name = "panda_link0 (PlasticGray)"
 locked = true
 visible = true
@@ -1779,15 +1933,15 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "a9569a5f-b9be-4e04-a3ef-812a454b39d2"
-selected_variant = "021bf165-a1d6-41d6-82e3-ef341e56def4"
+mesh = "901c904d-86a1-4c9b-9d53-589b6ff3f316"
+selected_variant = "8b2754f4-2b0a-4fba-9fbe-3a0fae5b1661"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "021bf165-a1d6-41d6-82e3-ef341e56def4"
+id = "8b2754f4-2b0a-4fba-9fbe-3a0fae5b1661"
 name = "PlasticGray"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "a3f71c8c-4fc2-4de4-b6a8-0acd8d95b6e9"
+asset = "472da4d7-98b3-40b8-b479-7b7cd538cce2"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "PlasticGray"
@@ -1834,7 +1988,7 @@ kind = "mesh"
 body = 4
 
 [[nodes.children]]
-id = "96113e95-5e2f-49a1-a319-879de601b66a"
+id = "58cd2511-9298-459a-884d-553363dcf13c"
 name = "panda_link0 (PlasticWhite)"
 locked = true
 visible = true
@@ -1860,15 +2014,15 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "a5a5b7a9-2ec3-48c3-95a8-bc72dee68439"
-selected_variant = "63dde276-3807-4f74-8820-ebf5418e5ca7"
+mesh = "ed079108-1694-4643-b3c2-f3f6588f717e"
+selected_variant = "f925fed2-a565-47a5-8b16-3ec8458f616b"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "63dde276-3807-4f74-8820-ebf5418e5ca7"
+id = "f925fed2-a565-47a5-8b16-3ec8458f616b"
 name = "PlasticWhite"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "c8744d97-86fe-4c47-b302-f0188396485e"
+asset = "07c1a49d-95b5-4288-8a01-10e01dbcea35"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "PlasticWhite"
@@ -1915,7 +2069,7 @@ kind = "mesh"
 body = 4
 
 [[nodes.children]]
-id = "93560cc3-2d98-4f22-8c87-53420fec7eab"
+id = "8783ebfb-9f85-4462-80a6-b4d6113a13bd"
 name = "panda_link0 (Aluminum, subset_3)"
 locked = true
 visible = true
@@ -1941,15 +2095,15 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "aa261051-10d7-452d-88ef-12ad15b28c11"
-selected_variant = "acc19e71-e45d-4a29-b2f2-a6aeca7e59f4"
+mesh = "0ef4a252-1bd3-4dbe-a9a3-24fa8589bac6"
+selected_variant = "d3bcb9c4-8194-4c26-b45e-a61e0d1d6367"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "acc19e71-e45d-4a29-b2f2-a6aeca7e59f4"
+id = "d3bcb9c4-8194-4c26-b45e-a61e0d1d6367"
 name = "Aluminum"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "af8122c5-7a59-4226-b84f-0b0386ef67be"
+asset = "93b0636a-5d5b-4269-82ba-702bbf9eddcf"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "Aluminum"
@@ -1996,7 +2150,7 @@ kind = "mesh"
 body = 4
 
 [[nodes.children]]
-id = "cd83c886-5a60-4fd1-a536-7d3de5ffce82"
+id = "d9a39699-4b7f-4aea-9dba-d1d44864252c"
 name = "panda_link0 (PlasticBlack)"
 locked = true
 visible = true
@@ -2022,15 +2176,15 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "b1930933-9634-4492-97ec-c8b0f04159cb"
-selected_variant = "f64c7400-d323-404c-b660-39aef996ca13"
+mesh = "5cef6e13-9fd2-4642-bffe-fda3ea84d1b9"
+selected_variant = "9a3e1541-d71d-483e-b837-39c19713d170"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "f64c7400-d323-404c-b660-39aef996ca13"
+id = "9a3e1541-d71d-483e-b837-39c19713d170"
 name = "PlasticBlack"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "4aa9db25-a7e4-4b04-b77c-d038b39d5309"
+asset = "bf85ffd9-3860-4a85-9ac3-db28d4b93524"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "PlasticBlack"
@@ -2077,7 +2231,7 @@ kind = "mesh"
 body = 4
 
 [[nodes.children]]
-id = "96a5eab8-eb30-4609-a402-4c52c8823f56"
+id = "d39797b4-e8b9-4fe6-b375-83079d2b38ed"
 name = "panda_link0 (EmissiveBlue)"
 locked = true
 visible = true
@@ -2103,22 +2257,22 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "78f48c4f-6972-4f1b-bf6a-970197d14846"
-selected_variant = "e0521c25-58f8-4f04-a09f-c363b9574f67"
+mesh = "94fc3029-af98-44ba-8c4b-af6960125faf"
+selected_variant = "4fefe2c4-9678-439f-b8c4-446e2a7b6940"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "e0521c25-58f8-4f04-a09f-c363b9574f67"
+id = "4fefe2c4-9678-439f-b8c4-446e2a7b6940"
 name = "EmissiveBlue"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "ed9832fe-26c1-4581-a114-32dff31b6697"
+asset = "5b525404-df97-43b2-90c6-c7eff7ac794d"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "EmissiveBlue"
 base_color = [
-    0.0,
-    0.10000000149011612,
     1.0,
+    0.9999899864196777,
+    0.9999899864196777,
     1.0,
 ]
 metallic = 0.0
@@ -2158,7 +2312,7 @@ kind = "mesh"
 body = 4
 
 [[nodes.children]]
-id = "fd085278-0c54-4c12-a119-f395fffa6bb0"
+id = "ab0e0ed0-f95b-4fde-9b2c-e5475e683948"
 name = "panda_link1"
 locked = true
 visible = true
@@ -2184,15 +2338,15 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "b088c2c3-2758-4156-aadd-50e60c6277b4"
-selected_variant = "7d7d2737-400a-425e-86c2-6cd78bd02ef9"
+mesh = "b8b2ab91-dfda-4c3e-9032-a058ebce17b7"
+selected_variant = "da798d22-bc3d-4539-9eed-b71ab15f90c4"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "7d7d2737-400a-425e-86c2-6cd78bd02ef9"
+id = "da798d22-bc3d-4539-9eed-b71ab15f90c4"
 name = "PlasticWhite"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "c8744d97-86fe-4c47-b302-f0188396485e"
+asset = "07c1a49d-95b5-4288-8a01-10e01dbcea35"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "PlasticWhite"
@@ -2239,7 +2393,7 @@ kind = "mesh"
 body = 5
 
 [[nodes.children]]
-id = "5bf5171e-7dbc-49d4-b130-e2a4558679b0"
+id = "211bb385-4e6f-4715-8bf4-1b7a719e90ad"
 name = "panda_link2"
 locked = true
 visible = true
@@ -2265,15 +2419,15 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "599aa449-a64e-4ff0-8d6a-59cc590838c4"
-selected_variant = "392f56db-74d6-4e08-8cf3-c8a9a41c738e"
+mesh = "d94d8b4b-b701-4acf-8a43-9008127026a1"
+selected_variant = "7274b634-bd0c-4056-a698-6f4f9ecf0b72"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "392f56db-74d6-4e08-8cf3-c8a9a41c738e"
+id = "7274b634-bd0c-4056-a698-6f4f9ecf0b72"
 name = "PlasticWhite"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "c8744d97-86fe-4c47-b302-f0188396485e"
+asset = "07c1a49d-95b5-4288-8a01-10e01dbcea35"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "PlasticWhite"
@@ -2320,7 +2474,7 @@ kind = "mesh"
 body = 6
 
 [[nodes.children]]
-id = "0cce7e0e-e508-45d3-b59b-073c0f0bffb0"
+id = "9ce20584-03ab-41df-bf30-c3e77d6038e9"
 name = "panda_link3 (PlasticWhite, subset)"
 locked = true
 visible = true
@@ -2346,15 +2500,15 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "f328667f-9452-4197-9bee-d4e18f2c37c3"
-selected_variant = "15bf39c1-190c-428d-92b3-d74ff8b28cc8"
+mesh = "c773cfd7-a88a-4f17-9647-923564c342eb"
+selected_variant = "42d6fb17-c6c7-461f-8f7f-3d19c02c8b57"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "15bf39c1-190c-428d-92b3-d74ff8b28cc8"
+id = "42d6fb17-c6c7-461f-8f7f-3d19c02c8b57"
 name = "PlasticWhite"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "c8744d97-86fe-4c47-b302-f0188396485e"
+asset = "07c1a49d-95b5-4288-8a01-10e01dbcea35"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "PlasticWhite"
@@ -2401,7 +2555,7 @@ kind = "mesh"
 body = 7
 
 [[nodes.children]]
-id = "52b31abc-861b-46a9-ae93-e0cfa0eff2a4"
+id = "9e8b50cd-0043-48ca-be3e-6917e2a57723"
 name = "panda_link3 (PlasticWhite, subset_1)"
 locked = true
 visible = true
@@ -2427,15 +2581,15 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "8f928554-653b-4c54-b688-839041a3a545"
-selected_variant = "61ab453c-cc0f-4919-b2ba-41b076a0f52e"
+mesh = "d7ff4a12-626a-4452-96d0-545d0bc4942d"
+selected_variant = "614942bb-e385-4da2-8d75-a0f77d72e2d6"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "61ab453c-cc0f-4919-b2ba-41b076a0f52e"
+id = "614942bb-e385-4da2-8d75-a0f77d72e2d6"
 name = "PlasticWhite"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "c8744d97-86fe-4c47-b302-f0188396485e"
+asset = "07c1a49d-95b5-4288-8a01-10e01dbcea35"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "PlasticWhite"
@@ -2482,7 +2636,7 @@ kind = "mesh"
 body = 7
 
 [[nodes.children]]
-id = "2f2bd47e-f880-4519-ac56-4ca520f07d95"
+id = "472699b5-0ea2-48df-b7f3-c7a783309acc"
 name = "panda_link3 (PlasticGray)"
 locked = true
 visible = true
@@ -2508,15 +2662,15 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "1f2c774d-ca36-4cb7-9154-b5f16d3c3aa0"
-selected_variant = "ca65ed37-1c38-42f9-82e7-8eaa72a3c76c"
+mesh = "3d847357-e07c-4e47-aefc-ceeb09bc1f43"
+selected_variant = "00fdc355-3cf7-42bb-a536-e402f4fe86fb"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "ca65ed37-1c38-42f9-82e7-8eaa72a3c76c"
+id = "00fdc355-3cf7-42bb-a536-e402f4fe86fb"
 name = "PlasticGray"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "a3f71c8c-4fc2-4de4-b6a8-0acd8d95b6e9"
+asset = "472da4d7-98b3-40b8-b479-7b7cd538cce2"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "PlasticGray"
@@ -2563,7 +2717,7 @@ kind = "mesh"
 body = 7
 
 [[nodes.children]]
-id = "91082965-b2f0-4d76-b31b-ff40db39b36a"
+id = "a81248bb-8380-416a-8f5d-76c2c08dca40"
 name = "panda_link4 (PlasticWhite, subset)"
 locked = true
 visible = true
@@ -2589,15 +2743,15 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "14847690-5b86-42d1-be4a-9d5f09f1c477"
-selected_variant = "0a1e6fd8-6471-473a-872f-461c1f5eec6a"
+mesh = "cb08fb3d-1a22-46c5-a071-e6a97f1ef7fd"
+selected_variant = "7ab52b4e-fcc5-4168-b4a0-2d17d7ae1237"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "0a1e6fd8-6471-473a-872f-461c1f5eec6a"
+id = "7ab52b4e-fcc5-4168-b4a0-2d17d7ae1237"
 name = "PlasticWhite"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "c8744d97-86fe-4c47-b302-f0188396485e"
+asset = "07c1a49d-95b5-4288-8a01-10e01dbcea35"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "PlasticWhite"
@@ -2644,7 +2798,7 @@ kind = "mesh"
 body = 8
 
 [[nodes.children]]
-id = "a2e4f432-6e58-4572-8fba-074e16d56799"
+id = "bdf89ed8-fbb5-45b3-a2d1-232a640cf7bc"
 name = "panda_link4 (PlasticWhite, subset_1)"
 locked = true
 visible = true
@@ -2670,15 +2824,15 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "3b6d13a2-6ea8-4349-a653-26930859f0e7"
-selected_variant = "5b159395-c199-4770-8e18-177e3ff7e053"
+mesh = "137359a8-15f5-41a2-af8a-bbbcc4258173"
+selected_variant = "955bc087-6a5f-47d2-9f31-f95cf89e1f27"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "5b159395-c199-4770-8e18-177e3ff7e053"
+id = "955bc087-6a5f-47d2-9f31-f95cf89e1f27"
 name = "PlasticWhite"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "c8744d97-86fe-4c47-b302-f0188396485e"
+asset = "07c1a49d-95b5-4288-8a01-10e01dbcea35"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "PlasticWhite"
@@ -2725,7 +2879,7 @@ kind = "mesh"
 body = 8
 
 [[nodes.children]]
-id = "2604a933-94a4-460a-899a-11650e36e642"
+id = "1063e462-c076-439a-afb9-a153789e0d5f"
 name = "panda_link4 (PlasticGray)"
 locked = true
 visible = true
@@ -2751,15 +2905,15 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "420dec69-856a-411d-ad84-692045c74b0c"
-selected_variant = "db89aee2-53a5-4b1f-9359-6efe74900871"
+mesh = "7e032ecf-04a5-4421-8e96-d6acd4860879"
+selected_variant = "a892bd1c-e116-4b5e-a216-79407290e50d"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "db89aee2-53a5-4b1f-9359-6efe74900871"
+id = "a892bd1c-e116-4b5e-a216-79407290e50d"
 name = "PlasticGray"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "a3f71c8c-4fc2-4de4-b6a8-0acd8d95b6e9"
+asset = "472da4d7-98b3-40b8-b479-7b7cd538cce2"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "PlasticGray"
@@ -2806,7 +2960,7 @@ kind = "mesh"
 body = 8
 
 [[nodes.children]]
-id = "7460613b-cc34-4439-9c9f-6bcd170f9afe"
+id = "1999271d-aa7a-4213-9fd9-ce4be9964d77"
 name = "panda_link5 (PlasticWhite, subset)"
 locked = true
 visible = true
@@ -2832,15 +2986,15 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "24bb3965-b265-49da-906d-598f92413822"
-selected_variant = "209ee5b9-1df2-49e2-963c-877912138a96"
+mesh = "154084eb-82fd-4ce5-98d5-9d9ebc4269e7"
+selected_variant = "217402c8-f3ae-4ae7-b21c-7682e3ca6071"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "209ee5b9-1df2-49e2-963c-877912138a96"
+id = "217402c8-f3ae-4ae7-b21c-7682e3ca6071"
 name = "PlasticWhite"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "c8744d97-86fe-4c47-b302-f0188396485e"
+asset = "07c1a49d-95b5-4288-8a01-10e01dbcea35"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "PlasticWhite"
@@ -2887,7 +3041,7 @@ kind = "mesh"
 body = 9
 
 [[nodes.children]]
-id = "b3838503-5072-40de-904b-3bc2a1dffedf"
+id = "3fc95400-e306-4dc2-bf80-7fc5450a0455"
 name = "panda_link5 (PlasticWhite, subset_1)"
 locked = true
 visible = true
@@ -2913,15 +3067,15 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "117c0edf-17c4-46c9-9f2f-cca20aeb36b7"
-selected_variant = "ed05784e-d705-41b0-b444-3b38f6891090"
+mesh = "3eee2106-3e47-4883-ae54-f3a8cc159634"
+selected_variant = "38b32a51-c156-4027-ab6d-11d09411e651"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "ed05784e-d705-41b0-b444-3b38f6891090"
+id = "38b32a51-c156-4027-ab6d-11d09411e651"
 name = "PlasticWhite"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "c8744d97-86fe-4c47-b302-f0188396485e"
+asset = "07c1a49d-95b5-4288-8a01-10e01dbcea35"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "PlasticWhite"
@@ -2968,7 +3122,7 @@ kind = "mesh"
 body = 9
 
 [[nodes.children]]
-id = "2b263cce-85a0-4255-9928-1cfe90c213c5"
+id = "8f9b4899-61d8-46f2-bdba-e65b30c2ea63"
 name = "panda_link5 (PlasticGray)"
 locked = true
 visible = true
@@ -2994,15 +3148,15 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "d9da26b8-bb60-4ce3-ba3f-a79407d33206"
-selected_variant = "60c4eec5-8dde-4b2c-b907-95c4c5b1504b"
+mesh = "e5e4b3e4-2163-42a7-80e0-9bf6a605862a"
+selected_variant = "4a59bb94-7953-4c4c-8273-ae8bf8fdd2ac"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "60c4eec5-8dde-4b2c-b907-95c4c5b1504b"
+id = "4a59bb94-7953-4c4c-8273-ae8bf8fdd2ac"
 name = "PlasticGray"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "a3f71c8c-4fc2-4de4-b6a8-0acd8d95b6e9"
+asset = "472da4d7-98b3-40b8-b479-7b7cd538cce2"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "PlasticGray"
@@ -3049,7 +3203,7 @@ kind = "mesh"
 body = 9
 
 [[nodes.children]]
-id = "28a427b3-988b-4696-bfc3-5f84d3cac36d"
+id = "6aacf6db-5367-499d-9567-a99b085c0363"
 name = "panda_link6 (PlasticWhite, subset)"
 locked = true
 visible = true
@@ -3075,15 +3229,15 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "c36ed063-8663-4570-b134-abc343fbf839"
-selected_variant = "1407298e-2017-4856-8cb1-9f58ced5c679"
+mesh = "7a8d3db1-1cf8-4e92-a4ef-3a98545f0cc1"
+selected_variant = "c3107552-4241-4723-ab6e-73afc828d535"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "1407298e-2017-4856-8cb1-9f58ced5c679"
+id = "c3107552-4241-4723-ab6e-73afc828d535"
 name = "PlasticWhite"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "c8744d97-86fe-4c47-b302-f0188396485e"
+asset = "07c1a49d-95b5-4288-8a01-10e01dbcea35"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "PlasticWhite"
@@ -3130,7 +3284,7 @@ kind = "mesh"
 body = 10
 
 [[nodes.children]]
-id = "ca2dced9-38e1-4145-962f-f5f582596d8f"
+id = "67645867-ca08-4a64-a15f-3f57265f1c7a"
 name = "panda_link6 (PlasticGray, subset_1)"
 locked = true
 visible = true
@@ -3156,15 +3310,15 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "c4083989-967d-4dc6-a55b-a00d02a79e33"
-selected_variant = "77067d02-08b6-4913-ab5a-037290b74bca"
+mesh = "fa450df0-0fe1-4ec7-ab5c-3427ab6aa70d"
+selected_variant = "488f3d7a-236e-414a-a1c3-9439295fce3a"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "77067d02-08b6-4913-ab5a-037290b74bca"
+id = "488f3d7a-236e-414a-a1c3-9439295fce3a"
 name = "PlasticGray"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "a3f71c8c-4fc2-4de4-b6a8-0acd8d95b6e9"
+asset = "472da4d7-98b3-40b8-b479-7b7cd538cce2"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "PlasticGray"
@@ -3211,7 +3365,7 @@ kind = "mesh"
 body = 10
 
 [[nodes.children]]
-id = "38fbf93f-8104-4949-8192-101516737f2d"
+id = "a9557f5e-2132-49df-a8ce-cd8faf7c030f"
 name = "panda_link6 (RubberWhite)"
 locked = true
 visible = true
@@ -3237,15 +3391,15 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "dc17212b-2efa-4348-96cc-94d8805b1ab8"
-selected_variant = "a243bdf3-d7f2-4772-a89b-889b236d2507"
+mesh = "c70412b5-410c-40d6-8d97-85e96fb036ae"
+selected_variant = "2facbfd5-8c8e-42b5-8511-1e0b8126e0be"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "a243bdf3-d7f2-4772-a89b-889b236d2507"
+id = "2facbfd5-8c8e-42b5-8511-1e0b8126e0be"
 name = "RubberWhite"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "2e4c291d-d64e-41fa-ba84-9be3a16c5ab7"
+asset = "5fa2e962-7eb1-49ff-9c4b-3a69ec9d6f05"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "RubberWhite"
@@ -3292,7 +3446,7 @@ kind = "mesh"
 body = 10
 
 [[nodes.children]]
-id = "82946d39-82f7-468b-90f5-d53627c5c945"
+id = "9566f0b5-0186-4ba0-831e-51528fa8800a"
 name = "panda_link6 (PlasticGray, subset_11)"
 locked = true
 visible = true
@@ -3318,15 +3472,15 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "405499db-cfe3-4a54-8af5-23aa58c36a63"
-selected_variant = "946cf79e-315e-4c06-9c38-41109fba3afe"
+mesh = "9aeacf59-a266-4516-ac48-5155d4bfc5f8"
+selected_variant = "b44c0c2c-a3fa-4b1c-9925-795087216b0f"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "946cf79e-315e-4c06-9c38-41109fba3afe"
+id = "b44c0c2c-a3fa-4b1c-9925-795087216b0f"
 name = "PlasticGray"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "a3f71c8c-4fc2-4de4-b6a8-0acd8d95b6e9"
+asset = "472da4d7-98b3-40b8-b479-7b7cd538cce2"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "PlasticGray"
@@ -3373,7 +3527,7 @@ kind = "mesh"
 body = 10
 
 [[nodes.children]]
-id = "4b00eef0-91f7-4baa-9ad3-067d1a06ffda"
+id = "f77f3300-8767-4962-80c4-1ac08b84c643"
 name = "panda_link6 (PlasticWhite, subset_12)"
 locked = true
 visible = true
@@ -3399,15 +3553,15 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "e68425bf-8674-4ebe-bc59-8d69f0f2e6b7"
-selected_variant = "16d05098-6ada-4a38-a71d-726ad683ff7c"
+mesh = "19c814c4-1725-49f2-9fd8-fef1a2b62ee1"
+selected_variant = "9b397589-6854-45f8-bc62-c1cdf9a59c9a"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "16d05098-6ada-4a38-a71d-726ad683ff7c"
+id = "9b397589-6854-45f8-bc62-c1cdf9a59c9a"
 name = "PlasticWhite"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "c8744d97-86fe-4c47-b302-f0188396485e"
+asset = "07c1a49d-95b5-4288-8a01-10e01dbcea35"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "PlasticWhite"
@@ -3454,7 +3608,7 @@ kind = "mesh"
 body = 10
 
 [[nodes.children]]
-id = "76833649-d54a-4527-88f9-b8b41ba275ef"
+id = "eb8a0947-550e-4265-adf4-bdf34b68b500"
 name = "panda_link6 (PlasticWhite, subset_13)"
 locked = true
 visible = true
@@ -3480,15 +3634,15 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "b1975e47-c678-414b-ab25-60b36fe400bd"
-selected_variant = "954b8058-c73d-4e86-9797-fe65669dc04d"
+mesh = "6312b22b-2f99-4824-96d0-94681ff97252"
+selected_variant = "3a6f7f59-ebf6-4e38-8895-bd38468f9533"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "954b8058-c73d-4e86-9797-fe65669dc04d"
+id = "3a6f7f59-ebf6-4e38-8895-bd38468f9533"
 name = "PlasticWhite"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "c8744d97-86fe-4c47-b302-f0188396485e"
+asset = "07c1a49d-95b5-4288-8a01-10e01dbcea35"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "PlasticWhite"
@@ -3535,7 +3689,7 @@ kind = "mesh"
 body = 10
 
 [[nodes.children]]
-id = "29acc74c-09fc-4d7c-aec1-9ea3ba283a34"
+id = "0547ce59-9666-473b-bb52-129896e4e9ba"
 name = "panda_link6 (PlasticGray, subset_2)"
 locked = true
 visible = true
@@ -3561,15 +3715,15 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "ce9b904c-6f8f-4388-90da-245422dcfb03"
-selected_variant = "f14e56db-2b42-4800-8b2e-6d3f4877c418"
+mesh = "c644d98c-d359-4939-9e96-3c188637bacb"
+selected_variant = "64d0f3ac-0f38-4438-b671-6b60ec628aeb"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "f14e56db-2b42-4800-8b2e-6d3f4877c418"
+id = "64d0f3ac-0f38-4438-b671-6b60ec628aeb"
 name = "PlasticGray"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "a3f71c8c-4fc2-4de4-b6a8-0acd8d95b6e9"
+asset = "472da4d7-98b3-40b8-b479-7b7cd538cce2"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "PlasticGray"
@@ -3616,7 +3770,7 @@ kind = "mesh"
 body = 10
 
 [[nodes.children]]
-id = "d01582a9-633d-44ad-b76c-fa454c2baf69"
+id = "aa932f7c-7a21-4699-8c31-082ffaf27fe3"
 name = "panda_link6 (RubberRed)"
 locked = true
 visible = true
@@ -3642,15 +3796,15 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "8b426e6d-e774-4cc2-937e-862498a4afc1"
-selected_variant = "90c6c5e6-c642-4080-bd72-5b48ffa5565c"
+mesh = "e5d5c2a1-1d29-4b17-8b1a-d26cf7f475d8"
+selected_variant = "07f0eb67-edf1-4c00-a290-3c6f82709766"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "90c6c5e6-c642-4080-bd72-5b48ffa5565c"
+id = "07f0eb67-edf1-4c00-a290-3c6f82709766"
 name = "RubberRed"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "cda57d45-ac05-47a0-bc4a-c894b2ab0c1b"
+asset = "53357a82-389d-48e7-b089-29f9a37579c1"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "RubberRed"
@@ -3697,7 +3851,7 @@ kind = "mesh"
 body = 10
 
 [[nodes.children]]
-id = "727f8f80-99d9-44eb-9c10-50aaa017164b"
+id = "6a808ac4-9164-46a7-b473-4643f4ecf480"
 name = "panda_link6 (RubberGreen)"
 locked = true
 visible = true
@@ -3723,15 +3877,15 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "f84886f8-c3a9-4e12-a422-31529eb91cf9"
-selected_variant = "2b80eca7-b5ae-4c3f-9511-cd970896c5d0"
+mesh = "3ef3fedc-e2af-488b-b0ce-df528ee8ef70"
+selected_variant = "b6926d9e-f85c-49a9-8f16-591e1b66d0b0"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "2b80eca7-b5ae-4c3f-9511-cd970896c5d0"
+id = "b6926d9e-f85c-49a9-8f16-591e1b66d0b0"
 name = "RubberGreen"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "78d1f5c6-401f-4499-b7c6-d3b4028315c1"
+asset = "3e505754-9854-4236-8f39-0bd60c979242"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "RubberGreen"
@@ -3778,7 +3932,7 @@ kind = "mesh"
 body = 10
 
 [[nodes.children]]
-id = "66d13e5c-dfb4-463e-97ee-aff3936c27f2"
+id = "0d4a9d65-bfa3-4512-bac2-12a5ebc8b667"
 name = "panda_link6 (EmissiveBlue)"
 locked = true
 visible = true
@@ -3804,22 +3958,22 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "a811ad0c-6add-4f60-845b-229e3de803c3"
-selected_variant = "35438cb5-fe89-4590-a680-fdea446e3f02"
+mesh = "fb058639-7beb-44f2-b08b-b6008d1e0da6"
+selected_variant = "3e242f23-c4bf-4787-aad4-2783e221936e"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "35438cb5-fe89-4590-a680-fdea446e3f02"
+id = "3e242f23-c4bf-4787-aad4-2783e221936e"
 name = "EmissiveBlue"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "ed9832fe-26c1-4581-a114-32dff31b6697"
+asset = "5b525404-df97-43b2-90c6-c7eff7ac794d"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "EmissiveBlue"
 base_color = [
-    0.0,
-    0.10000000149011612,
     1.0,
+    0.9999899864196777,
+    0.9999899864196777,
     1.0,
 ]
 metallic = 0.0
@@ -3859,7 +4013,7 @@ kind = "mesh"
 body = 10
 
 [[nodes.children]]
-id = "b8b4934b-418f-4b9b-8f58-a50f85ed8ac0"
+id = "fdb9a2bf-f076-49f7-b4f0-a8b5eeffd114"
 name = "panda_link6 (RubberGray)"
 locked = true
 visible = true
@@ -3885,15 +4039,15 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "c0493a26-9529-430d-97fa-81baf90c3aca"
-selected_variant = "7b154153-a337-4b59-bf3f-ca5a46f97e0e"
+mesh = "7cd4273f-b936-4a9c-a6ae-a7162df13620"
+selected_variant = "96c01a56-c8a2-4c45-9816-2504e5c50030"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "7b154153-a337-4b59-bf3f-ca5a46f97e0e"
+id = "96c01a56-c8a2-4c45-9816-2504e5c50030"
 name = "RubberGray"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "e9ab4d29-43bb-401a-a918-eecac75ea356"
+asset = "e178f084-c829-4b21-b612-8d73fb3a5f7b"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "RubberGray"
@@ -3940,7 +4094,7 @@ kind = "mesh"
 body = 10
 
 [[nodes.children]]
-id = "913c2c0a-4375-4628-93f4-832554ef7fda"
+id = "03ceba1b-20e5-4e0d-b7d5-d1d80c4fd787"
 name = "panda_link6 (PlasticGray, subset_7)"
 locked = true
 visible = true
@@ -3966,15 +4120,15 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "0cb716eb-3d4d-42c4-aa45-c6b24ec010c9"
-selected_variant = "be3d7d10-f422-4fc5-8636-4e676e4fe193"
+mesh = "8f17e13f-3403-4048-8c69-f03151ac8e4a"
+selected_variant = "7b94c039-799d-4f35-a8ce-18e9119bc2ab"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "be3d7d10-f422-4fc5-8636-4e676e4fe193"
+id = "7b94c039-799d-4f35-a8ce-18e9119bc2ab"
 name = "PlasticGray"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "a3f71c8c-4fc2-4de4-b6a8-0acd8d95b6e9"
+asset = "472da4d7-98b3-40b8-b479-7b7cd538cce2"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "PlasticGray"
@@ -4021,7 +4175,7 @@ kind = "mesh"
 body = 10
 
 [[nodes.children]]
-id = "8c016316-8cda-4e21-9358-91a7b212c0d5"
+id = "70cc1ac0-cf33-4c4c-a2c1-21f2486c8e31"
 name = "panda_link6 (RubberLightGray, subset_8)"
 locked = true
 visible = true
@@ -4047,15 +4201,15 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "2b46c921-f118-47b9-90cf-95ec30cf4856"
-selected_variant = "bf3aca82-a1b4-4a58-ac22-6398ff561645"
+mesh = "8f8766d9-b2c3-4a2d-a4bd-be93a49f0660"
+selected_variant = "b696972e-d02c-41ef-932b-403b021fc51b"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "bf3aca82-a1b4-4a58-ac22-6398ff561645"
+id = "b696972e-d02c-41ef-932b-403b021fc51b"
 name = "RubberLightGray"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "ef624750-729c-4dee-9d5c-946248a74941"
+asset = "fa2d51dd-dbd5-48a5-a412-7a22575751ad"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "RubberLightGray"
@@ -4102,7 +4256,7 @@ kind = "mesh"
 body = 10
 
 [[nodes.children]]
-id = "31c4d9fa-ca76-4871-ae10-2b24e2a771d3"
+id = "4e237aaf-f93a-446a-8721-596728dd9b3e"
 name = "panda_link6 (RubberLightGray, subset_9)"
 locked = true
 visible = true
@@ -4128,15 +4282,15 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "bb87c9c0-b2a5-43d5-b58b-0d8299177ebc"
-selected_variant = "14375cb5-f55d-4945-befa-1b8c54a0c62f"
+mesh = "940e3031-cd90-4997-8215-59d377a037ff"
+selected_variant = "70791e5d-b03e-47f6-ab09-6716b1e6441b"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "14375cb5-f55d-4945-befa-1b8c54a0c62f"
+id = "70791e5d-b03e-47f6-ab09-6716b1e6441b"
 name = "RubberLightGray"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "ef624750-729c-4dee-9d5c-946248a74941"
+asset = "fa2d51dd-dbd5-48a5-a412-7a22575751ad"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "RubberLightGray"
@@ -4183,7 +4337,7 @@ kind = "mesh"
 body = 10
 
 [[nodes.children]]
-id = "f23653a6-2845-4b34-ae1a-ef867bc81183"
+id = "7476cbfe-ab75-4e7a-9ad4-5290435d0df0"
 name = "panda_link7 (Aluminum, subset)"
 locked = true
 visible = true
@@ -4209,15 +4363,15 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "742dfac1-d5d5-49d4-99f2-f91d4c57ff69"
-selected_variant = "d2d98680-1708-454b-891c-4125644b3448"
+mesh = "7ed3333a-dfcc-47a0-9ede-582ed21063b9"
+selected_variant = "f7150373-a914-4170-a206-5efe267f43ba"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "d2d98680-1708-454b-891c-4125644b3448"
+id = "f7150373-a914-4170-a206-5efe267f43ba"
 name = "Aluminum"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "af8122c5-7a59-4226-b84f-0b0386ef67be"
+asset = "93b0636a-5d5b-4269-82ba-702bbf9eddcf"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "Aluminum"
@@ -4264,7 +4418,7 @@ kind = "mesh"
 body = 11
 
 [[nodes.children]]
-id = "f120f8f4-8b05-4333-bc69-f50cced2beed"
+id = "c8c450d0-253c-4bbb-9e0e-289dda2792a1"
 name = "panda_link7 (PlasticGray)"
 locked = true
 visible = true
@@ -4290,15 +4444,15 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "71a02bc9-fe0e-4364-8320-01c2166622e1"
-selected_variant = "f51a5166-77cf-4643-bdfb-a98b641ce6ee"
+mesh = "17211569-b696-4b4c-a7af-3f4693153d79"
+selected_variant = "6f2e74b0-a5c5-40d3-9d9a-c39a8b18b023"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "f51a5166-77cf-4643-bdfb-a98b641ce6ee"
+id = "6f2e74b0-a5c5-40d3-9d9a-c39a8b18b023"
 name = "PlasticGray"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "a3f71c8c-4fc2-4de4-b6a8-0acd8d95b6e9"
+asset = "472da4d7-98b3-40b8-b479-7b7cd538cce2"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "PlasticGray"
@@ -4345,7 +4499,7 @@ kind = "mesh"
 body = 11
 
 [[nodes.children]]
-id = "6d78908b-c1ea-4610-83fa-d3601fecb2ca"
+id = "320c1f00-8c52-4b2b-a13c-2873bfe39b6d"
 name = "panda_link7 (PlasticWhite)"
 locked = true
 visible = true
@@ -4371,15 +4525,15 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "18518759-dd95-4022-933c-a4e93fec7aca"
-selected_variant = "18b6959c-8034-4ae6-8c06-c01be85c03a7"
+mesh = "0cea5b8a-f624-4073-b5f5-f4f5a995aad2"
+selected_variant = "b6b2673f-33e4-47a2-801e-f68bd6422720"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "18b6959c-8034-4ae6-8c06-c01be85c03a7"
+id = "b6b2673f-33e4-47a2-801e-f68bd6422720"
 name = "PlasticWhite"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "c8744d97-86fe-4c47-b302-f0188396485e"
+asset = "07c1a49d-95b5-4288-8a01-10e01dbcea35"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "PlasticWhite"
@@ -4426,7 +4580,7 @@ kind = "mesh"
 body = 11
 
 [[nodes.children]]
-id = "00cf7845-a594-4d92-a5e8-502c7766d765"
+id = "99780ec3-d18d-4e06-a9fb-2f49db826364"
 name = "panda_link7 (Aluminum, subset_3)"
 locked = true
 visible = true
@@ -4452,15 +4606,15 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "79c290f5-b211-4525-865c-9d3d018ac5ed"
-selected_variant = "08693095-d72b-4681-9e73-fd0e627d7dd0"
+mesh = "5d363447-9993-44cc-aac4-ac711ddadcac"
+selected_variant = "ccbffa8a-be14-4676-8132-ef22873edd47"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "08693095-d72b-4681-9e73-fd0e627d7dd0"
+id = "ccbffa8a-be14-4676-8132-ef22873edd47"
 name = "Aluminum"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "af8122c5-7a59-4226-b84f-0b0386ef67be"
+asset = "93b0636a-5d5b-4269-82ba-702bbf9eddcf"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "Aluminum"
@@ -4507,7 +4661,7 @@ kind = "mesh"
 body = 11
 
 [[nodes]]
-id = "3ad4e100-d7e7-4918-b2a3-b272ff25c736"
+id = "5c334088-a7c7-43df-8e20-7e1c323df290"
 name = "anymal"
 kind = "group"
 locked = false
@@ -4551,7 +4705,7 @@ sha256 = "12656121fa5ebc54aad1a82931a3c7885b580257cb501ff2fdb378a40e4a7af2"
 mujoco_version = "none (USD, awsm-renderer-isaac-export)"
 
 [[nodes.children]]
-id = "1dd63088-fa3a-4245-91a2-f9fcee76c5ee"
+id = "e9d80830-0aa9-4814-89c4-54587775a731"
 name = "base/mesh"
 locked = true
 visible = true
@@ -4577,22 +4731,22 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "43e03dab-c070-415a-aaf6-31d1a1093b51"
-selected_variant = "b44229df-7529-488e-9a41-f414edebc220"
+mesh = "c77e4981-55a8-4713-a166-b7ca27d7851e"
+selected_variant = "c560cbf9-3e4e-413d-b6ba-e1ef5f452edb"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "b44229df-7529-488e-9a41-f414edebc220"
+id = "c560cbf9-3e4e-413d-b6ba-e1ef5f452edb"
 name = "base"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "e3f944f3-1883-418f-8c59-08d8bd78acb1"
+asset = "24127717-18a0-4af1-a44b-74261d5d1f85"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "base"
 base_color = [
-    0.009687848389148712,
-    0.011507036164402962,
-    0.011941871605813503,
+    1.0,
+    1.0,
+    1.0,
     1.0,
 ]
 metallic = 0.0
@@ -4609,6 +4763,9 @@ double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
 shading = "pbr"
+
+[nodes.children.kind.mesh.material_variants.instance.inline.base_color_texture]
+asset = "d6a9515a-ecae-40be-9ca6-7a8e96ff5c92"
 
 [nodes.children.kind.mesh.material_variants.instance.inline.extensions]
 
@@ -4632,7 +4789,7 @@ kind = "mesh"
 body = 1
 
 [[nodes.children]]
-id = "26ed2295-1dd9-417c-b499-038202aa887a"
+id = "e52f9d8f-7557-4318-8301-2a8640140e2e"
 name = "base/visuals/drive/mesh"
 locked = true
 visible = true
@@ -4658,22 +4815,22 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "a0c8c40b-f9dc-4501-b65e-655fcf5e783b"
-selected_variant = "4f64b315-2687-44a8-8325-a196f1c50469"
+mesh = "8757e038-913d-414e-b00d-977e8599118a"
+selected_variant = "257bb1a6-6852-4f0e-b812-a79d521d4e25"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "4f64b315-2687-44a8-8325-a196f1c50469"
+id = "257bb1a6-6852-4f0e-b812-a79d521d4e25"
 name = "drive"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "9403d9b2-bd78-47f9-9d7c-b8387eccb7cc"
+asset = "b7ef89a3-959e-41b8-a6a1-07974de7bfb0"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "drive"
 base_color = [
-    0.008380698971450329,
-    0.008380698971450329,
-    0.008380698971450329,
+    1.0,
+    1.0,
+    1.0,
     1.0,
 ]
 metallic = 0.0
@@ -4690,6 +4847,9 @@ double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
 shading = "pbr"
+
+[nodes.children.kind.mesh.material_variants.instance.inline.base_color_texture]
+asset = "c8ed9b4f-a70b-487d-886d-adf3a1d5d0c2"
 
 [nodes.children.kind.mesh.material_variants.instance.inline.extensions]
 
@@ -4713,7 +4873,7 @@ kind = "mesh"
 body = 1
 
 [[nodes.children]]
-id = "6619a069-d3ff-4153-804c-e3be3517603a"
+id = "ec01c446-a5c0-41bb-8477-67cc0389a4db"
 name = "base/visuals/drive_0/mesh"
 locked = true
 visible = true
@@ -4739,22 +4899,22 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "2987fed2-1200-44c1-ac3c-f7fbc5b6abfe"
-selected_variant = "99355dbd-becf-48ef-9313-de64184a2e74"
+mesh = "6dc8714c-a067-491a-b632-77e68478c55b"
+selected_variant = "e9db2f62-e79e-4691-9ede-15c9ff895d5a"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "99355dbd-becf-48ef-9313-de64184a2e74"
+id = "e9db2f62-e79e-4691-9ede-15c9ff895d5a"
 name = "drive"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "9403d9b2-bd78-47f9-9d7c-b8387eccb7cc"
+asset = "b7ef89a3-959e-41b8-a6a1-07974de7bfb0"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "drive"
 base_color = [
-    0.008380698971450329,
-    0.008380698971450329,
-    0.008380698971450329,
+    1.0,
+    1.0,
+    1.0,
     1.0,
 ]
 metallic = 0.0
@@ -4771,6 +4931,9 @@ double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
 shading = "pbr"
+
+[nodes.children.kind.mesh.material_variants.instance.inline.base_color_texture]
+asset = "c8ed9b4f-a70b-487d-886d-adf3a1d5d0c2"
 
 [nodes.children.kind.mesh.material_variants.instance.inline.extensions]
 
@@ -4794,7 +4957,7 @@ kind = "mesh"
 body = 1
 
 [[nodes.children]]
-id = "c8e11a10-e8f8-4dee-a267-5831b8569357"
+id = "dff22fb5-e667-4914-857d-88a351d768b4"
 name = "drive_1/mesh"
 locked = true
 visible = true
@@ -4820,22 +4983,22 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "0ca1d98d-9e14-4bcf-8b89-4e6feecdccdf"
-selected_variant = "81763259-3765-46ac-961b-77a6b1cddcda"
+mesh = "113b79da-ea95-4e6f-88a7-91c4a2d6c10f"
+selected_variant = "255b9309-e7bc-4fed-843b-63b666426798"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "81763259-3765-46ac-961b-77a6b1cddcda"
+id = "255b9309-e7bc-4fed-843b-63b666426798"
 name = "drive"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "9403d9b2-bd78-47f9-9d7c-b8387eccb7cc"
+asset = "b7ef89a3-959e-41b8-a6a1-07974de7bfb0"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "drive"
 base_color = [
-    0.008380698971450329,
-    0.008380698971450329,
-    0.008380698971450329,
+    1.0,
+    1.0,
+    1.0,
     1.0,
 ]
 metallic = 0.0
@@ -4852,6 +5015,9 @@ double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
 shading = "pbr"
+
+[nodes.children.kind.mesh.material_variants.instance.inline.base_color_texture]
+asset = "c8ed9b4f-a70b-487d-886d-adf3a1d5d0c2"
 
 [nodes.children.kind.mesh.material_variants.instance.inline.extensions]
 
@@ -4875,7 +5041,7 @@ kind = "mesh"
 body = 1
 
 [[nodes.children]]
-id = "9fb5f943-13aa-4609-bef7-4343ae769f26"
+id = "aca52758-7bd1-449d-a9e1-aec004a4f7ee"
 name = "drive_2/mesh"
 locked = true
 visible = true
@@ -4901,22 +5067,22 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "754b55bf-c66d-4df9-a7a0-666e620bf56a"
-selected_variant = "4a55d468-31d0-421e-847d-a538a3715aa1"
+mesh = "2b0091dc-eea3-477a-9e15-71959225341f"
+selected_variant = "4ffc0bc5-fc16-41f2-948f-1b140bc8b82c"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "4a55d468-31d0-421e-847d-a538a3715aa1"
+id = "4ffc0bc5-fc16-41f2-948f-1b140bc8b82c"
 name = "drive"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "9403d9b2-bd78-47f9-9d7c-b8387eccb7cc"
+asset = "b7ef89a3-959e-41b8-a6a1-07974de7bfb0"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "drive"
 base_color = [
-    0.008380698971450329,
-    0.008380698971450329,
-    0.008380698971450329,
+    1.0,
+    1.0,
+    1.0,
     1.0,
 ]
 metallic = 0.0
@@ -4933,6 +5099,9 @@ double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
 shading = "pbr"
+
+[nodes.children.kind.mesh.material_variants.instance.inline.base_color_texture]
+asset = "c8ed9b4f-a70b-487d-886d-adf3a1d5d0c2"
 
 [nodes.children.kind.mesh.material_variants.instance.inline.extensions]
 
@@ -4956,7 +5125,7 @@ kind = "mesh"
 body = 1
 
 [[nodes.children]]
-id = "0b07749a-9454-400b-9eb5-9f60214875c3"
+id = "f1045a72-44fa-432c-b01e-a07822090b5a"
 name = "battery/mesh"
 locked = true
 visible = true
@@ -4982,22 +5151,22 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "37264ec2-f2ce-43c5-9739-52f2ea624e91"
-selected_variant = "8e9558a6-338a-403b-a831-92d1ee26b3c6"
+mesh = "ff66ff31-097a-4c31-a55c-a194da9bcdb0"
+selected_variant = "f84161dd-fd8f-44fa-98a6-7433aeab9521"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "8e9558a6-338a-403b-a831-92d1ee26b3c6"
+id = "f84161dd-fd8f-44fa-98a6-7433aeab9521"
 name = "battery"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "663f53f4-5c01-4743-b165-ad35da365041"
+asset = "5e0c6560-383f-49b4-94ca-1d62275f5602"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "battery"
 base_color = [
-    0.009450125508010387,
-    0.009450125508010387,
-    0.009450125508010387,
+    1.0,
+    1.0,
+    1.0,
     1.0,
 ]
 metallic = 0.0
@@ -5014,6 +5183,9 @@ double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
 shading = "pbr"
+
+[nodes.children.kind.mesh.material_variants.instance.inline.base_color_texture]
+asset = "31f85cd0-df3a-41b5-bec3-84a65e6a60b5"
 
 [nodes.children.kind.mesh.material_variants.instance.inline.extensions]
 
@@ -5037,7 +5209,7 @@ kind = "mesh"
 body = 1
 
 [[nodes.children]]
-id = "1bc306b2-a752-4b21-ae21-4af6b68230b9"
+id = "59977c51-44b6-4731-9f21-0e2a7e14cfab"
 name = "bottom_shell/mesh"
 locked = true
 visible = true
@@ -5063,22 +5235,22 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "69d4f647-5dcc-4feb-8079-b282528fdff9"
-selected_variant = "276fc32f-2980-407b-8b08-199b1a241411"
+mesh = "a76f9459-1f77-4cae-873f-48d7de3d8a61"
+selected_variant = "307bc07e-d65a-4bad-9f6c-d2c1518de8ae"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "276fc32f-2980-407b-8b08-199b1a241411"
+id = "307bc07e-d65a-4bad-9f6c-d2c1518de8ae"
 name = "Default_OBJ"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "43d1c0ff-026d-4ca8-900a-8b1843277bb8"
+asset = "18567b8e-5031-4114-99d2-701692cb0f9c"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "Default_OBJ"
 base_color = [
-    0.43935927748680115,
-    0.040067579597234726,
-    0.03298986703157425,
+    1.0,
+    1.0,
+    1.0,
     1.0,
 ]
 metallic = 0.0
@@ -5095,6 +5267,9 @@ double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
 shading = "pbr"
+
+[nodes.children.kind.mesh.material_variants.instance.inline.base_color_texture]
+asset = "f16e7413-a719-444b-8148-09469c42e748"
 
 [nodes.children.kind.mesh.material_variants.instance.inline.extensions]
 
@@ -5118,7 +5293,7 @@ kind = "mesh"
 body = 1
 
 [[nodes.children]]
-id = "1e6acf49-ff1b-4429-9542-6b66d545b8ef"
+id = "7a2330dd-5d95-411c-afb7-2893d28f4e46"
 name = "face_shell/mesh"
 locked = true
 visible = true
@@ -5144,22 +5319,22 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "8b0dbed2-4a85-4f4f-9d33-38d754accb70"
-selected_variant = "eda7eb73-acc2-4303-afd0-35ca9ac5febb"
+mesh = "cd9dc87b-27bb-48c3-b624-b080cdb2158b"
+selected_variant = "f61369d5-4001-441c-9ad0-d60dcd9bb735"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "eda7eb73-acc2-4303-afd0-35ca9ac5febb"
+id = "f61369d5-4001-441c-9ad0-d60dcd9bb735"
 name = "face_shell"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "b3ee61c7-a981-4c0d-8f2f-3b5af53d8eba"
+asset = "27c47589-3d60-4783-a1c9-b81c71702a42"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "face_shell"
 base_color = [
-    0.7433390021324158,
-    0.061924535781145096,
-    0.050855234265327454,
+    1.0,
+    1.0,
+    1.0,
     1.0,
 ]
 metallic = 0.0
@@ -5176,6 +5351,9 @@ double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
 shading = "pbr"
+
+[nodes.children.kind.mesh.material_variants.instance.inline.base_color_texture]
+asset = "b1776a3c-098b-40f4-9ee9-72b1db24ad71"
 
 [nodes.children.kind.mesh.material_variants.instance.inline.extensions]
 
@@ -5199,7 +5377,7 @@ kind = "mesh"
 body = 1
 
 [[nodes.children]]
-id = "7152b80b-a622-4662-8632-47d2e3d73dcf"
+id = "44fcb2d4-a238-46a5-8369-c55382e6b1b7"
 name = "face_shell_0/mesh"
 locked = true
 visible = true
@@ -5225,22 +5403,22 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "e9764f4b-0d9f-4b68-9419-75295ff8264b"
-selected_variant = "3f73640b-58a9-44f7-bd38-a1e101f4c447"
+mesh = "9451ce74-85c0-4141-9084-304e79428479"
+selected_variant = "3627f725-62b7-49f4-8a3c-9782c3348f2d"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "3f73640b-58a9-44f7-bd38-a1e101f4c447"
+id = "3627f725-62b7-49f4-8a3c-9782c3348f2d"
 name = "face_shell"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "b3ee61c7-a981-4c0d-8f2f-3b5af53d8eba"
+asset = "27c47589-3d60-4783-a1c9-b81c71702a42"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "face_shell"
 base_color = [
-    0.7433390021324158,
-    0.061924535781145096,
-    0.050855234265327454,
+    1.0,
+    1.0,
+    1.0,
     1.0,
 ]
 metallic = 0.0
@@ -5257,6 +5435,9 @@ double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
 shading = "pbr"
+
+[nodes.children.kind.mesh.material_variants.instance.inline.base_color_texture]
+asset = "b1776a3c-098b-40f4-9ee9-72b1db24ad71"
 
 [nodes.children.kind.mesh.material_variants.instance.inline.extensions]
 
@@ -5280,7 +5461,7 @@ kind = "mesh"
 body = 1
 
 [[nodes.children]]
-id = "77fa697e-f548-4be1-88eb-e785abfb7ed5"
+id = "00b207a9-560d-4166-a20f-5cdaf3f38b39"
 name = "docking_socket/mesh"
 locked = true
 visible = true
@@ -5306,22 +5487,22 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "a5b20204-6912-4629-97f6-62cce31e5d50"
-selected_variant = "f93c2caf-e7bb-468b-9afb-8b6b0716830f"
+mesh = "cfd0d356-e6a2-457f-9751-a0a81cf7ac51"
+selected_variant = "524296e2-1e33-42fe-99d3-180c9143ee23"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "f93c2caf-e7bb-468b-9afb-8b6b0716830f"
+id = "524296e2-1e33-42fe-99d3-180c9143ee23"
 name = "docking_socket"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "243f59e9-5066-471e-bd43-0ad4b9966c28"
+asset = "821c68c5-f5c1-442d-b560-2a1fa0b759ed"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "docking_socket"
 base_color = [
-    0.011063222773373127,
-    0.010366962291300297,
-    0.009837591089308262,
+    1.0,
+    1.0,
+    1.0,
     1.0,
 ]
 metallic = 0.0
@@ -5338,6 +5519,9 @@ double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
 shading = "pbr"
+
+[nodes.children.kind.mesh.material_variants.instance.inline.base_color_texture]
+asset = "94e57eaa-f959-4d08-8c7c-700c504badc2"
 
 [nodes.children.kind.mesh.material_variants.instance.inline.extensions]
 
@@ -5361,7 +5545,7 @@ kind = "mesh"
 body = 1
 
 [[nodes.children]]
-id = "876c09eb-c01c-4718-8420-70227f6c8bc3"
+id = "0c290aa3-71fe-4e60-a718-adc1bc22d626"
 name = "mount/mesh"
 locked = true
 visible = true
@@ -5387,22 +5571,22 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "3c0a8479-f4dc-485f-b628-f81558126a04"
-selected_variant = "dd530e85-acf2-4521-bd31-b5acbf80bfae"
+mesh = "b00c2e42-fa48-4bfd-9fd4-f2bb0e0749d1"
+selected_variant = "e26307b1-ca16-4683-bb25-f21cf1aaa074"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "dd530e85-acf2-4521-bd31-b5acbf80bfae"
+id = "e26307b1-ca16-4683-bb25-f21cf1aaa074"
 name = "mount"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "89231495-66cc-451c-9bbc-e606ed1e2d1e"
+asset = "9c1904f8-1b97-483b-98ba-b1c05607ab3c"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "mount"
 base_color = [
-    0.006757126189768314,
-    0.006757126189768314,
-    0.006757126189768314,
+    1.0,
+    1.0,
+    1.0,
     1.0,
 ]
 metallic = 0.0
@@ -5419,6 +5603,9 @@ double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
 shading = "pbr"
+
+[nodes.children.kind.mesh.material_variants.instance.inline.base_color_texture]
+asset = "e305e988-1e23-4f49-9cd9-219b7fb193f1"
 
 [nodes.children.kind.mesh.material_variants.instance.inline.extensions]
 
@@ -5442,7 +5629,7 @@ kind = "mesh"
 body = 1
 
 [[nodes.children]]
-id = "435f20af-7708-45aa-b739-63807fc3bd67"
+id = "80a7766f-2b08-4467-ac9b-5379e070034b"
 name = "lidar/mesh"
 locked = true
 visible = true
@@ -5468,22 +5655,22 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "87bbae31-8096-4f28-bb74-c4ec07097e9f"
-selected_variant = "1b39bbac-899a-409e-8c10-c608726add07"
+mesh = "eb66536e-0ce3-445e-9da6-1ff23c2585a1"
+selected_variant = "916a2bd4-8973-4e22-b52f-7d329b6bb25e"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "1b39bbac-899a-409e-8c10-c608726add07"
+id = "916a2bd4-8973-4e22-b52f-7d329b6bb25e"
 name = "Velodyne"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "3155915a-890d-4fde-ba48-34fcb0b2c32f"
+asset = "7144e5c6-630b-4cf1-9dac-8df518bc038a"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "Velodyne"
 base_color = [
-    0.04106786847114563,
-    0.042052026838064194,
-    0.04310828819870949,
+    1.0,
+    1.0,
+    1.0,
     1.0,
 ]
 metallic = 0.0
@@ -5500,6 +5687,9 @@ double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
 shading = "pbr"
+
+[nodes.children.kind.mesh.material_variants.instance.inline.base_color_texture]
+asset = "661e12ec-4853-474c-a695-e45e392e6a5e"
 
 [nodes.children.kind.mesh.material_variants.instance.inline.extensions]
 
@@ -5523,7 +5713,7 @@ kind = "mesh"
 body = 1
 
 [[nodes.children]]
-id = "b9cda7c1-3910-40b2-af81-b9a0faa1bbf4"
+id = "2f7f43b1-55f4-4e87-8557-ad7b49c19b72"
 name = "lidar_guard/mesh"
 locked = true
 visible = true
@@ -5549,22 +5739,22 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "33f2d4a4-dbc9-4638-8882-d5291aafe147"
-selected_variant = "9924bca2-db2a-402b-9f42-e34bf7f9390f"
+mesh = "7564818c-8d5f-490e-ad15-9f0e04cff13f"
+selected_variant = "261b3c99-63c2-483a-a2ae-31dc1c794560"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "9924bca2-db2a-402b-9f42-e34bf7f9390f"
+id = "261b3c99-63c2-483a-a2ae-31dc1c794560"
 name = "lidar_guard"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "55d82fe1-4c45-41d3-8945-0393a7bf58c9"
+asset = "56e3b757-007f-4cfe-bfca-f097a6f9fd7b"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "lidar_guard"
 base_color = [
-    0.0032785781659185886,
-    0.0032785781659185886,
-    0.0032785781659185886,
+    1.0,
+    1.0,
+    1.0,
     1.0,
 ]
 metallic = 0.0
@@ -5581,6 +5771,9 @@ double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
 shading = "pbr"
+
+[nodes.children.kind.mesh.material_variants.instance.inline.base_color_texture]
+asset = "b01f0621-a72a-4258-a1ff-14e37b1f8042"
 
 [nodes.children.kind.mesh.material_variants.instance.inline.extensions]
 
@@ -5604,7 +5797,7 @@ kind = "mesh"
 body = 1
 
 [[nodes.children]]
-id = "b8ebf865-57f6-4afc-9657-8294913f43bf"
+id = "89dfeb4d-c4f5-4966-9376-b5751cb605f5"
 name = "top_shell/mesh"
 locked = true
 visible = true
@@ -5630,22 +5823,22 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "40c32da1-74fc-4a92-a456-391d0333df17"
-selected_variant = "575508b1-df1a-475c-81dc-23a38fa88838"
+mesh = "df87cc50-dbce-46f3-84a4-50086bc63526"
+selected_variant = "913e79fd-497a-45e2-821f-8578d477d931"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "575508b1-df1a-475c-81dc-23a38fa88838"
+id = "913e79fd-497a-45e2-821f-8578d477d931"
 name = "top_shell"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "e07aa2cd-e16b-42c6-a39b-9a924beed628"
+asset = "b771aad5-ed6f-4843-8653-73cf4be81c90"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "top_shell"
 base_color = [
-    0.37675797939300537,
-    0.03334295377135277,
-    0.02765810303390026,
+    1.0,
+    1.0,
+    1.0,
     1.0,
 ]
 metallic = 0.0
@@ -5662,6 +5855,9 @@ double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
 shading = "pbr"
+
+[nodes.children.kind.mesh.material_variants.instance.inline.base_color_texture]
+asset = "def2f736-268b-4d97-bec8-44d1f8d101ff"
 
 [nodes.children.kind.mesh.material_variants.instance.inline.extensions]
 
@@ -5685,7 +5881,7 @@ kind = "mesh"
 body = 1
 
 [[nodes.children]]
-id = "f733b00e-73e7-45ab-81d3-9911c4f27664"
+id = "3ce6358f-d069-4789-817d-ec3f66c5bf1f"
 name = "LF_HIP/visuals/hip/mesh"
 locked = true
 visible = true
@@ -5711,22 +5907,22 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "4fb56b3c-f7b0-4908-8182-cbcd765a56cb"
-selected_variant = "d41a639b-a893-4bab-8d2c-d767f0865106"
+mesh = "82fbdaf6-95a2-45ed-abdb-31594d0bc980"
+selected_variant = "078c61e1-856a-40ba-a719-9669c6dd8d6e"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "d41a639b-a893-4bab-8d2c-d767f0865106"
+id = "078c61e1-856a-40ba-a719-9669c6dd8d6e"
 name = "hip"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "8ccba6d1-bd4f-4324-a273-d345a46860cd"
+asset = "126ee703-32e8-4211-9270-8d6c0e13c5fb"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "hip"
 base_color = [
-    0.033578697592020035,
-    0.042700253427028656,
-    0.04906075447797775,
+    1.0,
+    1.0,
+    1.0,
     1.0,
 ]
 metallic = 0.0
@@ -5743,6 +5939,9 @@ double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
 shading = "pbr"
+
+[nodes.children.kind.mesh.material_variants.instance.inline.base_color_texture]
+asset = "48e87e95-5afb-4d16-b373-13eb0780732b"
 
 [nodes.children.kind.mesh.material_variants.instance.inline.extensions]
 
@@ -5766,7 +5965,7 @@ kind = "mesh"
 body = 2
 
 [[nodes.children]]
-id = "211d2679-be22-48bf-a5fd-08fb9acc4578"
+id = "2e7b49e9-17c7-4f1f-bf34-e258e8efde8d"
 name = "LF_THIGH/visuals/drive/mesh"
 locked = true
 visible = true
@@ -5792,22 +5991,22 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "81b7076c-64d7-4412-b010-cca0701b1b31"
-selected_variant = "2b75ac33-5c56-44c2-957a-3051999dfa98"
+mesh = "c90234e8-46be-4ea1-9389-bcefee4fea7b"
+selected_variant = "d60f3057-7c1b-4764-ab6a-50deac0160bd"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "2b75ac33-5c56-44c2-957a-3051999dfa98"
+id = "d60f3057-7c1b-4764-ab6a-50deac0160bd"
 name = "drive"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "9403d9b2-bd78-47f9-9d7c-b8387eccb7cc"
+asset = "b7ef89a3-959e-41b8-a6a1-07974de7bfb0"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "drive"
 base_color = [
-    0.008380698971450329,
-    0.008380698971450329,
-    0.008380698971450329,
+    1.0,
+    1.0,
+    1.0,
     1.0,
 ]
 metallic = 0.0
@@ -5824,6 +6023,9 @@ double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
 shading = "pbr"
+
+[nodes.children.kind.mesh.material_variants.instance.inline.base_color_texture]
+asset = "c8ed9b4f-a70b-487d-886d-adf3a1d5d0c2"
 
 [nodes.children.kind.mesh.material_variants.instance.inline.extensions]
 
@@ -5847,7 +6049,7 @@ kind = "mesh"
 body = 3
 
 [[nodes.children]]
-id = "a4c9c339-18ac-4d8c-8cf3-9f28f45d0089"
+id = "46f0b575-dc7d-4b0d-aa48-d24ff8cbfc1b"
 name = "LF_THIGH/visuals/thigh/mesh"
 locked = true
 visible = true
@@ -5873,22 +6075,22 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "4c975821-00cc-4590-b5d5-21a4bcfc9c49"
-selected_variant = "72d78633-0000-4a31-8414-259869d7e72e"
+mesh = "04eb2aa2-f8da-4f93-a8a8-608589410733"
+selected_variant = "3ae38161-3a40-4bd5-ac91-f0863a0757e8"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "72d78633-0000-4a31-8414-259869d7e72e"
+id = "3ae38161-3a40-4bd5-ac91-f0863a0757e8"
 name = "thigh"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "e1748539-401c-4e24-a318-97c5ce52e2e4"
+asset = "bd8b5d6d-87e5-4e22-ab47-8367f8c9dc4d"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "thigh"
 base_color = [
-    0.01567174680531025,
-    0.015340188518166542,
-    0.017567206174135208,
+    1.0,
+    1.0,
+    1.0,
     1.0,
 ]
 metallic = 0.0
@@ -5905,6 +6107,9 @@ double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
 shading = "pbr"
+
+[nodes.children.kind.mesh.material_variants.instance.inline.base_color_texture]
+asset = "8ae1b984-944a-401f-babb-dfed443cbd74"
 
 [nodes.children.kind.mesh.material_variants.instance.inline.extensions]
 
@@ -5928,7 +6133,7 @@ kind = "mesh"
 body = 3
 
 [[nodes.children]]
-id = "752d62e1-08f2-460f-9867-aa98be493c60"
+id = "c8deff79-50a3-4016-946f-03fd0e7fdc65"
 name = "LF_THIGH/visuals/drive_0/mesh"
 locked = true
 visible = true
@@ -5954,22 +6159,22 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "e5fa83bd-3aff-42ae-8a56-27e0cdd4195e"
-selected_variant = "08cc6ee2-6e15-4c85-bbc3-5b20b37f0120"
+mesh = "3e4cf571-8900-4387-8e89-59fd41139b81"
+selected_variant = "beaebe8a-f5c5-4227-afa4-04f9babef384"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "08cc6ee2-6e15-4c85-bbc3-5b20b37f0120"
+id = "beaebe8a-f5c5-4227-afa4-04f9babef384"
 name = "drive"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "9403d9b2-bd78-47f9-9d7c-b8387eccb7cc"
+asset = "b7ef89a3-959e-41b8-a6a1-07974de7bfb0"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "drive"
 base_color = [
-    0.008380698971450329,
-    0.008380698971450329,
-    0.008380698971450329,
+    1.0,
+    1.0,
+    1.0,
     1.0,
 ]
 metallic = 0.0
@@ -5986,6 +6191,9 @@ double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
 shading = "pbr"
+
+[nodes.children.kind.mesh.material_variants.instance.inline.base_color_texture]
+asset = "c8ed9b4f-a70b-487d-886d-adf3a1d5d0c2"
 
 [nodes.children.kind.mesh.material_variants.instance.inline.extensions]
 
@@ -6009,7 +6217,7 @@ kind = "mesh"
 body = 3
 
 [[nodes.children]]
-id = "df31bf77-f269-4ea6-843e-62ba42c62e15"
+id = "871322b9-ffcd-43f6-b745-ebefbe37274c"
 name = "LF_SHANK/visuals/shank_l/mesh"
 locked = true
 visible = true
@@ -6035,22 +6243,22 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "e26d3e9c-d27b-449b-9d0d-3e970fe402d0"
-selected_variant = "9ed0b002-0c66-4c68-9687-7f602491d14c"
+mesh = "ad098ae5-3ee1-4c80-9c25-2e2c8544c368"
+selected_variant = "a53a17bf-62a3-4bf3-972f-9b020214a0ec"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "9ed0b002-0c66-4c68-9687-7f602491d14c"
+id = "a53a17bf-62a3-4bf3-972f-9b020214a0ec"
 name = "shank"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "5aa8a972-cc69-477d-b237-08348eb03562"
+asset = "51a79737-3346-4c7f-8f41-65eaad7c39b5"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "shank"
 base_color = [
-    0.016238221898674965,
-    0.01606958918273449,
-    0.01836826466023922,
+    1.0,
+    1.0,
+    1.0,
     1.0,
 ]
 metallic = 0.0
@@ -6067,6 +6275,9 @@ double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
 shading = "pbr"
+
+[nodes.children.kind.mesh.material_variants.instance.inline.base_color_texture]
+asset = "cf910f61-1d48-4e5c-ab07-2bc9ded256ab"
 
 [nodes.children.kind.mesh.material_variants.instance.inline.extensions]
 
@@ -6090,7 +6301,7 @@ kind = "mesh"
 body = 4
 
 [[nodes.children]]
-id = "25afbdb0-87bb-4ee7-937c-273411b2d09d"
+id = "aaa32e4e-9605-412f-b15f-b3df192f2660"
 name = "LF_SHANK/visuals/foot/mesh"
 locked = true
 visible = true
@@ -6116,22 +6327,22 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "6c9c6fe7-cdae-4939-a06f-430032c19977"
-selected_variant = "45b99c7f-2d2b-4e72-a121-5d8af972db40"
+mesh = "ad6798f2-1515-4de9-92ad-160c1792f75d"
+selected_variant = "ad716215-27b6-4b7b-a46e-d7867b35b44a"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "45b99c7f-2d2b-4e72-a121-5d8af972db40"
+id = "ad716215-27b6-4b7b-a46e-d7867b35b44a"
 name = "foot"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "f3a677e9-b83f-44de-b241-73f5a0f8cfa8"
+asset = "c3e1677e-d1f4-4c9f-b3e5-24eac147af64"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "foot"
 base_color = [
-    0.004922155756503344,
-    0.004858886823058128,
-    0.005190200638025999,
+    1.0,
+    1.0,
+    1.0,
     1.0,
 ]
 metallic = 0.0
@@ -6148,6 +6359,9 @@ double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
 shading = "pbr"
+
+[nodes.children.kind.mesh.material_variants.instance.inline.base_color_texture]
+asset = "ce3c1f30-7524-4a1a-a967-a85c049fb077"
 
 [nodes.children.kind.mesh.material_variants.instance.inline.extensions]
 
@@ -6171,7 +6385,7 @@ kind = "mesh"
 body = 4
 
 [[nodes.children]]
-id = "ed8cfe38-82fe-4438-88d6-b4632117bb6e"
+id = "99139dd7-ce04-49d4-8662-a12f0397ca74"
 name = "LH_HIP/visuals/hip/mesh"
 locked = true
 visible = true
@@ -6197,22 +6411,22 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "e0e6fb14-85a0-4cb0-a1fe-d67c27ab1b33"
-selected_variant = "02c4abb4-97bf-44e6-8525-722eacf54175"
+mesh = "b9a6ac76-2b9c-48a9-9808-ba2ed11311ba"
+selected_variant = "3fef6d74-9b98-4f4b-9f12-8c3e132f2e16"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "02c4abb4-97bf-44e6-8525-722eacf54175"
+id = "3fef6d74-9b98-4f4b-9f12-8c3e132f2e16"
 name = "hip"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "8ccba6d1-bd4f-4324-a273-d345a46860cd"
+asset = "126ee703-32e8-4211-9270-8d6c0e13c5fb"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "hip"
 base_color = [
-    0.033578697592020035,
-    0.042700253427028656,
-    0.04906075447797775,
+    1.0,
+    1.0,
+    1.0,
     1.0,
 ]
 metallic = 0.0
@@ -6229,6 +6443,9 @@ double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
 shading = "pbr"
+
+[nodes.children.kind.mesh.material_variants.instance.inline.base_color_texture]
+asset = "48e87e95-5afb-4d16-b373-13eb0780732b"
 
 [nodes.children.kind.mesh.material_variants.instance.inline.extensions]
 
@@ -6252,7 +6469,7 @@ kind = "mesh"
 body = 5
 
 [[nodes.children]]
-id = "5f47e70b-58f3-411e-a6a7-0372bba3a2d4"
+id = "9f21fce4-bdf3-4c00-ab25-d31b46762933"
 name = "LH_THIGH/visuals/drive/mesh"
 locked = true
 visible = true
@@ -6278,22 +6495,22 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "3f7fd6d9-8358-42e2-9415-78cd385f2217"
-selected_variant = "4fb0a1ab-eb35-4813-9f7d-9bc02ae47b57"
+mesh = "f607c14c-2ca8-4a1c-a5c3-a4118b75519b"
+selected_variant = "dad6a97d-149c-44a8-9e7b-94c1c56d6d85"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "4fb0a1ab-eb35-4813-9f7d-9bc02ae47b57"
+id = "dad6a97d-149c-44a8-9e7b-94c1c56d6d85"
 name = "drive"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "9403d9b2-bd78-47f9-9d7c-b8387eccb7cc"
+asset = "b7ef89a3-959e-41b8-a6a1-07974de7bfb0"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "drive"
 base_color = [
-    0.008380698971450329,
-    0.008380698971450329,
-    0.008380698971450329,
+    1.0,
+    1.0,
+    1.0,
     1.0,
 ]
 metallic = 0.0
@@ -6310,6 +6527,9 @@ double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
 shading = "pbr"
+
+[nodes.children.kind.mesh.material_variants.instance.inline.base_color_texture]
+asset = "c8ed9b4f-a70b-487d-886d-adf3a1d5d0c2"
 
 [nodes.children.kind.mesh.material_variants.instance.inline.extensions]
 
@@ -6333,7 +6553,7 @@ kind = "mesh"
 body = 6
 
 [[nodes.children]]
-id = "a84abbb0-c778-4493-ac91-7637ed20c72b"
+id = "5f57c39e-a3f7-4865-97d3-70763fb7a89f"
 name = "LH_THIGH/visuals/thigh/mesh"
 locked = true
 visible = true
@@ -6359,22 +6579,22 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "0f1e76f3-559c-465d-b15c-53dbae5701ee"
-selected_variant = "f3afeb2f-6b65-41bb-b2b1-80d04965b76a"
+mesh = "1d854b28-3926-4771-9f40-881cd256c0d0"
+selected_variant = "4c244d08-25f0-48bb-a53f-4e69a3b85b8c"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "f3afeb2f-6b65-41bb-b2b1-80d04965b76a"
+id = "4c244d08-25f0-48bb-a53f-4e69a3b85b8c"
 name = "thigh"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "e1748539-401c-4e24-a318-97c5ce52e2e4"
+asset = "bd8b5d6d-87e5-4e22-ab47-8367f8c9dc4d"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "thigh"
 base_color = [
-    0.01567174680531025,
-    0.015340188518166542,
-    0.017567206174135208,
+    1.0,
+    1.0,
+    1.0,
     1.0,
 ]
 metallic = 0.0
@@ -6391,6 +6611,9 @@ double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
 shading = "pbr"
+
+[nodes.children.kind.mesh.material_variants.instance.inline.base_color_texture]
+asset = "8ae1b984-944a-401f-babb-dfed443cbd74"
 
 [nodes.children.kind.mesh.material_variants.instance.inline.extensions]
 
@@ -6414,7 +6637,7 @@ kind = "mesh"
 body = 6
 
 [[nodes.children]]
-id = "a437b436-9757-4822-86aa-977ec29ea31b"
+id = "2a501ae6-a788-4f98-8900-37d5225c7bee"
 name = "LH_THIGH/visuals/drive_0/mesh"
 locked = true
 visible = true
@@ -6440,22 +6663,22 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "45e6cf6a-bc83-4fde-b819-94d10a43212b"
-selected_variant = "c7177742-56b2-43f6-890a-f2d04a733c83"
+mesh = "2669130b-cf58-4d92-b4bf-7646472b0e3b"
+selected_variant = "652beca4-d12e-46d8-9228-41cf694e71ba"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "c7177742-56b2-43f6-890a-f2d04a733c83"
+id = "652beca4-d12e-46d8-9228-41cf694e71ba"
 name = "drive"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "9403d9b2-bd78-47f9-9d7c-b8387eccb7cc"
+asset = "b7ef89a3-959e-41b8-a6a1-07974de7bfb0"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "drive"
 base_color = [
-    0.008380698971450329,
-    0.008380698971450329,
-    0.008380698971450329,
+    1.0,
+    1.0,
+    1.0,
     1.0,
 ]
 metallic = 0.0
@@ -6472,6 +6695,9 @@ double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
 shading = "pbr"
+
+[nodes.children.kind.mesh.material_variants.instance.inline.base_color_texture]
+asset = "c8ed9b4f-a70b-487d-886d-adf3a1d5d0c2"
 
 [nodes.children.kind.mesh.material_variants.instance.inline.extensions]
 
@@ -6495,7 +6721,7 @@ kind = "mesh"
 body = 6
 
 [[nodes.children]]
-id = "80615722-bdf6-4c30-ba33-d03e35c43ed7"
+id = "41d01b52-e3c1-40e4-bfba-ca7eceda6cdf"
 name = "LH_SHANK/visuals/shank_r/mesh"
 locked = true
 visible = true
@@ -6521,22 +6747,22 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "09a250e8-0fbd-471f-a170-b14bc4c045d1"
-selected_variant = "5c0f11de-05bb-4267-a984-c6718401c52b"
+mesh = "70320aff-9c78-4233-8d87-cb54608ef745"
+selected_variant = "5b6974ad-6f7e-41f6-b517-bdda4c4274ac"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "5c0f11de-05bb-4267-a984-c6718401c52b"
+id = "5b6974ad-6f7e-41f6-b517-bdda4c4274ac"
 name = "shank"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "5aa8a972-cc69-477d-b237-08348eb03562"
+asset = "51a79737-3346-4c7f-8f41-65eaad7c39b5"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "shank"
 base_color = [
-    0.016238221898674965,
-    0.01606958918273449,
-    0.01836826466023922,
+    1.0,
+    1.0,
+    1.0,
     1.0,
 ]
 metallic = 0.0
@@ -6553,6 +6779,9 @@ double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
 shading = "pbr"
+
+[nodes.children.kind.mesh.material_variants.instance.inline.base_color_texture]
+asset = "cf910f61-1d48-4e5c-ab07-2bc9ded256ab"
 
 [nodes.children.kind.mesh.material_variants.instance.inline.extensions]
 
@@ -6576,7 +6805,7 @@ kind = "mesh"
 body = 7
 
 [[nodes.children]]
-id = "b87d1042-b80d-4438-a773-2dc1fd227075"
+id = "01a4ebc6-8d6b-4724-9b09-b5359fb257a3"
 name = "LH_SHANK/visuals/foot/mesh"
 locked = true
 visible = true
@@ -6602,22 +6831,22 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "25c57ee7-99d5-49ef-b819-bbfc1da4a758"
-selected_variant = "08b55c7f-9b1e-489b-ac73-d2b868510cc3"
+mesh = "28584b6d-5815-48fa-9b0e-274661a2013a"
+selected_variant = "7fa99069-f798-4544-9edb-11e03a712793"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "08b55c7f-9b1e-489b-ac73-d2b868510cc3"
+id = "7fa99069-f798-4544-9edb-11e03a712793"
 name = "foot"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "f3a677e9-b83f-44de-b241-73f5a0f8cfa8"
+asset = "c3e1677e-d1f4-4c9f-b3e5-24eac147af64"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "foot"
 base_color = [
-    0.004922155756503344,
-    0.004858886823058128,
-    0.005190200638025999,
+    1.0,
+    1.0,
+    1.0,
     1.0,
 ]
 metallic = 0.0
@@ -6634,6 +6863,9 @@ double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
 shading = "pbr"
+
+[nodes.children.kind.mesh.material_variants.instance.inline.base_color_texture]
+asset = "ce3c1f30-7524-4a1a-a967-a85c049fb077"
 
 [nodes.children.kind.mesh.material_variants.instance.inline.extensions]
 
@@ -6657,7 +6889,7 @@ kind = "mesh"
 body = 7
 
 [[nodes.children]]
-id = "3726717b-039c-4f34-a6c7-90a0d7c1cb17"
+id = "86e346a6-391d-4a99-84e1-283c646016ca"
 name = "RF_HIP/visuals/hip/mesh"
 locked = true
 visible = true
@@ -6683,22 +6915,22 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "3eb43971-f9b5-44b3-bce1-05b790fa5dc7"
-selected_variant = "70a4f5d1-fd78-4ef4-921f-3e60727014e7"
+mesh = "4bbf5c9f-237a-4b09-aa69-69f0861db917"
+selected_variant = "5d81ceb4-7857-4546-b31b-18579629d3cd"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "70a4f5d1-fd78-4ef4-921f-3e60727014e7"
+id = "5d81ceb4-7857-4546-b31b-18579629d3cd"
 name = "hip"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "8ccba6d1-bd4f-4324-a273-d345a46860cd"
+asset = "126ee703-32e8-4211-9270-8d6c0e13c5fb"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "hip"
 base_color = [
-    0.033578697592020035,
-    0.042700253427028656,
-    0.04906075447797775,
+    1.0,
+    1.0,
+    1.0,
     1.0,
 ]
 metallic = 0.0
@@ -6715,6 +6947,9 @@ double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
 shading = "pbr"
+
+[nodes.children.kind.mesh.material_variants.instance.inline.base_color_texture]
+asset = "48e87e95-5afb-4d16-b373-13eb0780732b"
 
 [nodes.children.kind.mesh.material_variants.instance.inline.extensions]
 
@@ -6738,7 +6973,7 @@ kind = "mesh"
 body = 8
 
 [[nodes.children]]
-id = "2bed3d77-01d5-4c47-8f22-3dca8dfddfd0"
+id = "e00cb324-7105-4f13-a06e-e910d3e7d22a"
 name = "RF_THIGH/visuals/drive/mesh"
 locked = true
 visible = true
@@ -6764,22 +6999,22 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "24dd24a8-a586-4dc7-88a5-334078733d49"
-selected_variant = "7df18f1c-d629-4092-b1a3-82c7e3e27ac6"
+mesh = "c1deff84-264c-45ad-91b8-7d5eb34b79fe"
+selected_variant = "c7546bde-7eac-4100-b23e-ac4470748ea9"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "7df18f1c-d629-4092-b1a3-82c7e3e27ac6"
+id = "c7546bde-7eac-4100-b23e-ac4470748ea9"
 name = "drive"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "9403d9b2-bd78-47f9-9d7c-b8387eccb7cc"
+asset = "b7ef89a3-959e-41b8-a6a1-07974de7bfb0"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "drive"
 base_color = [
-    0.008380698971450329,
-    0.008380698971450329,
-    0.008380698971450329,
+    1.0,
+    1.0,
+    1.0,
     1.0,
 ]
 metallic = 0.0
@@ -6796,6 +7031,9 @@ double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
 shading = "pbr"
+
+[nodes.children.kind.mesh.material_variants.instance.inline.base_color_texture]
+asset = "c8ed9b4f-a70b-487d-886d-adf3a1d5d0c2"
 
 [nodes.children.kind.mesh.material_variants.instance.inline.extensions]
 
@@ -6819,7 +7057,7 @@ kind = "mesh"
 body = 9
 
 [[nodes.children]]
-id = "2b9a5363-5a7c-49fe-9a83-0283ffdd4c49"
+id = "576767c3-053e-438c-b7ed-fac4d3c4c785"
 name = "RF_THIGH/visuals/thigh/mesh"
 locked = true
 visible = true
@@ -6845,22 +7083,22 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "139a6363-e72b-4a69-88b6-29ead99247ad"
-selected_variant = "0b70318c-28a5-42a4-a3ae-6cfdd42ac528"
+mesh = "046a18cc-fce0-4498-a362-7f397a8e3636"
+selected_variant = "9da69cf1-c95a-41a7-a7b8-1285b4a7bbc5"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "0b70318c-28a5-42a4-a3ae-6cfdd42ac528"
+id = "9da69cf1-c95a-41a7-a7b8-1285b4a7bbc5"
 name = "thigh"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "e1748539-401c-4e24-a318-97c5ce52e2e4"
+asset = "bd8b5d6d-87e5-4e22-ab47-8367f8c9dc4d"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "thigh"
 base_color = [
-    0.01567174680531025,
-    0.015340188518166542,
-    0.017567206174135208,
+    1.0,
+    1.0,
+    1.0,
     1.0,
 ]
 metallic = 0.0
@@ -6877,6 +7115,9 @@ double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
 shading = "pbr"
+
+[nodes.children.kind.mesh.material_variants.instance.inline.base_color_texture]
+asset = "8ae1b984-944a-401f-babb-dfed443cbd74"
 
 [nodes.children.kind.mesh.material_variants.instance.inline.extensions]
 
@@ -6900,7 +7141,7 @@ kind = "mesh"
 body = 9
 
 [[nodes.children]]
-id = "94f685a7-ed39-4025-ae80-d76f0f68e320"
+id = "1a0ad731-986f-41fa-b5f7-a095cce3acbf"
 name = "RF_THIGH/visuals/drive_0/mesh"
 locked = true
 visible = true
@@ -6926,22 +7167,22 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "cbafafb7-3436-444f-883f-c63b16870b37"
-selected_variant = "1a095b69-f0f8-40f6-8674-91c9804f4b94"
+mesh = "627d5de3-8510-4ecc-859f-a6b11488018a"
+selected_variant = "45601530-25f3-4b56-8c31-d758aedc5b36"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "1a095b69-f0f8-40f6-8674-91c9804f4b94"
+id = "45601530-25f3-4b56-8c31-d758aedc5b36"
 name = "drive"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "9403d9b2-bd78-47f9-9d7c-b8387eccb7cc"
+asset = "b7ef89a3-959e-41b8-a6a1-07974de7bfb0"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "drive"
 base_color = [
-    0.008380698971450329,
-    0.008380698971450329,
-    0.008380698971450329,
+    1.0,
+    1.0,
+    1.0,
     1.0,
 ]
 metallic = 0.0
@@ -6958,6 +7199,9 @@ double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
 shading = "pbr"
+
+[nodes.children.kind.mesh.material_variants.instance.inline.base_color_texture]
+asset = "c8ed9b4f-a70b-487d-886d-adf3a1d5d0c2"
 
 [nodes.children.kind.mesh.material_variants.instance.inline.extensions]
 
@@ -6981,7 +7225,7 @@ kind = "mesh"
 body = 9
 
 [[nodes.children]]
-id = "6f0cefc7-90bb-44d0-8c4d-5a9b2792515a"
+id = "9df161f8-b7dc-4fd1-b0d0-52b4d8024ea6"
 name = "RF_SHANK/visuals/shank_r/mesh"
 locked = true
 visible = true
@@ -7007,22 +7251,22 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "b3b8163d-7e45-424d-bf25-b9b86dacd2f0"
-selected_variant = "5006af7c-7734-418d-84d1-edb4d65ae6ff"
+mesh = "78776849-93ab-4077-a11f-5483bd37b60c"
+selected_variant = "68a11a9c-f943-4189-a9b5-94b39bc5f95c"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "5006af7c-7734-418d-84d1-edb4d65ae6ff"
+id = "68a11a9c-f943-4189-a9b5-94b39bc5f95c"
 name = "shank"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "5aa8a972-cc69-477d-b237-08348eb03562"
+asset = "51a79737-3346-4c7f-8f41-65eaad7c39b5"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "shank"
 base_color = [
-    0.016238221898674965,
-    0.01606958918273449,
-    0.01836826466023922,
+    1.0,
+    1.0,
+    1.0,
     1.0,
 ]
 metallic = 0.0
@@ -7039,6 +7283,9 @@ double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
 shading = "pbr"
+
+[nodes.children.kind.mesh.material_variants.instance.inline.base_color_texture]
+asset = "cf910f61-1d48-4e5c-ab07-2bc9ded256ab"
 
 [nodes.children.kind.mesh.material_variants.instance.inline.extensions]
 
@@ -7062,7 +7309,7 @@ kind = "mesh"
 body = 10
 
 [[nodes.children]]
-id = "873f06f0-2c0e-48e9-a2ed-4a9bb838cea7"
+id = "9a2ac9fd-98df-428e-8dd1-7414028c58bc"
 name = "RF_SHANK/visuals/foot/mesh"
 locked = true
 visible = true
@@ -7088,22 +7335,22 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "b010be5c-4c64-409f-a471-e156d8276622"
-selected_variant = "37bea108-5318-4676-b910-275d28bcb89c"
+mesh = "12cce5b3-075c-4848-bb08-ec8a5ab8cfc0"
+selected_variant = "854e443e-3a0f-4265-9d59-425fc04aecce"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "37bea108-5318-4676-b910-275d28bcb89c"
+id = "854e443e-3a0f-4265-9d59-425fc04aecce"
 name = "foot"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "f3a677e9-b83f-44de-b241-73f5a0f8cfa8"
+asset = "c3e1677e-d1f4-4c9f-b3e5-24eac147af64"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "foot"
 base_color = [
-    0.004922155756503344,
-    0.004858886823058128,
-    0.005190200638025999,
+    1.0,
+    1.0,
+    1.0,
     1.0,
 ]
 metallic = 0.0
@@ -7120,6 +7367,9 @@ double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
 shading = "pbr"
+
+[nodes.children.kind.mesh.material_variants.instance.inline.base_color_texture]
+asset = "ce3c1f30-7524-4a1a-a967-a85c049fb077"
 
 [nodes.children.kind.mesh.material_variants.instance.inline.extensions]
 
@@ -7143,7 +7393,7 @@ kind = "mesh"
 body = 10
 
 [[nodes.children]]
-id = "20c336f5-ecc1-4c33-8854-faafb8f0a738"
+id = "ccb4743c-d2c3-44e4-8582-26ee404aeef9"
 name = "RH_HIP/visuals/hip/mesh"
 locked = true
 visible = true
@@ -7169,22 +7419,22 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "73f60483-b65a-4419-b855-1a2d84a01c30"
-selected_variant = "4283f019-cc60-4110-8ed1-5814f234d7c6"
+mesh = "173fe917-6195-4e5b-a375-b0858b4500ec"
+selected_variant = "b340f438-ae90-45fa-9a86-69e9e25049ef"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "4283f019-cc60-4110-8ed1-5814f234d7c6"
+id = "b340f438-ae90-45fa-9a86-69e9e25049ef"
 name = "hip"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "8ccba6d1-bd4f-4324-a273-d345a46860cd"
+asset = "126ee703-32e8-4211-9270-8d6c0e13c5fb"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "hip"
 base_color = [
-    0.033578697592020035,
-    0.042700253427028656,
-    0.04906075447797775,
+    1.0,
+    1.0,
+    1.0,
     1.0,
 ]
 metallic = 0.0
@@ -7201,6 +7451,9 @@ double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
 shading = "pbr"
+
+[nodes.children.kind.mesh.material_variants.instance.inline.base_color_texture]
+asset = "48e87e95-5afb-4d16-b373-13eb0780732b"
 
 [nodes.children.kind.mesh.material_variants.instance.inline.extensions]
 
@@ -7224,7 +7477,7 @@ kind = "mesh"
 body = 11
 
 [[nodes.children]]
-id = "9a4709da-6f48-46e6-9dc2-822435b9be62"
+id = "5f6c2ac1-fc3d-46d6-8b49-97aca2ae154e"
 name = "RH_THIGH/visuals/drive/mesh"
 locked = true
 visible = true
@@ -7250,22 +7503,22 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "a627b15d-555a-4ec2-9e49-9b50a25d43aa"
-selected_variant = "00f0135b-80ef-484a-bd1e-2be411f19b0c"
+mesh = "bfcc9f97-6f4a-4863-838e-6a6b575c37da"
+selected_variant = "ce7bb966-b006-4e47-afbd-ccb57b69f28d"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "00f0135b-80ef-484a-bd1e-2be411f19b0c"
+id = "ce7bb966-b006-4e47-afbd-ccb57b69f28d"
 name = "drive"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "9403d9b2-bd78-47f9-9d7c-b8387eccb7cc"
+asset = "b7ef89a3-959e-41b8-a6a1-07974de7bfb0"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "drive"
 base_color = [
-    0.008380698971450329,
-    0.008380698971450329,
-    0.008380698971450329,
+    1.0,
+    1.0,
+    1.0,
     1.0,
 ]
 metallic = 0.0
@@ -7282,6 +7535,9 @@ double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
 shading = "pbr"
+
+[nodes.children.kind.mesh.material_variants.instance.inline.base_color_texture]
+asset = "c8ed9b4f-a70b-487d-886d-adf3a1d5d0c2"
 
 [nodes.children.kind.mesh.material_variants.instance.inline.extensions]
 
@@ -7305,7 +7561,7 @@ kind = "mesh"
 body = 12
 
 [[nodes.children]]
-id = "5b450be7-f0f5-4f16-97fb-794a4eeb867f"
+id = "4ce22cf2-0082-40d1-9c0d-4b34c1e11bd4"
 name = "RH_THIGH/visuals/thigh/mesh"
 locked = true
 visible = true
@@ -7331,22 +7587,22 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "e746aa8e-3434-4185-92f2-ad9689993c78"
-selected_variant = "17c723fb-66d8-4250-8119-8436ab2fa9af"
+mesh = "35745375-84f1-463b-b7d2-8721bacb8f49"
+selected_variant = "26dd9617-43ea-4aed-94e9-fb2a0a79ea9a"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "17c723fb-66d8-4250-8119-8436ab2fa9af"
+id = "26dd9617-43ea-4aed-94e9-fb2a0a79ea9a"
 name = "thigh"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "e1748539-401c-4e24-a318-97c5ce52e2e4"
+asset = "bd8b5d6d-87e5-4e22-ab47-8367f8c9dc4d"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "thigh"
 base_color = [
-    0.01567174680531025,
-    0.015340188518166542,
-    0.017567206174135208,
+    1.0,
+    1.0,
+    1.0,
     1.0,
 ]
 metallic = 0.0
@@ -7363,6 +7619,9 @@ double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
 shading = "pbr"
+
+[nodes.children.kind.mesh.material_variants.instance.inline.base_color_texture]
+asset = "8ae1b984-944a-401f-babb-dfed443cbd74"
 
 [nodes.children.kind.mesh.material_variants.instance.inline.extensions]
 
@@ -7386,7 +7645,7 @@ kind = "mesh"
 body = 12
 
 [[nodes.children]]
-id = "f497e059-ab72-44fb-9fca-958736bf0909"
+id = "fc7549b7-4ec0-486d-9cca-faedc69b8a60"
 name = "RH_THIGH/visuals/drive_0/mesh"
 locked = true
 visible = true
@@ -7412,22 +7671,22 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "b77f0105-48e6-43dd-9e98-eb5e82c0649a"
-selected_variant = "dae35698-8450-4902-8123-91b21a234186"
+mesh = "7281827b-e175-410b-b00f-13a1b4697231"
+selected_variant = "f34cab29-15a3-4435-ad6b-c762a2eca5d6"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "dae35698-8450-4902-8123-91b21a234186"
+id = "f34cab29-15a3-4435-ad6b-c762a2eca5d6"
 name = "drive"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "9403d9b2-bd78-47f9-9d7c-b8387eccb7cc"
+asset = "b7ef89a3-959e-41b8-a6a1-07974de7bfb0"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "drive"
 base_color = [
-    0.008380698971450329,
-    0.008380698971450329,
-    0.008380698971450329,
+    1.0,
+    1.0,
+    1.0,
     1.0,
 ]
 metallic = 0.0
@@ -7444,6 +7703,9 @@ double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
 shading = "pbr"
+
+[nodes.children.kind.mesh.material_variants.instance.inline.base_color_texture]
+asset = "c8ed9b4f-a70b-487d-886d-adf3a1d5d0c2"
 
 [nodes.children.kind.mesh.material_variants.instance.inline.extensions]
 
@@ -7467,7 +7729,7 @@ kind = "mesh"
 body = 12
 
 [[nodes.children]]
-id = "c78d3d4c-b4d0-4280-9e2f-5e83dbd73187"
+id = "04a3cb86-bf09-49a0-ae42-2aca017de3a1"
 name = "RH_SHANK/visuals/shank_l/mesh"
 locked = true
 visible = true
@@ -7493,22 +7755,22 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "cd594a9b-2a31-44bd-96d7-e9b576a8e970"
-selected_variant = "cc83232e-6e27-4394-8039-0efc02141ec1"
+mesh = "f7d93916-0989-4fca-a458-89ad4c0c5c08"
+selected_variant = "7f6ff861-7a23-4d71-bb84-21ab4e0488a4"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "cc83232e-6e27-4394-8039-0efc02141ec1"
+id = "7f6ff861-7a23-4d71-bb84-21ab4e0488a4"
 name = "shank"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "5aa8a972-cc69-477d-b237-08348eb03562"
+asset = "51a79737-3346-4c7f-8f41-65eaad7c39b5"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "shank"
 base_color = [
-    0.016238221898674965,
-    0.01606958918273449,
-    0.01836826466023922,
+    1.0,
+    1.0,
+    1.0,
     1.0,
 ]
 metallic = 0.0
@@ -7525,6 +7787,9 @@ double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
 shading = "pbr"
+
+[nodes.children.kind.mesh.material_variants.instance.inline.base_color_texture]
+asset = "cf910f61-1d48-4e5c-ab07-2bc9ded256ab"
 
 [nodes.children.kind.mesh.material_variants.instance.inline.extensions]
 
@@ -7548,7 +7813,7 @@ kind = "mesh"
 body = 13
 
 [[nodes.children]]
-id = "38a40e47-77dc-4d44-9be1-cde78786c1f2"
+id = "23be394f-e51c-490c-8036-f9618bb4bf0d"
 name = "RH_SHANK/visuals/foot/mesh"
 locked = true
 visible = true
@@ -7574,22 +7839,22 @@ scale = [
 ]
 
 [nodes.children.kind.mesh]
-mesh = "5cc8af29-b711-434b-aefa-42bd20db4e49"
-selected_variant = "e42268e4-8695-45b2-9b24-ea1a1170f574"
+mesh = "57d724d1-b6b2-4a63-b563-b235aea3dd49"
+selected_variant = "b1583dab-fc3e-456b-9a81-770c97313cc7"
 
 [[nodes.children.kind.mesh.material_variants]]
-id = "e42268e4-8695-45b2-9b24-ea1a1170f574"
+id = "b1583dab-fc3e-456b-9a81-770c97313cc7"
 name = "foot"
 
 [nodes.children.kind.mesh.material_variants.instance]
-asset = "f3a677e9-b83f-44de-b241-73f5a0f8cfa8"
+asset = "c3e1677e-d1f4-4c9f-b3e5-24eac147af64"
 
 [nodes.children.kind.mesh.material_variants.instance.inline]
 label = "foot"
 base_color = [
-    0.004922155756503344,
-    0.004858886823058128,
-    0.005190200638025999,
+    1.0,
+    1.0,
+    1.0,
     1.0,
 ]
 metallic = 0.0
@@ -7606,6 +7871,9 @@ double_sided = false
 vertex_colors_enabled = false
 alpha_mode = "opaque"
 shading = "pbr"
+
+[nodes.children.kind.mesh.material_variants.instance.inline.base_color_texture]
+asset = "ce3c1f30-7524-4a1a-a967-a85c049fb077"
 
 [nodes.children.kind.mesh.material_variants.instance.inline.extensions]
 
@@ -7704,416 +7972,486 @@ receive = true
 kind = "none"
 
 [pack]
-packs = [1370592]
+packs = [3294350]
 
 [pack.files]
-"assets/09a250e8-0fbd-471f-a170-b14bc4c045d1.glb" = [
+"assets/046a18cc-fce0-4498-a362-7f397a8e3636.glb" = [
     0,
-    915988,
-    17780,
-]
-"assets/0ca1d98d-9e14-4bcf-8b89-4e6feecdccdf.glb" = [
-    0,
-    1211620,
-    7476,
-]
-"assets/0cb716eb-3d4d-42c4-aa45-c6b24ec010c9.glb" = [
-    0,
-    1335152,
-    3532,
-]
-"assets/0f1e76f3-559c-465d-b15c-53dbae5701ee.glb" = [
-    0,
-    969328,
+    2893086,
     16016,
 ]
-"assets/117c0edf-17c4-46c9-9f2f-cca20aeb36b7.glb" = [
+"assets/04eb2aa2-f8da-4f93-a8a8-608589410733.glb" = [
     0,
-    1315532,
-    4004,
-]
-"assets/139a6363-e72b-4a69-88b6-29ead99247ad.glb" = [
-    0,
-    985344,
+    2909102,
     16016,
 ]
-"assets/14847690-5b86-42d1-be4a-9d5f09f1c477.glb" = [
+"assets/0cea5b8a-f624-4073-b5f5-f4f5a995aad2.glb" = [
     0,
-    567168,
-    35648,
-]
-"assets/18518759-dd95-4022-933c-a4e93fec7aca.glb" = [
-    0,
-    705904,
+    2629662,
     31604,
 ]
-"assets/1f2c774d-ca36-4cb7-9154-b5f16d3c3aa0.glb" = [
+"assets/0d1a60da-d1e8-4fed-9f8c-0e47fb73a039.glb" = [
     0,
-    1061212,
-    11724,
-]
-"assets/21b3a18f-f1ed-45c7-81b2-a4883afffd93.glb" = [
-    0,
-    1262764,
-    6236,
-]
-"assets/24bb3965-b265-49da-906d-598f92413822.glb" = [
-    0,
-    877256,
-    20948,
-]
-"assets/24dd24a8-a586-4dc7-88a5-334078733d49.glb" = [
-    0,
-    1219096,
-    7472,
-]
-"assets/25c57ee7-99d5-49ef-b819-bbfc1da4a758.glb" = [
-    0,
-    1127856,
-    10684,
-]
-"assets/26c30cbc-5f29-4f4d-b8e7-d0157dcc637c.glb" = [
-    0,
-    1353336,
-    2704,
-]
-"assets/2987fed2-1200-44c1-ac3c-f7fbc5b6abfe.glb" = [
-    0,
-    1166740,
-    7480,
-]
-"assets/2b46c921-f118-47b9-90cf-95ec30cf4856.glb" = [
-    0,
-    1342008,
-    2904,
-]
-"assets/33f2d4a4-dbc9-4638-8882-d5291aafe147.glb" = [
-    0,
-    1149036,
-    10016,
-]
-"assets/37264ec2-f2ce-43c5-9739-52f2ea624e91.glb" = [
-    0,
-    1368228,
-    2364,
-]
-"assets/3b6d13a2-6ea8-4349-a653-26930859f0e7.glb" = [
-    0,
-    1281400,
-    5200,
-]
-"assets/3c0a8479-f4dc-485f-b628-f81558126a04.glb" = [
-    0,
-    1275236,
-    6164,
-]
-"assets/3eb43971-f9b5-44b3-bce1-05b790fa5dc7.glb" = [
-    0,
-    1327356,
-    3900,
-]
-"assets/3f7fd6d9-8358-42e2-9415-78cd385f2217.glb" = [
-    0,
-    1226568,
-    7472,
-]
-"assets/405499db-cfe3-4a54-8af5-23aa58c36a63.glb" = [
-    0,
-    1356040,
-    2508,
-]
-"assets/40c32da1-74fc-4a92-a456-391d0333df17.glb" = [
-    0,
-    0,
-    85200,
-]
-"assets/420dec69-856a-411d-ad84-692045c74b0c.glb" = [
-    0,
-    1049384,
-    11828,
-]
-"assets/43e03dab-c070-415a-aaf6-31d1a1093b51.glb" = [
-    0,
-    312628,
-    55968,
-]
-"assets/45e6cf6a-bc83-4fde-b819-94d10a43212b.glb" = [
-    0,
-    1174220,
-    7480,
-]
-"assets/4c975821-00cc-4590-b5d5-21a4bcfc9c49.glb" = [
-    0,
-    1001360,
-    16016,
-]
-"assets/4fb56b3c-f7b0-4908-8182-cbcd765a56cb.glb" = [
-    0,
-    1319536,
-    3912,
-]
-"assets/599aa449-a64e-4ff0-8d6a-59cc590838c4.glb" = [
-    0,
-    672172,
-    33732,
-]
-"assets/5cc8af29-b711-434b-aefa-42bd20db4e49.glb" = [
-    0,
-    1095788,
-    10692,
-]
-"assets/60bfe666-b536-4dab-9d1f-18c0db35f724.glb" = [
-    0,
-    1269000,
-    6236,
-]
-"assets/69d4f647-5dcc-4feb-8079-b282528fdff9.glb" = [
-    0,
-    85200,
-    83032,
-]
-"assets/6c9c6fe7-cdae-4939-a06f-430032c19977.glb" = [
-    0,
-    1106480,
-    10688,
-]
-"assets/71a02bc9-fe0e-4364-8320-01c2166622e1.glb" = [
-    0,
-    737508,
-    29396,
-]
-"assets/73f60483-b65a-4419-b855-1a2d84a01c30.glb" = [
-    0,
-    1323448,
-    3908,
-]
-"assets/742dfac1-d5d5-49d4-99f2-f91d4c57ff69.glb" = [
-    0,
-    789988,
-    22688,
-]
-"assets/754b55bf-c66d-4df9-a7a0-666e620bf56a.glb" = [
-    0,
-    1181700,
-    7480,
-]
-"assets/7834d5ac-e596-452f-bc82-623fab0b330a.glb" = [
-    0,
-    530772,
+    2454530,
     36396,
 ]
-"assets/78f48c4f-6972-4f1b-bf6a-970197d14846.glb" = [
+"assets/0ef4a252-1bd3-4dbe-a9a3-24fa8589bac6.glb" = [
     0,
-    1344912,
-    2884,
-]
-"assets/79c290f5-b211-4525-865c-9d3d018ac5ed.glb" = [
-    0,
-    766904,
-    23084,
-]
-"assets/81b7076c-64d7-4412-b010-cca0701b1b31.glb" = [
-    0,
-    1234040,
-    7472,
-]
-"assets/87bbae31-8096-4f28-bb74-c4ec07097e9f.glb" = [
-    0,
-    1072936,
-    11572,
-]
-"assets/8b0dbed2-4a85-4f4f-9d33-38d754accb70.glb" = [
-    0,
-    423628,
-    55028,
-]
-"assets/8b426e6d-e774-4cc2-937e-862498a4afc1.glb" = [
-    0,
-    1363460,
-    2392,
-]
-"assets/8e8d482c-92c4-463a-b592-047021c6671f.glb" = [
-    0,
-    1296816,
-    5024,
-]
-"assets/8f928554-653b-4c54-b688-839041a3a545.glb" = [
-    0,
-    1286600,
-    5184,
-]
-"assets/90761c18-cdb1-40ef-9be3-eaebb7c38b9f.glb" = [
-    0,
-    1159052,
-    7688,
-]
-"assets/9e8d3cb0-cf77-41c0-b665-8cc1e3b8bd66.glb" = [
-    0,
-    478656,
-    52116,
-]
-"assets/a0c8c40b-f9dc-4501-b65e-655fcf5e783b.glb" = [
-    0,
-    1241512,
-    7472,
-]
-"assets/a5a5b7a9-2ec3-48c3-95a8-bc72dee68439.glb" = [
-    0,
-    241280,
-    71348,
-]
-"assets/a5b20204-6912-4629-97f6-62cce31e5d50.glb" = [
-    0,
-    1347796,
-    2824,
-]
-"assets/a627b15d-555a-4ec2-9e49-9b50a25d43aa.glb" = [
-    0,
-    1248984,
-    7472,
-]
-"assets/a811ad0c-6add-4f60-845b-229e3de803c3.glb" = [
-    0,
-    1301840,
-    5016,
-]
-"assets/a9569a5f-b9be-4e04-a3ef-812a454b39d2.glb" = [
-    0,
-    856260,
-    20996,
-]
-"assets/aa261051-10d7-452d-88ef-12ad15b28c11.glb" = [
-    0,
-    1350620,
+    3274378,
     2716,
 ]
-"assets/b010be5c-4c64-409f-a471-e156d8276622.glb" = [
+"assets/113b79da-ea95-4e6f-88a7-91c4a2d6c10f.glb" = [
     0,
-    1117168,
+    3135378,
+    7476,
+]
+"assets/12cce5b3-075c-4848-bb08-ec8a5ab8cfc0.glb" = [
+    0,
+    3030238,
     10688,
 ]
-"assets/b088c2c3-2758-4156-aadd-50e60c6277b4.glb" = [
+"assets/137359a8-15f5-41a2-af8a-bbbcc4258173.glb" = [
     0,
-    638348,
-    33824,
+    3205158,
+    5200,
 ]
-"assets/b1930933-9634-4492-97ec-c8b0f04159cb.glb" = [
+"assets/154084eb-82fd-4ce5-98d5-9d9ebc4269e7.glb" = [
     0,
-    1358548,
-    2480,
+    2801014,
+    20948,
 ]
-"assets/b1975e47-c678-414b-ab25-60b36fe400bd.glb" = [
+"assets/17211569-b696-4b4c-a7af-3f4693153d79.glb" = [
     0,
-    1256456,
-    6308,
+    2661266,
+    29396,
 ]
-"assets/b3b8163d-7e45-424d-bf25-b9b86dacd2f0.glb" = [
+"assets/173fe917-6195-4e5b-a375-b0858b4500ec.glb" = [
     0,
-    898204,
-    17784,
+    3247206,
+    3908,
 ]
-"assets/b77f0105-48e6-43dd-9e98-eb5e82c0649a.glb" = [
+"assets/19c814c4-1725-49f2-9fd8-fef1a2b62ee1.glb" = [
     0,
-    1189180,
-    7480,
-]
-"assets/bb87c9c0-b2a5-43d5-b58b-0d8299177ebc.glb" = [
-    0,
-    1361028,
-    2432,
-]
-"assets/c0493a26-9529-430d-97fa-81baf90c3aca.glb" = [
-    0,
-    1138540,
-    10496,
-]
-"assets/c36ed063-8663-4570-b134-abc343fbf839.glb" = [
-    0,
-    168232,
-    73048,
-]
-"assets/c4083989-967d-4dc6-a55b-a00d02a79e33.glb" = [
-    0,
-    1033392,
-    15992,
-]
-"assets/cbafafb7-3436-444f-883f-c63b16870b37.glb" = [
-    0,
-    1196660,
-    7480,
-]
-"assets/cd42f6c3-acb4-4abf-9472-6ce905a46e28.glb" = [
-    0,
-    1291784,
-    5032,
-]
-"assets/cd594a9b-2a31-44bd-96d7-e9b576a8e970.glb" = [
-    0,
-    933768,
-    17780,
-]
-"assets/ce9b904c-6f8f-4388-90da-245422dcfb03.glb" = [
-    0,
-    1084508,
-    11280,
-]
-"assets/d9da26b8-bb60-4ce3-ba3f-a79407d33206.glb" = [
-    0,
-    812676,
-    22188,
-]
-"assets/dc17212b-2efa-4348-96cc-94d8805b1ab8.glb" = [
-    0,
-    1338684,
-    3324,
-]
-"assets/e0e6fb14-85a0-4cb0-a1fe-d67c27ab1b33.glb" = [
-    0,
-    1331256,
-    3896,
-]
-"assets/e26d3e9c-d27b-449b-9d0d-3e970fe402d0.glb" = [
-    0,
-    951548,
-    17780,
-]
-"assets/e5fa83bd-3aff-42ae-8a56-27e0cdd4195e.glb" = [
-    0,
-    1204140,
-    7480,
-]
-"assets/e68425bf-8674-4ebe-bc59-8d69f0f2e6b7.glb" = [
-    0,
-    1306856,
+    3230614,
     4388,
 ]
-"assets/e746aa8e-3434-4185-92f2-ad9689993c78.glb" = [
+"assets/1d854b28-3926-4771-9f40-881cd256c0d0.glb" = [
     0,
-    1017376,
+    2925118,
     16016,
 ]
-"assets/e9764f4b-0d9f-4b68-9419-75295ff8264b.glb" = [
+"assets/1f6c6e3f-d8b0-4621-900a-1070600844c5.glb" = [
     0,
-    368596,
-    55032,
+    3215542,
+    5032,
 ]
-"assets/ed378314-4746-4e3e-97d5-6c95a897ad54.glb" = [
+"assets/215419f8-0dec-4e41-89bd-529f9b69c8e9.glb" = [
     0,
-    1311244,
-    4288,
+    3082810,
+    7688,
 ]
-"assets/f02a364f-ac50-4536-b41c-2e9470b6def9.glb" = [
+"assets/2669130b-cf58-4d92-b4bf-7646472b0e3b.glb" = [
     0,
-    834864,
+    3090498,
+    7480,
+]
+"assets/28584b6d-5815-48fa-9b0e-274661a2013a.glb" = [
+    0,
+    3051614,
+    10684,
+]
+"assets/2b0091dc-eea3-477a-9e15-71959225341f.glb" = [
+    0,
+    3097978,
+    7480,
+]
+"assets/31f85cd0-df3a-41b5-bec3-84a65e6a60b5.ktx2" = [
+    0,
+    2070397,
+    63433,
+]
+"assets/357124cf-e13c-423c-94f2-0c982a4eee30.glb" = [
+    0,
+    2758622,
     21396,
 ]
-"assets/f328667f-9452-4197-9bee-d4e18f2c37c3.glb" = [
+"assets/35745375-84f1-463b-b7d2-8721bacb8f49.glb" = [
     0,
-    602816,
+    2941134,
+    16016,
+]
+"assets/3d847357-e07c-4e47-aefc-ceeb09bc1f43.glb" = [
+    0,
+    2984970,
+    11724,
+]
+"assets/3e4cf571-8900-4387-8e89-59fd41139b81.glb" = [
+    0,
+    3105458,
+    7480,
+]
+"assets/3eee2106-3e47-4883-ae54-f3a8cc159634.glb" = [
+    0,
+    3239290,
+    4004,
+]
+"assets/3ef3fedc-e2af-488b-b0ce-df528ee8ef70.glb" = [
+    0,
+    3289610,
+    2376,
+]
+"assets/4250b720-c2a6-4716-960d-d35f7e169d05.glb" = [
+    0,
+    2358877,
+    52116,
+]
+"assets/48e87e95-5afb-4d16-b373-13eb0780732b.ktx2" = [
+    0,
+    956309,
+    156807,
+]
+"assets/4bbf5c9f-237a-4b09-aa69-69f0861db917.glb" = [
+    0,
+    3251114,
+    3900,
+]
+"assets/57d724d1-b6b2-4a63-b563-b235aea3dd49.glb" = [
+    0,
+    3019546,
+    10692,
+]
+"assets/58c9a102-be8b-424f-9ac3-c79c65923b34.glb" = [
+    0,
+    3235002,
+    4288,
+]
+"assets/5cef6e13-9fd2-4642-bffe-fda3ea84d1b9.glb" = [
+    0,
+    3282306,
+    2480,
+]
+"assets/5d363447-9993-44cc-aac4-ac711ddadcac.glb" = [
+    0,
+    2690662,
+    23084,
+]
+"assets/627d5de3-8510-4ecc-859f-a6b11488018a.glb" = [
+    0,
+    3112938,
+    7480,
+]
+"assets/6312b22b-2f99-4824-96d0-94681ff97252.glb" = [
+    0,
+    3180214,
+    6308,
+]
+"assets/661e12ec-4853-474c-a695-e45e392e6a5e.ktx2" = [
+    0,
+    2133830,
+    59019,
+]
+"assets/6dc8714c-a067-491a-b632-77e68478c55b.glb" = [
+    0,
+    3120418,
+    7480,
+]
+"assets/70320aff-9c78-4233-8d87-cb54608ef745.glb" = [
+    0,
+    2839746,
+    17780,
+]
+"assets/7281827b-e175-410b-b00f-13a1b4697231.glb" = [
+    0,
+    3127898,
+    7480,
+]
+"assets/7564818c-8d5f-490e-ad15-9f0e04cff13f.glb" = [
+    0,
+    3072794,
+    10016,
+]
+"assets/78776849-93ab-4077-a11f-5483bd37b60c.glb" = [
+    0,
+    2821962,
+    17784,
+]
+"assets/7a8d3db1-1cf8-4e92-a4ef-3a98545f0cc1.glb" = [
+    0,
+    1926001,
+    73048,
+]
+"assets/7cd4273f-b936-4a9c-a6ae-a7162df13620.glb" = [
+    0,
+    3062298,
+    10496,
+]
+"assets/7e032ecf-04a5-4421-8e96-d6acd4860879.glb" = [
+    0,
+    2973142,
+    11828,
+]
+"assets/7ed3333a-dfcc-47a0-9ede-582ed21063b9.glb" = [
+    0,
+    2713746,
+    22688,
+]
+"assets/82fbdaf6-95a2-45ed-abdb-31594d0bc980.glb" = [
+    0,
+    3243294,
+    3912,
+]
+"assets/8757e038-913d-414e-b00d-977e8599118a.glb" = [
+    0,
+    3142854,
+    7472,
+]
+"assets/888db881-01e9-4bb1-af68-6d34104c0977.glb" = [
+    0,
+    3277094,
+    2704,
+]
+"assets/8ae1b984-944a-401f-babb-dfed443cbd74.ktx2" = [
+    0,
+    1113116,
+    153131,
+]
+"assets/8f17e13f-3403-4048-8c69-f03151ac8e4a.glb" = [
+    0,
+    3258910,
+    3532,
+]
+"assets/8f8766d9-b2c3-4a2d-a4bd-be93a49f0660.glb" = [
+    0,
+    3265766,
+    2904,
+]
+"assets/901c904d-86a1-4c9b-9d53-589b6ff3f316.glb" = [
+    0,
+    2780018,
+    20996,
+]
+"assets/940e3031-cd90-4997-8215-59d377a037ff.glb" = [
+    0,
+    3284786,
+    2432,
+]
+"assets/9451ce74-85c0-4141-9084-304e79428479.glb" = [
+    0,
+    2248817,
+    55032,
+]
+"assets/94e57eaa-f959-4d08-8c7c-700c504badc2.ktx2" = [
+    0,
+    1266247,
+    120594,
+]
+"assets/94fc3029-af98-44ba-8c4b-af6960125faf.glb" = [
+    0,
+    3268670,
+    2884,
+]
+"assets/9ad8f6d1-e54f-4e7a-ba27-e93a93b2b7d9.glb" = [
+    0,
+    3220574,
+    5024,
+]
+"assets/9aeacf59-a266-4516-ac48-5155d4bfc5f8.glb" = [
+    0,
+    3279798,
+    2508,
+]
+"assets/9d1055e9-7173-4f21-affc-2511e8f557a3.glb" = [
+    0,
+    3186522,
+    6236,
+]
+"assets/a76f9459-1f77-4cae-873f-48d7de3d8a61.glb" = [
+    0,
+    1768761,
+    83032,
+]
+"assets/ad098ae5-3ee1-4c80-9c25-2e2c8544c368.glb" = [
+    0,
+    2857526,
+    17780,
+]
+"assets/ad6798f2-1515-4de9-92ad-160c1792f75d.glb" = [
+    0,
+    3040926,
+    10688,
+]
+"assets/b00c2e42-fa48-4bfd-9fd4-f2bb0e0749d1.glb" = [
+    0,
+    3198994,
+    6164,
+]
+"assets/b01f0621-a72a-4258-a1ff-14e37b1f8042.ktx2" = [
+    0,
+    2410993,
+    43537,
+]
+"assets/b1776a3c-098b-40f4-9ee9-72b1db24ad71.ktx2" = [
+    0,
+    613601,
+    182664,
+]
+"assets/b8b2ab91-dfda-4c3e-9032-a058ebce17b7.glb" = [
+    0,
+    2562106,
+    33824,
+]
+"assets/b9a6ac76-2b9c-48a9-9808-ba2ed11311ba.glb" = [
+    0,
+    3255014,
+    3896,
+]
+"assets/bfcc9f97-6f4a-4863-838e-6a6b575c37da.glb" = [
+    0,
+    3150326,
+    7472,
+]
+"assets/c1deff84-264c-45ad-91b8-7d5eb34b79fe.glb" = [
+    0,
+    3157798,
+    7472,
+]
+"assets/c644d98c-d359-4939-9e96-3c188637bacb.glb" = [
+    0,
+    3008266,
+    11280,
+]
+"assets/c70412b5-410c-40d6-8d97-85e96fb036ae.glb" = [
+    0,
+    3262442,
+    3324,
+]
+"assets/c773cfd7-a88a-4f17-9647-923564c342eb.glb" = [
+    0,
+    2526574,
     35532,
 ]
-"assets/f84886f8-c3a9-4e12-a422-31529eb91cf9.glb" = [
+"assets/c77e4981-55a8-4713-a166-b7ca27d7851e.glb" = [
     0,
-    1365852,
-    2376,
+    2192849,
+    55968,
+]
+"assets/c8ed9b4f-a70b-487d-886d-adf3a1d5d0c2.ktx2" = [
+    0,
+    796265,
+    160044,
+]
+"assets/c90234e8-46be-4ea1-9389-bcefee4fea7b.glb" = [
+    0,
+    3165270,
+    7472,
+]
+"assets/cb08fb3d-1a22-46c5-a071-e6a97f1ef7fd.glb" = [
+    0,
+    2490926,
+    35648,
+]
+"assets/cd9dc87b-27bb-48c3-b624-b080cdb2158b.glb" = [
+    0,
+    2303849,
+    55028,
+]
+"assets/ce3c1f30-7524-4a1a-a967-a85c049fb077.ktx2" = [
+    0,
+    1851793,
+    74208,
+]
+"assets/cf910f61-1d48-4e5c-ab07-2bc9ded256ab.ktx2" = [
+    0,
+    1501634,
+    96271,
+]
+"assets/cfd0d356-e6a2-457f-9751-a0a81cf7ac51.glb" = [
+    0,
+    3271554,
+    2824,
+]
+"assets/d6a9515a-ecae-40be-9ca6-7a8e96ff5c92.ktx2" = [
+    0,
+    0,
+    389655,
+]
+"assets/d7ff4a12-626a-4452-96d0-545d0bc4942d.glb" = [
+    0,
+    3210358,
+    5184,
+]
+"assets/d94d8b4b-b701-4acf-8a43-9008127026a1.glb" = [
+    0,
+    2595930,
+    33732,
+]
+"assets/def2f736-268b-4d97-bec8-44d1f8d101ff.ktx2" = [
+    0,
+    389655,
+    223946,
+]
+"assets/df87cc50-dbce-46f3-84a4-50086bc63526.glb" = [
+    0,
+    1683561,
+    85200,
+]
+"assets/e305e988-1e23-4f49-9cd9-219b7fb193f1.ktx2" = [
+    0,
+    1597905,
+    85656,
+]
+"assets/e5d5c2a1-1d29-4b17-8b1a-d26cf7f475d8.glb" = [
+    0,
+    3287218,
+    2392,
+]
+"assets/e5e4b3e4-2163-42a7-80e0-9bf6a605862a.glb" = [
+    0,
+    2736434,
+    22188,
+]
+"assets/eb66536e-0ce3-445e-9da6-1ff23c2585a1.glb" = [
+    0,
+    2996694,
+    11572,
+]
+"assets/ec6f1ea0-a6ac-4570-a955-c455c437b918.glb" = [
+    0,
+    3192758,
+    6236,
+]
+"assets/ed079108-1694-4643-b3c2-f3f6588f717e.glb" = [
+    0,
+    1999049,
+    71348,
+]
+"assets/f16e7413-a719-444b-8148-09469c42e748.ktx2" = [
+    0,
+    1386841,
+    114793,
+]
+"assets/f607c14c-2ca8-4a1c-a5c3-a4118b75519b.glb" = [
+    0,
+    3172742,
+    7472,
+]
+"assets/f7d93916-0989-4fca-a458-89ad4c0c5c08.glb" = [
+    0,
+    2875306,
+    17780,
+]
+"assets/fa450df0-0fe1-4ec7-ab5c-3427ab6aa70d.glb" = [
+    0,
+    2957150,
+    15992,
+]
+"assets/fb058639-7beb-44f2-b08b-b6008d1e0da6.glb" = [
+    0,
+    3225598,
+    5016,
+]
+"assets/ff66ff31-097a-4c31-a55c-a194da9bcdb0.glb" = [
+    0,
+    3291986,
+    2364,
 ]

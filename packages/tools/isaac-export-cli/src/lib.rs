@@ -11,7 +11,7 @@
 //! | `Mesh` × material `GeomSubset` | a `mesh` **geom**, its vertices baked into its body's frame |
 //! | `Cube` / `Sphere` / `Cylinder` / `Capsule` / `Cone` / `Plane` | a primitive **geom**, with a body-relative offset |
 //! | purpose `guide` / `proxy`, or `invisible` | geom group 3 (hidden, like MuJoCo collision geoms) |
-//! | bound `OmniPBR` / `OmniSurface` / `UsdPreviewSurface` | a **material** |
+//! | bound `OmniPBR` / `OmniSurface` / `UsdPreviewSurface` | a **material**, texture maps included |
 //!
 //! Every geom's world pose is therefore `body world pose ∘ (geom.pos, geom.quat)`,
 //! and for mesh geoms that offset is the identity — so a frame of Isaac Lab
@@ -24,6 +24,7 @@ pub mod geometry;
 pub mod material;
 pub mod primitive;
 pub mod stage;
+pub mod texture;
 
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -70,6 +71,9 @@ pub struct Export {
     pub sidecar: Sidecar,
     /// `None` when the stage has no mesh geometry at all.
     pub glb: Option<GlbScene>,
+    /// Texture files the sidecar's materials reference: `(path relative to the
+    /// sidecar, bytes)`. The caller writes them next to the sidecar.
+    pub images: Vec<(String, Vec<u8>)>,
     pub report: Report,
 }
 
@@ -179,6 +183,8 @@ pub fn export(root: &Path, options: &Options) -> Result<Export> {
         let hidden = group == HIDDEN_GROUP;
         let base_name = names.get(path).cloned().unwrap_or_else(|| "geom".into());
         let display_rgba = display_color(&prim);
+        let double_sided = stage::value(&prim.attribute("doubleSided"))
+            .is_some_and(|v| matches!(v, sdf::Value::Bool(true)));
 
         if is_mesh {
             if hidden && !options.include_hidden_geometry {
@@ -204,7 +210,13 @@ pub fn export(root: &Path, options: &Options) -> Result<Export> {
             let split = pieces.len() > 1;
             let bound: Vec<Option<usize>> = pieces
                 .iter()
-                .map(|p| materials.bound(&stage, &p.binding_prim))
+                .map(|p| {
+                    materials
+                        .bound(&stage, &p.binding_prim, double_sided)
+                        .or_else(|| {
+                            double_sided.then(|| materials.plain_double_sided(display_rgba))
+                        })
+                })
                 .collect();
             // A piece is labelled by its material; two subsets bound to the
             // same material (the Franka hand's two PlasticWhite parts) also
@@ -258,7 +270,9 @@ pub fn export(root: &Path, options: &Options) -> Result<Export> {
             }
             let quat = rot * shape.axis_rotation;
             let world = body_frame * DMat4::from_rotation_translation(quat, pos);
-            let material = materials.bound(&stage, &prim);
+            let material = materials
+                .bound(&stage, &prim, double_sided)
+                .or_else(|| double_sided.then(|| materials.plain_double_sided(display_rgba)));
             let rgba = material
                 .map(|m| materials.table[m].rgba)
                 .unwrap_or(display_rgba);
@@ -280,6 +294,7 @@ pub fn export(root: &Path, options: &Options) -> Result<Export> {
     }
     doc.materials = std::mem::take(&mut materials.table);
     report.notes.append(&mut materials.notes);
+    let images = std::mem::take(&mut materials.images.files);
     report.visible_geoms = doc.geoms.iter().filter(|g| g.group < HIDDEN_GROUP).count();
 
     if doc.geoms.is_empty() {
@@ -295,6 +310,7 @@ pub fn export(root: &Path, options: &Options) -> Result<Export> {
     Ok(Export {
         sidecar: doc,
         glb,
+        images,
         report,
     })
 }

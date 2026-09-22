@@ -52,7 +52,7 @@ bundles, which are window-independent.
 | `anim-morph` | morph targets, multi-track per-index blending (005 §3) | two morph indices driven independently by two tracks |
 | `anim-blend` | animation blends / mixer layers, masks, transport | blended pose distinct from either source clip |
 | `mujoco-capture` | MuJoCo import (sidecar → sim instance, primitive geoms, groups, materials) + capture→clip bake | humanoid frozen mid-collapse at t=1.2s, driven by a clip baked from a checked-in recorded capture — no simulator in the loop |
-| `isaac-robots` | Isaac Sim / Isaac Lab USD robots via `awsm-renderer-isaac-export` → the MuJoCo sidecar seam: MDL OmniPBR per GeomSubset, instanceable visuals, averaged albedo textures, guide colliders hidden, two sim instances in one world | Franka arm + ANYmal-D standing side by side on a floor, correct colours, no collider primitives visible |
+| `isaac-robots` | Isaac Sim / Isaac Lab USD robots via `awsm-renderer-isaac-export` → the MuJoCo sidecar seam: MDL OmniPBR per GeomSubset, instanceable visuals, OmniPBR albedo maps as sidecar texture slots, guide colliders hidden, two sim instances in one world | Franka arm + textured ANYmal-D (readable ANYbotics wordmark) standing side by side on a floor, no collider primitives visible |
 | `shadows-all` | directional cascades + spot + point/cube, denoise blur, world-ref bias | contact-tight shadows, no Peter-Pan gap, no donut/hole under lowered meshes |
 | `alpha-cutoff` | masked materials, cutoff values, double-sided | hard-edged cutouts, back faces visible where double-sided |
 | `transparent` | transparent pass ordering over opaque | correct through-glass layering, no popping |

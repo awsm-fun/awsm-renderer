@@ -218,6 +218,45 @@ impl Sidecar {
                 });
             }
         }
+        for (i, m) in self.materials.iter().enumerate() {
+            m.validate()
+                .map_err(|reason| Error::BadMaterial { index: i, reason })?;
+        }
+        Ok(())
+    }
+}
+
+impl Material {
+    /// The checks JSON cannot express: texture paths are relative to the
+    /// sidecar, and the numbers are in range. A path a consumer cannot resolve
+    /// would otherwise import as a silently untextured surface.
+    fn validate(&self) -> Result<(), String> {
+        if let Some(AlphaMode::Mask { cutoff }) = self.alpha_mode {
+            if !(0.0..=1.0).contains(&cutoff) {
+                return Err(format!("alpha cutoff {cutoff} is outside [0, 1]"));
+            }
+        }
+        let t = &self.textures;
+        for (name, v) in [
+            ("normal_scale", t.normal_scale),
+            ("occlusion_strength", t.occlusion_strength),
+        ] {
+            if !v.is_finite() {
+                return Err(format!("{name} is {v}"));
+            }
+        }
+        for (slot, tex) in t.slots() {
+            let Some(tex) = tex else { continue };
+            let p = tex.image.as_str();
+            if p.is_empty() {
+                return Err(format!("{slot} texture has an empty image path"));
+            }
+            if p.contains("://") || p.starts_with('/') || p.starts_with('\\') || p.contains(':') {
+                return Err(format!(
+                    "{slot} texture image {p:?} must be a path relative to the sidecar"
+                ));
+            }
+        }
         Ok(())
     }
 }
@@ -231,6 +270,12 @@ pub enum Error {
         index: usize,
         value: usize,
         len: usize,
+    },
+    /// A material the importer could not honour (bad texture path, alpha
+    /// cutoff out of range).
+    BadMaterial {
+        index: usize,
+        reason: String,
     },
 }
 
@@ -256,6 +301,7 @@ impl std::fmt::Display for Error {
                 f,
                 "{what}[{index}] = {value}, out of range for {len} entries"
             ),
+            Error::BadMaterial { index, reason } => write!(f, "materials[{index}]: {reason}"),
         }
     }
 }
@@ -502,6 +548,17 @@ pub struct Tendon {
 
 /// MuJoCo materials are Phong-ish; mapping them onto our PBR materials happens at
 /// *import*, not here, so the sidecar stays a faithful record of the source.
+///
+/// The importer's mapping, which a producer holding PBR data can invert
+/// exactly: base colour = `rgba`, `roughness = 1 - shininess`,
+/// `metallic = reflectance`, emissive = `rgba × emission` (unless
+/// [`emissive`](Self::emissive) says otherwise). `specular` is recorded but
+/// unused — a metallic-roughness dielectric's specular is fixed.
+///
+/// The fields after `emission` are additive (no [`VERSION`] bump): a MuJoCo
+/// export never writes them and a reader that predates them ignores them. They
+/// exist for producers with richer materials than MuJoCo's — the Isaac Sim /
+/// USD exporter first.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Material {
@@ -512,6 +569,201 @@ pub struct Material {
     pub shininess: f32,
     pub reflectance: f32,
     pub emission: f32,
+    /// Linear emissive colour, used INSTEAD of `rgba × emission` — for a
+    /// surface that glows a different colour from its base (a white housing
+    /// with a blue status light). `None` keeps the MuJoCo rule.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub emissive: Option<[f32; 3]>,
+    /// How alpha is used, INSTEAD of the MuJoCo rule (`rgba[3] < 1` blends).
+    /// Needed once alpha can come from a texture, where the factor alone cannot
+    /// say whether the surface is cut out, blended or opaque.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alpha_mode: Option<AlphaMode>,
+    /// Texture maps, with glTF metallic-roughness semantics: each texture is
+    /// multiplied by its factor above. Empty for every MuJoCo export.
+    #[serde(default, skip_serializing_if = "MaterialTextures::is_empty")]
+    pub textures: MaterialTextures,
+    /// Render back faces too (glTF `doubleSided`). A thin surface authored as
+    /// one sheet — a label, a panel, cloth — needs it to be visible from
+    /// behind. MuJoCo draws single-sided, so its exports leave it `false`.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub double_sided: bool,
+}
+
+fn is_false(v: &bool) -> bool {
+    !*v
+}
+
+impl Material {
+    /// A material with MuJoCo's own fields only: no emissive override, no alpha
+    /// mode, no textures.
+    pub fn phong(
+        name: Option<String>,
+        rgba: [f32; 4],
+        specular: f32,
+        shininess: f32,
+        reflectance: f32,
+        emission: f32,
+    ) -> Self {
+        Self {
+            name,
+            rgba,
+            specular,
+            shininess,
+            reflectance,
+            emission,
+            emissive: None,
+            alpha_mode: None,
+            textures: MaterialTextures::default(),
+            double_sided: false,
+        }
+    }
+}
+
+/// glTF's three alpha modes.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case", tag = "mode")]
+pub enum AlphaMode {
+    /// Alpha ignored.
+    Opaque,
+    /// Cut out where alpha < `cutoff`, fully opaque elsewhere.
+    Mask { cutoff: f32 },
+    /// Alpha-blended.
+    Blend,
+}
+
+/// A material's texture maps. Every slot is optional; with none, a material is
+/// exactly a MuJoCo material.
+///
+/// The slots are glTF's, with glTF's channel conventions, so a consumer maps
+/// them one-to-one onto a metallic-roughness renderer:
+///
+/// | slot | channels | combined with |
+/// |---|---|---|
+/// | `base_color` | sRGB RGB, linear A | × `rgba` |
+/// | `metallic_roughness` | linear; **G** = roughness, **B** = metallic | × `1 - shininess`, × `reflectance` |
+/// | `normal` | tangent space, +Y up (OpenGL / glTF) | strength `normal_scale` |
+/// | `occlusion` | linear **R** | strength `occlusion_strength` |
+/// | `emissive` | sRGB RGB | × the emissive colour |
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub struct MaterialTextures {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_color: Option<MaterialTexture>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metallic_roughness: Option<MaterialTexture>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub normal: Option<MaterialTexture>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub occlusion: Option<MaterialTexture>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub emissive: Option<MaterialTexture>,
+    /// glTF `normalTexture.scale`.
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub normal_scale: f32,
+    /// glTF `occlusionTexture.strength`.
+    #[serde(default = "one", skip_serializing_if = "is_one")]
+    pub occlusion_strength: f32,
+}
+
+// Written by hand: a derived default would give both strengths 0 — "no normal
+// map, no occlusion" — where glTF's default is 1.
+impl Default for MaterialTextures {
+    fn default() -> Self {
+        Self {
+            base_color: None,
+            metallic_roughness: None,
+            normal: None,
+            occlusion: None,
+            emissive: None,
+            normal_scale: 1.0,
+            occlusion_strength: 1.0,
+        }
+    }
+}
+
+impl MaterialTextures {
+    pub fn is_empty(&self) -> bool {
+        self.slots().all(|(_, t)| t.is_none())
+    }
+
+    /// Every slot with its glTF name, in a fixed order.
+    pub fn slots(&self) -> impl Iterator<Item = (&'static str, Option<&MaterialTexture>)> {
+        [
+            ("base_color", self.base_color.as_ref()),
+            ("metallic_roughness", self.metallic_roughness.as_ref()),
+            ("normal", self.normal.as_ref()),
+            ("occlusion", self.occlusion.as_ref()),
+            ("emissive", self.emissive.as_ref()),
+        ]
+        .into_iter()
+    }
+}
+
+fn one() -> f32 {
+    1.0
+}
+
+fn is_one(v: &f32) -> bool {
+    *v == 1.0
+}
+
+/// One texture map.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub struct MaterialTexture {
+    /// The image (PNG or JPEG), as a path **relative to this sidecar** —
+    /// like [`Sidecar::glb`], so the files move together.
+    pub image: String,
+    /// UV transform, glTF `KHR_texture_transform` semantics, in the GLB's UV
+    /// space. `None` = identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transform: Option<UvTransform>,
+    /// Wrap mode along U and V.
+    #[serde(default, skip_serializing_if = "is_repeat")]
+    pub wrap: [Wrap; 2],
+}
+
+impl MaterialTexture {
+    pub fn new(image: impl Into<String>) -> Self {
+        Self {
+            image: image.into(),
+            transform: None,
+            wrap: [Wrap::Repeat; 2],
+        }
+    }
+}
+
+fn is_repeat(w: &[Wrap; 2]) -> bool {
+    *w == [Wrap::Repeat; 2]
+}
+
+/// `KHR_texture_transform`: `uv' = T(offset) · R(rotation) · S(scale) · uv`,
+/// rotation in radians.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub struct UvTransform {
+    #[serde(default)]
+    pub offset: [f32; 2],
+    #[serde(default)]
+    pub rotation: f32,
+    #[serde(default = "unit_scale")]
+    pub scale: [f32; 2],
+}
+
+fn unit_scale() -> [f32; 2] {
+    [1.0, 1.0]
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[serde(rename_all = "snake_case")]
+pub enum Wrap {
+    #[default]
+    Repeat,
+    Mirror,
+    Clamp,
 }
 
 /// A mesh referenced by a geom. The vertex data itself is in the companion GLB —
@@ -663,6 +915,88 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn a_pre_texture_material_still_parses_and_stays_textureless() {
+        let m: Material = serde_json::from_str(
+            r#"{"rgba":[1,0,0,1],"specular":0.5,"shininess":0.5,"reflectance":0,"emission":0}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            m,
+            Material::phong(None, [1.0, 0.0, 0.0, 1.0], 0.5, 0.5, 0.0, 0.0)
+        );
+        assert!(m.textures.is_empty());
+        assert_eq!(m.textures.normal_scale, 1.0);
+        assert_eq!(m.textures.occlusion_strength, 1.0);
+        // And a textureless material writes none of the new keys, so a MuJoCo
+        // export's JSON is byte-for-byte what it was.
+        let json = serde_json::to_string(&m).unwrap();
+        for key in ["emissive", "alpha_mode", "textures", "double_sided"] {
+            assert!(!json.contains(key), "{key} leaked into {json}");
+        }
+    }
+
+    #[test]
+    fn a_textured_material_round_trips() {
+        let mut m = Material::phong(Some("shell".into()), [1.0; 4], 0.5, 0.0, 1.0, 0.0);
+        m.emissive = Some([0.0, 0.1, 1.0]);
+        m.alpha_mode = Some(AlphaMode::Mask { cutoff: 0.5 });
+        m.textures.base_color = Some(MaterialTexture {
+            image: "textures/base-0123abcd.jpg".into(),
+            transform: Some(UvTransform {
+                offset: [0.5, 0.0],
+                rotation: 0.25,
+                scale: [2.0, 2.0],
+            }),
+            wrap: [Wrap::Clamp, Wrap::Mirror],
+        });
+        m.textures.metallic_roughness = Some(MaterialTexture::new("textures/mr.png"));
+        m.textures.normal = Some(MaterialTexture::new("textures/n.png"));
+        m.textures.normal_scale = 0.5;
+        m.double_sided = true;
+        let json = serde_json::to_string(&m).unwrap();
+        assert!(
+            json.contains(r#""alpha_mode":{"mode":"mask","cutoff":0.5}"#),
+            "{json}"
+        );
+        let back: Material = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, m);
+    }
+
+    #[test]
+    fn validate_rejects_texture_paths_a_consumer_cannot_resolve() {
+        for bad in [
+            "",
+            "/abs/base.png",
+            "C:\\tex\\base.png",
+            "https://example.com/base.png",
+        ] {
+            let mut doc = Sidecar::new(source());
+            let mut m = Material::phong(None, [1.0; 4], 0.5, 0.5, 0.0, 0.0);
+            m.textures.base_color = Some(MaterialTexture::new(bad));
+            doc.materials.push(m);
+            assert!(
+                matches!(doc.validate(), Err(Error::BadMaterial { index: 0, .. })),
+                "{bad:?} should be refused"
+            );
+        }
+        let mut doc = Sidecar::new(source());
+        let mut m = Material::phong(None, [1.0; 4], 0.5, 0.5, 0.0, 0.0);
+        m.textures.base_color = Some(MaterialTexture::new("../shared/textures/base.png"));
+        doc.materials.push(m);
+        doc.validate()
+            .expect("a relative path, even upward, is fine");
+    }
+
+    #[test]
+    fn validate_rejects_an_alpha_cutoff_out_of_range() {
+        let mut doc = Sidecar::new(source());
+        let mut m = Material::phong(None, [1.0; 4], 0.5, 0.5, 0.0, 0.0);
+        m.alpha_mode = Some(AlphaMode::Mask { cutoff: 1.5 });
+        doc.materials.push(m);
+        assert!(matches!(doc.validate(), Err(Error::BadMaterial { .. })));
     }
 
     #[test]

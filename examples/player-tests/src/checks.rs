@@ -187,11 +187,13 @@ const SCENES: &[SceneSpec] = &[
     SceneSpec {
         // Isaac Sim robots (USD → awsm-renderer-isaac-export → the MuJoCo
         // sidecar seam): two sim instances, 82 geom nodes + floor + light.
-        // Locks that a USD-sourced bundle loads through the player path.
+        // Locks that a USD-sourced bundle loads through the player path, and
+        // that ANYmal's 14 OmniPBR albedo maps (sidecar texture slots) reach
+        // the texture pool.
         name: "isaac-robots",
         min_nodes: 80,
         expect_meshes: true,
-        expected_min_textures: 0,
+        expected_min_textures: 14,
         features: base_features,
         extra: Extra::None,
     },

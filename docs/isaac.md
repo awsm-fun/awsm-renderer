@@ -17,7 +17,7 @@ sees Isaac carries none of it.
 
 | piece | state |
 |---|---|
-| USD → sidecar + GLB exporter (`awsm-renderer-isaac-export`) | done, tested |
+| USD → sidecar + GLB exporter (`awsm-renderer-isaac-export`) | done, tested — geometry, materials and texture maps |
 | Isaac 5.0 Franka + ANYmal-D, imported in the editor | verified by eye and against Pixar's USD (every mesh's world bounds match to f32 precision) |
 | player bundle of an Isaac robot | verified: `isaac-robots` test scene, player-tests 33/33 |
 | sim-side frame builder for Isaac Lab (`isaac_geom_frame.py`) | verified offline against the fixtures; **not yet run inside Isaac Lab** |
@@ -84,6 +84,12 @@ It follows every `@asset@` reference, including textures. `OmniPBR.mdl` 404s
 and is skipped on purpose: it is a built-in Omniverse module, and the exporter
 never needs it (see Materials).
 
+One asset quirk worth knowing: the 5.0 Franka's `Mesh=Quality` variant composes
+its logo decals and cable meshes twice — one copy offset and rotated off the
+base, one unscaled 1 mm copy of the decal. Pixar's own USD composes it
+identically, so the export is faithful; the default `Performance` variant has
+no such copies.
+
 ## Exporting
 
 ```sh
@@ -102,8 +108,8 @@ awsm-renderer-isaac-export <root.usd> [-o DIR] [-n NAME]
   fallback.
 - Geoms that USD does not draw (below) always keep their slot in the table; their
   geometry ships only with `--include-hidden-geometry`.
-- `-v` prints the counts and every lossy step (averaged or dropped textures,
-  approximated shapes, dangling material bindings).
+- `-v` prints the counts (textures included) and every lossy step (dropped
+  inputs, approximated shapes, dangling material bindings).
 
 The output name defaults to the stage's default prim (`panda`, `anymal`).
 
@@ -152,26 +158,57 @@ be unique — ANYmal has 38 prims literally called `mesh`, which become
 
 Isaac assets author **MDL** materials, almost always NVIDIA's `OmniPBR`, with no
 `UsdPreviewSurface` fallback. We never need the `.mdl`: OmniPBR is a
-metallic-roughness model whose inputs are plain named attributes.
+metallic-roughness model whose inputs are plain named attributes, and the
+exporter reads them with OmniPBR's own defaults (from `OmniPBR.mdl` v2.1) for
+anything left unauthored.
 
-| shader | base colour | roughness | metallic | emission |
-|---|---|---|---|---|
-| `OmniPBR` | `diffuse_texture` (averaged) else `diffuse_color_constant`, × `diffuse_tint` | `reflection_roughness_constant` | `metallic_constant` | `enable_emission` → `emissive_color` |
-| `OmniSurface` | `diffuse_reflection_color` × `diffuse_reflection_weight` | `specular_reflection_roughness` | `metalness` | `emission_weight` > 0 → `emission_color` |
-| `UsdPreviewSurface` | `diffuseColor` (texture averaged) | `roughness` | `metallic` | `emissiveColor` |
-| `OmniGlass` | `glass_color`, alpha 0.3 | 0.05 | 0 | — |
+| shader | base colour | roughness / metallic | normal | opacity | emission |
+|---|---|---|---|---|---|
+| `OmniPBR` | `diffuse_texture` (replaces the constant) else `diffuse_color_constant`; × `diffuse_tint` × `albedo_brightness` | `reflectionroughness_texture` / `metallic_texture` lerped over their constants by `*_texture_influence` (default 0 = map ignored, as in OmniPBR); or `ORM_texture` | `normalmap_texture` × `bump_factor` | `enable_opacity` + `opacity_texture` (by `opacity_mode`) or `opacity_constant`; `opacity_threshold` > 0 = cutout | `enable_emission`: `emissive_color` or `emissive_color_texture`, × `emissive_mask_texture` |
+| `UsdPreviewSurface` | `diffuseColor` (value or `UsdUVTexture`, × its `scale`) | `roughness` / `metallic` (value or any texture channel) | `normal` | `opacity` (value or channel); `opacityThreshold` > 0 = cutout | `emissiveColor` |
+| `OmniSurface` | `diffuse_reflection_color` (or its image) × `diffuse_reflection_weight` | `specular_reflection_roughness` / `metalness` | — | `geometry_opacity` | `emission_weight` > 0 → `emission_color` |
+| `OmniGlass` | `glass_color`, alpha 0.3, blended | 0.05 / 0 | — | — | — |
 
-The sidecar material is MuJoCo-shaped, and the importer maps it to PBR as
-`roughness = 1 - shininess`, `metallic = reflectance`, `emissive = rgba ×
-emission`; the exporter writes the exact inverse, so roughness and metallic
-survive. An emissive part is written in its **emissive** colour at full emission
-(the Franka's blue status strip), since the sidecar has one colour. Unbound
-geometry uses `primvars:displayColor`.
+The sidecar material has glTF semantics, and the importer maps it as
+`roughness = 1 - shininess`, `metallic = reflectance`; the exporter writes the
+exact inverse. Occlusion (`ao_texture`, or ORM's red channel) is exported only
+when `ao_to_diffuse` > 0, which is OmniPBR's own switch for it. Unbound
+geometry uses `primvars:displayColor`. Identical materials — Isaac repeats each
+look per link file — are deduplicated, so the Franka's 32 bindings become 10
+library materials and editing "PlasticWhite" repaints the whole arm.
 
-**Textures do not cross the seam** — the sidecar has no texture slot. A texture
-driving base colour is averaged (in linear space) into the constant colour,
-which is why ANYmal's shells come out red rather than grey. Every other texture
-(normal, roughness, metallic, ORM) is dropped and reported by `-v`.
+**Textures.** Where one USD image IS a glTF slot, it ships byte-for-byte (a
+JPEG stays a JPEG). Where glTF packs channels USD keeps apart, the exporter
+packs a PNG:
+
+- **metallic-roughness**: roughness → G, metallic → B, each already blended
+  with its constant by its influence, so both factors are 1;
+- **base colour + opacity**: the opacity map, reduced by `opacity_mode`
+  (average, luminance, maximum or alpha), goes into A — unless colour and
+  opacity are the same RGBA file, which ships untouched;
+- **normal**: OmniPBR's default tangent flips (`flip_tangent_v = true`) read an
+  OpenGL-convention (+Y) map, which is glTF's; a non-default flip inverts that
+  channel.
+
+Images land in `textures/<name>-<hash>.<ext>` beside the sidecar,
+content-addressed, so two robots exported into one directory share identical
+images and never overwrite different ones. In the editor they become ordinary
+texture assets — deduplicated by content, so a re-import or a second instance
+adds none — uploaded with each slot's colour space, persisted on save, and
+compressed into the player bundle like any other texture.
+
+**UV transforms.** A `UsdTransform2d` (and OmniPBR's `texture_scale` /
+`texture_rotate` / `texture_translate`) becomes a glTF `KHR_texture_transform`.
+The GLB's V axis runs top-down (the exporter flips it, as glTF expects), so the
+transform is conjugated by that flip: scale and rotation angle carry over, the
+offset becomes `(t_u − sinθ·s_v, 1 − t_v − cosθ·s_v)`. `UsdUVTexture`'s
+`wrapS` / `wrapT` carry over (`black` approximated as clamp).
+
+**What does not carry,** each reported by `-v`: OmniPBR detail and clearcoat
+normal maps, `albedo_desaturation` / `albedo_add`, `project_uvw` world-space
+projection, a second UV set (`uv_space_index` ≠ 0), `emissive_intensity` (the
+renderer has no physical light units; the colour ships at full strength), and a
+`UsdUVTexture` bias on anything but a normal map.
 
 ### The fingerprint
 
@@ -248,7 +285,7 @@ Ubuntu 22.04/24.04 or Windows 11, RTX 4080-class, driver ≥ 580;
 |---|---|
 | **Live streaming test** | a Linux/RTX box (or cloud instance) with Isaac Lab; wire `isaac_geom_frame.py` into an env loop behind a WebSocket; a player template like `physics-mujoco` with the sim replaced by that socket |
 | **Recorded captures from Isaac Lab** | dump `payload()` per step into a `<name>.capture.json`; `ImportMujocoCapture` then bakes it into a clip exactly as for MuJoCo — no renderer work |
-| **Textures** | an additive `texture` field on the sidecar material (no `VERSION` bump) plus importer binding; it touches the published `awsm-renderer-mujoco-format` and the editor, so it ships with a crates release |
+| **A second UV set** | the GLB and sidecar carry UV set 0 only; a `uv_space_index` or `st1` material would need `TEXCOORD_1` in the GLB and a `uv` index on the sidecar texture |
 | **`UsdSkel` / deformables** | not used by the Isaac Lab robots; would map onto the existing flex → skinned-mesh path |
 | **`PointInstancer`** | not used by robot assets; needed for Isaac *scenes* (warehouses, props) |
 | **Isaac Lab scenes** (terrains, props, lights) | out of scope here: robots are sim instances; a static scene is better imported as geometry through the ordinary glTF path |
