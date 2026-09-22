@@ -10,6 +10,7 @@ with the ordinary `import_mujoco_from_url`.
 |---|---|---|
 | `panda.mujoco.json` + `panda.glb` | `Isaac/5.0/.../FrankaRobotics/FrankaPanda/franka.usd` (Performance variant) | 45 KB + 3.3 MB |
 | `anymal.mujoco.json` + `anymal.glb` | `Isaac/5.0/.../ANYbotics/anymal_d/anymal_d.usd` | 55 KB + 2.0 MB |
+| `textures/*.jpg` | ANYmal's 14 OmniPBR albedo maps, shipped byte-for-byte | 2.6 MB |
 
 drive (replay author.js — the robot subtrees are import-minted, so re-run the
 script rather than loading the project to re-drive it):
@@ -31,6 +32,10 @@ expect:
   - Right: **ANYmal-D** standing on four legs, feet on the floor, knees bent
     inward (its default "X" stance): **red** top/bottom shells, **black/dark
     navy** drives, hips and legs, a sensor head with a carry handle on top.
+    It is TEXTURED: the **ANYbotics** wordmark on the shell's flank reads
+    left-to-right (zoom in — a mirrored or upside-down word means the UV
+    V-flip broke), bolt holes and panel seams on the drives, a red/yellow
+    emergency stop on the back.
   - NO grey cylinders, boxes or spheres on ANYmal — those are its 26
     guide-purpose collider shapes, exported to hidden group 3.
   - Outliner: a `panda` root with 44 locked children (`panda_link3 (PlasticWhite)`,
@@ -43,8 +48,11 @@ fail:
     Z-up → Y-up convention rotation is missing or doubled.
   - Parts scattered or stacked at the origin — the body-frame bake or a
     transform stack was composed wrong.
-  - An all-white or all-grey ANYmal — texture averaging or the OmniPBR mapping
-    regressed (its shells get their colour from averaged albedo textures).
+  - An all-white, all-grey or flat-red ANYmal — its albedo maps did not bind
+    (the shells' colour comes ONLY from the texture: OmniPBR's constant is
+    replaced by a bound `diffuse_texture`).
+  - A mirrored or upside-down ANYbotics wordmark — the UV flip or a texture
+    transform is wrong.
   - Magenta anywhere — a geom lost its material.
   - Visible collider primitives on ANYmal — the purpose → group mapping broke.
   - ANYmal floating well above the floor or sunk into it — the fixture or the
