@@ -10,6 +10,10 @@ world poses onto node transforms.
 
 That split is the design. Everything below follows from it.
 
+Isaac Sim / Isaac Lab robots (USD) come through this same seam: a second
+exporter writes the identical sidecar + GLB, and everything below applies to
+them unchanged. See [`isaac.md`](isaac.md).
+
 ## The pipeline
 
 ```
