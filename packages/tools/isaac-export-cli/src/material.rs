@@ -24,6 +24,7 @@ use openusd::sdf;
 use openusd::usd::{Attribute, Prim, Stage};
 use openusd_schemas::shade;
 
+use crate::geometry::UvSet;
 use crate::stage::{value, value_f64, value_token, value_vec3};
 use crate::texture::{blend, pack, Channel, Images, Mono};
 
@@ -38,6 +39,10 @@ pub struct Materials {
     by_path: HashMap<(sdf::Path, bool), usize>,
     /// Sidecar material table, in first-use order.
     pub table: Vec<Material>,
+    /// Per table entry, the UV sets its textures sample, in `uv` index order
+    /// (set 0 first). A mesh piece carrying this material writes exactly these
+    /// as `TEXCOORD_0..n`.
+    pub uv_sets: Vec<Vec<UvSet>>,
     /// Texture files to write next to the sidecar.
     pub images: Images,
     /// Human-readable notes for the export report — anything approximated.
@@ -50,6 +55,7 @@ impl Materials {
             root_dir: root.parent().map(Path::to_path_buf).unwrap_or_default(),
             by_path: HashMap::new(),
             table: Vec::new(),
+            uv_sets: Vec::new(),
             images: Images::default(),
             notes: Vec::new(),
         }
@@ -64,9 +70,9 @@ impl Materials {
         if let Some(i) = self.by_path.get(&key) {
             return Some(*i);
         }
-        let mut read = self.read(stage, &key.0);
+        let (mut read, sets) = self.read(stage, &key.0);
         read.double_sided = double_sided;
-        let index = self.intern(read);
+        let index = self.intern(read, sets);
         self.by_path.insert(key, index);
         Some(index)
     }
@@ -80,26 +86,35 @@ impl Materials {
         if rgba[3] < 1.0 {
             m.alpha_mode = Some(AlphaMode::Blend);
         }
-        self.intern(m)
+        self.intern(m, vec![UvSet::Index(0)])
     }
 
-    fn intern(&mut self, read: Material) -> usize {
+    fn intern(&mut self, read: Material, sets: Vec<UvSet>) -> usize {
         // Isaac assets repeat each look per link file (every Franka link has
         // its own `Looks/PlasticWhite`). Equal materials share one entry, so
         // the editor's library gets ONE PlasticWhite and editing it repaints
         // the whole arm.
-        match self.table.iter().position(|m| *m == read) {
+        // The UV sets are part of the identity: two materials whose textures
+        // both say `uv: 1` mean different primvars if their set lists differ.
+        let same = |(m, s): (&Material, &Vec<UvSet>)| *m == read && *s == sets;
+        match self.table.iter().zip(&self.uv_sets).position(same) {
             Some(i) => i,
             None => {
                 self.table.push(read);
+                self.uv_sets.push(sets);
                 self.table.len() - 1
             }
         }
     }
 
-    fn read(&mut self, stage: &Stage, path: &sdf::Path) -> Material {
+    fn read(&mut self, stage: &Stage, path: &sdf::Path) -> (Material, Vec<UvSet>) {
         let name = path.name().map(str::to_string);
-        let grey = || Material::phong(name.clone(), [0.5, 0.5, 0.5, 1.0], 0.5, 0.5, 0.0, 0.0);
+        let grey = || {
+            (
+                Material::phong(name.clone(), [0.5, 0.5, 0.5, 1.0], 0.5, 0.5, 0.0, 0.0),
+                vec![UvSet::Index(0)],
+            )
+        };
         if !matches!(shade::Material::get(stage, path.clone()), Ok(Some(_))) {
             // A dangling binding — it happens in shipped assets (the Franka's
             // `Quality` decals bind a material no layer defines).
@@ -118,6 +133,7 @@ impl Materials {
             root_dir: &self.root_dir,
             images: &mut self.images,
             notes: &mut self.notes,
+            uv_sets: vec![UvSet::Index(0)],
         };
         let look = match shader_kind(&ctx.shader).as_deref() {
             Some(
@@ -138,7 +154,8 @@ impl Materials {
                 return grey();
             }
         };
-        look.into_material(name)
+        let sets = std::mem::take(&mut ctx.uv_sets);
+        (look.into_material(name), sets)
     }
 }
 
@@ -208,6 +225,8 @@ struct Ctx<'a> {
     root_dir: &'a Path,
     images: &'a mut Images,
     notes: &'a mut Vec<String>,
+    /// The UV sets this material's textures sample, in `uv` index order.
+    uv_sets: Vec<UvSet>,
 }
 
 /// A texture feeding an input: the file, which channel the input reads, and
@@ -222,11 +241,33 @@ struct Tex {
     /// A UsdUVTexture's `scale.rgb` — a colour multiplier on what it reads.
     /// OmniPBR maps have none (1).
     scale: [f32; 3],
+    /// The UV set it samples.
+    uv: UvSet,
 }
 
 impl Ctx<'_> {
     fn note(&mut self, msg: impl std::fmt::Display) {
         self.notes.push(format!("{}: {msg}", self.path));
+    }
+
+    /// `set`'s index in this material's UV set list, adding it if new.
+    fn uv_index(&mut self, set: &UvSet) -> u32 {
+        match self.uv_sets.iter().position(|s| s == set) {
+            Some(i) => i as u32,
+            None => {
+                self.uv_sets.push(set.clone());
+                (self.uv_sets.len() - 1) as u32
+            }
+        }
+    }
+
+    fn slot(&mut self, image: String, t: &Tex) -> MaterialTexture {
+        MaterialTexture {
+            image,
+            transform: t.transform,
+            wrap: t.wrap,
+            uv: self.uv_index(&t.uv),
+        }
     }
 
     // ── OmniPBR ──────────────────────────────────────────────────────────────
@@ -236,8 +277,10 @@ impl Ctx<'_> {
 
     fn omni_pbr(&mut self) -> Look {
         let transform = self.omni_transform("texture_scale", "texture_rotate", "texture_translate");
+        // Every OmniPBR map samples one UV set, `uv_space_index`.
+        let uv = UvSet::Index(self.int("uv_space_index").unwrap_or(0).max(0) as u32);
         let tex = |ctx: &mut Self, name: &str, channel: Channel| {
-            ctx.asset_texture(name, channel, transform, [Wrap::Repeat; 2])
+            ctx.asset_texture(name, channel, transform, [Wrap::Repeat; 2], uv.clone())
         };
         for (input, what) in [
             ("detail_normalmap_texture", "detail normal map"),
@@ -405,6 +448,7 @@ impl Ctx<'_> {
             Channel::Rgb,
             transform,
             [Wrap::Repeat; 2],
+            UvSet::Index(0),
         );
         let weight = self.float("diffuse_reflection_weight").unwrap_or(0.8);
         let constant = self.color("diffuse_reflection_color").unwrap_or([1.0; 3]);
@@ -482,6 +526,11 @@ impl Ctx<'_> {
                 None,
                 [&Mono::Constant(1.0), &rough, &metal, &Mono::Constant(1.0)],
             );
+            if let (Some(r), Some(m)) = (&rough_map, &metal_map) {
+                if r.uv != m.uv || r.transform != m.transform {
+                    self.note("roughness and metallic maps sample different UVs; packed on the roughness map's");
+                }
+            }
             let sampling = rough_map.as_ref().or(metal_map.as_ref());
             textures.metallic_roughness = self.write_png("metallic_roughness", &packed, sampling);
             (1.0, 1.0)
@@ -544,6 +593,13 @@ impl Ctx<'_> {
         constant: [f32; 3],
         alpha_map: Option<Tex>,
     ) -> ([f32; 3], Option<MaterialTexture>) {
+        if let (Some(d), Some(a)) = (&diffuse, &alpha_map) {
+            if d.uv != a.uv || d.transform != a.transform {
+                self.note(
+                    "colour and opacity maps sample different UVs; packed on the colour map's",
+                );
+            }
+        }
         let diffuse_img = diffuse.as_ref().and_then(|t| self.decode(t));
         let alpha_img = alpha_map.as_ref().and_then(|t| self.gray(Some(t)));
         match (diffuse_img, alpha_img) {
@@ -627,7 +683,7 @@ impl Ctx<'_> {
 
     fn copy(&mut self, t: &Tex) -> Option<MaterialTexture> {
         match self.images.copy(&t.file) {
-            Ok(image) => Some(slot(image, t)),
+            Ok(image) => Some(self.slot(image, t)),
             Err(e) => {
                 self.note(format!("texture {} could not be read ({e:#})", t.authored));
                 None
@@ -644,7 +700,7 @@ impl Ctx<'_> {
         let stem = format!("{}_{stem}", self.path.name().unwrap_or("material"));
         match self.images.png(&stem, img) {
             Ok(image) => Some(match sampling {
-                Some(t) => slot(image, t),
+                Some(t) => self.slot(image, t),
                 None => MaterialTexture::new(image),
             }),
             Err(e) => {
@@ -695,7 +751,7 @@ impl Ctx<'_> {
                 node,
             } => {
                 let file = self.resolve_file(&asset)?;
-                let (transform, wrap) = self.node_sampling(&node);
+                let (transform, wrap, uv) = self.node_sampling(&node);
                 let four = |n: &str, d: f32| match value(&node.attribute(format!("inputs:{n}"))) {
                     Some(sdf::Value::Vec4f(v)) => [v.x, v.y, v.z, v.w],
                     Some(sdf::Value::Vec4d(v)) => [v.x as f32, v.y as f32, v.z as f32, v.w as f32],
@@ -715,6 +771,7 @@ impl Ctx<'_> {
                     transform,
                     wrap,
                     scale: [scale[0], scale[1], scale[2]],
+                    uv,
                 })
             }
         })
@@ -744,6 +801,7 @@ impl Ctx<'_> {
         channel: Channel,
         transform: Option<UvTransform>,
         wrap: [Wrap; 2],
+        uv: UvSet,
     ) -> Option<Tex> {
         let asset = self.asset_input(name)?;
         let file = self.resolve_file(&asset)?;
@@ -754,6 +812,7 @@ impl Ctx<'_> {
             transform,
             wrap,
             scale: [1.0; 3],
+            uv,
         })
     }
 
@@ -786,17 +845,15 @@ impl Ctx<'_> {
                 "project_uvw (world/object-space projection) is not supported; mesh UVs used",
             );
         }
-        if self.int("uv_space_index").unwrap_or(0) != 0 {
-            self.note("uv_space_index != 0: only the first UV set is exported");
-        }
         let s = self.vec2(scale).unwrap_or([1.0, 1.0]);
         let r = self.float(rotate).unwrap_or(0.0);
         let t = self.vec2(translate).unwrap_or([0.0, 0.0]);
         usd_uv_transform(s, r, t)
     }
 
-    /// A UsdUVTexture's wrap modes and its `st` input's UsdTransform2d.
-    fn node_sampling(&mut self, node: &Prim) -> (Option<UvTransform>, [Wrap; 2]) {
+    /// A UsdUVTexture's wrap modes, its `st` input's UsdTransform2d, and the
+    /// UV set its primvar reader names.
+    fn node_sampling(&mut self, node: &Prim) -> (Option<UvTransform>, [Wrap; 2], UvSet) {
         let wrap = |name: &str, notes: &mut Vec<String>, path: &sdf::Path| match value(
             &node.attribute(format!("inputs:{name}")),
         )
@@ -815,7 +872,25 @@ impl Ctx<'_> {
             wrap("wrapS", self.notes, &self.path),
             wrap("wrapT", self.notes, &self.path),
         ];
-        let transform = connected_prim(node, "st").and_then(|t| {
+        // `st` ← [UsdTransform2d `in` ←] UsdPrimvarReader_float2 `varname`.
+        let st = connected_prim(node, "st");
+        let is = |p: &Prim, id: &str| {
+            value(&p.attribute("info:id"))
+                .and_then(|v| value_token(&v))
+                .is_some_and(|t| t.starts_with(id))
+        };
+        let reader = match &st {
+            Some(p) if is(p, "UsdTransform2d") => connected_prim(p, "in"),
+            other => other.clone(),
+        };
+        let uv = reader
+            .filter(|r| is(r, "UsdPrimvarReader"))
+            .and_then(|r| match resolve_input(&r, "varname", 0) {
+                Some(Resolved::Value(v)) => value_token(&v),
+                _ => None,
+            })
+            .map_or(UvSet::Index(0), UvSet::Name);
+        let transform = st.and_then(|t| {
             let id = value(&t.attribute("info:id")).and_then(|v| value_token(&v));
             (id.as_deref() == Some("UsdTransform2d")).then(|| {
                 let v2 = |n: &str, d: [f32; 2]| match value(&t.attribute(format!("inputs:{n}"))) {
@@ -829,7 +904,7 @@ impl Ctx<'_> {
                 usd_uv_transform(v2("scale", [1.0, 1.0]), rot, v2("translation", [0.0, 0.0]))
             })
         });
-        (transform.flatten(), wrap)
+        (transform.flatten(), wrap, uv)
     }
 
     fn color(&self, name: &str) -> Option<[f32; 3]> {
@@ -870,14 +945,6 @@ impl Ctx<'_> {
             Resolved::Value(v) => value_f64(&v).map(|x| x != 0.0),
             Resolved::Connected { .. } => None,
         }
-    }
-}
-
-fn slot(image: String, t: &Tex) -> MaterialTexture {
-    MaterialTexture {
-        image,
-        transform: t.transform,
-        wrap: t.wrap,
     }
 }
 

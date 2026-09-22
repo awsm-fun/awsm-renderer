@@ -9,6 +9,11 @@
 //! A mesh split into material `GeomSubset`s becomes one piece per subset (plus a
 //! remainder for faces no subset claims), because the importer mints one
 //! material per geom and the GLB carries geometry only.
+//!
+//! Each piece carries exactly the UV sets its material samples, in the
+//! material's order (set 0 always first), as `TEXCOORD_0..n` — so a texture's
+//! sidecar `uv` index means the same thing on every mesh the material is on,
+//! whatever the mesh calls its primvars.
 
 use anyhow::{bail, Result};
 use awsm_renderer_glb_export::MeshData;
@@ -38,6 +43,39 @@ const UV_NAMES: &[&str] = &[
     "primvars:UVMap",
     "primvars:uv",
 ];
+
+/// A UV set a material samples, as the material names it.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum UvSet {
+    /// By index — OmniPBR's `uv_space_index`. Set `n` is the mesh's
+    /// `primvars:st{n}` / `primvars:st_{n}` (set 0: see [`UV_NAMES`]).
+    Index(u32),
+    /// By primvar name — a `UsdPrimvarReader_float2`'s `varname`.
+    Name(String),
+}
+
+impl UvSet {
+    /// The primvar names this set may go by on a mesh, most specific first.
+    fn candidates(&self) -> Vec<String> {
+        match self {
+            UvSet::Index(0) => UV_NAMES.iter().map(|s| s.to_string()).collect(),
+            UvSet::Index(n) => vec![format!("primvars:st{n}"), format!("primvars:st_{n}")],
+            UvSet::Name(name) => {
+                let mut out = vec![format!("primvars:{name}")];
+                // `st`, `st1`, `st_2`, ...: the conventional names ARE indices,
+                // so a reader asking for `st` still finds Isaac's `st_0`.
+                let digits = name
+                    .strip_prefix("st_")
+                    .or_else(|| name.strip_prefix("st"))
+                    .map(|d| if d.is_empty() { "0" } else { d });
+                if let Some(n) = digits.and_then(|d| d.parse::<u32>().ok()) {
+                    out.extend(UvSet::Index(n).candidates());
+                }
+                out
+            }
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Interp {
@@ -135,7 +173,17 @@ fn read_primvar<T>(
 
 /// Split `prim` (a `Mesh`) into material pieces, with every vertex transformed
 /// by `xform` — the mesh's transform relative to the frame it will be drawn in.
-pub fn pieces(stage: &Stage, prim: &Prim, xform: DMat4) -> Result<Vec<Piece>> {
+///
+/// `uv_sets_for` answers, for a piece's binding prim, which UV sets its
+/// material samples (set 0 first). A set the mesh does not have falls back to
+/// set 0, and says so in `notes`.
+pub fn pieces(
+    stage: &Stage,
+    prim: &Prim,
+    xform: DMat4,
+    uv_sets_for: &mut dyn FnMut(&Prim) -> Vec<UvSet>,
+    notes: &mut Vec<String>,
+) -> Result<Vec<Piece>> {
     let path = prim.path().clone();
     let Some(points) = value(&prim.attribute("points")).and_then(|v| value_vec3_array(&v)) else {
         return Ok(Vec::new());
@@ -185,9 +233,40 @@ pub fn pieces(stage: &Stage, prim: &Prim, xform: DMat4) -> Result<Vec<Piece>> {
     // `primvars:normals` overrides the `normals` attribute when both exist.
     let normals = read_primvar(prim, "primvars:normals", &counts, value_vec3_array)
         .or_else(|| read_primvar(prim, "normals", &counts, value_vec3_array));
-    let uvs = UV_NAMES
-        .iter()
-        .find_map(|n| read_primvar(prim, n, &counts, value_vec2_array));
+    // Each requested UV set, read once per mesh; `None` = the mesh has none.
+    let mut uv_cache: std::collections::HashMap<UvSet, Option<std::rc::Rc<Primvar<[f64; 2]>>>> =
+        std::collections::HashMap::new();
+    let mut read_uv = |set: &UvSet| -> Option<std::rc::Rc<Primvar<[f64; 2]>>> {
+        uv_cache
+            .entry(set.clone())
+            .or_insert_with(|| {
+                set.candidates()
+                    .iter()
+                    .find_map(|n| read_primvar(prim, n, &counts, value_vec2_array))
+                    .map(std::rc::Rc::new)
+            })
+            .clone()
+    };
+    // The primvars for one piece's sets, in order. A missing set falls back to
+    // set 0 (a texture that samples SOMETHING beats one that samples nothing);
+    // with no set 0 either, the piece has no UVs at all.
+    let mut uvs_for =
+        |sets: &[UvSet], notes: &mut Vec<String>| -> Vec<std::rc::Rc<Primvar<[f64; 2]>>> {
+            let Some(base) = read_uv(&UvSet::Index(0)) else {
+                return Vec::new();
+            };
+            sets.iter()
+                .map(|set| match read_uv(set) {
+                    Some(p) => p,
+                    None => {
+                        notes.push(format!(
+                            "{path}: UV set {set:?} not found; using the first UV set"
+                        ));
+                        base.clone()
+                    }
+                })
+                .collect()
+        };
 
     // A left-handed mesh, or a mirroring transform, reverses which way a
     // counter-clockwise face points; flip once to keep glTF's CCW-front rule.
@@ -197,15 +276,17 @@ pub fn pieces(stage: &Stage, prim: &Prim, xform: DMat4) -> Result<Vec<Piece>> {
     let flip = left_handed ^ (xform.determinant() < 0.0);
     let normal_xform = DMat3::from_mat4(xform).inverse().transpose();
 
-    let build = |faces: &mut dyn Iterator<Item = usize>| -> MeshData {
+    let build = |faces: &mut dyn Iterator<Item = usize>,
+                 uvs: &[std::rc::Rc<Primvar<[f64; 2]>>]|
+     -> MeshData {
         let mut out = MeshData::default();
-        let mut uv_out: Vec<[f32; 2]> = Vec::new();
+        let mut uv_out: Vec<Vec<[f32; 2]>> = vec![Vec::new(); uvs.len()];
         let mut normal_out: Vec<[f32; 3]> = Vec::new();
         // Keyed on the attribute VALUES, not their slots: face-varying normals
         // give every corner its own slot even where neighbouring faces share
         // the exact normal (every flat or smooth-shaded region of a CAD mesh),
         // and keying on slots would triple the vertex count for nothing.
-        let mut seen: std::collections::HashMap<(usize, [u64; 3], [u64; 2]), u32> =
+        let mut seen: std::collections::HashMap<(usize, [u64; 3], Vec<[u64; 2]>), u32> =
             std::collections::HashMap::new();
         for f in faces {
             let n = face_counts[f] as usize;
@@ -217,11 +298,14 @@ pub fn pieces(stage: &Stage, prim: &Prim, xform: DMat4) -> Result<Vec<Piece>> {
                 let corner = start + c;
                 let point = face_indices[corner] as usize;
                 let nrm = normals.as_ref().and_then(|p| p.at(f, corner, point));
-                let uv = uvs.as_ref().and_then(|p| p.at(f, corner, point));
+                let uv: Vec<Option<[f64; 2]>> =
+                    uvs.iter().map(|p| p.at(f, corner, point)).collect();
                 let key = (
                     point,
                     nrm.map_or([u64::MAX; 3], |v| v.map(f64::to_bits)),
-                    uv.map_or([u64::MAX; 2], |v| v.map(f64::to_bits)),
+                    uv.iter()
+                        .map(|v| v.map_or([u64::MAX; 2], |v| v.map(f64::to_bits)))
+                        .collect(),
                 );
                 let next = out.positions.len() as u32;
                 *seen.entry(key).or_insert_with(|| {
@@ -231,9 +315,11 @@ pub fn pieces(stage: &Stage, prim: &Prim, xform: DMat4) -> Result<Vec<Piece>> {
                         let v = (normal_xform * DVec3::from_array(v)).normalize_or_zero();
                         normal_out.push(v.as_vec3().to_array());
                     }
-                    if let Some(v) = uv {
-                        // USD's V runs bottom-up; glTF's top-down.
-                        uv_out.push([v[0] as f32, 1.0 - v[1] as f32]);
+                    for (set, v) in uv_out.iter_mut().zip(&uv) {
+                        if let Some(v) = v {
+                            // USD's V runs bottom-up; glTF's top-down.
+                            set.push([v[0] as f32, 1.0 - v[1] as f32]);
+                        }
                     }
                     next
                 })
@@ -256,15 +342,16 @@ pub fn pieces(stage: &Stage, prim: &Prim, xform: DMat4) -> Result<Vec<Piece>> {
         } else if !out.positions.is_empty() {
             out.compute_vertex_normals();
         }
-        if uv_out.len() == out.positions.len() && !uv_out.is_empty() {
-            out.uvs = vec![uv_out];
+        if !out.positions.is_empty() && uv_out.iter().all(|s| s.len() == out.positions.len()) {
+            out.uvs = uv_out;
         }
         out
     };
 
     let subsets = material_subsets(stage, prim, face_counts.len());
     if subsets.is_empty() {
-        let mesh = build(&mut (0..face_counts.len()));
+        let uvs = uvs_for(&uv_sets_for(prim), notes);
+        let mesh = build(&mut (0..face_counts.len()), &uvs);
         if mesh.indices.is_empty() {
             return Ok(Vec::new());
         }
@@ -281,7 +368,8 @@ pub fn pieces(stage: &Stage, prim: &Prim, xform: DMat4) -> Result<Vec<Piece>> {
         for f in faces {
             claimed[*f] = true;
         }
-        let mesh = build(&mut faces.iter().copied());
+        let uvs = uvs_for(&uv_sets_for(subset), notes);
+        let mesh = build(&mut faces.iter().copied(), &uvs);
         if !mesh.indices.is_empty() {
             out.push(Piece {
                 binding_prim: subset.clone(),
@@ -290,7 +378,8 @@ pub fn pieces(stage: &Stage, prim: &Prim, xform: DMat4) -> Result<Vec<Piece>> {
             });
         }
     }
-    let rest = build(&mut (0..face_counts.len()).filter(|f| !claimed[*f]));
+    let uvs = uvs_for(&uv_sets_for(prim), notes);
+    let rest = build(&mut (0..face_counts.len()).filter(|f| !claimed[*f]), &uvs);
     if !rest.indices.is_empty() {
         out.push(Piece {
             binding_prim: prim.clone(),

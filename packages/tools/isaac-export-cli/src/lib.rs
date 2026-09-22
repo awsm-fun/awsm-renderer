@@ -205,8 +205,16 @@ pub fn export(root: &Path, options: &Options) -> Result<Export> {
                 });
                 continue;
             }
-            let pieces = geometry::pieces(&stage, &prim, local)
-                .with_context(|| format!("reading mesh {path}"))?;
+            // Each piece carries exactly the UV sets its material samples.
+            let mut uv_sets_for = |binding: &Prim| {
+                materials
+                    .bound(&stage, binding, double_sided)
+                    .map(|m| materials.uv_sets[m].clone())
+                    .unwrap_or_else(|| vec![geometry::UvSet::Index(0)])
+            };
+            let pieces =
+                geometry::pieces(&stage, &prim, local, &mut uv_sets_for, &mut report.notes)
+                    .with_context(|| format!("reading mesh {path}"))?;
             let split = pieces.len() > 1;
             let bound: Vec<Option<usize>> = pieces
                 .iter()
