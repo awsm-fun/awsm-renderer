@@ -7,9 +7,9 @@
 //! It is joint animation, not physics: nothing collides, nothing falls, and a
 //! floating base (a quadruped's) stays where it was authored.
 //!
-//! The capture replays through the pose sink exactly like a streamed run (the
-//! `physics-isaac` template loops it), or bakes into an animation clip in the
-//! editor (`ImportMujocoCapture`).
+//! The capture replays through the pose sink exactly like a streamed run (a
+//! player loops its frames into `apply_geom_poses`), or bakes into an animation
+//! clip in the editor (`ImportMujocoCapture`).
 
 use std::path::PathBuf;
 

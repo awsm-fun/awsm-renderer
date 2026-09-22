@@ -265,9 +265,9 @@ cargo run --release -p awsm-renderer-isaac-export-cli --bin awsm-renderer-isaac-
 - **It is joint animation, not physics:** nothing collides, nothing falls, and
   a floating base (a quadruped's) stays where it was authored.
 
-The capture replays through the pose sink exactly like a live stream — the
-`physics-isaac` template loops one by default — or bakes into an ordinary clip
-in the editor (`ImportMujocoCapture`).
+The capture replays through the pose sink exactly like a live stream (a player
+loops its frames into `apply_geom_poses`), or bakes into an ordinary clip in
+the editor (`ImportMujocoCapture`).
 
 ## Streaming from Isaac Lab
 
