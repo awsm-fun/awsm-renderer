@@ -723,6 +723,14 @@ pub struct MaterialTexture {
     /// Wrap mode along U and V.
     #[serde(default, skip_serializing_if = "is_repeat")]
     pub wrap: [Wrap; 2],
+    /// Which UV set this texture samples: the GLB mesh's `TEXCOORD_<uv>`
+    /// (glTF `texCoord`). Default 0.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub uv: u32,
+}
+
+fn is_zero(v: &u32) -> bool {
+    *v == 0
 }
 
 impl MaterialTexture {
@@ -731,6 +739,7 @@ impl MaterialTexture {
             image: image.into(),
             transform: None,
             wrap: [Wrap::Repeat; 2],
+            uv: 0,
         }
     }
 }
@@ -951,6 +960,7 @@ mod tests {
                 scale: [2.0, 2.0],
             }),
             wrap: [Wrap::Clamp, Wrap::Mirror],
+            uv: 1,
         });
         m.textures.metallic_roughness = Some(MaterialTexture::new("textures/mr.png"));
         m.textures.normal = Some(MaterialTexture::new("textures/n.png"));

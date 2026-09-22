@@ -1226,6 +1226,7 @@ fn pbr_from_mujoco(m: &MujocoMaterial, textures: &TextureAssets) -> MaterialDef 
                 wrap_v: wrap(t.wrap[1]),
                 ..TextureSampler::default()
             }),
+            uv_index: t.uv,
             ..TextureRef::new(asset)
         })
     };

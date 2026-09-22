@@ -33,9 +33,15 @@ impl Fixture {
         self.png(name, [c; 4])
     }
 
-    /// A one-cube robot whose mesh binds `material_body` (the `def Material`
+    /// A one-quad robot whose mesh binds `material_body` (the `def Material`
     /// block's contents).
     fn stage(&self, material_body: &str) -> Export {
+        self.stage_with(material_body, "")
+    }
+
+    /// As [`Self::stage`], with `mesh_extra` added to the mesh's body (extra
+    /// primvars).
+    fn stage_with(&self, material_body: &str, mesh_extra: &str) -> Export {
         let usda = format!(
             r#"#usda 1.0
 (
@@ -60,6 +66,7 @@ def Xform "robot"
                 interpolation = "vertex"
             )
             rel material:binding = </robot/Looks/M>
+{mesh_extra}
         }}
     }}
     def Scope "Looks"
@@ -396,6 +403,131 @@ fn a_missing_texture_drops_its_slot_and_says_so() {
     );
     // OmniPBR's own default colour, not white.
     assert_eq!(&m.rgba[..3], &[0.2, 0.2, 0.2]);
+}
+
+/// The GLB mesh of the only geom.
+fn only_mesh(out: &Export) -> &awsm_renderer_glb_export::MeshData {
+    let g = &out.sidecar.geoms[0];
+    let node = out.sidecar.meshes[g.mesh.unwrap()].node.as_deref().unwrap();
+    out.glb
+        .as_ref()
+        .unwrap()
+        .nodes
+        .iter()
+        .find(|n| n.name == node)
+        .unwrap()
+        .mesh
+        .as_ref()
+        .unwrap()
+}
+
+/// Sorted (u, v) pairs of one UV set, rounded, for order-free comparison.
+fn uv_set(mesh: &awsm_renderer_glb_export::MeshData, set: usize) -> Vec<[i32; 2]> {
+    let mut v: Vec<[i32; 2]> = mesh.uvs[set]
+        .iter()
+        .map(|p| p.map(|c| (c * 1000.0).round() as i32))
+        .collect();
+    v.sort();
+    v
+}
+
+/// A second UV set, `st1`, laid out so it cannot be confused with `st`.
+const ST1: &str = r#"            texCoord2f[] primvars:st1 = [(0.5, 0.5), (0.75, 0.5), (0.75, 0.75), (0.5, 0.75)] (
+                interpolation = "vertex"
+            )"#;
+
+#[test]
+fn omnipbr_uv_space_index_selects_a_second_uv_set() {
+    let f = Fixture::new("uvindex");
+    f.solid("albedo.png", [1, 2, 3, 255]);
+    let out = f.stage_with(
+        &omni(
+            r#"                asset inputs:diffuse_texture = @tex/albedo.png@
+                int inputs:uv_space_index = 1"#,
+        ),
+        ST1,
+    );
+    let m = material(&out);
+    assert_eq!(m.textures.base_color.as_ref().unwrap().uv, 1);
+    let mesh = only_mesh(&out);
+    // Set 0 is always there (st); set 1 is st1, V flipped for the GLB.
+    assert_eq!(mesh.uvs.len(), 2);
+    assert_eq!(
+        uv_set(mesh, 0),
+        vec![[0, 0], [0, 1000], [1000, 0], [1000, 1000]]
+    );
+    assert_eq!(
+        uv_set(mesh, 1),
+        vec![[500, 250], [500, 500], [750, 250], [750, 500]]
+    );
+    assert_valid(&out);
+}
+
+#[test]
+fn a_preview_surface_primvar_reader_picks_its_uv_set_by_name() {
+    let f = Fixture::new("uvname");
+    f.solid("detail.png", [4, 5, 6, 255]);
+    let out = f.stage_with(
+        r#"            token outputs:surface.connect = </robot/Looks/M/Surface.outputs:surface>
+            def Shader "Surface"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor.connect = </robot/Looks/M/Tex.outputs:rgb>
+                token outputs:surface
+            }
+            def Shader "Tex"
+            {
+                uniform token info:id = "UsdUVTexture"
+                asset inputs:file = @tex/detail.png@
+                float2 inputs:st.connect = </robot/Looks/M/Reader.outputs:result>
+                float3 outputs:rgb
+            }
+            def Shader "Reader"
+            {
+                uniform token info:id = "UsdPrimvarReader_float2"
+                token inputs:varname = "detailUV"
+                float2 outputs:result
+            }"#,
+        r#"            texCoord2f[] primvars:detailUV = [(0.5, 0.5), (0.75, 0.5), (0.75, 0.75), (0.5, 0.75)] (
+                interpolation = "vertex"
+            )"#,
+    );
+    let m = material(&out);
+    assert_eq!(m.textures.base_color.as_ref().unwrap().uv, 1);
+    let mesh = only_mesh(&out);
+    assert_eq!(mesh.uvs.len(), 2);
+    assert_eq!(
+        uv_set(mesh, 1),
+        vec![[500, 250], [500, 500], [750, 250], [750, 500]]
+    );
+}
+
+#[test]
+fn a_uv_set_the_mesh_lacks_falls_back_to_the_first_and_says_so() {
+    let f = Fixture::new("uvmissing");
+    f.solid("albedo.png", [1, 2, 3, 255]);
+    let out = f.stage(&omni(
+        r#"                asset inputs:diffuse_texture = @tex/albedo.png@
+                int inputs:uv_space_index = 2"#,
+    ));
+    let mesh = only_mesh(&out);
+    assert_eq!(mesh.uvs.len(), 2);
+    assert_eq!(uv_set(mesh, 1), uv_set(mesh, 0));
+    assert!(
+        out.report.notes.iter().any(|n| n.contains("UV set")),
+        "{:?}",
+        out.report.notes
+    );
+}
+
+#[test]
+fn an_untextured_material_ships_the_first_uv_set_only() {
+    let f = Fixture::new("uvplain");
+    let out = f.stage_with(
+        &omni(r#"                color3f inputs:diffuse_color_constant = (1, 0, 0)"#),
+        ST1,
+    );
+    assert_eq!(only_mesh(&out).uvs.len(), 1);
 }
 
 #[test]
