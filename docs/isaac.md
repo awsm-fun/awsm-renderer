@@ -65,6 +65,15 @@ Versions 4.5, 5.0, 5.1, 6.0 and 6.1 are live. The two exercised here (Isaac 5.0)
 | Franka Panda | `Robots/FrankaRobotics/FrankaPanda/franka.usd` |
 | ANYmal-D | `Robots/ANYbotics/anymal_d/anymal_d.usd` |
 
+**Licenses are per robot.** NVIDIA's asset tables list a license for each
+robot, and it varies: the Franka Panda is Apache-2.0 and the ANYmal-D is
+BSD-3-Clause, while others name a vendor's 3D content sharing agreement, and
+NVIDIA's own assets fall under its Isaac Sim Additional Software and Materials
+License, which restricts redistribution and derivative works. Check the
+robot's row in the [asset tables](https://docs.isaacsim.omniverse.nvidia.com/latest/assets/usd_assets_overview.html)
+before shipping an export of it. The two robots in
+`examples/test-scenes/isaac-robots` carry their notices in `ASSET-LICENSES.md`.
+
 Isaac Lab's own robot configs (`isaaclab_assets`) point at
 `<version>/Isaac/IsaacLab/Robots/...` — `ANYbotics/ANYmal-{B,C,D}/`,
 `Unitree/{A1,Go1,Go2,H1,G1}/`, `Classic/Cartpole/cartpole.usd`, … — and Isaac Sim

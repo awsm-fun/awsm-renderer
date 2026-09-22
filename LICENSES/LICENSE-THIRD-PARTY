@@ -1,1 +1,3 @@
 ---- some of the shader code derived from https://github.com/KhronosGroup/glTF-Sample-Viewer under the Apache License ---
+
+---- examples/test-scenes/isaac-robots: robot assets derived from the NVIDIA Isaac Sim asset library — Franka Panda (Apache License 2.0) and ANYmal-D (BSD 3-Clause, ANYbotics AG); notices in examples/test-scenes/isaac-robots/ASSET-LICENSES.md ---
