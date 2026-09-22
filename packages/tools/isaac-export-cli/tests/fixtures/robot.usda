@@ -81,6 +81,21 @@ def Xform "robot" (
         }
     }
 
+    # base → arm, about Z. The arm is AUTHORED rotated 90° about Z relative to
+    # the joint's zero, so the solved rest position must be +90°.
+    def PhysicsRevoluteJoint "hinge"
+    {
+        rel physics:body0 = </robot/base>
+        rel physics:body1 = </robot/arm>
+        point3f physics:localPos0 = (1, 0, 0)
+        quatf physics:localRot0 = (1, 0, 0, 0)
+        point3f physics:localPos1 = (0, 0, 0)
+        quatf physics:localRot1 = (1, 0, 0, 0)
+        uniform token physics:axis = "Z"
+        float physics:lowerLimit = -120
+        float physics:upperLimit = 120
+    }
+
     def Scope "Looks"
     {
         def Material "Blue"

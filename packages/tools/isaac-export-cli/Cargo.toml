@@ -21,6 +21,13 @@ path = "src/lib.rs"
 name = "awsm-renderer-isaac-export"
 path = "src/main.rs"
 
+# Scripted joint motion → a capture, by forward kinematics over the USD
+# joints: a robot shown moving with no simulator. Separate binary, like the
+# MuJoCo recorder, because it is a separate job.
+[[bin]]
+name = "awsm-renderer-isaac-record"
+path = "src/bin/record.rs"
+
 [dependencies]
 # Pure-Rust USD: composition (sublayers, references, payloads, variants,
 # instancing) plus the typed UsdGeom / UsdShade views. No C++ OpenUSD needed.

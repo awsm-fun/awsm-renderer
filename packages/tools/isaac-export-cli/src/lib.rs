@@ -21,6 +21,7 @@
 //! is its dependency alone.
 
 pub mod geometry;
+pub mod kinematics;
 pub mod material;
 pub mod primitive;
 pub mod stage;
@@ -74,6 +75,9 @@ pub struct Export {
     /// Texture files the sidecar's materials reference: `(path relative to the
     /// sidecar, bytes)`. The caller writes them next to the sidecar.
     pub images: Vec<(String, Vec<u8>)>,
+    /// The stage's joints over the sidecar's bodies — what the recorder
+    /// drives to produce a capture with no simulator.
+    pub articulation: kinematics::Articulation,
     pub report: Report,
 }
 
@@ -140,14 +144,18 @@ pub fn export(root: &Path, options: &Options) -> Result<Export> {
         quat: [1.0, 0.0, 0.0, 0.0],
     });
     let mut body_of_path: HashMap<sdf::Path, usize> = HashMap::new();
-    // Rigid world frame per body (scale dropped: a sim pose has none).
+    // Rigid world frame per body (scale dropped: a sim pose has none), and
+    // the dropped scale, which joint frames are authored in.
     let mut body_frames: Vec<DMat4> = vec![DMat4::IDENTITY];
+    let mut body_scales: Vec<glam::DVec3> = vec![glam::DVec3::ONE];
     for path in &paths {
         let prim = stage.prim(path.clone())?;
         if !prim.has_api_schema("PhysicsRigidBodyAPI")? {
             continue;
         }
-        let frame = rigid(xforms.get(&stage, path)?);
+        let full = xforms.get(&stage, path)?;
+        let frame = rigid(full);
+        body_scales.push(full.to_scale_rotation_translation().0);
         let parent = nearest_body(path, &body_of_path, false);
         let (_, rot, pos) = (body_frames[parent].inverse() * frame).to_scale_rotation_translation();
         body_of_path.insert(path.clone(), doc.bodies.len());
@@ -162,6 +170,9 @@ pub fn export(root: &Path, options: &Options) -> Result<Export> {
             quat: wxyz(rot),
         });
     }
+
+    let articulation =
+        kinematics::Articulation::read(&stage, &paths, &body_of_path, &body_frames, &body_scales);
 
     // ── geoms ───────────────────────────────────────────────────────────────
     let names = geom_names(&stage, &paths)?;
@@ -319,6 +330,7 @@ pub fn export(root: &Path, options: &Options) -> Result<Export> {
         sidecar: doc,
         glb,
         images,
+        articulation,
         report,
     })
 }
