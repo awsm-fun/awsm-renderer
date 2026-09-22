@@ -1,0 +1,43 @@
+[package]
+# Takes the `-cli` suffix like `mujoco-export-cli`; the shipped binary is
+# `awsm-renderer-isaac-export` (see the `[[bin]]` section).
+name = "awsm-renderer-isaac-export-cli"
+version.workspace = true
+edition = "2021"
+description = "Offline CLI that reads an Isaac Sim / Isaac Lab robot (USD) and exports it as a geometry GLB + the same mujoco.json sidecar the editor already imports."
+license = "MIT OR Apache-2.0"
+publish = false
+
+# A native tool, like the MuJoCo exporter: nothing here reaches a runtime or wasm
+# crate. `openusd` is a dependency of THIS crate only, so renderers and players
+# that never touch Isaac carry none of it.
+
+[lib]
+# The bin is a thin CLI shell over this; the tests drive the library directly.
+name = "awsm_renderer_isaac_export_cli"
+path = "src/lib.rs"
+
+[[bin]]
+name = "awsm-renderer-isaac-export"
+path = "src/main.rs"
+
+[dependencies]
+# Pure-Rust USD: composition (sublayers, references, payloads, variants,
+# instancing) plus the typed UsdGeom / UsdShade views. No C++ OpenUSD needed.
+openusd = "0.7"
+openusd-schemas = { version = "0.7", features = ["geom", "shade", "physics"] }
+glam = { workspace = true }
+# The sidecar is the MuJoCo one, unchanged: an Isaac robot imports, bundles and
+# takes pose frames through exactly the path a MuJoCo model does.
+awsm-renderer-mujoco-format = { workspace = true }
+awsm-renderer-glb-export = { workspace = true }
+# Averages a textured material down to one base colour (see `material.rs`).
+image = { workspace = true }
+anyhow = { workspace = true }
+clap = { version = "4.5", features = ["derive"] }
+serde_json = { workspace = true }
+sha2 = "0.10.8"
+
+[dev-dependencies]
+# Read the emitted GLB back with the same reader the renderer imports with.
+gltf = { workspace = true }

@@ -244,9 +244,10 @@ tasks:
     # `publish = false`: the two frontends (awsm-renderer-editor, awsm-renderer-model-tests),
     # awsm-renderer-web-shared, awsm-renderer-render-worker-example, awsm-renderer-debugging, awsm-renderer-scene-mcp
     # (ships via cargo-dist, not crates.io), awsm-renderer-editor-protocol (internal
-    # editor↔server glue under packages/mcp/), and the native MuJoCo tools
+    # editor↔server glue under packages/mcp/), the native MuJoCo tools
     # (awsm-renderer-mujoco-sys + awsm-renderer-mujoco-export-cli — they dlopen
-    # libmujoco, so they build from the repo, not crates.io).
+    # libmujoco, so they build from the repo, not crates.io), and the Isaac/USD
+    # exporter (awsm-renderer-isaac-export-cli — an offline tool, like the rest).
     #
     # Published one crate at a time, dependency-leaf-first. `cargo publish` waits
     # for crates.io to index each crate before returning, so a dependent's verify
