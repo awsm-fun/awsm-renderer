@@ -16,7 +16,9 @@ pub mod bake;
 /// the interchange crate just to name the types the component is made of.
 pub use awsm_renderer_mujoco_format::capture::{Capture, FLOATS_PER_GEOM};
 pub use awsm_renderer_mujoco_format::sidecar::{
-    GeomKind, Material as MujocoMaterial, Sidecar, Source,
+    AlphaMode as MujocoAlphaMode, GeomKind, Material as MujocoMaterial,
+    MaterialTexture as MujocoMaterialTexture, MaterialTextures as MujocoMaterialTextures, Sidecar,
+    Source, UvTransform as MujocoUvTransform, Wrap as MujocoWrap,
 };
 
 /// A node's MuJoCo role. A node is an instance root or a geom, never both, so
