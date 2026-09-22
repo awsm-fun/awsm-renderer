@@ -20,6 +20,7 @@ sees Isaac carries none of it.
 | USD → sidecar + GLB exporter (`awsm-renderer-isaac-export`) | done, tested — geometry, materials and texture maps |
 | Isaac 5.0 Franka + ANYmal-D, imported in the editor | verified by eye and against Pixar's USD (every mesh's world bounds match to f32 precision) |
 | player bundle of an Isaac robot | verified: `isaac-robots` test scene, player-tests 33/33 |
+| scripted motion by forward kinematics (`awsm-renderer-isaac-record`) | done, tested — every moving joint of both robots agrees with its bodies |
 | sim-side frame builder for Isaac Lab (`isaac_geom_frame.py`) | verified offline against the fixtures; **not yet run inside Isaac Lab** |
 | live streaming from Isaac Lab | designed below, not built — Isaac Sim needs Linux/Windows + an RTX GPU |
 
@@ -204,9 +205,17 @@ transform is conjugated by that flip: scale and rotation angle carry over, the
 offset becomes `(t_u − sinθ·s_v, 1 − t_v − cosθ·s_v)`. `UsdUVTexture`'s
 `wrapS` / `wrapT` carry over (`black` approximated as clamp).
 
+**UV sets.** A material may sample more than one UV set: OmniPBR picks one with
+`uv_space_index` (set `n` is the mesh's `primvars:st{n}` or `st_{n}`), and a
+UsdPreviewSurface texture names one through its `UsdPrimvarReader_float2`
+`varname`. Each material records the sets it samples, set 0 first, and every
+mesh piece carrying it writes exactly those as `TEXCOORD_0..n`; a texture's
+sidecar `uv` is its index into that list, so it means the same on every mesh
+the material is on. A set the mesh lacks falls back to set 0, reported.
+
 **What does not carry,** each reported by `-v`: OmniPBR detail and clearcoat
 normal maps, `albedo_desaturation` / `albedo_add`, `project_uvw` world-space
-projection, a second UV set (`uv_space_index` ≠ 0), `emissive_intensity` (the
+projection, `emissive_intensity` (the
 renderer has no physical light units; the colour ships at full strength), and a
 `UsdUVTexture` bias on anything but a normal map.
 
@@ -226,6 +235,39 @@ robot above its asset origin (ANYmal's origin is its base, so its feet are
 0.68 m below it). Place the instance root where the robot stands in your world,
 as for any sim instance; `examples/test-scenes/isaac-robots/author.js` lifts
 ANYmal by 0.6815 m, its lowest foot vertex.
+
+## Moving without a simulator
+
+`awsm-renderer-isaac-record` makes a robot move with no Isaac at all. It reads
+the stage's UsdPhysics joints — revolute, prismatic and fixed; their two body
+frames, axis and limits (degrees in USD) — into a tree over the sidecar's
+bodies, sweeps every movable joint around its rest position, runs forward
+kinematics, and writes the geom poses as a `<name>.capture.json`: the same
+capture format, and the same fingerprint, a live stream records.
+
+```sh
+cargo run --release -p awsm-renderer-isaac-export-cli --bin awsm-renderer-isaac-record -- \
+  /tmp/isaac/franka/franka.usd -o out/ -v    # --seconds 8 --fps 30 --amplitude 0.4 --cycles 2
+```
+
+- **Rest positions are solved, not assumed.** Assets do not reliably store
+  joint positions (ANYmal authors none), so each joint's rest position is the
+  relative motion between its two frames at the authored pose, projected on
+  its axis. FK at rest reproduces the export exactly, so playback starts where
+  the import is. Where an asset's joint frames disagree with its bodies — the
+  ANYmal's fixed foot joints sit 3 cm from the foot bodies — the authored pose
+  is kept and the joint reported.
+- **The sweep** stays within each joint's limits (≤ 45° or the slider's
+  travel, times `--amplitude`, on each side of rest), gives joints golden-angle
+  phases so none move in lockstep, and runs a whole number of cycles per loop,
+  so the capture loops without a seam. A rest pose outside its limits (the
+  Franka's joint 4 is authored past its stop) only swings back toward them.
+- **It is joint animation, not physics:** nothing collides, nothing falls, and
+  a floating base (a quadruped's) stays where it was authored.
+
+The capture replays through the pose sink exactly like a live stream — the
+`physics-isaac` template loops one by default — or bakes into an ordinary clip
+in the editor (`ImportMujocoCapture`).
 
 ## Streaming from Isaac Lab
 
@@ -285,7 +327,6 @@ Ubuntu 22.04/24.04 or Windows 11, RTX 4080-class, driver ≥ 580;
 |---|---|
 | **Live streaming test** | a Linux/RTX box (or cloud instance) with Isaac Lab; wire `isaac_geom_frame.py` into an env loop behind a WebSocket; a player template like `physics-mujoco` with the sim replaced by that socket |
 | **Recorded captures from Isaac Lab** | dump `payload()` per step into a `<name>.capture.json`; `ImportMujocoCapture` then bakes it into a clip exactly as for MuJoCo — no renderer work |
-| **A second UV set** | the GLB and sidecar carry UV set 0 only; a `uv_space_index` or `st1` material would need `TEXCOORD_1` in the GLB and a `uv` index on the sidecar texture |
 | **`UsdSkel` / deformables** | not used by the Isaac Lab robots; would map onto the existing flex → skinned-mesh path |
 | **`PointInstancer`** | not used by robot assets; needed for Isaac *scenes* (warehouses, props) |
 | **Isaac Lab scenes** (terrains, props, lights) | out of scope here: robots are sim instances; a static scene is better imported as geometry through the ordinary glTF path |
@@ -313,8 +354,8 @@ Ubuntu 22.04/24.04 or Windows 11, RTX 4080-class, driver ≥ 580;
 
 | path | what |
 |---|---|
-| `packages/tools/isaac-export-cli/` | the exporter (`stage`, `geometry`, `material`, `primitive`, `lib`) |
-| `packages/tools/isaac-export-cli/tests/fixtures/robot.usda` | a two-body fixture exercising every rule; `tests/export.rs` |
+| `packages/tools/isaac-export-cli/` | the exporter (`stage`, `geometry`, `material`, `texture`, `primitive`, `lib`) and the recorder (`kinematics`, `src/bin/record.rs`) |
+| `packages/tools/isaac-export-cli/tests/` | `fixtures/robot.usda` (two bodies, a hinge, every export rule) with `export.rs`, `kinematics.rs`; `textures.rs` generates its own images |
 | `packages/tools/isaac-export-cli/fetch_isaac_asset.py` | downloads an asset tree |
 | `packages/tools/isaac-export-cli/isaac_geom_frame.py` | Isaac Lab body poses → geom frame |
 | `examples/test-scenes/isaac-robots/` | Franka + ANYmal-D fixtures, project, bundle, golden, `verify.md` |
