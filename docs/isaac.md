@@ -84,6 +84,12 @@ It follows every `@asset@` reference, including textures. `OmniPBR.mdl` 404s
 and is skipped on purpose: it is a built-in Omniverse module, and the exporter
 never needs it (see Materials).
 
+One asset quirk worth knowing: the 5.0 Franka's `Mesh=Quality` variant composes
+its logo decals and cable meshes twice — one copy offset and rotated off the
+base, one unscaled 1 mm copy of the decal. Pixar's own USD composes it
+identically, so the export is faithful; the default `Performance` variant has
+no such copies.
+
 ## Exporting
 
 ```sh
