@@ -34,6 +34,9 @@ members = [
     # Pure-serde interchange schemas; no MuJoCo dep, so wasm consumers can use it.
     "packages/crates/mujoco-format",
     "packages/tools/mujoco-export-cli",
+    # Native-only Isaac Sim / Isaac Lab (USD) exporter. Pure Rust (openusd), so it
+    # builds anywhere; it emits the same sidecar + GLB seam as the MuJoCo exporter.
+    "packages/tools/isaac-export-cli",
 ]
 resolver = "2"
 

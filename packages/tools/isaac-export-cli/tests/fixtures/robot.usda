@@ -1,0 +1,143 @@
+#usda 1.0
+(
+    defaultPrim = "robot"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+# A two-body "robot" exercising every rule the exporter implements, in the
+# shapes Isaac assets use: instanceable visuals referencing a prototype, a
+# guide-purpose collider, a quad face, a scaled mesh under a rotated body,
+# material GeomSubsets, an MDL OmniPBR and a UsdPreviewSurface material, an
+# axis-X cylinder, and a variant set.
+def Xform "robot" (
+    variants = {
+        string Look = "Shown"
+    }
+    prepend variantSets = "Look"
+)
+{
+    def Xform "base" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (0, 0, 1)
+        uniform token[] xformOpOrder = ["xformOp:translate"]
+
+        def Xform "visuals" (
+            instanceable = true
+            prepend references = </Prototypes/Tri>
+        )
+        {
+        }
+
+        def Cube "collider" (
+            prepend apiSchemas = ["PhysicsCollisionAPI"]
+        )
+        {
+            uniform token purpose = "guide"
+            double size = 1
+        }
+    }
+
+    def Xform "arm" (
+        prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+    )
+    {
+        double3 xformOp:translate = (1, 0, 1)
+        float xformOp:rotateZ = 90
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:rotateZ"]
+
+        def Mesh "quad" (
+            prepend apiSchemas = ["MaterialBindingAPI"]
+        )
+        {
+            float3 xformOp:scale = (2, 2, 2)
+            uniform token[] xformOpOrder = ["xformOp:scale"]
+            point3f[] points = [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0), (2, 0, 0), (2, 1, 0)]
+            int[] faceVertexCounts = [4, 3]
+            int[] faceVertexIndices = [0, 1, 2, 3, 1, 4, 5]
+            rel material:binding = </robot/Looks/Blue>
+            uniform token subsetFamily:materialBind:familyType = "nonOverlapping"
+
+            def GeomSubset "red" (
+                prepend apiSchemas = ["MaterialBindingAPI"]
+            )
+            {
+                uniform token elementType = "face"
+                uniform token familyName = "materialBind"
+                int[] indices = [1]
+                rel material:binding = </robot/Looks/Red>
+            }
+        }
+
+        def Cylinder "pin"
+        {
+            uniform token axis = "X"
+            double radius = 0.1
+            double height = 0.4
+            double3 xformOp:translate = (0, 0, 0.5)
+            uniform token[] xformOpOrder = ["xformOp:translate"]
+        }
+    }
+
+    def Scope "Looks"
+    {
+        def Material "Blue"
+        {
+            token outputs:mdl:surface.connect = </robot/Looks/Blue/Shader.outputs:out>
+
+            def Shader "Shader"
+            {
+                uniform token info:implementationSource = "sourceAsset"
+                uniform asset info:mdl:sourceAsset = @OmniPBR.mdl@
+                uniform token info:mdl:sourceAsset:subIdentifier = "OmniPBR"
+                color3f inputs:diffuse_color_constant = (0, 0, 1)
+                float inputs:reflection_roughness_constant = 0.25
+                float inputs:metallic_constant = 1
+                token outputs:out
+            }
+        }
+
+        def Material "Red"
+        {
+            token outputs:surface.connect = </robot/Looks/Red/Preview.outputs:surface>
+
+            def Shader "Preview"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (1, 0, 0)
+                float inputs:roughness = 0.75
+                token outputs:surface
+            }
+        }
+    }
+
+    variantSet "Look" = {
+        "Hidden" {
+            over "arm"
+            {
+                over "pin"
+                {
+                    token visibility = "invisible"
+                }
+            }
+        }
+        "Shown" {
+        }
+    }
+}
+
+class "Prototypes"
+{
+    def Xform "Tri"
+    {
+        def Mesh "mesh"
+        {
+            point3f[] points = [(0, 0, 0), (0.5, 0, 0), (0, 0.5, 0)]
+            int[] faceVertexCounts = [3]
+            int[] faceVertexIndices = [0, 1, 2]
+            color3f[] primvars:displayColor = [(0, 1, 0)]
+        }
+    }
+}
