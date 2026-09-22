@@ -44,6 +44,10 @@ const UV_NAMES: &[&str] = &[
     "primvars:uv",
 ];
 
+/// A welded vertex's identity: position slot, normal bits, and the bits of
+/// every UV set's value.
+type WeldKey = (usize, [u64; 3], Vec<[u64; 2]>);
+
 /// A UV set a material samples, as the material names it.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum UvSet {
@@ -286,8 +290,7 @@ pub fn pieces(
         // give every corner its own slot even where neighbouring faces share
         // the exact normal (every flat or smooth-shaded region of a CAD mesh),
         // and keying on slots would triple the vertex count for nothing.
-        let mut seen: std::collections::HashMap<(usize, [u64; 3], Vec<[u64; 2]>), u32> =
-            std::collections::HashMap::new();
+        let mut seen: std::collections::HashMap<WeldKey, u32> = std::collections::HashMap::new();
         for f in faces {
             let n = face_counts[f] as usize;
             if n < 3 {
