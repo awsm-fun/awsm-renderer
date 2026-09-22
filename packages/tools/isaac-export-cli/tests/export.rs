@@ -244,6 +244,52 @@ fn a_y_up_stage_is_refused() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The harness contract, checked on the export itself: composing each body's
+/// chain of `(pos, quat)` up to the world, then the geom's own offset, lands
+/// exactly on the geom's `world_pos` / `world_quat`. That composition is what a
+/// streaming harness does with Isaac Lab's body poses, so if this holds the
+/// first streamed frame continues from the imported pose without a jump.
+fn assert_body_scatter_reproduces_world_poses(out: &Export) {
+    use glam::{DQuat, DVec3};
+    let s = &out.sidecar;
+    let q = |w: &[f64; 4]| DQuat::from_xyzw(w[1], w[2], w[3], w[0]);
+    let mut world: Vec<(DVec3, DQuat)> = Vec::with_capacity(s.bodies.len());
+    for (i, b) in s.bodies.iter().enumerate() {
+        let local = (DVec3::from_array(b.pos), q(&b.quat));
+        world.push(if i == 0 {
+            local
+        } else {
+            // Parents precede children (traversal order), so the parent is
+            // already resolved.
+            let (pt, pr) = world[b.parent];
+            (pt + pr * local.0, pr * local.1)
+        });
+    }
+    for g in &s.geoms {
+        let (bt, br) = world[g.body];
+        let t = bt + br * DVec3::from_array(g.pos);
+        let r = br * q(&g.quat);
+        let want_t = DVec3::from_array(g.world_pos);
+        let want_r = q(&g.world_quat);
+        assert!(
+            (t - want_t).length() < 1e-6,
+            "{:?}: body chain puts it at {t}, sidecar says {want_t}",
+            g.name
+        );
+        // q and -q are the same rotation.
+        assert!(
+            r.dot(want_r).abs() > 1.0 - 1e-9,
+            "{:?}: body chain rotation {r} vs sidecar {want_r}",
+            g.name
+        );
+    }
+}
+
+#[test]
+fn a_body_pose_frame_reproduces_every_geom_pose() {
+    assert_body_scatter_reproduces_world_poses(&run(Options::default()));
+}
+
 /// The real Isaac assets. They are tens of MB across dozens of files on
 /// NVIDIA's public bucket, so they are not checked in; point these at a local
 /// download (see `docs/isaac.md`, "Getting the assets") to run:
@@ -266,6 +312,7 @@ fn real_isaac_assets() {
         // 11 links; 11 meshes split into 44 material pieces.
         assert_eq!(out.sidecar.bodies.len(), 12);
         assert_eq!(out.report.visible_geoms, 44);
+        assert_body_scatter_reproduces_world_poses(&out);
         ran += 1;
     }
     if let Ok(p) = std::env::var("AWSM_ISAAC_ANYMAL_D") {
@@ -279,6 +326,7 @@ fn real_isaac_assets() {
         // 38 visual meshes; the 26 guide-purpose collider shapes are hidden.
         assert_eq!(out.report.visible_geoms, 38);
         assert_eq!(out.sidecar.geoms.len(), 64);
+        assert_body_scatter_reproduces_world_poses(&out);
         ran += 1;
     }
     assert!(ran > 0, "set AWSM_ISAAC_FRANKA and/or AWSM_ISAAC_ANYMAL_D");

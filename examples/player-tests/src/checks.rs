@@ -185,6 +185,17 @@ const SCENES: &[SceneSpec] = &[
         extra: Extra::Instancing,
     },
     SceneSpec {
+        // Isaac Sim robots (USD → awsm-renderer-isaac-export → the MuJoCo
+        // sidecar seam): two sim instances, 82 geom nodes + floor + light.
+        // Locks that a USD-sourced bundle loads through the player path.
+        name: "isaac-robots",
+        min_nodes: 80,
+        expect_meshes: true,
+        expected_min_textures: 0,
+        features: base_features,
+        extra: Extra::None,
+    },
+    SceneSpec {
         name: "prefab-skinned-morph",
         min_nodes: 3,
         expect_meshes: true,

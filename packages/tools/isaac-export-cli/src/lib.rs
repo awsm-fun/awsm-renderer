@@ -202,21 +202,33 @@ pub fn export(root: &Path, options: &Options) -> Result<Export> {
             let pieces = geometry::pieces(&stage, &prim, local)
                 .with_context(|| format!("reading mesh {path}"))?;
             let split = pieces.len() > 1;
-            for piece in pieces {
-                let material = materials.bound(&stage, &piece.binding_prim);
-                let rgba = material
-                    .map(|m| materials.table[m].rgba)
-                    .unwrap_or(display_rgba);
-                let label = match (
-                    split,
-                    material.and_then(|m| materials.table[m].name.clone()),
-                    &piece.subset,
-                ) {
+            let bound: Vec<Option<usize>> = pieces
+                .iter()
+                .map(|p| materials.bound(&stage, &p.binding_prim))
+                .collect();
+            // A piece is labelled by its material; two subsets bound to the
+            // same material (the Franka hand's two PlasticWhite parts) also
+            // get their subset name, so no two outliner rows read the same.
+            let mat_name = |m: Option<usize>| m.and_then(|m| materials.table[m].name.clone());
+            let shared =
+                |m: Option<usize>| m.is_some() && bound.iter().filter(|b| **b == m).count() > 1;
+            let labels: Vec<String> = pieces
+                .iter()
+                .zip(&bound)
+                .map(|(piece, m)| match (split, mat_name(*m), &piece.subset) {
                     (false, _, _) => base_name.clone(),
+                    (true, Some(mat), Some(sub)) if shared(*m) => {
+                        format!("{base_name} ({mat}, {sub})")
+                    }
                     (true, Some(mat), _) => format!("{base_name} ({mat})"),
                     (true, None, Some(sub)) => format!("{base_name} ({sub})"),
                     (true, None, None) => format!("{base_name} (rest)"),
-                };
+                })
+                .collect();
+            for ((piece, material), label) in pieces.into_iter().zip(bound).zip(labels) {
+                let rgba = material
+                    .map(|m| materials.table[m].rgba)
+                    .unwrap_or(display_rgba);
                 let mesh = intern_mesh(&mut doc, &mut glb, &mut mesh_by_hash, &label, piece.mesh);
                 doc.geoms.push(Geom {
                     name: Some(label),
