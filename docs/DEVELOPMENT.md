@@ -173,7 +173,14 @@ specular ladder keeps exactly the 6 roughness levels the shader expects.
 > the range IBL depends on. `KHR_texture_basisu` transcoding applies to glTF
 > *material* textures, not to environment maps.
 
-The raw `ktx create` recipes below still work for the uncompressed variant.
+The raw `ktx create` recipes below produce the uncompressed variant, but **prefer
+`env-bake` even for `rg11b10`**: a `ktx create`-packed skybox has shipped with
+hundreds of NaN/Inf texels (exponent 31 in one channel, sane values in the
+others) — the signature of negative or NaN EXR input packed without clamping.
+`env-bake` clamps negatives and NaN to 0 and saturates overflow. The loader now scrubs non-finite texels from any
+float KTX cubemap (NaN → 0, Inf → largest finite) and logs a `warn!` naming the
+count, but a warning at load means the asset should be re-baked: one NaN texel
+on screen is enough for bloom to smear a black square across the frame.
 
 Skybox (HDR EXR with mipmaps)
 

@@ -68,6 +68,8 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     let base = textureLoad(src_prev, dst_coords, 0).rgb;
     let scatter = max(params.scatter, 0.0);
-    let result = base + tent9(uv, texel) * scatter;
+    // Saturate at the largest finite rgba16float value: the accumulation
+    // grows with every level, and a sum past it would store as Inf.
+    let result = min(base + tent9(uv, texel) * scatter, vec3<f32>(65504.0));
     textureStore(dst_mip, dst_coords, vec4<f32>(result, 1.0));
 }

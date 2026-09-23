@@ -33,8 +33,31 @@ fn soft_threshold(color: vec3<f32>) -> vec3<f32> {
 }
 {% endif %}
 
+{% if prefilter %}
+// Largest finite rgba16float value — what every pyramid texel is stored as.
+const F16_MAX: f32 = 65504.0;
+
+// The composite is the one input this pass does not control, and a single
+// non-finite texel in it is catastrophic: `soft_threshold` turns an Inf into
+// NaN (Inf / Inf), and the 13-tap / tent filters then smear that NaN over a
+// coarse-mip footprint — a hard black square hundreds of pixels wide. NaN
+// has no radiance to contribute, so it becomes 0; Inf (an upstream f16
+// overflow) and anything above the pyramid's range saturate at F16_MAX;
+// negative radiance is meaningless and clamps to 0.
+fn finite_hdr(c: vec3<f32>) -> vec3<f32> {
+    let bits = bitcast<vec3<u32>>(c);
+    let exp_all_ones = (bits & vec3<u32>(0x7f800000u)) == vec3<u32>(0x7f800000u);
+    let is_nan = exp_all_ones & ((bits & vec3<u32>(0x007fffffu)) != vec3<u32>(0u));
+    return select(clamp(c, vec3<f32>(0.0), vec3<f32>(F16_MAX)), vec3<f32>(0.0), is_nan);
+}
+{% endif %}
+
 fn sample_src(uv: vec2<f32>) -> vec3<f32> {
+    {% if prefilter %}
+    return finite_hdr(textureSampleLevel(src_tex, samp, uv, 0.0).rgb);
+    {% else %}
     return textureSampleLevel(src_tex, samp, uv, 0.0).rgb;
+    {% endif %}
 }
 
 @compute @workgroup_size(8, 8, 1)

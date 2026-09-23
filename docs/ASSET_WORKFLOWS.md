@@ -46,9 +46,11 @@ no runtime equirect projection). Pipeline (full flags in `docs/DEVELOPMENT.md`):
    --out … --format bc6h` → `skybox.ktx2`, `env.ktx2`, `irradiance.ktx2`.
    BC6H stays block-compressed in VRAM at 1 byte/texel vs `B10G11R11`'s 4 (a 4x
    saving), under the `texture-compression-bc` feature the renderer already
-   requests. `--format rg11b10` gives the uncompressed fallback; the raw
-   `ktx create --cubemap --format B10G11R11_UFLOAT_PACK32 …` recipes still work
-   for that variant but cannot produce BC6H.
+   requests. `--format rg11b10` gives the uncompressed fallback. The raw
+   `ktx create --cubemap --format B10G11R11_UFLOAT_PACK32 …` recipes also make
+   that variant but cannot produce BC6H, and they have shipped NaN/Inf texels
+   (env-bake clamps its input) — see `docs/DEVELOPMENT.md`. If the
+   cubemap loader logs a NaN/Inf texel warning, re-bake with env-bake.
    **Never `--encode uastc` / `--encode basis-lz` for these cubemaps** — both
    write a supercompressed KTX2, which the cubemap loader rejects outright, and
    both are LDR codecs that would clip everything above 1.0. `KHR_texture_basisu`
