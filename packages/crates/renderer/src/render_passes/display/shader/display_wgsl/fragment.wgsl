@@ -6,6 +6,18 @@
 {% include "shared_wgsl/color_space.wgsl" %}
 /*************** END color_space.wgsl ******************/
 
+// Every tonemapper here turns a non-finite input black (Khronos neutral:
+// `result *= newPeak / peak` is Inf * 0), so a single overflowed or NaN
+// pixel reaching this pass would punch a hole in the frame. An Inf is an
+// over-bright value — saturate it so it tonemaps to white; a NaN carries no
+// radiance at all — show nothing.
+fn finite_exposed(c: vec3<f32>) -> vec3<f32> {
+    let bits = bitcast<vec3<u32>>(c);
+    let exp_all_ones = (bits & vec3<u32>(0x7f800000u)) == vec3<u32>(0x7f800000u);
+    let is_nan = exp_all_ones & ((bits & vec3<u32>(0x007fffffu)) != vec3<u32>(0u));
+    return select(clamp(c, vec3<f32>(-65504.0), vec3<f32>(65504.0)), vec3<f32>(0.0), is_nan);
+}
+
 struct FragmentInput {
     @builtin(position) full_screen_quad_position: vec4<f32>,
 }
@@ -47,7 +59,7 @@ fn frag_main(in: FragmentInput) -> @location(0) vec4<f32> {
     // 1500 cd LED) need to be pulled into the tonemapper's responsive
     // range somewhere. We do it here with a single linear multiplier,
     // exp2(EV), so the UI exposure slider behaves like a photo stop.
-    let exposed = color.rgb * display_uniform.exposure_scale;
+    let exposed = finite_exposed(color.rgb * display_uniform.exposure_scale);
 
     // Apply tone mapping to compress HDR to displayable range
     {% match tonemapping %}

@@ -71,5 +71,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     color /= max(total_weight, 1e-5);
     color *= params.intensity;
 
-    textureStore(dst, coords, vec4<f32>(color, 1.0));
+    // `intensity` can push a saturated pyramid past what the rgba16float
+    // target holds; clamp rather than store Inf.
+    textureStore(dst, coords, vec4<f32>(min(color, vec3<f32>(65504.0)), 1.0));
 }
