@@ -227,6 +227,26 @@ pub struct ExportBundleParams {
     /// the project setting.
     #[serde(default)]
     pub env_max_face_size: Option<u32>,
+    /// A directory to copy the bundle into (e.g. a staging folder): its files
+    /// are written there and stale files under its `assets/` removed. Omit to
+    /// leave the bundle only in the server's temp directory.
+    #[serde(default)]
+    pub out_dir: Option<String>,
+}
+
+#[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
+pub struct SaveProjectParams {
+    /// A directory to save the project into: `project.toml` plus `assets/`,
+    /// with stale files under its `assets/` removed and nothing else touched.
+    /// Omit to leave the save only in the server's temp directory.
+    #[serde(default)]
+    pub out_dir: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct PathParams {
+    /// A local project directory holding `project.toml` and `assets/`.
+    pub path: String,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -2271,7 +2291,7 @@ impl EditorMcp {
 
     #[tool(
         annotations(read_only_hint = true),
-        description = "Bake the whole project to a player runtime bundle DIRECTORY on disk: a `scene.toml` (the runtime scene — node hierarchy + transforms + material instances + lights/cameras + our animation clips + environment, meshes referenced by id) plus an `assets/` directory. Asset files (geometry-only per-mesh glbs, custom-material wgsl folders, referenced textures, env cubemaps) are PACKED into a few concatenated `assets/pack-<n>.bin` blobs whose index rides inside `scene.toml` (`Scene::pack`); cluster `.clusters.bin` DAGs stay loose (they stream on demand). Materials + animations are NOT in the glbs (they're ours, applied by the player from scene.toml + clips), and the loader falls back to loose per-file fetching when the pack index is absent (old bundles / dev routes). A read; the files ride the `/bundle/<id>/<path>` side-channel and land in a temp directory — NEVER inlined in this result. Returns `{name, bundle_dir, files:[{path, byte_len}], total_bytes, url_base}`: read/copy the bundle from `bundle_dir`, or fetch files over HTTP at `<server>/<url_base>/<path>`. Optional per-call bundle-option overrides (mesh_compression/mesh_quantization/smart_threshold_mm/texture_compression/texture_max_dim/env_max_face_size — same vocabulary as set_bundle_options) apply to THIS export only; the project-persisted options are not modified. Long bakes stream keep-alive progress, so this request does not hit the 2-minute link timeout while working."
+        description = "Bake the whole project to a player runtime bundle DIRECTORY on disk: a `scene.toml` (the runtime scene — node hierarchy + transforms + material instances + lights/cameras + our animation clips + environment, meshes referenced by id) plus an `assets/` directory. Asset files (geometry-only per-mesh glbs, custom-material wgsl folders, referenced textures, env cubemaps) are PACKED into a few concatenated `assets/pack-<n>.bin` blobs whose index rides inside `scene.toml` (`Scene::pack`); cluster `.clusters.bin` DAGs stay loose (they stream on demand). Materials + animations are NOT in the glbs (they're ours, applied by the player from scene.toml + clips), and the loader falls back to loose per-file fetching when the pack index is absent (old bundles / dev routes). A read; the files ride the `/bundle/<id>/<path>` side-channel and land in a temp directory — NEVER inlined in this result. Returns `{name, bundle_dir, files:[{path, byte_len}], total_bytes, url_base}`: read/copy the bundle from `bundle_dir`, or fetch files over HTTP at `<server>/<url_base>/<path>`. Optional per-call bundle-option overrides (mesh_compression/mesh_quantization/smart_threshold_mm/texture_compression/texture_max_dim/env_max_face_size — same vocabulary as set_bundle_options) apply to THIS export only; the project-persisted options are not modified. Pass `out_dir` to also copy the bundle into a directory (stale files under its assets/ are removed). Long bakes stream keep-alive progress, so this request does not hit the 2-minute link timeout while working."
     )]
     async fn export_player_bundle(
         &self,
@@ -2302,9 +2322,15 @@ impl EditorMcp {
                     .iter()
                     .map(|f| serde_json::json!({ "path": f.path, "byte_len": f.byte_len }))
                     .collect();
+                if let Some(out) = &p.out_dir {
+                    let paths: Vec<String> = handle.files.iter().map(|f| f.path.clone()).collect();
+                    crate::http::mirror_into(&dir, &paths, std::path::Path::new(out))
+                        .map_err(|e| McpError::internal_error(e, None))?;
+                }
                 Ok(text(
                     serde_json::json!({
                         "name": p.name,
+                        "out_dir": p.out_dir,
                         "bundle_dir": dir.display().to_string(),
                         "files": files,
                         "total_bytes": total,
@@ -2320,9 +2346,12 @@ impl EditorMcp {
 
     #[tool(
         annotations(read_only_hint = true),
-        description = "Save the open project's persisted form (project.toml + assets/* side files) to a temp directory on the MCP server's filesystem and return the path + manifest. The same bytes a directory Save writes — load it back with load_project_from_url or copy it into a versioned scenes dir. Files transfer over the /bundle side-channel; only the manifest crosses the control link."
+        description = "Save the open project's persisted form (project.toml + assets/* side files) to a temp directory on the MCP server's filesystem and return the path + manifest. The same bytes a directory Save writes. Pass `out_dir` to also write it into a real project directory (stale files under its assets/ are removed; nothing else there is touched); load it back with load_project_from_path. Files transfer over the /bundle side-channel; only the manifest crosses the control link."
     )]
-    async fn save_project(&self) -> Result<CallToolResult, McpError> {
+    async fn save_project(
+        &self,
+        Parameters(p): Parameters<SaveProjectParams>,
+    ) -> Result<CallToolResult, McpError> {
         match self.req(Request::SaveProject).await? {
             Response::Bundle(handle) => {
                 let dir = crate::http::bundle_dir(&handle.id);
@@ -2332,6 +2361,11 @@ impl EditorMcp {
                         format!("save {} not found at {}", handle.id, dir.display()),
                         None,
                     ));
+                }
+                if let Some(out) = &p.out_dir {
+                    let paths: Vec<String> = handle.files.iter().map(|f| f.path.clone()).collect();
+                    crate::http::mirror_into(&dir, &paths, std::path::Path::new(out))
+                        .map_err(|e| McpError::internal_error(e, None))?;
                 }
                 let total: usize = handle.files.iter().map(|f| f.byte_len).sum();
                 let files: Vec<serde_json::Value> = handle
@@ -3027,6 +3061,26 @@ impl EditorMcp {
         // import_model_from_url's dispatch-then-query pattern).
         self.dispatch(EditorCommand::VerifyRoundtrip).await?;
         self.query(EditorQuery::VerifyRoundtripReport).await
+    }
+
+    #[tool(
+        description = "Load a project from a local directory (project.toml + assets/), replacing the open one: the server serves the directory read-only to the editor and loads it from there. SETTLE-VISIBLE: one wait_render_settled after this call observes the fully-loaded scene."
+    )]
+    async fn load_project_from_path(
+        &self,
+        Parameters(p): Parameters<PathParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let dir = std::path::PathBuf::from(&p.path);
+        if !dir.join("project.toml").is_file() {
+            return Err(McpError::invalid_params(
+                format!("{} has no project.toml", dir.display()),
+                None,
+            ));
+        }
+        let base_url =
+            crate::http::serve_local_dir(dir).map_err(|e| McpError::internal_error(e, None))?;
+        self.dispatch(EditorCommand::LoadProjectFromUrl { base_url })
+            .await
     }
 
     #[tool(

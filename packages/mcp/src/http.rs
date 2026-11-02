@@ -104,6 +104,81 @@ fn bundle_file_path(id: &str, rel: &str) -> Option<PathBuf> {
     Some(path)
 }
 
+/// The origin this server answers on (`http://127.0.0.1:<port>`), for URLs
+/// the editor fetches back from it.
+static ORIGIN: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Local directories the editor may read through `GET /local/<id>/<path>`,
+/// registered by `load_project_from_path`. Read-only; nothing else on disk is
+/// reachable.
+static LOCAL_DIRS: std::sync::LazyLock<Mutex<std::collections::HashMap<String, PathBuf>>> =
+    std::sync::LazyLock::new(|| Mutex::new(std::collections::HashMap::new()));
+
+/// Serve `dir` read-only to the editor and return its base URL.
+pub(crate) fn serve_local_dir(dir: PathBuf) -> Result<String, String> {
+    let origin = ORIGIN.get().ok_or("the HTTP server isn't running")?;
+    let id = uuid::Uuid::new_v4().simple().to_string();
+    LOCAL_DIRS
+        .lock()
+        .map_err(|_| "local dirs lock poisoned")?
+        .insert(id.clone(), dir);
+    Ok(format!("{origin}/local/{id}"))
+}
+
+/// Copy an export or save from its temp directory into `out`, mirroring it:
+/// every file in `files` is written, and files under `out/assets/` that the
+/// new set doesn't contain are removed. Nothing else in `out` is touched.
+pub(crate) fn mirror_into(
+    src: &std::path::Path,
+    files: &[String],
+    out: &std::path::Path,
+) -> Result<(), String> {
+    let mut keep = std::collections::HashSet::new();
+    for rel in files {
+        let rel_path = std::path::Path::new(rel);
+        if rel_path.is_absolute()
+            || rel_path
+                .components()
+                .any(|c| !matches!(c, std::path::Component::Normal(_)))
+        {
+            return Err(format!("refusing to copy an unsafe path: {rel}"));
+        }
+        let dest = out.join(rel_path);
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| format!("create {}: {e}", parent.display()))?;
+        }
+        std::fs::copy(src.join(rel_path), &dest)
+            .map_err(|e| format!("copy {rel} → {}: {e}", dest.display()))?;
+        keep.insert(dest);
+    }
+    fn prune(
+        dir: &std::path::Path,
+        keep: &std::collections::HashSet<PathBuf>,
+    ) -> Result<(), String> {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return Ok(());
+        };
+        for entry in entries {
+            let path = entry.map_err(|e| e.to_string())?.path();
+            if path.is_dir() {
+                prune(&path, keep)?;
+                if std::fs::read_dir(&path)
+                    .map(|mut d| d.next().is_none())
+                    .unwrap_or(false)
+                {
+                    let _ = std::fs::remove_dir(&path);
+                }
+            } else if !keep.contains(&path) {
+                std::fs::remove_file(&path)
+                    .map_err(|e| format!("remove {}: {e}", path.display()))?;
+            }
+        }
+        Ok(())
+    }
+    prune(&out.join("assets"), &keep)
+}
+
 #[derive(Clone)]
 struct AppState {
     link: EditorLink,
@@ -189,11 +264,14 @@ pub async fn serve(addr: SocketAddr, link: EditorLink) -> Result<()> {
                 .get(bundle_download)
                 .layer(DefaultBodyLimit::max(BUNDLE_BODY_LIMIT)),
         )
+        // Read-only local directories registered by `load_project_from_path`.
+        .route("/local/{id}/{*path}", get(local_download))
         .nest_service("/mcp", mcp_service)
         .layer(cors)
         .with_state(state);
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
+    let _ = ORIGIN.set(format!("http://{}", listener.local_addr()?));
     tracing::info!(
         "http listening on http://{addr} (/mcp, /editor, /debug, /png, /glb, /bundle, /health)"
     );
@@ -419,6 +497,34 @@ async fn bundle_download(Path((id, rel)): Path<(String, String)>) -> impl IntoRe
     }
 }
 
+async fn local_download(Path((id, rel)): Path<(String, String)>) -> impl IntoResponse {
+    let Some(root) = LOCAL_DIRS
+        .lock()
+        .ok()
+        .and_then(|dirs| dirs.get(&id).cloned())
+    else {
+        return (StatusCode::NOT_FOUND, "no such local directory").into_response();
+    };
+    let mut path = root;
+    for comp in rel.split('/') {
+        if comp.is_empty() || comp == "." || comp == ".." || comp.contains('\\') {
+            return (StatusCode::BAD_REQUEST, "bad path").into_response();
+        }
+        path.push(comp);
+    }
+    match std::fs::read(&path) {
+        Ok(bytes) => (
+            [
+                (header::CONTENT_TYPE, bundle_mime(&rel)),
+                (header::CACHE_CONTROL, "no-store"),
+            ],
+            bytes,
+        )
+            .into_response(),
+        Err(_) => (StatusCode::NOT_FOUND, "no such file").into_response(),
+    }
+}
+
 /// Content type for a served bundle file, by extension (enough for a browser /
 /// player to consume the handful of formats a bundle contains).
 fn bundle_mime(path: &str) -> &'static str {
@@ -429,6 +535,37 @@ fn bundle_mime(path: &str) -> &'static str {
         Some("ktx2") => "image/ktx2",
         Some("json") => "application/json",
         _ => "application/octet-stream",
+    }
+}
+
+#[cfg(test)]
+mod mirror_tests {
+    #[test]
+    fn mirrors_files_and_prunes_only_stale_assets() {
+        let root = std::env::temp_dir().join(format!("awsm-mcp-mirror-{}", std::process::id()));
+        let (src, out) = (root.join("src"), root.join("out"));
+        let _ = std::fs::remove_dir_all(&root);
+        for (rel, body) in [("project.toml", "p"), ("assets/a.glb", "a")] {
+            let path = src.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, body).unwrap();
+        }
+        std::fs::create_dir_all(out.join("assets/old")).unwrap();
+        std::fs::write(out.join("assets/old/stale.bin"), "x").unwrap();
+        std::fs::write(out.join("NOTES.md"), "keep").unwrap();
+        let files = vec!["project.toml".to_string(), "assets/a.glb".to_string()];
+        super::mirror_into(&src, &files, &out).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(out.join("assets/a.glb")).unwrap(),
+            "a"
+        );
+        assert!(!out.join("assets/old").exists());
+        assert_eq!(
+            std::fs::read_to_string(out.join("NOTES.md")).unwrap(),
+            "keep"
+        );
+        assert!(super::mirror_into(&src, &["../x".to_string()], &out).is_err());
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }
 
