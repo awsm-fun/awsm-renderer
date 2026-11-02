@@ -35,8 +35,8 @@ Three pieces:
 | Piece | Where | Role |
 |---|---|---|
 | `awsm-renderer-editor-protocol` | [`packages/mcp/editor-protocol`](../packages/mcp/editor-protocol) | The serializable wire vocabulary — `EditorCommand` / `EditorQuery` / `EditorSnapshot` / `QueryResult` + the `Request` / `Response` envelope and the `WsServerMsg` / `WsClientMsg` WebSocket frames. Compiles for both wasm and native. |
-| `awsm-renderer-scene-mcp` | [`packages/mcp`](../packages/mcp) | Native binary. rmcp tool layer over streamable-HTTP + the `/editor` WebSocket link + the `/png` side-channel. Per-tab isolation via pairing codes. `publish = false`. |
-| editor remote module | [`packages/frontend/editor/src/remote.rs`](../packages/frontend/editor/src/remote.rs) | The WebSocket client: parse `?mcp=`/`?pair=`, dial `ws://<origin>/editor`, read `Request` frames → call `EditorController` → reply with `Response` frames; POST screenshots to `/png/<id>`. |
+| `awsm-renderer-scene-mcp` | [`packages/mcp`](../packages/mcp) | Native binary. rmcp tool layer over streamable-HTTP + the `/editor` WebSocket link + the `/png`, `/glb`, `/bundle` and `/local` side-channels. One editor tab per server. `publish = false`. |
+| editor remote module | [`packages/frontend/editor/src/remote.rs`](../packages/frontend/editor/src/remote.rs) | The WebSocket client: parse `?mcp=`, dial `ws://<origin>/editor`, read `Request` frames → call `EditorController` → reply with `Response` frames; POST screenshots to `/png/<id>`. |
 
 All editor mutation flows through `EditorController` (the editor's single
 command/query authority), so an agent and a human watching the same tab stay in
@@ -55,26 +55,29 @@ sync, and undo/redo/coalescing all work as in the UI.
    | Service | Address |
    | --- | --- |
    | Editor (Trunk) | `http://localhost:9085` |
-   | MCP server (HTTP + WebSocket) | `http://127.0.0.1:9086` — `/mcp`, `/editor` (ws), `/png/<id>`, `/debug`, `/health`, `/boot-error` |
+   | MCP server (HTTP + WebSocket) | `http://127.0.0.1:9186` — `/mcp`, `/editor` (ws), `/png/<id>`, `/glb/<id>`, `/bundle/<id>/…`, `/local/<id>/…`, `/debug`, `/health`, `/boot-error` |
 
-   (The single port lives in [`taskfiles/config.yml`](../taskfiles/config.yml):
-   `PORT_MCP_HTTP_DEV`. Run the server alone with `task mcp:serve`, or the
-   installed binary with `awsm-renderer-scene-mcp`.)
+   (`task mcp-dev` uses `PORT_MCP_HTTP_LOCAL_DEV`, 9186, from
+   [`taskfiles/config.yml`](../taskfiles/config.yml), and bakes that origin into
+   the dev editor, so `http://localhost:9085` attaches with no `?mcp=`. 9086 is
+   the default for the installed binary (`awsm-renderer-scene-mcp`) and the
+   deployed editor; `task mcp-dev -- <port>` picks another.)
 
 2. Attach the editor to the server, either way:
 
    - **Button** — open the editor normally (`http://localhost:9085`) and click the
      **link icon** in the top bar ("Connect to MCP server"). It connects to the
-     default server (`http://127.0.0.1:9086`); click again to disconnect.
-   - **URL param** — `http://localhost:9085/?mcp=http://127.0.0.1:9086` auto-connects
+     default server (the dev editor's is `http://127.0.0.1:9186`); click again to
+     disconnect.
+   - **URL param** — `http://localhost:9085/?mcp=http://127.0.0.1:9186` auto-connects
      on load (and points the button at that origin).
 
    Connect and disconnect show a toast, and the button reflects the live state
    (`Connecting…` → `MCP connected`). The server logs `editor attached` once the
    WebSocket link is up. With neither, the editor runs normally with zero remote
-   overhead. When more than one tab/agent is connected the server asks for a
-   **pairing code** — the agent prints it (`pairing_status`); enter it in the MCP
-   modal or append `&pair=<code>` to the editor URL.
+   overhead. One server serves one editor tab: every agent talks to the most
+   recently attached tab, and there are no pairing codes. For a second concurrent
+   session, run another server on another port and point another editor at it.
 
 3. Point your agent at the MCP server. A ready-to-use
    [`.mcp.json`](../.mcp.json) lives in the repo root:
@@ -113,9 +116,9 @@ every command/query, and each tool self-describes over the MCP schema.
 
 **Connection / health**
 - `ping` — confirm an editor is attached (fails fast otherwise).
-- `pairing_status` — this session's pairing state (paired? this session's code?
-  how many tabs/agents connected?) without performing an editor op. Call it after
-  a `No editor is paired` error to surface the code for the human.
+- `pairing_status` — whether an editor tab is attached (and whether it reports
+  itself hidden) without performing an editor op. Call it after a `no editor tab
+  is attached` error to know whether to wait.
 - `get_console_logs { limit? }` — recent editor notices (toasts) + raw tracing
   (WARN/ERROR from the render loop / bridges) from a ring buffer; surfaces
   runtime errors otherwise stuck in the browser.
@@ -212,12 +215,16 @@ every command/query, and each tool self-describes over the MCP schema.
 
 **Project / import / history**
 - `new_project` (seeds a key light + the default three-slot environment),
-  `load_project_from_url { base_url }`, `import_model_from_url { url }`, `undo`,
+  `load_project_from_url { base_url }`, `load_project_from_path { path }` (a local
+  project directory, served read-only to the editor by this server),
+  `import_model_from_url { url }`, `undo`,
   `redo`. Loads are **settle-visible**: one `wait_render_settled` after the call
   observes the fully-populated scene (no `get_snapshot` polling loops).
 - `save_project` — serialize the open project (`project.toml` + `assets/*` side
   files) to a server-side directory; the bytes ride a side-channel (never the
-  tool result) and the tool returns the path + a file manifest.
+  tool result) and the tool returns the path + a file manifest. `out_dir` also
+  writes it into a real project directory, removing stale files under its
+  `assets/` and touching nothing else there.
 - `verify_roundtrip` — destructive save→load losslessness self-test; returns a
   before/after census report (`{ before, after, equal, lossless }`).
 - `import_cluster_asset { clusters_url }` — import a **pre-baked cluster-LOD**
@@ -417,7 +424,9 @@ heightmaps (`displace_from_texture { node, url, strength }`). See the
   byte length, never inline base64.
 - `export_player_bundle` — bake the project to a runtime bundle dir (`scene.toml`
   + `assets/`); files ride the `/bundle` side-channel, the tool returns
-  `{ bundle_dir, files, total_bytes, url_base }`. Per-texture bundle encoding is
+  `{ bundle_dir, files, total_bytes, url_base }`; `out_dir` also copies it into a
+  directory the same way `save_project`'s does. The server keeps only the last
+  8 temp directories, so copy out promptly. Per-texture bundle encoding is
   authored with the dedicated `set_texture_export` tool (lossless WebP default;
   lossy + quality per texture). `load_player_bundle` — round-trip
   self-test: bundle the current project in-memory, reset, reload through
@@ -534,13 +543,10 @@ curl -s -X POST http://127.0.0.1:9086/debug -H 'content-type: application/json' 
 ## Troubleshooting
 
 - **`no editor attached`** — no editor tab is connected. Open
-  `http://localhost:9085/?mcp=http://127.0.0.1:9086` and wait for `editor attached`
+  `http://localhost:9085/?mcp=http://127.0.0.1:9186` (or the origin you started
+  the server on) and wait for `editor attached`
   in the server log. The editor auto-reconnects with backoff, so a server restart
   re-attaches on its own (no tab reload needed).
-- **`No editor is paired with this MCP session`** — more than one tab/agent is
-  connected, so the server can't auto-bind. Call `pairing_status` to get this
-  session's code, then enter it in the editor's MCP modal (or open the editor with
-  `&pair=<code>`).
 - **The editor's socket dropped** (tab reloaded/closed/frozen) — the server forgets
   the connection, so `GET /health` reports `editor_attached:false` (and
   `last_boot_error` if the page failed to init). The tab re-attaches when it's back.
@@ -569,12 +575,9 @@ commands, NLA mixer ops, one-off queries) — not as the only path to a real fea
 
 ## Known limitations / future
 
-- **Per-tab isolation.** Each editor tab (one `/editor` socket) and each MCP agent
-  get their own identity, bound to each other. Binding is automatic when exactly
-  one unbound tab and one unbound agent exist; otherwise the agent surfaces a
-  4-char pairing code the tab presents (via the modal or `?pair=`). Requests,
-  responses, and events never cross between sessions
-  ([`link::EditorLink`](../packages/mcp/src/link.rs)).
+- **One tab per server.** Every agent session routes to the most recently
+  attached tab ([`link::EditorLink`](../packages/mcp/src/link.rs)); there is no
+  per-tab isolation or pairing. Run one server per concurrent editor.
 - **Editor→agent push** is implemented for toasts (warning/error) and selection
   changes: the editor sends a `WsClientMsg::Event`
   ([`remote::notify_event`](../packages/frontend/editor/src/remote.rs)), the server
