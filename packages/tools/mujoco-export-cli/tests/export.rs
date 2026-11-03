@@ -280,3 +280,42 @@ fn a_model_without_flexes_exports_none() {
     let Some(s) = export(path) else { return };
     assert!(s.flexes.is_empty());
 }
+
+/// Menagerie's Skydio X2 carries one texture on one material, and textured mesh
+/// UVs: the export writes the texels once, names them from the material's
+/// base-colour slot, and keeps MuJoCo's row order.
+#[test]
+fn exports_the_x2s_texture_into_the_base_colour_slot() {
+    let Some(path) = menagerie_model("skydio_x2/x2.xml") else {
+        eprintln!("SKIP: no menagerie checkout");
+        return;
+    };
+    let Ok(lib) = awsm_renderer_mujoco_sys::Library::load() else {
+        eprintln!("SKIP: no MuJoCo");
+        return;
+    };
+    if !path.exists() {
+        eprintln!("SKIP: no model at {}", path.display());
+        return;
+    }
+    let model = lib.load_model(&path).expect("model should compile");
+    let source = sidecar::fingerprint(&path, lib.version_string()).unwrap();
+    let mut doc = sidecar::build(&model, source).unwrap();
+    let images = awsm_renderer_mujoco_export_cli::texture::attach(&model, &mut doc).unwrap();
+    assert_eq!(images.len(), 1, "one texture, written once");
+    let textured: Vec<_> = doc
+        .materials
+        .iter()
+        .filter_map(|m| m.textures.base_color.as_ref())
+        .collect();
+    assert_eq!(textured.len(), 1);
+    assert_eq!(textured[0].image, images[0].path);
+    assert!(images[0].path.starts_with("textures/") && images[0].path.ends_with(".png"));
+    let png = image::load_from_memory(&images[0].png).expect("a readable PNG");
+    assert_eq!((png.width(), png.height()), (1024, 1024));
+    // Row 0 of the PNG is row 0 of MuJoCo's texels.
+    let texels = &model.tex_data()[model.tex_adr()[0] as usize..][..3];
+    assert_eq!(&png.to_rgb8().as_raw()[..3], texels);
+    // The untextured material stays a plain MuJoCo material.
+    assert!(doc.materials.iter().any(|m| m.textures.is_empty()));
+}

@@ -341,7 +341,7 @@ async fn fetch(
 /// All new images upload in ONE batch with each slot's colour space (a normal
 /// or metallic-roughness map must not be sRGB-decoded), then one
 /// `commit_load` recompiles the texture-pool-baked pipelines once, not once per
-/// image. A MuJoCo sidecar has no textures and returns here untouched.
+/// image. A sidecar without textures returns here untouched.
 async fn fetch_textures(sidecar_url: &str, doc: &Sidecar) -> Result<TextureAssets, String> {
     use awsm_renderer_editor_protocol::material::{TextureColorKind, TextureDef};
 
@@ -673,7 +673,7 @@ fn build_subtree(
     let mut skipped_kinds: Vec<GeomKind> = Vec::new();
 
     for (geom_id, geom) in doc.geoms.iter().enumerate() {
-        if !visible.contains(&geom.group) {
+        if !visible.contains(&geom.group) || invisible(geom.material, geom.rgba, &doc.materials) {
             continue;
         }
         let name = geom
@@ -1258,6 +1258,19 @@ fn pbr_from_mujoco(m: &MujocoMaterial, textures: &TextureAssets) -> MaterialDef 
     }
 }
 
+/// A geom MuJoCo draws fully transparent: its material's alpha (or its own,
+/// without a material) is zero. Models use one to carry mass or inertia in a
+/// visual group (Menagerie's Skydio X2 core), and drawing it would only add an
+/// invisible mesh that still casts shadows. Skipped like a hidden group: its
+/// slot stays, so the binding's geom ids are unchanged.
+fn invisible(material: Option<usize>, rgba: [f32; 4], materials: &[MujocoMaterial]) -> bool {
+    let alpha = match material.and_then(|m| materials.get(m)) {
+        Some(material) => material.rgba[3],
+        None => rgba[3],
+    };
+    alpha <= 0.0
+}
+
 fn alpha_mode(alpha: f32) -> awsm_renderer_editor_protocol::material::MaterialAlphaMode {
     use awsm_renderer_editor_protocol::material::MaterialAlphaMode;
     if alpha < 0.999 {
@@ -1459,5 +1472,27 @@ fn collect_bodies(
             out.entry(b.body_id).or_default().push(child.id);
         }
         collect_bodies(child, out);
+    }
+}
+
+#[cfg(test)]
+mod invisible_tests {
+    use super::*;
+
+    fn material(alpha: f32) -> MujocoMaterial {
+        MujocoMaterial::phong(None, [0.5, 0.5, 0.5, alpha], 0.5, 0.5, 0.0, 0.0)
+    }
+
+    #[test]
+    fn a_zero_alpha_material_hides_its_geom_whatever_the_geom_says() {
+        let materials = [material(1.0), material(0.0)];
+        assert!(invisible(Some(1), [1.0; 4], &materials));
+        assert!(!invisible(Some(0), [1.0, 1.0, 1.0, 0.0], &materials));
+    }
+
+    #[test]
+    fn without_a_material_the_geoms_own_alpha_decides() {
+        assert!(invisible(None, [1.0, 0.0, 0.0, 0.0], &[]));
+        assert!(!invisible(None, [1.0, 0.0, 0.0, 0.3], &[]));
     }
 }

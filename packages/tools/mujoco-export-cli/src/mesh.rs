@@ -201,8 +201,8 @@ fn flex_mesh(model: &Model<'_>, data: &Data<'_, '_>, f: usize) -> MeshData {
         mesh.uvs = vec![(0..vertnum)
             .map(|v| {
                 let o = (tcadr + v) * 2;
-                // MuJoCo's V runs opposite ours, the same flip `extract` applies.
-                [tc[o], 1.0 - tc[o + 1]]
+                // MuJoCo's own convention, which is glTF's (see `extract`).
+                [tc[o], tc[o + 1]]
             })
             .collect()];
     }
@@ -292,10 +292,12 @@ fn extract(model: &Model<'_>, m: usize) -> Result<MeshData> {
                 ]);
                 if has_uv {
                     let t = (texcoord_base + ti as usize) * 2;
-                    // MuJoCo's V runs bottom-up (OBJ convention); glTF's runs
-                    // top-down. Flipping here rather than at import keeps the
-                    // GLB a plain, correct glTF that any viewer opens right.
-                    uvs.push([texcoords[t], 1.0 - texcoords[t + 1]]);
+                    // MuJoCo already flipped V when it loaded the mesh (OBJ's V
+                    // runs bottom-up), so its texcoords address `tex_data` with
+                    // row 0 at V = 0, which is glTF's convention exactly. The
+                    // texture images we write keep MuJoCo's row order, so the
+                    // UVs pass through unchanged.
+                    uvs.push([texcoords[t], texcoords[t + 1]]);
                 }
                 next
             });

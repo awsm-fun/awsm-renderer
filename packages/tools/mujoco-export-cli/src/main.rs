@@ -7,7 +7,7 @@
 //!
 //! Needs a local MuJoCo install — see `packages/crates/mujoco-sys/README.md`.
 
-use awsm_renderer_mujoco_export_cli::{mesh, sidecar};
+use awsm_renderer_mujoco_export_cli::{mesh, sidecar, texture};
 
 use anyhow::{Context, Result};
 use clap::Parser;
@@ -61,6 +61,16 @@ fn main() -> Result<()> {
     std::fs::create_dir_all(&args.out_dir)
         .with_context(|| format!("creating {}", args.out_dir.display()))?;
 
+    // Textures beside the sidecar, at the paths its materials name.
+    let images = texture::attach(&model, &mut doc)?;
+    for image in &images {
+        let path = args.out_dir.join(&image.path);
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+        }
+        std::fs::write(&path, &image.png).with_context(|| format!("writing {}", path.display()))?;
+    }
+
     // Geometry first: an all-primitive model produces no GLB at all, and the
     // sidecar's mesh list is what says so.
     let mesh_names: Vec<_> = doc.meshes.iter().map(|m| m.name.clone()).collect();
@@ -110,6 +120,7 @@ fn main() -> Result<()> {
         );
         println!("  materials  {}", doc.materials.len());
         println!("  meshes     {}", doc.meshes.len());
+        println!("  textures   {}", images.len());
         match &glb_path {
             Some((p, len)) => println!("  glb        {} ({} KiB)", p.display(), len / 1024),
             None => println!("  glb        (none — model has no meshes)"),

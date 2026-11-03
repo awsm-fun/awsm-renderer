@@ -301,6 +301,9 @@ impl Model<'_> {
     pub fn ntex(&self) -> usize {
         self.raw().ntex as usize
     }
+    pub fn ntexdata(&self) -> usize {
+        self.raw().ntexdata as usize
+    }
     pub fn nsite(&self) -> usize {
         self.raw().nsite as usize
     }
@@ -514,6 +517,24 @@ impl Model<'_> {
         mat_shininess: f32 = nmat x 1,
         mat_reflectance: f32 = nmat x 1,
         mat_emission: f32 = nmat x 1,
+        /// Per material, one texture id per `mjtTextureRole` (`mjNTEXROLE` of
+        /// them, -1 for none): RGB, normal, ORM and the rest.
+        mat_texid: i32 = nmat x 10,
+        /// Texture repeats along U and V.
+        mat_texrepeat: f32 = nmat x 2,
+
+        /// `mjtTexture`: 0 = 2D, 1 = cube, 2 = skybox.
+        tex_type: i32 = ntex x 1,
+        /// `mjtColorSpace`: 0 = auto, 1 = linear, 2 = sRGB.
+        tex_colorspace: i32 = ntex x 1,
+        tex_height: i32 = ntex x 1,
+        tex_width: i32 = ntex x 1,
+        /// 1, 3 or 4 bytes a texel.
+        tex_nchannel: i32 = ntex x 1,
+        /// Where each texture's texels start in `tex_data`.
+        tex_adr: i64 = ntex x 1,
+        /// Every texture's texels, row-major, `nchannel` bytes each.
+        tex_data: u8 = ntexdata x 1,
     }
 
     /// Typed geom kind, or `None` for a discriminant this MuJoCo knows and these
