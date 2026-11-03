@@ -74,7 +74,7 @@ is the MuJoCo id**, which is what lets a stream address nodes without a map:
 | `source` | filename, sha256, MuJoCo version — the fingerprint |
 | `bodies` | parent, pose |
 | `geoms` | kind, group, size, world pose at `qpos0`, mesh/material refs, rgba |
-| `materials` | rgba, specular, shininess, reflectance, emission — MuJoCo's Phong-ish set, mapped onto PBR at import. Optional `emissive`, `alpha_mode`, `double_sided` and glTF-slot `textures` (images relative to the sidecar) for richer producers — never written by the MuJoCo exporter; see [`isaac.md`](isaac.md) |
+| `materials` | rgba, specular, shininess, reflectance, emission — MuJoCo's Phong-ish set, mapped onto PBR at import. Optional glTF-slot `textures` (images relative to the sidecar): the MuJoCo exporter writes each material's 2D textures as PNGs under `textures/` (RGB/RGBA → base colour, normal, emissive, ORM → metallic-roughness and occlusion; one file per distinct image), with `mat_texrepeat` as the UV scale. Optional `emissive`, `alpha_mode` and `double_sided` are for richer producers; see [`isaac.md`](isaac.md) |
 | `meshes` | name + the GLB node that holds the geometry |
 | `sites` | massless marker frames, in their own id space |
 | `tendons` | group, width, rgba, `max_waypoints`, initial waypoints |
@@ -325,6 +325,12 @@ which groups it imported.
 This is not cosmetic: menagerie models split collision and visual meshes by
 group, so ignoring it renders the robot's collision capsules instead of the
 robot.
+
+A geom MuJoCo draws fully transparent (its material's alpha, or its own without
+a material, is 0) gets no node either. Models use one to carry mass in a visual
+group (menagerie's Skydio X2 core); drawn, it would only be an invisible mesh
+that still casts shadows. Its slot in the instance's geom table stays empty, so
+geom ids never shift.
 
 ## Debug overlays live in the player
 

@@ -580,7 +580,8 @@ pub struct Material {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alpha_mode: Option<AlphaMode>,
     /// Texture maps, with glTF metallic-roughness semantics: each texture is
-    /// multiplied by its factor above. Empty for every MuJoCo export.
+    /// multiplied by its factor above. A MuJoCo export fills the slots its
+    /// materials' 2D textures map onto; empty without them.
     #[serde(default, skip_serializing_if = "MaterialTextures::is_empty")]
     pub textures: MaterialTextures,
     /// Render back faces too (glTF `doubleSided`). A thin surface authored as

@@ -577,6 +577,7 @@ dependencies = [
  "clap",
  "glam 0.32.1",
  "gltf",
+ "image",
  "serde_json",
  "sha2",
  "toml",

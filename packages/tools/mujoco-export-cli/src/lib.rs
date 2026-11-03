@@ -6,3 +6,4 @@
 
 pub mod mesh;
 pub mod sidecar;
+pub mod texture;

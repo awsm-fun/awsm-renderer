@@ -37,6 +37,8 @@ awsm-renderer-mujoco-format = { workspace = true }
 # the GLB we emit is exactly the shape the importer already knows how to read.
 awsm-renderer-glb-export = { workspace = true }
 anyhow = { workspace = true }
+# Writing each texture's texels beside the sidecar as a PNG.
+image = { workspace = true }
 clap = { version = "4.5", features = ["derive"] }
 serde_json = { workspace = true }
 # Source fingerprinting. Same crate the editor hashes assets with.
