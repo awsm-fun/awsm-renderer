@@ -388,6 +388,14 @@ Notes:
   cold; commit after a batch of such edits to route new PBR materials to their
   specialised kernels. For a full reload, `begin_load()` puts the renderer
   back into the reserve-then-batch mode.
+- **Your own pipelines are reserved until the commit, too.** A pipeline you
+  create through the renderer's pools (`renderer.pipelines.compute` /
+  `renderer.pipelines.render`: `get_key`, `ensure_keys`) before the first
+  `commit_load`, or after a `begin_load()`, comes back as a key at once but
+  is only *reserved*: `pipelines.*.get(key)` reports `NotFound` until the
+  commit has compiled it with everything else. Dispatch it from the first
+  committed frame on (or check `get(key).is_ok()`), not from a loading-screen
+  hook. On a committed scene the same calls compile and await as before.
 - **A post-process effect the device cannot compile is turned off, not
   fatal.** If SSR, bloom or the volumetric atmosphere fails to compile during
   the commit, the renderer logs a warning, switches that effect off in

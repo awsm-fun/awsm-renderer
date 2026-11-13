@@ -196,7 +196,13 @@ changes the compile path accordingly.
   and the load goes on (`degrade_failed_post_processing`); a scene on a device
   that cannot build an effect loads without it. Any other rejected pipeline is
   the commit's error. On a committed scene the setter compiles on the spot and
-  returns the error itself.
+  returns the error itself. Every setter follows this, `set_anti_aliasing`
+  included: called while loading it reserves and leaves the pool alone.
+- **On a committed scene, compile before you install.** A pass that is drawing
+  must never be handed a key whose pipeline may not arrive: compile the new
+  keys first and swap them in only once they exist, so a rejected compile
+  leaves the pass on what it had (`ensure_material_prep_pipelines`).
+  Reserve-then-drain is for the uncommitted case only.
 
 ### What is still serial or wasteful
 
@@ -204,6 +210,14 @@ changes the compile path accordingly.
   and mostly identical text. They also bake in the bucket count, their bucket
   index and their shader id, so any change to the bucket set recompiles all of
   them and identical kernels in different scenes never share a cache entry.
+- The batch's finish time is not fully ours. With several large kernels in
+  it, one of them sometimes resolves after every other pipeline and adds
+  about half a second (DANCE-OFF: 7.7–8.6 s over identical batches — same 54
+  pipelines, same modules, same issue order). Which kernel it is changes run
+  to run, and how often it happens changed with the order the reserved pool
+  was issued in, which is why that order is now deterministic (largest shader
+  first) rather than a hash map's. No order tried avoids it; capping how many
+  compiles are in flight at once is the untested next idea.
 - A few pipelines live outside the pools and are still awaited where they are
   built: the SSR composite, the BRDF LUT, and the core blit / sRGB / mipmap
   helpers.
