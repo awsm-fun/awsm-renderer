@@ -243,6 +243,36 @@ const SCENES: &[SceneSpec] = &[
     },
 ];
 
+/// Scenes for the compiled-pipeline invariants (`pipelines-ready` +
+/// `config-ensure-keeps-kernels`). Each one grows the material bucket set past
+/// the first-party five (a custom material and/or a PBR feature-set variant),
+/// which is the precondition for both bug classes these lock; the SSR-on ones
+/// additionally kick a material compile BEFORE the load's commit.
+const PIPELINE_SCENES: &[PipelineScene] = &[
+    PipelineScene {
+        name: "ssr-arena",
+        features: base_features,
+    },
+    PipelineScene {
+        name: "kitchen-sink",
+        features: kitchen_sink_features,
+    },
+    PipelineScene {
+        name: "dynamic-materials",
+        features: base_features,
+    },
+    PipelineScene {
+        name: "pbr-extensions",
+        features: base_features,
+    },
+];
+
+/// One scene of the compiled-pipeline invariant sweep.
+struct PipelineScene {
+    name: &'static str,
+    features: fn() -> RendererFeatures,
+}
+
 /// The scene whose bundle carries `prefab = true` roots — the clone-surface
 /// scene for the prefab-churn check.
 const PREFAB_CHURN_SCENE: &str = "prefab-static";
@@ -270,6 +300,17 @@ pub async fn run_all() {
         }
         set_hud(&format!("player-tests: loading {}", spec.name));
         run_scene(spec, &origin, &mut report).await;
+    }
+
+    // ── 8 + 9. compiled-pipeline invariants after ONE commit. ───────────────
+    for scene in PIPELINE_SCENES {
+        if let Some(filter) = &filter {
+            if !filter.iter().any(|f| f == scene.name) {
+                continue;
+            }
+        }
+        set_hud(&format!("player-tests: pipelines {}", scene.name));
+        pipeline_invariants(scene.name, scene.features, &origin, &mut report).await;
     }
 
     // ── 5. prefab-churn — spawn/despawn a duplicated subtree, no leak. ──────
@@ -731,4 +772,204 @@ async fn prefab_churn(origin: &str, scene_name: &str, require_skinned: bool) -> 
     };
     destroy_renderer(renderer);
     result
+}
+
+/// The material-pass pipelines the live scene dispatches, as pool keys: the
+/// classify pipeline, the MSAA final blend, and one shading kernel per bucket
+/// a live material routes to (plus the SKYBOX bucket at index 0).
+#[derive(Clone, PartialEq, Debug)]
+struct MaterialPipelines {
+    buckets: usize,
+    classify: Option<PoolKey>,
+    final_blend: Option<PoolKey>,
+    /// `(bucket index, kernel)` for every USED bucket; `None` = not installed.
+    kernels: Vec<(usize, Option<PoolKey>)>,
+}
+
+/// A compute pipeline's handle in the renderer's shared pool.
+type PoolKey = awsm_renderer::pipelines::compute_pipeline::ComputePipelineKey;
+
+fn material_pipelines(renderer: &AwsmRenderer) -> MaterialPipelines {
+    let aa = &renderer.anti_aliasing;
+    let msaa = aa.msaa_sample_count;
+    let entries = renderer.dynamic_materials.bucket_entries_cached();
+    let classify = renderer
+        .render_passes
+        .material_classify
+        .pipeline_cache
+        .borrow()
+        .get(&(renderer.dynamic_materials.dispatch_hash_cached(), msaa))
+        .copied();
+    let opaque = &renderer.render_passes.material_opaque;
+    // Shader ids opaque-routed materials currently resolve to.
+    let used: std::collections::HashSet<_> = renderer
+        .materials
+        .keys()
+        .filter(|key| !renderer.materials.is_transparency_pass(*key))
+        .map(|key| renderer.materials.shader_id(key))
+        .collect();
+    let kernels = entries
+        .iter()
+        .enumerate()
+        .filter(|(index, entry)| *index == 0 || used.contains(&entry.shader_id))
+        .map(|(index, entry)| {
+            let key = if msaa.is_some() {
+                opaque
+                    .edge_pipelines
+                    .get_shade_pipeline_key(aa, entry.shader_id)
+            } else {
+                opaque
+                    .pipelines
+                    .get_compute_pipeline_key(aa, entry.shader_id)
+            };
+            (index, key)
+        })
+        .collect();
+    MaterialPipelines {
+        buckets: entries.len(),
+        classify,
+        final_blend: if msaa.is_some() {
+            opaque.edge_pipelines.final_blend_pipeline_key
+        } else {
+            None
+        },
+        kernels,
+    }
+}
+
+/// Every pipeline in the snapshot is installed AND compiled (a reserved pool
+/// slot does not count).
+fn material_pipelines_missing(renderer: &AwsmRenderer, p: &MaterialPipelines) -> Vec<String> {
+    let compiled =
+        |key: Option<PoolKey>| key.is_some_and(|k| renderer.pipelines.compute.get(k).is_ok());
+    let mut missing = Vec::new();
+    if !compiled(p.classify) {
+        missing.push("classify".to_string());
+    }
+    if renderer.anti_aliasing.msaa_sample_count.is_some() && !compiled(p.final_blend) {
+        missing.push("final_blend".to_string());
+    }
+    for (index, key) in &p.kernels {
+        if !compiled(*key) {
+            missing.push(format!("kernel[bucket {index}]"));
+        }
+    }
+    missing
+}
+
+/// Checks 8 + 9 for one scene.
+///
+/// **8 `pipelines-ready`** — after the load's single `commit_load`, with no
+/// further commit and before any frame, the classify pipeline, the final
+/// blend and the kernel of every used bucket are installed. Locks the bug
+/// where a classify compile kicked before the commit (an SSR-on scene's
+/// `set_post_processing`) was dropped as stale by the commit's own layout
+/// reset and never relaunched, so the scene drew nothing shaded until some
+/// later commit happened to recompile it.
+///
+/// **9 `config-ensure-keeps-kernels`** — a standalone
+/// `ensure_config_pipelines()` on a committed scene (what the editor's
+/// shadow-denoise toggle does) leaves those pipelines untouched. Locks the bug
+/// where it re-installed first-party kernels compiled for the FIRST-PARTY-ONLY
+/// bucket layout over the live ones, so on a scene with more buckets the sky /
+/// canonical buckets read the classify tile lists at the wrong offsets.
+async fn pipeline_invariants(
+    name: &str,
+    features: fn() -> RendererFeatures,
+    origin: &str,
+    report: &mut Report,
+) {
+    let ready_name = format!("pipelines-ready:{name}");
+    let ensure_name = format!("config-ensure-keeps-kernels:{name}");
+    let loaded = async {
+        let bundle_base = format!("{origin}/{name}/bundle");
+        let scene = fetch_scene(&bundle_base).await?;
+        let (mut renderer, _canvas) = create_renderer(features()).await?;
+        let assets = awsm_renderer_scene_loader::assets::HttpAssets::new(bundle_base);
+        load_scene_for_player(&mut renderer, &scene, &assets, |_| {}).await?;
+        anyhow::Ok(renderer)
+    }
+    .await;
+    let mut renderer = match loaded {
+        Ok(renderer) => renderer,
+        Err(err) => {
+            report.emit(&ready_name, false, &format!("load failed — {err:#}"));
+            report.emit(&ensure_name, false, "skipped — load failed");
+            return;
+        }
+    };
+
+    // ── 8. straight after the one commit. ──
+    let before = material_pipelines(&renderer);
+    let first_party = awsm_renderer::dynamic_materials::first_party_bucket_entries().len();
+    let missing = material_pipelines_missing(&renderer, &before);
+    let detail = format!(
+        "{} buckets ({first_party} first-party), {} used kernels, msaa={:?}",
+        before.buckets,
+        before.kernels.len(),
+        renderer.anti_aliasing.msaa_sample_count
+    );
+    if before.buckets <= first_party {
+        report.emit(
+            &ready_name,
+            false,
+            &format!("scene no longer grows the bucket set, so it locks nothing — {detail}"),
+        );
+    } else if missing.is_empty() {
+        report.emit(&ready_name, true, &detail);
+    } else {
+        report.emit(
+            &ready_name,
+            false,
+            &format!("not installed after the commit: {missing:?} — {detail}"),
+        );
+    }
+
+    // ── 9. a standalone config ensure must not disturb them. ──
+    let result = async {
+        // Settle first, so this check is independent of check 8: one more
+        // commit installs anything the first one left out.
+        renderer
+            .commit_load(|_| {})
+            .await
+            .map_err(|e| anyhow!("second commit_load: {e}"))?;
+        let settled = material_pipelines(&renderer);
+        let missing = material_pipelines_missing(&renderer, &settled);
+        if !missing.is_empty() {
+            return Err(anyhow!("still missing after a second commit: {missing:?}"));
+        }
+        renderer
+            .ensure_config_pipelines()
+            .await
+            .map_err(|e| anyhow!("ensure_config_pipelines: {e}"))?;
+        let after = material_pipelines(&renderer);
+        if after != settled {
+            let changed: Vec<usize> = settled
+                .kernels
+                .iter()
+                .zip(&after.kernels)
+                .filter(|(a, b)| a != b)
+                .map(|(a, _)| a.0)
+                .collect();
+            return Err(anyhow!(
+                "ensure_config_pipelines replaced live material pipelines: kernels of buckets {changed:?} changed (classify changed: {}, final_blend changed: {})",
+                settled.classify != after.classify,
+                settled.final_blend != after.final_blend
+            ));
+        }
+        // And the scene still renders.
+        renderer.update_transforms();
+        let (center, radius) = scene_bounds(&renderer);
+        run_frames(&mut renderer, center, radius, 2, |_| {
+            orbit_eye(center, radius, 2.2, 0.8)
+        })
+        .await?;
+        Ok(format!(
+            "{} material pipelines unchanged across a standalone ensure_config_pipelines",
+            settled.kernels.len() + 2
+        ))
+    }
+    .await;
+    report.emit_result(&ensure_name, result);
+    destroy_renderer(renderer);
 }
