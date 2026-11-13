@@ -784,6 +784,10 @@ struct MaterialPipelines {
     final_blend: Option<PoolKey>,
     /// `(bucket index, kernel)` for every USED bucket; `None` = not installed.
     kernels: Vec<(usize, Option<PoolKey>)>,
+    /// Bucket indices of FIRST-PARTY buckets no material resolves to that hold
+    /// a kernel anyway. Must be empty after a cold load: nothing shades
+    /// through them, so compiling their kernels is pure load time.
+    idle_first_party_kernels: Vec<usize>,
 }
 
 /// A compute pipeline's handle in the renderer's shared pool.
@@ -808,22 +812,35 @@ fn material_pipelines(renderer: &AwsmRenderer) -> MaterialPipelines {
         .filter(|key| !renderer.materials.is_transparency_pass(*key))
         .map(|key| renderer.materials.shader_id(key))
         .collect();
+    let kernel_of = |entry: &awsm_renderer::dynamic_materials::BucketEntry| {
+        if msaa.is_some() {
+            opaque
+                .edge_pipelines
+                .get_shade_pipeline_key(aa, entry.shader_id)
+        } else {
+            opaque
+                .pipelines
+                .get_compute_pipeline_key(aa, entry.shader_id)
+        }
+    };
     let kernels = entries
         .iter()
         .enumerate()
         .filter(|(index, entry)| *index == 0 || used.contains(&entry.shader_id))
-        .map(|(index, entry)| {
-            let key = if msaa.is_some() {
-                opaque
-                    .edge_pipelines
-                    .get_shade_pipeline_key(aa, entry.shader_id)
-            } else {
-                opaque
-                    .pipelines
-                    .get_compute_pipeline_key(aa, entry.shader_id)
-            };
-            (index, key)
+        .map(|(index, entry)| (index, kernel_of(entry)))
+        .collect();
+    // A registered custom material always compiles (that is how its WGSL
+    // errors surface before it is assigned), so only first-party buckets count.
+    let idle_first_party_kernels = entries
+        .iter()
+        .enumerate()
+        .filter(|(index, entry)| {
+            *index != 0
+                && !used.contains(&entry.shader_id)
+                && renderer.dynamic_materials.get(entry.shader_id).is_none()
+                && kernel_of(entry).is_some()
         })
+        .map(|(index, _)| index)
         .collect();
     MaterialPipelines {
         buckets: entries.len(),
@@ -834,6 +851,7 @@ fn material_pipelines(renderer: &AwsmRenderer) -> MaterialPipelines {
             None
         },
         kernels,
+        idle_first_party_kernels,
     }
 }
 
@@ -861,7 +879,9 @@ fn material_pipelines_missing(renderer: &AwsmRenderer, p: &MaterialPipelines) ->
 ///
 /// **8 `pipelines-ready`** — after the load's single `commit_load`, with no
 /// further commit and before any frame, the classify pipeline, the final
-/// blend and the kernel of every used bucket are installed. Locks the bug
+/// blend and the kernel of every used bucket are installed — and NO kernel
+/// exists for a first-party bucket nothing shades through (the canonical PBR
+/// bucket, an unused Toon / FlipBook one). Locks the bug
 /// where a classify compile kicked before the commit (an SSR-on scene's
 /// `set_post_processing`) was dropped as stale by the commit's own layout
 /// reset and never relaunched, so the scene drew nothing shaded until some
@@ -914,6 +934,15 @@ async fn pipeline_invariants(
             &ready_name,
             false,
             &format!("scene no longer grows the bucket set, so it locks nothing — {detail}"),
+        );
+    } else if !before.idle_first_party_kernels.is_empty() {
+        report.emit(
+            &ready_name,
+            false,
+            &format!(
+                "kernels compiled for first-party buckets no material uses: {:?} — {detail}",
+                before.idle_first_party_kernels
+            ),
         );
     } else if missing.is_empty() {
         report.emit(&ready_name, true, &detail);

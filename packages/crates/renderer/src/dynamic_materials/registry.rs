@@ -1908,6 +1908,42 @@ impl crate::AwsmRenderer {
                 .is_some()
     }
 
+    /// The buckets the live scene needs a shading kernel for:
+    ///
+    /// - the SKYBOX bucket, always (it owns every uncovered pixel);
+    /// - every registered CUSTOM material, used or not — its compile is how
+    ///   an author's WGSL error surfaces through
+    ///   `dynamic_material_compile_status` right after `register_material`,
+    ///   before any mesh is assigned to it;
+    /// - a FIRST-PARTY bucket (canonical PBR / Unlit / Toon / FlipBook, or a
+    ///   PBR feature-set variant) only when an opaque-routed material
+    ///   currently resolves to it.
+    ///
+    /// The last rule is what this exists for. The canonical first-party
+    /// buckets are always present in the layout, but most scenes shade
+    /// through few of them: every opaque PBR material routes to a feature-set
+    /// VARIANT, so the canonical PBR bucket — one of the largest kernels —
+    /// shades nothing at all, and a scene with no Toon or FlipBook material
+    /// never dispatches those either. Compiling them anyway was a quarter or
+    /// more of a cold load's kernel work. A bucket with no kernel is skipped
+    /// by the dispatch loop (its tile list is empty anyway); when a material
+    /// first resolves to it, the next `commit_load` compiles that one kernel
+    /// — the layout is unchanged, so nothing else recompiles.
+    ///
+    /// Call after `reconcile_material_variants` has stamped the resolved
+    /// variant ids (every ensure pass does).
+    pub(crate) fn buckets_wanting_kernel(&self) -> std::collections::HashSet<MaterialShaderId> {
+        let mut wanted: std::collections::HashSet<MaterialShaderId> = self
+            .materials
+            .keys()
+            .filter(|key| !self.materials.is_transparency_pass(*key))
+            .map(|key| self.materials.shader_id(key))
+            .collect();
+        wanted.insert(MaterialShaderId::SKYBOX);
+        wanted.extend(self.dynamic_materials.iter().map(|(id, _)| id));
+        wanted
+    }
+
     /// Returns the registration record for a previously-registered id.
     pub fn dynamic_material_registration(
         &self,

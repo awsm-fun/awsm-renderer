@@ -247,7 +247,9 @@ impl MaterialEdgePipelines {
     /// `bucket_entries` MUST be the registry's live list: every kernel
     /// bakes the bucket count and its own index into its WGSL, so a
     /// kernel built from any other list reads the classify tile lists at
-    /// the wrong offsets.
+    /// the wrong offsets. `wanted` selects which of those buckets get a
+    /// kernel at all (`AwsmRenderer::buckets_wanting_kernel`); it never
+    /// changes the layout the kernels are compiled against.
     ///
     /// Also commits the per-pipeline-layout keys onto `self` (cheap
     /// hash registrations, no Dawn work) so subsequent
@@ -264,6 +266,7 @@ impl MaterialEdgePipelines {
         opaque_bind_groups: &MaterialOpaqueBindGroups,
         edge_layouts: &MaterialEdgeBindGroupLayouts,
         bucket_entries: &[BucketEntry],
+        wanted: &std::collections::HashSet<MaterialShaderId>,
         anti_aliasing: &AntiAliasing,
         color_wgsl_format: &str,
         dynamic_registry: Option<&DynamicMaterials>,
@@ -341,6 +344,12 @@ impl MaterialEdgePipelines {
         // list by `render_shade` in place of cs_opaque + cs_edge.
         {
             for entry in bucket_entries.iter() {
+                // Skip buckets nothing shades through. They stay in
+                // `bucket_entries` — the LAYOUT every kernel is keyed on — but
+                // get no kernel of their own.
+                if !wanted.contains(&entry.shader_id) {
+                    continue;
+                }
                 let owns_skybox = entry.shader_id == MaterialShaderId::SKYBOX;
                 // Same dynamic-shader resolution as the cs_edge loop above
                 // (skip transparent-only customs; first-party variants build

@@ -21,7 +21,8 @@
 //!    corrupted shading, so it is strictly ordered.
 //! 3. **Classify + per-bucket opaque.** For the ACTIVE `(msaa, mipmaps)`
 //!    only (never the 4× msaa×mipmap blowup), it ensures the classify
-//!    pipeline and every opaque-routed bucket's opaque pipeline via the
+//!    pipeline and the opaque pipeline of every opaque-routed bucket that
+//!    something shades through (`buckets_wanting_kernel`) via the
 //!    shared content-keyed cache, charging each compile to the bucket's
 //!    scheduler `Material(mid)` group (so a CUSTOM material's WGSL
 //!    compile error surfaces via `dynamic_material_compile_status`).
@@ -105,7 +106,10 @@ impl crate::AwsmRenderer {
     ///    against mismatched classify-output offsets.
     /// 3. **Classify** (active msaa) — ensured + installed.
     /// 4. **Per-bucket opaque** (active msaa × mipmaps) — every
-    ///    opaque-routed bucket. A CUSTOM material's compile is charged
+    ///    opaque-routed bucket that something shades through (the SKYBOX
+    ///    bucket, every registered custom material, and each first-party
+    ///    bucket a live material resolves to; see
+    ///    `buckets_wanting_kernel`). A CUSTOM material's compile is charged
     ///    to its `Material(mid)` group so a WGSL error surfaces via
     ///    `dynamic_material_compile_status`; first-party variants charge
     ///    to their own (never-failing) group the same way.
@@ -180,10 +184,27 @@ impl crate::AwsmRenderer {
         //    a Blend-only custom scene whose own opaque compile is skipped.
         let entries = self.dynamic_materials.bucket_entries_cached().to_vec();
 
+        // Only buckets something shades through get a kernel (see
+        // `buckets_wanting_kernel`). The classify pipeline is unaffected: it is
+        // launched on behalf of the SKYBOX bucket, which is always wanted.
+        let wanted = self.buckets_wanting_kernel();
+
         // This pass decides afresh which classify / opaque pipelines the scene
         // wants; a resolved compile installs iff its key is one of them.
         self.pipeline_scheduler.clear_desired_compute_installs();
         for shader_id in &bucket_ids {
+            if !wanted.contains(shader_id) {
+                // Nothing to compile for it — mark its group Ready so it can't
+                // sit Pending on the compile-status surface.
+                if let Some(mid) = self
+                    .pipeline_scheduler
+                    .find_material_by_shader_id(*shader_id)
+                {
+                    self.pipeline_scheduler
+                        .mark_ready(PipelineGroupId::Material(mid));
+                }
+                continue;
+            }
             if let Err(e) = self.ensure_bucket_pipelines(
                 *shader_id,
                 &entries,
@@ -202,7 +223,7 @@ impl crate::AwsmRenderer {
         // ── Step 4: edge resolve — layout-level, idempotent (deduped by
         //    cache + in-flight + desired_keys). No-op when MSAA is off or
         //    `edge_resolve_supported` is false.
-        self.launch_edge_resolve_compile()?;
+        self.launch_edge_resolve_compile(&wanted)?;
 
         Ok(())
     }
@@ -714,7 +735,10 @@ impl crate::AwsmRenderer {
     /// double-compiles.
     ///
     /// No-op when MSAA is off or `edge_resolve_supported` is false.
-    pub(crate) fn launch_edge_resolve_compile(&mut self) -> Result<(), crate::error::AwsmError> {
+    pub(crate) fn launch_edge_resolve_compile(
+        &mut self,
+        wanted: &std::collections::HashSet<MaterialShaderId>,
+    ) -> Result<(), crate::error::AwsmError> {
         if self.anti_aliasing.msaa_sample_count.is_none()
             || !crate::edge_resolve_supported(&self.gpu)
         {
@@ -740,6 +764,7 @@ impl crate::AwsmRenderer {
                 &self.render_passes.material_opaque.bind_groups,
                 &self.render_passes.material_opaque.edge_bind_group_layouts,
                 &bucket_entries,
+                wanted,
                 &self.anti_aliasing,
                 color_wgsl,
                 Some(&self.dynamic_materials),
