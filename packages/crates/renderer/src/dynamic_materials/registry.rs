@@ -1927,8 +1927,10 @@ impl crate::AwsmRenderer {
     /// never dispatches those either. Compiling them anyway was a quarter or
     /// more of a cold load's kernel work. A bucket with no kernel is skipped
     /// by the dispatch loop (its tile list is empty anyway); when a material
-    /// first resolves to it, the next `commit_load` compiles that one kernel
-    /// — the layout is unchanged, so nothing else recompiles.
+    /// first resolves to it, that one kernel is compiled — by the commit that
+    /// brought the material in, or, for a material inserted on a running
+    /// scene, by the render loop (`kick_missing_kernels`). The layout is
+    /// unchanged either way, so nothing else recompiles.
     ///
     /// Call after `reconcile_material_variants` has stamped the resolved
     /// variant ids (every ensure pass does).

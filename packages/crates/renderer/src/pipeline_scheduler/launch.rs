@@ -123,6 +123,8 @@ impl crate::AwsmRenderer {
     /// the classify compile (keyed on `(msaa, bucket_entries)`, shared
     /// by every bucket) is issued once and every bucket waits on it.
     pub fn ensure_scene_pipelines(&mut self) -> Result<(), crate::error::AwsmError> {
+        // This pass compiles for everything the live materials shade through.
+        self.materials.clear_kernel_demand_dirty();
         let active_msaa = self.anti_aliasing.msaa_sample_count;
         let active_mipmaps = self.anti_aliasing.mipmap;
 
@@ -226,6 +228,40 @@ impl crate::AwsmRenderer {
         self.launch_edge_resolve_compile(&wanted)?;
 
         Ok(())
+    }
+
+    /// Render-loop auto-drive: compile the kernel of a bucket that came into
+    /// use since the last ensure pass, with no commit after it.
+    ///
+    /// Kernels are compiled only for the buckets some material shades through
+    /// (`buckets_wanting_kernel`), which a commit settles for everything
+    /// loaded through it. A running scene can also be handed a material whose
+    /// bucket has no kernel — the first material of a family, or any newly
+    /// inserted PBR material, which shades through the canonical PBR bucket
+    /// until a commit routes it to its feature-set variant — by an embedder
+    /// that inserts and assigns materials live. Without this its pixels would
+    /// stay unshaded until the next `commit_load`; with it they shade as soon
+    /// as the kernel resolves (`poll_pipeline_scheduler`), like a custom
+    /// material registered on a running scene.
+    ///
+    /// One `bool` check per frame otherwise. It never changes the bucket
+    /// LAYOUT (and so never recompiles anything else): a layout that has moved
+    /// since the last ensure pass is a commit's to handle, as it always was.
+    pub(crate) fn kick_missing_kernels(&mut self) -> Result<(), crate::error::AwsmError> {
+        if !self.materials.kernel_demand_dirty() {
+            return Ok(());
+        }
+        let layout_signature = (
+            self.dynamic_materials.dispatch_hash_cached(),
+            self.dynamic_materials.bucket_entries_cached().len(),
+        );
+        if self.last_ensured_bucket_layout != Some(layout_signature) {
+            return Ok(());
+        }
+        // Layout unchanged, so this is the ensure pass's idempotent tail:
+        // cache hits for every kernel that exists, a compile for each newly
+        // wanted bucket (and its edge-resolve pipeline under MSAA).
+        self.ensure_scene_pipelines()
     }
 
     /// Re-lay-out the bucket-dependent GPU state for `bucket_count`:

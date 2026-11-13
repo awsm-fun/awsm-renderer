@@ -226,6 +226,11 @@ impl AwsmRenderer {
         self.kick_masked_variants_compile()?;
         self.poll_masked_variants_compile();
 
+        // A kernel for a bucket that came into use since the last commit (a
+        // material inserted and assigned live). Installs through the
+        // scheduler pump at the top of `render`. One bool check otherwise.
+        self.kick_missing_kernels()?;
+
         // HUD meshes (editor gizmos, in-game HUD primitives) draw
         // through the transparent pipeline, which is per-mesh and
         // texture-pool-shape-coupled. Unlike world transparents — whose

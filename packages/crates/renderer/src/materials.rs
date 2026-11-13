@@ -416,6 +416,14 @@ pub struct Materials {
     /// Live count of alpha-tested (glTF `MASK`) materials per built-in
     /// family. See [`MaskedBuiltinCounts`].
     masked_builtin: MaskedBuiltinCounts,
+    /// Set when the set of buckets something shades through may have GROWN:
+    /// an opaque-routed material entered, or an edit moved one to another
+    /// family or into the opaque pass. Such a material's bucket may have no
+    /// kernel yet (kernels are compiled only for buckets in use — see
+    /// `AwsmRenderer::buckets_wanting_kernel`). Every ensure pass clears it;
+    /// between commits the render loop reads it to compile what is missing
+    /// (`AwsmRenderer::kick_missing_kernels`).
+    kernel_demand_dirty: bool,
 }
 
 /// The built-in material families that have a masked (alpha-tested) geometry
@@ -536,6 +544,7 @@ impl Materials {
             uploader: crate::buffer::mapped_uploader::MappedUploader::new("Materials"),
             has_seen_transmission: false,
             masked_builtin: MaskedBuiltinCounts::default(),
+            kernel_demand_dirty: false,
         })
     }
 
@@ -549,6 +558,17 @@ impl Materials {
     /// MB on desktop).
     pub fn has_seen_transmission(&self) -> bool {
         self.has_seen_transmission
+    }
+
+    /// See the `kernel_demand_dirty` field.
+    pub(crate) fn kernel_demand_dirty(&self) -> bool {
+        self.kernel_demand_dirty
+    }
+
+    /// Clears the `kernel_demand_dirty` flag — an ensure pass is about to
+    /// compile whatever the live materials shade through.
+    pub(crate) fn clear_kernel_demand_dirty(&mut self) {
+        self.kernel_demand_dirty = false;
     }
 
     /// Which built-in families have an alpha-tested material right now — the
@@ -615,6 +635,11 @@ impl Materials {
         // A newly-inserted material may need routing to a feature-set
         // variant bucket — flag the renderer's reconcile pass.
         self.variants_dirty = true;
+        // …and, opaque-routed, it shades through a bucket that may have no
+        // kernel yet.
+        if !is_transparency_pass {
+            self.kernel_demand_dirty = true;
+        }
 
         self.update(key, textures, dynamic_materials, extras_pool, |_| {});
 
@@ -715,8 +740,14 @@ impl Materials {
         if let Some(material) = self.lookup.get_mut(key) {
             let was_transparent = material.is_transparency_pass();
             let was_masked = MaskedBuiltinCounts::slot(material);
+            let was_family = material.shader_id();
             f(material);
             let is_transparent = material.is_transparency_pass();
+            // Now shading through a bucket it was not in before (another
+            // family, or newly in the opaque pass)?
+            if !is_transparent && (was_transparent || material.shader_id() != was_family) {
+                self.kernel_demand_dirty = true;
+            }
             // An edit can turn a material alpha-tested (or back), or replace
             // it with one of another family.
             self.masked_builtin

@@ -340,6 +340,17 @@ pub async fn run_all() {
         }
     }
 
+    // ── 12. a material assigned on a running scene shades without a commit. ─
+    if pick_enabled {
+        for (name, msaa) in [
+            ("material-without-commit", true),
+            ("material-without-commit:no-msaa", false),
+        ] {
+            set_hud(&format!("player-tests: {name}"));
+            report.emit_result(name, material_without_commit(&origin, msaa).await);
+        }
+    }
+
     // ── 5. prefab-churn — spawn/despawn a duplicated subtree, no leak. ──────
     let churn_enabled = filter
         .as_ref()
@@ -1068,6 +1079,134 @@ async fn opaque_pbr_pick_target(
     Err(anyhow!(
         "no pick over {PICK_SCENE} landed on an opaque PBR mesh — the check has nothing to edit"
     ))
+}
+
+/// The canvas pixel at `(x, y)` as 8-bit RGBA. Must be called in the same
+/// task as the `render()` that drew it — a WebGPU canvas only holds the frame
+/// until it is presented.
+fn read_canvas_pixel(canvas: &web_sys::HtmlCanvasElement, x: i32, y: i32) -> Result<[u8; 4]> {
+    let read = js_sys::Function::new_with_args(
+        "canvas, x, y",
+        "const c = document.createElement('canvas');
+         c.width = canvas.width; c.height = canvas.height;
+         const g = c.getContext('2d', { willReadFrequently: true });
+         g.drawImage(canvas, 0, 0);
+         return Array.from(g.getImageData(x, y, 1, 1).data);",
+    );
+    let rgba = read
+        .call3(
+            &wasm_bindgen::JsValue::NULL,
+            canvas.as_ref(),
+            &x.into(),
+            &y.into(),
+        )
+        .map_err(|e| anyhow!("read canvas pixel: {e:?}"))?;
+    let rgba = js_sys::Array::from(&rgba);
+    let channel = |i: u32| rgba.get(i).as_f64().unwrap_or(0.0) as u8;
+    Ok([channel(0), channel(1), channel(2), channel(3)])
+}
+
+/// How long `material-without-commit` gives a newly assigned material to
+/// shade. On a renderer that compiles its kernel lazily that is a cold kernel
+/// compile; the bug this locks is "never".
+const MATERIAL_WITHOUT_COMMIT_DEADLINE_MS: f64 = 30_000.0;
+
+/// Check 12 — `material-without-commit`. A kernel (the per-bucket opaque
+/// shading pipeline) is compiled only for the buckets some material shades
+/// through; `commit_load` settles that for everything loaded through it. A
+/// running scene can also be handed a material of a bucket that has no kernel
+/// yet, with no commit — an embedder that inserts a material and assigns it
+/// with `set_mesh_material`:
+///
+/// - the scene's first material of a family (here Unlit), and
+/// - any newly inserted PBR material, which shades through the canonical PBR
+///   bucket until a commit routes it to its feature-set variant.
+///
+/// Both must shade, on their own, within a kernel compile.
+///
+/// Locks the regression where they did not: the mesh's pixels were left
+/// unshaded until the next `commit_load`.
+async fn material_without_commit(origin: &str, msaa: bool) -> Result<String> {
+    use awsm_renderer::materials::pbr::PbrMaterial;
+    use awsm_renderer::materials::unlit::UnlitMaterial;
+    use awsm_renderer::materials::{Material, MaterialAlphaMode};
+
+    let bundle_base = format!("{origin}/{PICK_SCENE}/bundle");
+    let scene = fetch_scene(&bundle_base).await?;
+    let features = RendererFeatures {
+        picking: true,
+        ..base_features()
+    };
+    let (mut renderer, canvas) = create_renderer_with_msaa(features, msaa).await?;
+    let assets = awsm_renderer_scene_loader::assets::HttpAssets::new(bundle_base);
+    load_scene_for_player(&mut renderer, &scene, &assets, |_| {}).await?;
+    renderer.update_transforms();
+    let (center, radius) = scene_bounds(&renderer);
+    let eye = orbit_eye(center, radius, 2.2, 0.8);
+    run_frames(&mut renderer, center, radius, 3, |_| eye).await?;
+    let (x, y, mesh_key, double_sided) = opaque_pbr_pick_target(&mut renderer, &canvas).await?;
+
+    // Unlit magenta, then PBR emitting pure green: each is unmistakable at the
+    // pixel whatever the scene's lighting and tone mapping do.
+    let mut unlit = UnlitMaterial::new(MaterialAlphaMode::Opaque, double_sided);
+    unlit.base_color_factor = [1.0, 0.0, 1.0, 1.0];
+    let mut pbr = PbrMaterial::new(MaterialAlphaMode::Opaque, double_sided);
+    pbr.base_color_factor = [0.0, 0.0, 0.0, 1.0];
+    pbr.emissive_factor = [0.0, 1.0, 0.0];
+    fn is_magenta([r, g, b, _]: [u8; 4]) -> bool {
+        r > g.saturating_add(60) && b > g.saturating_add(60)
+    }
+    fn is_green([r, g, b, _]: [u8; 4]) -> bool {
+        g > r.saturating_add(60) && g > b.saturating_add(60)
+    }
+    type Shows = fn([u8; 4]) -> bool;
+    let steps: [(&str, Material, Shows); 2] = [
+        ("unlit magenta", Material::Unlit(unlit), is_magenta),
+        ("PBR emissive green", Material::Pbr(Box::new(pbr)), is_green),
+    ];
+
+    let mut detail = Vec::new();
+    for (label, material, shows) in steps {
+        let key = renderer.materials.insert(
+            material,
+            &renderer.textures,
+            &renderer.dynamic_materials,
+            &renderer.extras_pool,
+        );
+        renderer
+            .set_mesh_material(mesh_key, key)
+            .map_err(|e| anyhow!("set_mesh_material: {e}"))?;
+
+        let start = now_ms();
+        let mut frames = 0usize;
+        let mut pixel = [0u8; 4];
+        let mut shaded = false;
+        while now_ms() - start < MATERIAL_WITHOUT_COMMIT_DEADLINE_MS {
+            crate::harness::next_frame().await;
+            crate::harness::set_camera(&mut renderer, eye, center, radius)?;
+            renderer.update_transforms();
+            renderer.render(None).map_err(|e| anyhow!("render: {e}"))?;
+            frames += 1;
+            pixel = read_canvas_pixel(&canvas, x, y)?;
+            if shows(pixel) {
+                shaded = true;
+                break;
+            }
+        }
+        let elapsed_ms = now_ms() - start;
+        if !shaded {
+            destroy_renderer(renderer);
+            return Err(anyhow!(
+                "{label}: assigned with no commit and still not shaded after {frames} frames ({:.1}s) — pixel ({x},{y}) is rgba{pixel:?}",
+                elapsed_ms / 1000.0
+            ));
+        }
+        detail.push(format!(
+            "{label} shaded after {frames} frames ({elapsed_ms:.0}ms), rgba{pixel:?}"
+        ));
+    }
+    destroy_renderer(renderer);
+    Ok(format!("no commit: {}", detail.join("; ")))
 }
 
 /// How long `mask-without-commit` waits for the lazily compiled masked
