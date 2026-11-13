@@ -45,6 +45,7 @@ struct BlitPipelineCacheKey {
 }
 thread_local! {
     static BLIT_PIPELINE: RefCell<HashMap<BlitPipelineCacheKey, BlitPipeline>> = RefCell::new(HashMap::new());
+    static BLIT_IN_FLIGHT: crate::in_flight::InFlight<BlitPipelineCacheKey> = crate::in_flight::InFlight::new();
 }
 
 static SHADER_SOURCE: &str = r#"
@@ -162,16 +163,24 @@ pub async fn blit_get_pipeline(
         dst_format: dst_format.into(),
         dst_sample_count,
     };
-    if let Some(pipeline) =
-        BLIT_PIPELINE.with(|pipeline_cell| pipeline_cell.borrow().get(&key).cloned())
-    {
-        return Ok(pipeline);
-    }
+    // One compile per key: a caller that arrives while it is running waits
+    // for it instead of starting another (see `crate::in_flight`).
+    let _in_flight = loop {
+        if let Some(pipeline) =
+            BLIT_PIPELINE.with(|pipeline_cell| pipeline_cell.borrow().get(&key).cloned())
+        {
+            return Ok(pipeline);
+        }
+        match crate::in_flight::claim(&BLIT_IN_FLIGHT, &key) {
+            crate::in_flight::Claim::Mine(guard) => break guard,
+            crate::in_flight::Claim::Wait(done) => {
+                let _ = done.await;
+            }
+        }
+    };
 
     let shader_module =
         gpu.compile_shader(&ShaderModuleDescriptor::new(SHADER_SOURCE, Some("Blit shader")).into());
-
-    shader_module.validate_shader().await?;
 
     let bind_group_layout = gpu.create_bind_group_layout(
         &BindGroupLayoutDescriptor::new(Some("Blit Bind Group Layout"))
@@ -214,9 +223,18 @@ pub async fn blit_get_pipeline(
             pipeline_descriptor.with_multisample(MultisampleState::new().with_count(sample_count));
     }
 
-    let render_pipeline = gpu
-        .create_render_pipeline(&pipeline_descriptor.into())
-        .await?;
+    // Validation and the pipeline compile are issued together: waiting for
+    // the validation round-trip before even asking for the pipeline put one
+    // after the other for nothing. The validation result is still read first,
+    // so a WGSL error is reported as one (with its diagnostics) and not as
+    // the pipeline rejection it also causes.
+    let pipeline_descriptor: web_sys::GpuRenderPipelineDescriptor = pipeline_descriptor.into();
+    let (validated, render_pipeline) = futures::join!(
+        shader_module.validate_shader(),
+        gpu.create_render_pipeline(&pipeline_descriptor)
+    );
+    validated?;
+    let render_pipeline = render_pipeline?;
 
     BLIT_PIPELINE.with(|pipeline_cell| {
         let pipeline = BlitPipeline {

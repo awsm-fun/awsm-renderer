@@ -32,6 +32,7 @@ struct ConvertSrgbPipeline {
 // `(DeviceId, format)` rather than format alone (see `DeviceId`).
 thread_local! {
     static CONVERT_SRGB_PIPELINE: RefCell<HashMap<(DeviceId, TextureFormatKey), ConvertSrgbPipeline>> = RefCell::new(HashMap::new());
+    static CONVERT_SRGB_IN_FLIGHT: crate::in_flight::InFlight<(DeviceId, TextureFormatKey)> = crate::in_flight::InFlight::new();
 }
 
 // sRGB to linear conversion shader
@@ -183,18 +184,26 @@ async fn get_pipeline(
 ) -> Result<ConvertSrgbPipeline> {
     let key: (DeviceId, TextureFormatKey) = (gpu.device_id(), format.into());
 
-    if let Some(pipeline) =
-        CONVERT_SRGB_PIPELINE.with(|pipeline_cell| pipeline_cell.borrow().get(&key).cloned())
-    {
-        return Ok(pipeline);
-    }
+    // One compile per key: a caller that arrives while it is running waits
+    // for it instead of starting another (see `crate::in_flight`).
+    let _in_flight = loop {
+        if let Some(pipeline) =
+            CONVERT_SRGB_PIPELINE.with(|pipeline_cell| pipeline_cell.borrow().get(&key).cloned())
+        {
+            return Ok(pipeline);
+        }
+        match crate::in_flight::claim(&CONVERT_SRGB_IN_FLIGHT, &key) {
+            crate::in_flight::Claim::Mine(guard) => break guard,
+            crate::in_flight::Claim::Wait(done) => {
+                let _ = done.await;
+            }
+        }
+    };
 
     let shader_source = shader_source(format)?;
     let shader_module = gpu.compile_shader(
         &ShaderModuleDescriptor::new(&shader_source, Some("sRGB Conversion Shader")).into(),
     );
-
-    shader_module.validate_shader().await?;
 
     let compute = ProgrammableStage::new(&shader_module, None);
 
@@ -246,9 +255,18 @@ async fn get_pipeline(
         Some("sRGB Conversion Pipeline"),
     );
 
-    let pipeline = gpu
-        .create_compute_pipeline(&pipeline_descriptor.into())
-        .await?;
+    // Validation and the pipeline compile are issued together: waiting for
+    // the validation round-trip before even asking for the pipeline put one
+    // after the other for nothing. The validation result is still read first,
+    // so a WGSL error is reported as one (with its diagnostics) and not as
+    // the pipeline rejection it also causes.
+    let pipeline_descriptor: web_sys::GpuComputePipelineDescriptor = pipeline_descriptor.into();
+    let (validated, pipeline) = futures::join!(
+        shader_module.validate_shader(),
+        gpu.create_compute_pipeline(&pipeline_descriptor)
+    );
+    validated?;
+    let pipeline = pipeline?;
 
     CONVERT_SRGB_PIPELINE.with(|pipeline_cell| {
         let pipeline = ConvertSrgbPipeline {

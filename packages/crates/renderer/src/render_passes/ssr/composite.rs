@@ -189,9 +189,24 @@ fn frag_main(in: VsOut) -> @location(0) vec4<f32> {{
     )
 }
 
+/// The composite's render pipeline. It is not in the renderer's pipeline
+/// pools (its shader and layout are private to this file), so it carries its
+/// own version of "reserved until the commit".
+enum CompositePipeline {
+    Ready(web_sys::GpuRenderPipeline),
+    /// The compile was issued when the pass was built — before the first
+    /// commit, when nothing draws yet — and has not been awaited. The commit
+    /// collects it ([`SsrComposite::resolve_pipeline`]). Awaiting it where the
+    /// pass is built held up everything a cold load still had to issue.
+    Pending(wasm_bindgen_futures::JsFuture<web_sys::GpuRenderPipeline>),
+    /// The driver rejected it. The pass skips its draw; the commit that found
+    /// out turns SSR off.
+    Failed,
+}
+
 pub struct SsrComposite {
     bind_group_layout: web_sys::GpuBindGroupLayout,
-    pipeline: web_sys::GpuRenderPipeline,
+    pipeline: CompositePipeline,
     bind_group: Option<web_sys::GpuBindGroup>,
     /// Whether temporal accumulation is on — selects the reflection source
     /// this pass reads: `ssr_final` (the temporal pass's accumulated output)
@@ -219,8 +234,6 @@ impl SsrComposite {
             )
             .into(),
         );
-        shader_module.validate_shader().await?;
-
         let bind_group_layout = gpu.create_bind_group_layout(
             &BindGroupLayoutDescriptor::new(Some("SSR Composite BGL"))
                 .with_entries(vec![
@@ -287,7 +300,21 @@ impl SsrComposite {
             .with_primitive(PrimitiveState::new())
             .with_layout(PipelineLayoutKind::Custom(&pipeline_layout))
             .with_fragment(fragment);
-        let pipeline = gpu.create_render_pipeline(&descriptor.into()).await?;
+        // Validation and the compile are issued together. The validation is
+        // always awaited here, so a WGSL error is this call's error, as ever.
+        let descriptor: web_sys::GpuRenderPipelineDescriptor = descriptor.into();
+        let compile =
+            wasm_bindgen_futures::JsFuture::from(gpu.create_render_pipeline_promise(&descriptor));
+        let pipeline = if ctx.pipelines.is_deferred() {
+            // No scene is committed: leave the compile running and let the
+            // commit collect it with the rest of the load.
+            shader_module.validate_shader().await?;
+            CompositePipeline::Pending(compile)
+        } else {
+            let (validated, pipeline) = futures::join!(shader_module.validate_shader(), compile);
+            validated?;
+            CompositePipeline::Ready(resolved_pipeline(pipeline)?)
+        };
 
         Ok(Self {
             bind_group_layout,
@@ -296,6 +323,23 @@ impl SsrComposite {
             temporal: ctx.post_processing.ssr.temporal,
             pass_descriptor: None,
         })
+    }
+
+    /// Waits for a compile left running by [`Self::new`] (see
+    /// [`CompositePipeline::Pending`]). A no-op once it has been collected.
+    /// An error means the driver rejected the pipeline: the pass then skips
+    /// its draw, and the caller decides what that costs (SSR, at a commit).
+    pub(crate) async fn resolve_pipeline(&mut self) -> Result<()> {
+        if !matches!(self.pipeline, CompositePipeline::Pending(_)) {
+            return Ok(());
+        }
+        let CompositePipeline::Pending(compile) =
+            std::mem::replace(&mut self.pipeline, CompositePipeline::Failed)
+        else {
+            return Ok(());
+        };
+        self.pipeline = CompositePipeline::Ready(resolved_pipeline(compile.await)?);
+        Ok(())
     }
 
     fn get_bind_group(&self) -> std::result::Result<&web_sys::GpuBindGroup, AwsmBindGroupError> {
@@ -355,14 +399,26 @@ impl SsrComposite {
     /// Records the additive composite render pass — fullscreen triangle onto
     /// `composite` with a Load op (the blend reads the existing HDR content).
     pub fn render(&self, ctx: &RenderContext) -> Result<()> {
+        // Not collected yet (no commit has run) or rejected: nothing to draw
+        // with. The reflection simply is not composited.
+        let CompositePipeline::Ready(pipeline) = &self.pipeline else {
+            return Ok(());
+        };
         let descriptor = self.pass_descriptor.as_ref().ok_or_else(|| {
             AwsmBindGroupError::NotFound("SSR Composite pass descriptor".to_string())
         })?;
         let render_pass = ctx.command_encoder.begin_render_pass(descriptor)?;
-        render_pass.set_pipeline(&self.pipeline);
+        render_pass.set_pipeline(pipeline);
         render_pass.set_bind_group(0, self.get_bind_group()?, None)?;
         render_pass.draw(3);
         render_pass.end();
         Ok(())
     }
+}
+
+/// A `createRenderPipelineAsync` result as a pipeline or the renderer's error.
+fn resolved_pipeline(
+    result: std::result::Result<web_sys::GpuRenderPipeline, wasm_bindgen::JsValue>,
+) -> Result<web_sys::GpuRenderPipeline> {
+    result.map_err(|err| awsm_renderer_core::error::AwsmCoreError::pipeline_creation(err).into())
 }

@@ -347,6 +347,15 @@ pub struct AwsmRenderer {
     skybox_is_placeholder: bool,
     ibl_is_placeholder: bool,
     brdf_lut_is_placeholder: bool,
+    /// The default BRDF LUT being generated in the background for a cold
+    /// commit (see `ensure_lighting_defaults`); collected by
+    /// `collect_pending_brdf_lut` before the commit ends.
+    #[allow(clippy::type_complexity)]
+    pending_brdf_lut: Option<
+        futures::channel::oneshot::Receiver<
+            std::result::Result<BrdfLut, awsm_renderer_core::error::AwsmCoreError>,
+        >,
+    >,
     /// Shadow mapping subsystem. Owns the depth atlas, EVSM atlas,
     /// cube-array pool, descriptors, and the comparison / filterable
     /// samplers used by the shadow-aware shading passes.
@@ -648,6 +657,13 @@ impl AwsmRenderer {
         #[cfg(feature = "lod")]
         self.ensure_cluster_pipelines_compiled().await?;
 
+        // A caller that drains here (a standalone `ensure_config_pipelines`,
+        // or a live commit) gets the finished LUT here too; a cold commit
+        // collects it with its batch.
+        if drain {
+            self.collect_pending_brdf_lut().await?;
+        }
+
         Ok(compiled)
     }
 
@@ -669,13 +685,23 @@ impl AwsmRenderer {
         for round in 0.. {
             let pending = self.compile_pending_pipelines().await?;
             compiled += pending.compiled;
-            if !pending.has_failures() {
+            // The SSR composite is not in the pools; a compile it left
+            // running before the commit is collected here, with the batch.
+            let composite_error = match self.render_passes.ssr.as_mut() {
+                Some(ssr) => ssr.composite.resolve_pipeline().await.err(),
+                None => None,
+            };
+            if !pending.has_failures() && composite_error.is_none() {
                 break;
             }
             if round == MAX_ROUNDS {
-                return pending.into_result();
+                return match composite_error {
+                    Some(err) if !pending.has_failures() => Err(err),
+                    _ => pending.into_result(),
+                };
             }
-            self.degrade_failed_post_processing(pending).await?;
+            self.degrade_failed_post_processing(pending, composite_error)
+                .await?;
         }
         let eager_ids = std::mem::take(&mut self.eager_pass_ids);
         for id in &eager_ids {
@@ -776,12 +802,20 @@ impl AwsmRenderer {
     async fn degrade_failed_post_processing(
         &mut self,
         pending: PendingPipelines,
+        ssr_composite_error: Option<crate::error::AwsmError>,
     ) -> crate::error::Result<()> {
         let keys = self.post_process_pipeline_keys();
-        let failed = keys.attribute(
-            pending.failed_compute.iter().map(|(key, _)| *key),
-            pending.failed_render.iter().map(|(key, _)| *key),
-        );
+        let failed = keys
+            .attribute(
+                pending.failed_compute.iter().map(|(key, _)| *key),
+                pending.failed_render.iter().map(|(key, _)| *key),
+            )
+            .map(|mut failed| {
+                // The composite belongs to the SSR pass like its compute
+                // pipelines do.
+                failed.ssr |= ssr_composite_error.is_some();
+                failed
+            });
         let degraded = failed.and_then(|failed| {
             self.post_processing
                 .degraded(failed, &self.config_spec.post_processing)
@@ -798,12 +832,15 @@ impl AwsmRenderer {
             .iter()
             .map(|(_, err)| err.to_string())
             .chain(pending.failed_render.iter().map(|(_, err)| err.to_string()))
+            .chain(ssr_composite_error.iter().map(|err| err.to_string()))
         {
             tracing::warn!("post-processing pipeline failed to compile: {err}");
         }
         tracing::warn!(
             "post-processing degraded after {} failed pipeline compile(s): {}{}{}{}",
-            pending.failed_compute.len() + pending.failed_render.len(),
+            pending.failed_compute.len()
+                + pending.failed_render.len()
+                + usize::from(ssr_composite_error.is_some()),
             if failed.ssr { "SSR off; " } else { "" },
             if failed.bloom { "bloom off; " } else { "" },
             if failed.volumetrics {
@@ -905,8 +942,43 @@ impl AwsmRenderer {
             self.set_ibl(ibl);
         }
         if self.brdf_lut_is_placeholder {
-            let lut = BrdfLut::new(&self.gpu, self.config_spec.brdf_lut_options.clone()).await?;
-            self.set_brdf_lut(lut);
+            if self.pipelines.is_deferred() {
+                // Cold commit: nothing draws until the commit ends, and the
+                // LUT's pipeline compile is one more thing awaited alone
+                // ahead of the load's batch. Generate it in the background
+                // and collect it with the batch (`collect_pending_brdf_lut`).
+                if self.pending_brdf_lut.is_none() {
+                    let (tx, rx) = futures::channel::oneshot::channel();
+                    let gpu = self.gpu.clone();
+                    let options = self.config_spec.brdf_lut_options.clone();
+                    wasm_bindgen_futures::spawn_local(async move {
+                        let _ = tx.send(BrdfLut::new(&gpu, options).await);
+                    });
+                    self.pending_brdf_lut = Some(rx);
+                }
+            } else {
+                let lut =
+                    BrdfLut::new(&self.gpu, self.config_spec.brdf_lut_options.clone()).await?;
+                self.set_brdf_lut(lut);
+            }
+        }
+        Ok(())
+    }
+
+    /// Installs the default BRDF LUT a cold commit started generating in the
+    /// background. A no-op when none is pending. If content supplied a real
+    /// LUT in the meantime, the default is dropped.
+    async fn collect_pending_brdf_lut(&mut self) -> crate::error::Result<()> {
+        let Some(pending) = self.pending_brdf_lut.take() else {
+            return Ok(());
+        };
+        // A cancelled channel means the generating task was dropped (page
+        // teardown): leave the placeholder; the next commit retries.
+        if let Ok(result) = pending.await {
+            let lut = result?;
+            if self.brdf_lut_is_placeholder {
+                self.set_brdf_lut(lut);
+            }
         }
         Ok(())
     }
@@ -2411,6 +2483,27 @@ impl AwsmRendererBuilder {
         // the registers (and the dependent Lights / Environment
         // construction) to the post-await sync block.
         let formats_for_textures = render_texture_formats.clone();
+        // The two blit pipelines `RenderTextures::new` needs are the first
+        // pipelines a renderer compiles, and on a cold GPU process that first
+        // compile is slow (measured: ~0.35 s for 1.2 KB of WGSL). Nothing in
+        // `build()` depends on them, so they are STARTED here and only
+        // collected at the very end (`RenderTextures::new`, below, joins the
+        // compiles already running — `blit_get_pipeline` dedupes in flight).
+        // The shader plan, the boot shader modules and the pipeline
+        // reservations all overlap with the wait instead of queueing behind
+        // it. A failure is reported by the awaited call at the end.
+        for sample_count in [None, Some(4)] {
+            let gpu = gpu.clone();
+            let color_format = formats_for_textures.color;
+            wasm_bindgen_futures::spawn_local(async move {
+                let _ = awsm_renderer_core::texture::blit::blit_get_pipeline(
+                    &gpu,
+                    color_format,
+                    sample_count,
+                )
+                .await;
+            });
+        }
         let bind_groups = BindGroups::new(&features);
         // Resolved edge-pixel budget — mirrors what `MaterialEdgeBuffers` uses
         // (the builder override or the desktop default). Sizes the prep pass's
@@ -2471,7 +2564,6 @@ impl AwsmRendererBuilder {
             skybox_resources,
             brdf_lut,
             mut render_passes_plan,
-            render_textures,
         ) = futures::try_join!(
             IblTexture::prepare_resources_sized(&gpu, ibl_filtered_env_colors, 1),
             IblTexture::prepare_resources_sized(&gpu, ibl_irradiance_colors, 1),
@@ -2482,19 +2574,9 @@ impl AwsmRendererBuilder {
                     .map_err(crate::error::AwsmError::from)
             },
             RenderPasses::describe_shaders(&mut render_pass_init, &features),
-            async {
-                RenderTextures::new(
-                    &gpu,
-                    formats_for_textures,
-                    &features,
-                    prep_config.shadow_visibility_layers(),
-                )
-                .await
-                .map_err(crate::error::AwsmError::from)
-            },
         )?;
         let opaque_mipgen: Option<opaque_mipgen::OpaqueMipgen> = None;
-        submark("render textures + placeholder lighting resources + shader plan");
+        submark("placeholder lighting resources + shader plan");
         // Move `render_pass_init` into a discard binding so its
         // `&mut`-borrows of bind_group_layouts / pipeline_layouts /
         // pipelines / shaders / render_texture_formats / textures /
@@ -2732,7 +2814,7 @@ impl AwsmRendererBuilder {
             &mut pipeline_layouts,
             &mut shaders,
             render_passes_plan.geometry_bind_groups(),
-            &render_textures.formats,
+            &formats_for_textures,
             shadows_config.unwrap_or_default(),
             // 003 stage 7: shadows follow the renderer-wide depth convention
             // (writer projections + sampler + pipeline compare/bias + clear +
@@ -2913,6 +2995,18 @@ impl AwsmRendererBuilder {
         // moved into the struct below.
         let gpu_timestamps = crate::profiling::GpuTimestamps::new(&gpu);
 
+        // Collect the blit pipelines started at the top (see there). By now
+        // they have usually resolved; if not, this is the one place `build()`
+        // waits for them.
+        let render_textures = RenderTextures::new(
+            &gpu,
+            formats_for_textures,
+            &features,
+            prep_config.shadow_visibility_layers(),
+        )
+        .await?;
+        submark("render textures (blit pipelines collected)");
+
         let mut _self = AwsmRenderer {
             gpu,
             gpu_timestamps,
@@ -3008,6 +3102,7 @@ impl AwsmRendererBuilder {
             skybox_is_placeholder: true,
             ibl_is_placeholder: true,
             brdf_lut_is_placeholder: true,
+            pending_brdf_lut: None,
             last_ensured_bucket_layout: None,
             // Flipped to true at end of build(). Used by config-change
             // APIs to enforce the race policy from the architecture doc.
@@ -3702,6 +3797,11 @@ impl AwsmRenderer {
         // starts, so a loading UI has a number to show for it.
         let reserved =
             self.pipelines.compute.pending_count() + self.pipelines.render.pending_count();
+        if self.pipelines.is_deferred() {
+            // A cold load: have the plain-RGBA upload helpers compiling inside
+            // this batch, for whatever uploads such a texture after the load.
+            self.textures.kick_default_upload_pipelines();
+        }
         if reserved > 0 {
             let mut progress = self.compile_progress();
             progress.in_flight_subcompiles = progress
@@ -3718,6 +3818,10 @@ impl AwsmRenderer {
             self.reconcile_material_variants()?;
             self.prewarm_pipelines().await?;
         }
+
+        // The default BRDF LUT a cold commit generates in the background
+        // (see `ensure_lighting_defaults`) — long resolved by now.
+        self.collect_pending_brdf_lut().await?;
 
         // Report the initial in-flight count before the drain so the splash
         // shows a number immediately rather than after the first resolution.

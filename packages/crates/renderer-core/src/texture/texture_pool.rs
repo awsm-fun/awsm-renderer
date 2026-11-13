@@ -54,6 +54,39 @@ pub struct TexturePoolArray<ID> {
     pub gpu_texture_view: Option<web_sys::GpuTextureView>,
 }
 
+/// The upload helper pipelines a pool needs — see
+/// [`TexturePool::upload_pipeline_needs`].
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct UploadPipelineNeeds {
+    /// Formats that need the sRGB → linear conversion pipeline.
+    pub srgb: Vec<TextureFormat>,
+    /// `(format, is_array)` pairs that need a mipmap pipeline.
+    pub mipmap: Vec<(TextureFormat, bool)>,
+}
+
+impl UploadPipelineNeeds {
+    /// Starts compiling every pipeline listed, in the background, and
+    /// returns at once. Whoever needs one later — [`TexturePool::write_gpu`]
+    /// — finds it compiled, or joins the compile still running, instead of
+    /// starting it then and waiting for all of it. A failure is not reported
+    /// here: the upload that needs the pipeline compiles it again and reports
+    /// its own error.
+    pub fn compile_in_background(self, gpu: &AwsmRendererWebGpu) {
+        for format in self.srgb {
+            let gpu = gpu.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                let _ = convert_srgb::prewarm_pipeline(&gpu, format).await;
+            });
+        }
+        for (format, is_array) in self.mipmap {
+            let gpu = gpu.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                let _ = mipmap::prewarm_pipeline(&gpu, format, is_array).await;
+            });
+        }
+    }
+}
+
 /// Lookup information for a texture entry in the pool.
 pub struct TexturePoolEntryInfo<ID> {
     pub id: ID,
@@ -223,8 +256,37 @@ impl<ID: Eq + Hash + Clone> TexturePool<ID> {
     /// back to back. A no-op once they exist (and for compressed arrays, which
     /// use neither).
     async fn prewarm_upload_pipelines(&self, gpu: &AwsmRendererWebGpu) -> Result<()> {
-        let mut srgb: Vec<TextureFormat> = Vec::new();
-        let mut mipmap: Vec<(TextureFormat, bool)> = Vec::new();
+        let needs = self.upload_pipeline_needs();
+        if needs.srgb.len() + needs.mipmap.len() < 2 {
+            // Zero or one pipeline: nothing to overlap; the lazy path covers it.
+            return Ok(());
+        }
+        let srgb = futures::future::try_join_all(
+            needs
+                .srgb
+                .into_iter()
+                .map(|format| convert_srgb::prewarm_pipeline(gpu, format)),
+        );
+        let mipmap = futures::future::try_join_all(
+            needs
+                .mipmap
+                .into_iter()
+                .map(|(format, is_array)| mipmap::prewarm_pipeline(gpu, format, is_array)),
+        );
+        futures::future::try_join(srgb, mipmap).await?;
+        Ok(())
+    }
+
+    /// The helper pipelines the next [`Self::write_gpu`] will use for the
+    /// arrays that are dirty right now: an sRGB-conversion pipeline per format
+    /// that has an sRGB image, and a mipmap pipeline per `(format, is_array)`
+    /// that generates mips. Compressed arrays use neither.
+    ///
+    /// `is_array` follows the array's CURRENT layer count, so an array still
+    /// being filled reports the single-layer pipeline after its first image
+    /// and the array one from its second.
+    pub fn upload_pipeline_needs(&self) -> UploadPipelineNeeds {
+        let mut needs = UploadPipelineNeeds::default();
         for array in self.arrays.values() {
             if !array.gpu_dirty || array.compressed {
                 continue;
@@ -233,33 +295,19 @@ impl<ID: Eq + Hash + Clone> TexturePool<ID> {
                 .images
                 .iter()
                 .any(|(_, _, color)| color.srgb_to_linear)
-                && !srgb.contains(&array.format)
+                && !needs.srgb.contains(&array.format)
             {
-                srgb.push(array.format);
+                needs.srgb.push(array.format);
             }
             let is_array = array.images.len() > 1;
             if array.mipmap
                 && array.mipmap_levels() >= 2
-                && !mipmap.contains(&(array.format, is_array))
+                && !needs.mipmap.contains(&(array.format, is_array))
             {
-                mipmap.push((array.format, is_array));
+                needs.mipmap.push((array.format, is_array));
             }
         }
-        if srgb.len() + mipmap.len() < 2 {
-            // Zero or one pipeline: nothing to overlap; the lazy path covers it.
-            return Ok(());
-        }
-        let srgb = futures::future::try_join_all(
-            srgb.into_iter()
-                .map(|format| convert_srgb::prewarm_pipeline(gpu, format)),
-        );
-        let mipmap = futures::future::try_join_all(
-            mipmap
-                .into_iter()
-                .map(|(format, is_array)| mipmap::prewarm_pipeline(gpu, format, is_array)),
-        );
-        futures::future::try_join(srgb, mipmap).await?;
-        Ok(())
+        needs
     }
 
     /// Iterates over GPU textures for uploaded arrays.

@@ -84,9 +84,10 @@ struct MipmapPipeline {
 
 thread_local! {
     static MIPMAP_PIPELINE: RefCell<HashMap<LookupKey, MipmapPipeline>> = RefCell::new(HashMap::new());
+    static MIPMAP_IN_FLIGHT: crate::in_flight::InFlight<LookupKey> = crate::in_flight::InFlight::new();
 }
 
-#[derive(Hash, Debug, Eq, PartialEq)]
+#[derive(Hash, Debug, Eq, PartialEq, Clone)]
 struct LookupKey {
     // Scopes the device-bound compute pipeline per-device (see `DeviceId`).
     pub device: DeviceId,
@@ -410,17 +411,25 @@ async fn get_pipeline(
         is_array,
     };
 
-    if let Some(pipeline) =
-        MIPMAP_PIPELINE.with(|pipeline_cell| pipeline_cell.borrow().get(&key).cloned())
-    {
-        return Ok(pipeline);
-    }
+    // One compile per key: a caller that arrives while it is running waits
+    // for it instead of starting another (see `crate::in_flight`).
+    let _in_flight = loop {
+        if let Some(pipeline) =
+            MIPMAP_PIPELINE.with(|pipeline_cell| pipeline_cell.borrow().get(&key).cloned())
+        {
+            return Ok(pipeline);
+        }
+        match crate::in_flight::claim(&MIPMAP_IN_FLIGHT, &key) {
+            crate::in_flight::Claim::Mine(guard) => break guard,
+            crate::in_flight::Claim::Wait(done) => {
+                let _ = done.await;
+            }
+        }
+    };
 
     let shader_source = shader_source(format, is_array)?;
     let shader_module = gpu
         .compile_shader(&ShaderModuleDescriptor::new(&shader_source, Some("Mipmap Shader")).into());
-
-    shader_module.validate_shader().await?;
 
     let compute = ProgrammableStage::new(&shader_module, None);
 
@@ -478,9 +487,18 @@ async fn get_pipeline(
         Some("Mipmap Pipeline"),
     );
 
-    let pipeline = gpu
-        .create_compute_pipeline(&pipeline_descriptor.into())
-        .await?;
+    // Validation and the pipeline compile are issued together: waiting for
+    // the validation round-trip before even asking for the pipeline put one
+    // after the other for nothing. The validation result is still read first,
+    // so a WGSL error is reported as one (with its diagnostics) and not as
+    // the pipeline rejection it also causes.
+    let pipeline_descriptor: web_sys::GpuComputePipelineDescriptor = pipeline_descriptor.into();
+    let (validated, pipeline) = futures::join!(
+        shader_module.validate_shader(),
+        gpu.create_compute_pipeline(&pipeline_descriptor)
+    );
+    validated?;
+    let pipeline = pipeline?;
 
     MIPMAP_PIPELINE.with(|pipeline_cell| {
         let pipeline = MipmapPipeline {

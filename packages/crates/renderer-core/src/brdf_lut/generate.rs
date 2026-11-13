@@ -151,8 +151,6 @@ async fn get_pipeline(gpu: &AwsmRendererWebGpu) -> Result<web_sys::GpuRenderPipe
         &ShaderModuleDescriptor::new(shader_source, Some("BRDF Lut Shader")).into(),
     );
 
-    shader_module.validate_shader().await?;
-
     let bind_group_layout = gpu.create_bind_group_layout(
         &BindGroupLayoutDescriptor::new(Some("BRDF Lut Bind Group Layout"))
             .with_entries(vec![])
@@ -179,9 +177,15 @@ async fn get_pipeline(gpu: &AwsmRendererWebGpu) -> Result<web_sys::GpuRenderPipe
         vec![ColorTargetState::new(TextureFormat::Rgba16float)],
     ));
 
-    let render_pipeline = gpu
-        .create_render_pipeline(&pipeline_descriptor.into())
-        .await?;
+    // Validation and the pipeline compile are issued together; the validation
+    // result is read first so a WGSL error is reported as one.
+    let pipeline_descriptor: web_sys::GpuRenderPipelineDescriptor = pipeline_descriptor.into();
+    let (validated, render_pipeline) = futures::join!(
+        shader_module.validate_shader(),
+        gpu.create_render_pipeline(&pipeline_descriptor)
+    );
+    validated?;
+    let render_pipeline = render_pipeline?;
 
     BRDF_LUT_PIPELINE.with(|pipeline_cell| {
         pipeline_cell

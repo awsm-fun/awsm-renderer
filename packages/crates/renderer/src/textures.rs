@@ -1047,6 +1047,13 @@ pub struct Textures {
     neutral_white: Option<TextureKey>,
     neutral_flat_normal: Option<TextureKey>,
     neutral_sampler: Option<SamplerKey>,
+    /// For starting upload helper compiles in the background — see
+    /// [`Self::kick_upload_pipelines`].
+    gpu: AwsmRendererWebGpu,
+    /// The upload helper pipelines already started (or compiled), so each is
+    /// kicked once: sRGB conversion per format, mipmap per (format, is_array).
+    kicked_srgb_pipelines: Vec<TextureFormat>,
+    kicked_mipmap_pipelines: Vec<(TextureFormat, bool)>,
     pool_textures: SlotMap<TextureKey, TexturePoolEntryInfo<TextureKey>>,
     cubemaps: SlotMap<CubemapTextureKey, web_sys::GpuTexture>,
     samplers: SlotMap<SamplerKey, web_sys::GpuSampler>,
@@ -1278,6 +1285,9 @@ impl Textures {
             neutral_white: None,
             neutral_flat_normal: None,
             neutral_sampler: None,
+            gpu: gpu.clone(),
+            kicked_srgb_pipelines: Vec::new(),
+            kicked_mipmap_pipelines: Vec::new(),
             pool_textures: SlotMap::with_key(),
             cubemaps: SlotMap::with_key(),
             texture_transforms,
@@ -1392,7 +1402,66 @@ impl Textures {
             self.sampler_pool_dirty = true;
         }
 
+        self.kick_upload_pipelines();
+
         Ok(key)
+    }
+
+    /// Starts, in the background, the helper pipelines the pool's next upload
+    /// will need for what has been added so far (sRGB conversion, mipmap
+    /// generation — uncompressed images only). Each is started once.
+    ///
+    /// The upload itself (`finalize_gpu_textures`, inside `commit_load`)
+    /// creates them on first use and waits; on a cold load that was about
+    /// 0.2 s spent before the load's pipeline batch could even be issued.
+    /// Started here, when the image arrives, they are compiling while the
+    /// rest of the scene is still being fetched and decoded.
+    fn kick_upload_pipelines(&mut self) {
+        let mut needs = self.pool.upload_pipeline_needs();
+        needs
+            .srgb
+            .retain(|format| !self.kicked_srgb_pipelines.contains(format));
+        needs
+            .mipmap
+            .retain(|pair| !self.kicked_mipmap_pipelines.contains(pair));
+        if needs.srgb.is_empty() && needs.mipmap.is_empty() {
+            return;
+        }
+        self.kicked_srgb_pipelines
+            .extend(needs.srgb.iter().copied());
+        self.kicked_mipmap_pipelines
+            .extend(needs.mipmap.iter().copied());
+        needs.compile_in_background(&self.gpu);
+    }
+
+    /// Starts, in the background, the helper pipelines an upload of plain
+    /// 8-bit RGBA images uses — the format [`Self::add_image_rgba_raw`] and
+    /// every decoded PNG / JPEG / WebP goes in as — whether or not one has
+    /// been added yet.
+    ///
+    /// A cold load calls this as it issues its pipeline batch. Content that
+    /// uploads such a texture only AFTER the load (a HUD, a marquee, a dynamic
+    /// texture, then a second `commit_load`) otherwise meets three pipelines
+    /// nobody has compiled, and waits ~0.2 s for them alone at the very end.
+    /// They are three small shaders; started here they finish inside the
+    /// batch.
+    pub(crate) fn kick_default_upload_pipelines(&mut self) {
+        let format = TextureFormat::Rgba8unorm;
+        let mut needs = awsm_renderer_core::texture::texture_pool::UploadPipelineNeeds {
+            srgb: vec![format],
+            mipmap: vec![(format, false), (format, true)],
+        };
+        needs
+            .srgb
+            .retain(|format| !self.kicked_srgb_pipelines.contains(format));
+        needs
+            .mipmap
+            .retain(|pair| !self.kicked_mipmap_pipelines.contains(pair));
+        self.kicked_srgb_pipelines
+            .extend(needs.srgb.iter().copied());
+        self.kicked_mipmap_pipelines
+            .extend(needs.mipmap.iter().copied());
+        needs.compile_in_background(&self.gpu);
     }
 
     /// Adds a texture from raw RGBA8 bytes by packing them through a synchronous
