@@ -15,8 +15,8 @@ use crate::{
     image::{CopyExternalImageDestInfo, ImageData},
     renderer::AwsmRendererWebGpu,
     texture::{
-        convert_srgb::convert_srgb_to_linear,
-        mipmap::{calculate_mipmap_levels, generate_mipmaps, MipmapTextureKind},
+        convert_srgb::{self, convert_srgb_to_linear},
+        mipmap::{self, calculate_mipmap_levels, generate_mipmaps, MipmapTextureKind},
         Extent3d, TextureDescriptor, TextureDimension, TextureFormat, TextureFormatKey,
         TextureViewDescriptor, TextureViewDimension,
     },
@@ -204,6 +204,8 @@ impl<ID: Eq + Hash + Clone> TexturePool<ID> {
 
     /// Uploads dirty arrays to the GPU. Returns true if any array was dirty.
     pub async fn write_gpu(&mut self, gpu: &AwsmRendererWebGpu) -> Result<bool> {
+        self.prewarm_upload_pipelines(gpu).await?;
+
         let mut any_dirty = false;
         for array in self.arrays.values_mut() {
             any_dirty |= array.gpu_dirty;
@@ -211,6 +213,53 @@ impl<ID: Eq + Hash + Clone> TexturePool<ID> {
         }
 
         Ok(any_dirty)
+    }
+
+    /// Compile, TOGETHER, every sRGB-conversion and mipmap pipeline the dirty
+    /// arrays are about to use. Each is otherwise created lazily at its first
+    /// use inside the per-array upload — the sRGB one while recording the
+    /// first layer, the mipmap one only after that array's upload was
+    /// submitted — so the first upload that needs both paid for two compiles
+    /// back to back. A no-op once they exist (and for compressed arrays, which
+    /// use neither).
+    async fn prewarm_upload_pipelines(&self, gpu: &AwsmRendererWebGpu) -> Result<()> {
+        let mut srgb: Vec<TextureFormat> = Vec::new();
+        let mut mipmap: Vec<(TextureFormat, bool)> = Vec::new();
+        for array in self.arrays.values() {
+            if !array.gpu_dirty || array.compressed {
+                continue;
+            }
+            if array
+                .images
+                .iter()
+                .any(|(_, _, color)| color.srgb_to_linear)
+                && !srgb.contains(&array.format)
+            {
+                srgb.push(array.format);
+            }
+            let is_array = array.images.len() > 1;
+            if array.mipmap
+                && array.mipmap_levels() >= 2
+                && !mipmap.contains(&(array.format, is_array))
+            {
+                mipmap.push((array.format, is_array));
+            }
+        }
+        if srgb.len() + mipmap.len() < 2 {
+            // Zero or one pipeline: nothing to overlap; the lazy path covers it.
+            return Ok(());
+        }
+        let srgb = futures::future::try_join_all(
+            srgb.into_iter()
+                .map(|format| convert_srgb::prewarm_pipeline(gpu, format)),
+        );
+        let mipmap = futures::future::try_join_all(
+            mipmap
+                .into_iter()
+                .map(|(format, is_array)| mipmap::prewarm_pipeline(gpu, format, is_array)),
+        );
+        futures::future::try_join(srgb, mipmap).await?;
+        Ok(())
     }
 
     /// Iterates over GPU textures for uploaded arrays.

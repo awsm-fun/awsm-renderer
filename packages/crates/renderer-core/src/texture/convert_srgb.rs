@@ -169,6 +169,14 @@ pub async fn convert_srgb_to_linear(
     Ok(())
 }
 
+/// Create (or fetch) the sRGB→linear conversion pipeline for `format` without
+/// converting anything. Lets a caller that knows it will also need the mipmap
+/// pipeline compile both at once instead of one after the other — see
+/// `TexturePool::write_gpu`.
+pub async fn prewarm_pipeline(gpu: &AwsmRendererWebGpu, format: TextureFormat) -> Result<()> {
+    get_pipeline(gpu, format).await.map(|_| ())
+}
+
 async fn get_pipeline(
     gpu: &AwsmRendererWebGpu,
     format: TextureFormat,

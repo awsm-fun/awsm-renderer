@@ -386,6 +386,19 @@ pub async fn generate_mipmaps(
     Ok(())
 }
 
+/// Create (or fetch) the mipmap pipeline [`generate_mipmaps`] will use for a
+/// texture of `format`, without generating anything. `is_array` must match
+/// what `generate_mipmaps` derives: true when the texture has more than one
+/// layer. Lets a caller compile it alongside the other pipelines an upload
+/// needs — see `TexturePool::write_gpu`.
+pub async fn prewarm_pipeline(
+    gpu: &AwsmRendererWebGpu,
+    format: TextureFormat,
+    is_array: bool,
+) -> Result<()> {
+    get_pipeline(gpu, format, is_array).await.map(|_| ())
+}
+
 async fn get_pipeline(
     gpu: &AwsmRendererWebGpu,
     format: TextureFormat,
