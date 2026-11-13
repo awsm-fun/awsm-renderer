@@ -56,7 +56,13 @@ pub struct ShadowMaskedPipelines {
     /// Pipeline layout for instanced casters (uniform-with-dynamic-offset meta).
     pipeline_layout_key_uniform: PipelineLayoutKey,
     main: HashMap<MaskedShadowPipelineKeyId, RenderPipelineKey>,
+    /// Bumped every time the pool is emptied — same role as
+    /// `GeometryMaskedPipelines::epoch`.
+    epoch: u64,
 }
+
+/// The two shapes every masked-shadow variant compiles: instancing off, on.
+const INSTANCING_SHAPES: [bool; 2] = [false, true];
 
 impl ShadowMaskedPipelines {
     /// Resolves the two masked-shadow pipeline layouts (augmented group 0 + the
@@ -72,7 +78,19 @@ impl ShadowMaskedPipelines {
             pipeline_layout_key_storage,
             pipeline_layout_key_uniform,
             main: HashMap::new(),
+            epoch: 0,
         })
+    }
+
+    /// See the `epoch` field.
+    pub(crate) fn epoch(&self) -> u64 {
+        self.epoch
+    }
+
+    /// True when a masked-shadow variant for `shader_id` is already compiled
+    /// (any shape — every shape of a variant is inserted together).
+    pub fn has_variant(&self, shader_id: MaterialShaderId) -> bool {
+        self.main.keys().any(|k| k.shader_id == shader_id)
     }
 
     /// Re-resolves the pipeline layouts after the masked group-0 layout changed
@@ -88,6 +106,7 @@ impl ShadowMaskedPipelines {
         self.pipeline_layout_key_storage = storage;
         self.pipeline_layout_key_uniform = uniform;
         self.main.clear();
+        self.epoch += 1;
         Ok(())
     }
 
@@ -118,26 +137,64 @@ impl ShadowMaskedPipelines {
         if variants.is_empty() {
             return Ok(());
         }
-        // One entry per (variant, instancing shape).
-        let shapes: Vec<(&MaskedShadowVariant, bool)> = variants
-            .iter()
-            .flat_map(|variant| [false, true].into_iter().map(move |i| (variant, i)))
-            .collect();
-        let shader_caches: Vec<ShaderCacheKeyShadowMasked> = shapes
-            .iter()
-            .map(|(variant, instancing)| ShaderCacheKeyShadowMasked {
-                texture_pool_arrays_len: masked_bind_group.texture_pool_arrays_len,
-                texture_pool_samplers_len: masked_bind_group.texture_pool_samplers_len,
-                shader_id: variant.shader_id,
-                base: variant.base,
-                dynamic_alpha: variant.dynamic_alpha.clone(),
-                instancing_transforms: *instancing,
-            })
-            .collect();
         let shader_keys = ctx
             .shaders
-            .ensure_keys(ctx.gpu, shader_caches.into_iter().map(Into::into))
+            .ensure_keys(
+                ctx.gpu,
+                Self::shader_cache_keys(masked_bind_group, variants),
+            )
             .await?;
+        let (cache_keys, slots) = self.pipeline_cache_keys(ctx, variants, &shader_keys);
+        let keys = ctx
+            .pipelines
+            .render
+            .ensure_keys(ctx.gpu, ctx.shaders, ctx.pipeline_layouts, cache_keys)
+            .await?;
+        self.insert_resolved(slots, keys);
+        Ok(())
+    }
+
+    /// The shaders `variants` compile at the masked bind group's current
+    /// texture-pool shape: two per variant (instancing off, then on), in
+    /// variant order.
+    pub(crate) fn shader_cache_keys(
+        masked_bind_group: &ShadowMaskedBindGroup,
+        variants: &[MaskedShadowVariant],
+    ) -> Vec<crate::shaders::ShaderCacheKey> {
+        variants
+            .iter()
+            .flat_map(|variant| INSTANCING_SHAPES.into_iter().map(move |i| (variant, i)))
+            .map(|(variant, instancing)| {
+                ShaderCacheKeyShadowMasked {
+                    texture_pool_arrays_len: masked_bind_group.texture_pool_arrays_len,
+                    texture_pool_samplers_len: masked_bind_group.texture_pool_samplers_len,
+                    shader_id: variant.shader_id,
+                    base: variant.base,
+                    dynamic_alpha: variant.dynamic_alpha.clone(),
+                    instancing_transforms: instancing,
+                }
+                .into()
+            })
+            .collect()
+    }
+
+    /// The pipelines of `variants` and the pool slot each one fills.
+    /// `shader_keys` is the resolved [`Self::shader_cache_keys`] (two per
+    /// variant). Sync — no compile.
+    pub(crate) fn pipeline_cache_keys(
+        &self,
+        ctx: &RenderPassInitContext<'_>,
+        variants: &[MaskedShadowVariant],
+        shader_keys: &[crate::shaders::ShaderKey],
+    ) -> (
+        Vec<crate::pipelines::render_pipeline::RenderPipelineCacheKey>,
+        Vec<MaskedShadowPipelineKeyId>,
+    ) {
+        // One entry per (variant, instancing shape) — the order
+        // `shader_cache_keys` emits.
+        let shapes = variants
+            .iter()
+            .flat_map(|variant| INSTANCING_SHAPES.into_iter().map(move |i| (variant, i)));
 
         // Depth-only, bias-matched pipelines shared with the plain caster;
         // `with_force_fragment_stage` adds the discard fragment. Four cull
@@ -147,10 +204,10 @@ impl ShadowMaskedPipelines {
             .into_iter()
             .flat_map(|cube_face| [false, true].into_iter().map(move |ds| (cube_face, ds)))
             .collect();
-        let mut cache_keys = Vec::with_capacity(shapes.len() * combos.len());
-        let mut slots = Vec::with_capacity(shapes.len() * combos.len());
-        for ((variant, instancing), shader_key) in shapes.iter().zip(shader_keys) {
-            let layout_key = if *instancing {
+        let mut cache_keys = Vec::with_capacity(shader_keys.len() * combos.len());
+        let mut slots = Vec::with_capacity(shader_keys.len() * combos.len());
+        for ((variant, instancing), shader_key) in shapes.zip(shader_keys) {
+            let layout_key = if instancing {
                 self.pipeline_layout_key_uniform
             } else {
                 self.pipeline_layout_key_storage
@@ -158,9 +215,9 @@ impl ShadowMaskedPipelines {
             for &(cube_face, double_sided) in &combos {
                 cache_keys.push(
                     shadow_pipeline_cache_key(
-                        shader_key,
+                        *shader_key,
                         layout_key,
-                        *instancing,
+                        instancing,
                         cube_face,
                         double_sided,
                         ctx.features.depth(),
@@ -169,27 +226,31 @@ impl ShadowMaskedPipelines {
                 );
                 slots.push(MaskedShadowPipelineKeyId {
                     shader_id: variant.shader_id,
-                    instancing: *instancing,
+                    instancing,
                     cube_face,
                     double_sided,
                 });
             }
         }
+        (cache_keys, slots)
+    }
 
-        let keys = ctx
-            .pipelines
-            .render
-            .ensure_keys(ctx.gpu, ctx.shaders, ctx.pipeline_layouts, cache_keys)
-            .await?;
+    /// Records compiled pipelines under the slots [`Self::pipeline_cache_keys`]
+    /// returned for them.
+    pub(crate) fn insert_resolved(
+        &mut self,
+        slots: Vec<MaskedShadowPipelineKeyId>,
+        keys: Vec<RenderPipelineKey>,
+    ) {
         for (slot, key) in slots.into_iter().zip(keys) {
             self.main.insert(slot, key);
         }
-        Ok(())
     }
 
     /// Drops every compiled masked-shadow pipeline.
     pub fn clear(&mut self) {
         self.main.clear();
+        self.epoch += 1;
     }
 
     /// Looks up a compiled masked-shadow pipeline for a caster's `(shader_id,

@@ -218,6 +218,14 @@ impl AwsmRenderer {
         self.kick_decal_pipelines_compile()?;
         self.poll_decal_pipelines_compile()?;
 
+        // Built-in masked (alpha-tested) variants for a material that turned
+        // alpha-tested since the last commit: same kick/poll auto-drive. The
+        // commit path compiles them for everything loaded through it; this
+        // covers a live `update_material` / `set_mesh_material` with no commit
+        // after it. An integer check per frame when there is nothing to do.
+        self.kick_masked_variants_compile()?;
+        self.poll_masked_variants_compile();
+
         // HUD meshes (editor gizmos, in-game HUD primitives) draw
         // through the transparent pipeline, which is per-mesh and
         // texture-pool-shape-coupled. Unlike world transparents — whose

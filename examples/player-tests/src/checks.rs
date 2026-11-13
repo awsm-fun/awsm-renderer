@@ -9,8 +9,8 @@ use awsm_renderer_scene::Trs;
 use awsm_renderer_scene_loader::{load_scene_for_player, LoadedScene};
 
 use crate::harness::{
-    count_authored_nodes, create_renderer, destroy_renderer, fetch_scene, now_ms, orbit_eye,
-    run_frames, scene_bounds, url_flag_value, url_has_flag,
+    count_authored_nodes, create_renderer, create_renderer_with_msaa, destroy_renderer,
+    fetch_scene, now_ms, orbit_eye, run_frames, scene_bounds, url_flag_value, url_has_flag,
 };
 use crate::report::{set_hud, Report};
 
@@ -326,6 +326,18 @@ pub async fn run_all() {
     if pick_enabled {
         set_hud("player-tests: pick-after-mip-grow");
         report.emit_result("pick-after-mip-grow", pick_after_mip_grow(&origin).await);
+    }
+
+    // ── 11. a material turned alpha-tested on a running scene cuts out
+    //        without a commit. ─────────────────────────────────────────────────
+    if pick_enabled {
+        for (name, msaa) in [
+            ("mask-without-commit", true),
+            ("mask-without-commit:no-msaa", false),
+        ] {
+            set_hud(&format!("player-tests: {name}"));
+            report.emit_result(name, mask_without_commit(&origin, msaa).await);
+        }
     }
 
     // ── 5. prefab-churn — spawn/despawn a duplicated subtree, no leak. ──────
@@ -1016,6 +1028,183 @@ async fn pipeline_invariants(
     .await;
     report.emit_result(&ensure_name, result);
     destroy_renderer(renderer);
+}
+
+/// A canvas pixel showing a plain opaque PBR mesh of [`PICK_SCENE`], found by
+/// picking: `(x, y, mesh, double_sided)`. The live-edit checks swap that
+/// mesh's material and watch the pixel.
+async fn opaque_pbr_pick_target(
+    renderer: &mut AwsmRenderer,
+    canvas: &web_sys::HtmlCanvasElement,
+) -> Result<(i32, i32, awsm_renderer::meshes::MeshKey, bool)> {
+    use awsm_renderer::materials::{Material, MaterialAlphaMode};
+    use awsm_renderer::picker::PickResult;
+
+    let (width, height) = (canvas.width() as f32, canvas.height() as f32);
+    for fy in [0.5_f32, 0.4, 0.6, 0.3, 0.7] {
+        for fx in [0.5_f32, 0.4, 0.6, 0.3, 0.7] {
+            let (x, y) = ((width * fx) as i32, (height * fy) as i32);
+            let PickResult::Hit(mesh_key) = renderer
+                .pick(x, y)
+                .await
+                .map_err(|e| anyhow!("pick: {e}"))?
+            else {
+                continue;
+            };
+            let Ok(mesh) = renderer.meshes.get(mesh_key) else {
+                continue;
+            };
+            let Ok(Material::Pbr(pbr)) = renderer.materials.get(mesh.material_key) else {
+                continue;
+            };
+            if !mesh.instanced
+                && matches!(pbr.alpha_mode(), MaterialAlphaMode::Opaque)
+                && !pbr.has_transmission()
+            {
+                return Ok((x, y, mesh_key, pbr.double_sided()));
+            }
+        }
+    }
+    Err(anyhow!(
+        "no pick over {PICK_SCENE} landed on an opaque PBR mesh — the check has nothing to edit"
+    ))
+}
+
+/// How long `mask-without-commit` waits for the lazily compiled masked
+/// variants. A cold compile of them is a second or two; the bug this locks is
+/// "never".
+const MASK_WITHOUT_COMMIT_DEADLINE_MS: f64 = 30_000.0;
+
+/// Check 11 — `mask-without-commit`. The masked (alpha-tested) geometry and
+/// shadow pipelines are compiled only for the built-in families that have an
+/// alpha-tested material; `commit_load` does that for everything loaded
+/// through it. A running scene can also GAIN its first one with no commit —
+/// an embedder editing materials live (`update_material`, or a new material
+/// assigned with `set_mesh_material`). The render loop must then compile that
+/// family's variants itself and cut the mesh out once they land.
+///
+/// Locks the regression where it did not: the mesh drew solid until the next
+/// `commit_load`, however long that took.
+///
+/// End to end, through the picker: a visible opaque PBR mesh is given a
+/// material that is alpha-tested and fully below its cutoff, so cut out means
+/// gone — the pick at its pixel must stop returning it.
+async fn mask_without_commit(origin: &str, msaa: bool) -> Result<String> {
+    use awsm_renderer::materials::pbr::PbrMaterial;
+    use awsm_renderer::materials::{Material, MaterialAlphaMode, MaterialShaderId};
+    use awsm_renderer::picker::PickResult;
+
+    let bundle_base = format!("{origin}/{PICK_SCENE}/bundle");
+    let scene = fetch_scene(&bundle_base).await?;
+    let features = RendererFeatures {
+        picking: true,
+        ..base_features()
+    };
+    let (mut renderer, canvas) = create_renderer_with_msaa(features, msaa).await?;
+    let assets = awsm_renderer_scene_loader::assets::HttpAssets::new(bundle_base);
+    load_scene_for_player(&mut renderer, &scene, &assets, |_| {}).await?;
+    renderer.update_transforms();
+    let (center, radius) = scene_bounds(&renderer);
+    let eye = orbit_eye(center, radius, 2.2, 0.8);
+    run_frames(&mut renderer, center, radius, 3, |_| eye).await?;
+
+    let msaa = match renderer.anti_aliasing.msaa_sample_count {
+        Some(4) => Some(4u32),
+        _ => None,
+    };
+    let has_geometry_variant = |renderer: &AwsmRenderer| {
+        renderer
+            .render_passes
+            .geometry
+            .masked_pipelines
+            .has_variant(msaa, MaterialShaderId::PBR)
+    };
+    if has_geometry_variant(&renderer) {
+        return Err(anyhow!(
+            "{PICK_SCENE} already has an alpha-tested PBR material — the check needs to introduce the first one itself"
+        ));
+    }
+
+    let (x, y, mesh_key, double_sided) = opaque_pbr_pick_target(&mut renderer, &canvas).await?;
+
+    // Alpha-tested, and everywhere below its cutoff. No commit follows.
+    let mut cutout = PbrMaterial::new(MaterialAlphaMode::Mask { cutoff: 0.5 }, double_sided);
+    cutout.base_color_factor = [1.0, 1.0, 1.0, 0.0];
+    let cutout = renderer.materials.insert(
+        Material::Pbr(Box::new(cutout)),
+        &renderer.textures,
+        &renderer.dynamic_materials,
+        &renderer.extras_pool,
+    );
+    renderer
+        .set_mesh_material(mesh_key, cutout)
+        .map_err(|e| anyhow!("set_mesh_material: {e}"))?;
+
+    let device: wasm_bindgen::JsValue = renderer.gpu.device.clone().into();
+    let call = |name: &str, args: &js_sys::Array| -> Result<wasm_bindgen::JsValue> {
+        let f: js_sys::Function = js_sys::Reflect::get(&device, &name.into())
+            .map_err(|e| anyhow!("device.{name}: {e:?}"))?
+            .into();
+        js_sys::Reflect::apply(&f, &device, args).map_err(|e| anyhow!("device.{name}(): {e:?}"))
+    };
+    call("pushErrorScope", &js_sys::Array::of1(&"validation".into()))?;
+
+    let start = now_ms();
+    let mut frames = 0usize;
+    let mut cut_out = false;
+    while now_ms() - start < MASK_WITHOUT_COMMIT_DEADLINE_MS {
+        run_frames(&mut renderer, center, radius, 2, |_| eye).await?;
+        frames += 2;
+        let picked = renderer
+            .pick(x, y)
+            .await
+            .map_err(|e| anyhow!("pick: {e}"))?;
+        if !matches!(picked, PickResult::Hit(hit) if hit == mesh_key) {
+            cut_out = true;
+            break;
+        }
+    }
+    let elapsed_ms = now_ms() - start;
+    // A few more frames with the masked pipelines live, still under the scope.
+    run_frames(&mut renderer, center, radius, 4, |_| eye).await?;
+    let error = wasm_bindgen_futures::JsFuture::from(js_sys::Promise::from(call(
+        "popErrorScope",
+        &js_sys::Array::new(),
+    )?))
+    .await
+    .map_err(|e| anyhow!("popErrorScope: {e:?}"))?;
+
+    let geometry_variant = has_geometry_variant(&renderer);
+    let shadow_variant = renderer
+        .render_passes
+        .shadow_masked
+        .pipelines
+        .has_variant(MaterialShaderId::PBR);
+    destroy_renderer(renderer);
+
+    if !cut_out {
+        return Err(anyhow!(
+            "mesh still drawn solid {frames} frames ({:.1}s) after its material turned alpha-tested with no commit (PBR masked variants compiled: geometry={geometry_variant}, shadow={shadow_variant})",
+            elapsed_ms / 1000.0
+        ));
+    }
+    if !geometry_variant || !shadow_variant {
+        return Err(anyhow!(
+            "mesh cut out but the PBR masked variants are incomplete: geometry={geometry_variant}, shadow={shadow_variant}"
+        ));
+    }
+    if !(error.is_null() || error.is_undefined()) {
+        let message = js_sys::Reflect::get(&error, &"message".into())
+            .ok()
+            .and_then(|m| m.as_string())
+            .unwrap_or_else(|| format!("{error:?}"));
+        return Err(anyhow!(
+            "GPU validation error while the masked variants compiled and landed: {message}"
+        ));
+    }
+    Ok(format!(
+        "cut out {frames} frames ({elapsed_ms:.0}ms) after the material turned alpha-tested, no commit, no GPU validation error"
+    ))
 }
 
 /// Check 10 — `pick-after-mip-grow`. The render textures are rebuilt lazily by

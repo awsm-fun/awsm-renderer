@@ -284,6 +284,10 @@ pub struct AwsmRenderer {
     /// (alpha-tested) pipelines for MASK customs even if no texture changed
     /// (a procedural cutout needs no texture). Cleared by `finalize_gpu_textures`.
     pub masked_dynamic_dirty: bool,
+    /// The render loop's lazy compile of built-in masked variants for a
+    /// material that turned alpha-tested between commits. See
+    /// [`crate::render_passes::masked_lazy`].
+    pub(crate) masked_lazy: crate::render_passes::masked_lazy::MaskedLazyCompile,
     /// The PADDED texture-pool tier `(arrays, samplers)` (see
     /// [`crate::render_passes::shared::material::bind_group::pool_binding_tier`])
     /// as of the last `finalize_gpu_textures`. The pool-grow recompile reset
@@ -2702,6 +2706,7 @@ impl AwsmRendererBuilder {
             materials,
             dynamic_materials: crate::dynamic_materials::DynamicMaterials::new(),
             masked_dynamic_dirty: false,
+            masked_lazy: Default::default(),
             last_pool_tier: None,
             extras_pool: extras_pool_built,
             pipeline_layouts,

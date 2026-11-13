@@ -10,6 +10,7 @@ pub mod geometry;
 pub mod hzb;
 pub mod light_culling;
 pub mod lines;
+pub(crate) mod masked_lazy;
 pub mod material_classify;
 pub mod material_decal;
 pub mod material_opaque;

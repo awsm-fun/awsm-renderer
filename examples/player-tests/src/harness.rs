@@ -20,6 +20,16 @@ pub const CANVAS_HEIGHT: u32 = 600;
 pub async fn create_renderer(
     features: RendererFeatures,
 ) -> Result<(AwsmRenderer, web_sys::HtmlCanvasElement)> {
+    create_renderer_with_msaa(features, true).await
+}
+
+/// [`create_renderer`], with 4x MSAA (the renderer default) on or off. The two
+/// shade through different pipelines — per-bucket edge kernels with MSAA, the
+/// plain opaque kernel without — so a check of the compile paths wants both.
+pub async fn create_renderer_with_msaa(
+    features: RendererFeatures,
+    msaa: bool,
+) -> Result<(AwsmRenderer, web_sys::HtmlCanvasElement)> {
     let window = web_sys::window().ok_or_else(|| anyhow!("no window"))?;
     let document = window.document().ok_or_else(|| anyhow!("no document"))?;
     if let Some(prev) = document.get_element_by_id("render-canvas") {
@@ -51,6 +61,10 @@ pub async fn create_renderer(
     let renderer = awsm_renderer::AwsmRendererBuilder::new(gpu_builder)
         .with_features(features)
         .with_optimization_policy(policy)
+        .with_anti_aliasing(awsm_renderer::anti_alias::AntiAliasing {
+            msaa_sample_count: msaa.then_some(4),
+            ..Default::default()
+        })
         .build()
         .await
         .map_err(|e| anyhow!("renderer build: {e}"))?;

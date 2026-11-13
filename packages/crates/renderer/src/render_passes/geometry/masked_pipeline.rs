@@ -1,9 +1,12 @@
 //! Lazy pipeline pool for the **masked** (alpha-tested) geometry variant.
 //!
-//! Keyed by `(msaa, shader_id, cull)` and populated on demand — built-in PBR
+//! Keyed by `(msaa, shader_id, cull)` and populated on demand — built-in
 //! masked pipelines are (re)built by the texture-finalize flow (the pool size
-//! lives in the shader cache key); dynamic/custom masked pipelines are compiled
-//! by the same per-shader-id scheduler that compiles the opaque pipelines.
+//! lives in the shader cache key) for the families that have an alpha-tested
+//! material, and by the render loop for a family that gains its first one
+//! between commits ([`crate::render_passes::masked_lazy`]); dynamic/custom
+//! masked pipelines are compiled by the same per-shader-id scheduler that
+//! compiles the opaque pipelines.
 //! Mirrors `MaterialOpaquePipelines`'s lazy `main` map: a missing entry means
 //! "not compiled yet" and the render path falls back to the plain (solid)
 //! geometry pipeline, so a mesh is never dropped — it just renders un-cut until
@@ -52,6 +55,11 @@ pub struct MaskedVariant {
 pub struct GeometryMaskedPipelines {
     pipeline_layout_key: PipelineLayoutKey,
     main: HashMap<MaskedPipelineKeyId, RenderPipelineKey>,
+    /// Bumped every time the pool is emptied ([`Self::relayout`] /
+    /// [`Self::clear`]). A compile issued against an earlier epoch was built
+    /// for a layout the pool no longer has, so its result must not be
+    /// inserted — see [`crate::render_passes::masked_lazy`].
+    epoch: u64,
 }
 
 const CULL_MODES: &[CullMode] = &[CullMode::None, CullMode::Back, CullMode::Front];
@@ -70,7 +78,13 @@ impl GeometryMaskedPipelines {
         Ok(Self {
             pipeline_layout_key,
             main: HashMap::new(),
+            epoch: 0,
         })
+    }
+
+    /// See the `epoch` field.
+    pub(crate) fn epoch(&self) -> u64 {
+        self.epoch
     }
 
     /// True when a masked variant for `(msaa, shader_id)` is already compiled
@@ -97,6 +111,7 @@ impl GeometryMaskedPipelines {
         self.pipeline_layout_key =
             resolve_layout_key(ctx, masked_bind_group, geometry_bind_groups)?;
         self.main.clear();
+        self.epoch += 1;
         Ok(())
     }
 
@@ -132,27 +147,58 @@ impl GeometryMaskedPipelines {
         if variants.is_empty() {
             return Ok(());
         }
-        let msaa_samples = match ctx.anti_aliasing.msaa_sample_count {
-            Some(4) => Some(4u32),
-            _ => None,
-        };
-
-        let shader_caches: Vec<ShaderCacheKeyGeometryMasked> = variants
-            .iter()
-            .map(|variant| ShaderCacheKeyGeometryMasked {
-                texture_pool_arrays_len: masked_bind_group.texture_pool_arrays_len,
-                texture_pool_samplers_len: masked_bind_group.texture_pool_samplers_len,
-                shader_id: variant.shader_id,
-                base: variant.base,
-                dynamic_alpha: variant.dynamic_alpha.clone(),
-                msaa_samples,
-            })
-            .collect();
-        let shader_keys = ctx
-            .shaders
-            .ensure_keys(ctx.gpu, shader_caches.into_iter().map(Into::into))
+        let shader_cache_keys = Self::shader_cache_keys(ctx, masked_bind_group, variants);
+        let shader_keys = ctx.shaders.ensure_keys(ctx.gpu, shader_cache_keys).await?;
+        let (pipeline_cache_keys, slots) = self.pipeline_cache_keys(ctx, variants, &shader_keys)?;
+        let keys = ctx
+            .pipelines
+            .render
+            .ensure_keys(
+                ctx.gpu,
+                ctx.shaders,
+                ctx.pipeline_layouts,
+                pipeline_cache_keys,
+            )
             .await?;
+        self.insert_resolved(slots, keys);
+        Ok(())
+    }
 
+    /// The shader each of `variants` compiles, at the active MSAA and the
+    /// masked bind group's current texture-pool shape. One per variant, in
+    /// order.
+    pub(crate) fn shader_cache_keys(
+        ctx: &RenderPassInitContext<'_>,
+        masked_bind_group: &GeometryMaskedBindGroup,
+        variants: &[MaskedVariant],
+    ) -> Vec<crate::shaders::ShaderCacheKey> {
+        let msaa_samples = active_msaa_samples(ctx);
+        variants
+            .iter()
+            .map(|variant| {
+                ShaderCacheKeyGeometryMasked {
+                    texture_pool_arrays_len: masked_bind_group.texture_pool_arrays_len,
+                    texture_pool_samplers_len: masked_bind_group.texture_pool_samplers_len,
+                    shader_id: variant.shader_id,
+                    base: variant.base,
+                    dynamic_alpha: variant.dynamic_alpha.clone(),
+                    msaa_samples,
+                }
+                .into()
+            })
+            .collect()
+    }
+
+    /// The pipelines of `variants` (three cull modes each, at the active
+    /// MSAA) and the pool slot each one fills. `shader_keys` is the resolved
+    /// [`Self::shader_cache_keys`], one per variant. Sync — no compile.
+    pub(crate) fn pipeline_cache_keys(
+        &self,
+        ctx: &RenderPassInitContext<'_>,
+        variants: &[MaskedVariant],
+        shader_keys: &[crate::shaders::ShaderKey],
+    ) -> Result<(Vec<RenderPipelineCacheKey>, Vec<MaskedPipelineKeyId>)> {
+        let msaa_samples = active_msaa_samples(ctx);
         let color_targets = [
             ColorTargetState::new(ctx.render_texture_formats.visiblity_data),
             ColorTargetState::new(ctx.render_texture_formats.barycentric),
@@ -166,7 +212,7 @@ impl GeometryMaskedPipelines {
         for (variant, shader_key) in variants.iter().zip(shader_keys) {
             for &cull_mode in CULL_MODES {
                 pipeline_cache_keys.push(build_masked_cache_key(
-                    shader_key,
+                    *shader_key,
                     self.pipeline_layout_key,
                     depth_format,
                     &color_targets,
@@ -181,27 +227,26 @@ impl GeometryMaskedPipelines {
                 });
             }
         }
+        Ok((pipeline_cache_keys, slots))
+    }
 
-        let keys = ctx
-            .pipelines
-            .render
-            .ensure_keys(
-                ctx.gpu,
-                ctx.shaders,
-                ctx.pipeline_layouts,
-                pipeline_cache_keys,
-            )
-            .await?;
+    /// Records compiled pipelines under the slots [`Self::pipeline_cache_keys`]
+    /// returned for them.
+    pub(crate) fn insert_resolved(
+        &mut self,
+        slots: Vec<MaskedPipelineKeyId>,
+        keys: Vec<RenderPipelineKey>,
+    ) {
         for (slot, key) in slots.into_iter().zip(keys) {
             self.main.insert(slot, key);
         }
-        Ok(())
     }
 
     /// Drops every compiled masked pipeline. Used before recompiling against a
     /// changed bucket layout / texture pool.
     pub fn clear(&mut self) {
         self.main.clear();
+        self.epoch += 1;
     }
 
     /// Looks up a compiled masked pipeline for a mesh's `(msaa, shader_id,
@@ -221,6 +266,14 @@ impl GeometryMaskedPipelines {
                 cull,
             })
             .copied()
+    }
+}
+
+/// The MSAA sample count the masked pipelines are built for (4 or none).
+fn active_msaa_samples(ctx: &RenderPassInitContext<'_>) -> Option<u32> {
+    match ctx.anti_aliasing.msaa_sample_count {
+        Some(4) => Some(4u32),
+        _ => None,
     }
 }
 

@@ -169,32 +169,7 @@ impl AwsmRenderer {
         let masked_builtin_families: Vec<(
             awsm_renderer_materials::MaterialShaderId,
             crate::dynamic_materials::ShadingBase,
-        )> = [
-            (
-                awsm_renderer_materials::MaterialShaderId::PBR,
-                crate::dynamic_materials::ShadingBase::Pbr,
-            ),
-            (
-                awsm_renderer_materials::MaterialShaderId::UNLIT,
-                crate::dynamic_materials::ShadingBase::Unlit,
-            ),
-            (
-                awsm_renderer_materials::MaterialShaderId::TOON,
-                crate::dynamic_materials::ShadingBase::Toon,
-            ),
-            (
-                awsm_renderer_materials::MaterialShaderId::FLIPBOOK,
-                crate::dynamic_materials::ShadingBase::Flipbook,
-            ),
-        ]
-        .into_iter()
-        .filter(|(family, _)| {
-            self.materials.keys().any(|key| {
-                self.materials.alpha_cutoff(key).is_some()
-                    && self.materials.canonical_shader_id(key) == *family
-            })
-        })
-        .collect();
+        )> = self.materials.masked_builtin().families().collect();
         let masked_builtin_missing = self.meshes.iter().any(|(_, mesh)| {
             !mesh.instanced
                 && self.materials.alpha_cutoff(mesh.material_key).is_some()

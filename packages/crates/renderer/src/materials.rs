@@ -413,6 +413,97 @@ pub struct Materials {
     /// reallocation with the full chain next time
     /// `RenderTextures::views` runs.
     has_seen_transmission: bool,
+    /// Live count of alpha-tested (glTF `MASK`) materials per built-in
+    /// family. See [`MaskedBuiltinCounts`].
+    masked_builtin: MaskedBuiltinCounts,
+}
+
+/// The built-in material families that have a masked (alpha-tested) geometry
+/// and shadow variant, in the fixed order [`MaskedBuiltinCounts`] indexes them.
+pub(crate) const MASKED_BUILTIN_FAMILIES: [(
+    MaterialShaderId,
+    crate::dynamic_materials::ShadingBase,
+); 4] = [
+    (
+        MaterialShaderId::PBR,
+        crate::dynamic_materials::ShadingBase::Pbr,
+    ),
+    (
+        MaterialShaderId::UNLIT,
+        crate::dynamic_materials::ShadingBase::Unlit,
+    ),
+    (
+        MaterialShaderId::TOON,
+        crate::dynamic_materials::ShadingBase::Toon,
+    ),
+    (
+        MaterialShaderId::FLIPBOOK,
+        crate::dynamic_materials::ShadingBase::Flipbook,
+    ),
+];
+
+/// How many live materials of each built-in family are alpha-tested right now.
+///
+/// The masked geometry / masked shadow pipelines are compiled per family, and
+/// only for the families that need them (a scene with no cutout compiles
+/// none). This is what says which families those are, exactly and in O(1):
+/// the commit reads it (`finalize_gpu_textures`), and so does the render
+/// loop's lazy compile for a material that turns alpha-tested between commits
+/// (`kick_masked_variants_compile`). Kept in step by every path that can
+/// change a material — insert, update, remove.
+#[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct MaskedBuiltinCounts([u32; 4]);
+
+impl MaskedBuiltinCounts {
+    /// The counter slot `material` occupies: `Some` only for an alpha-tested
+    /// material of a built-in family (custom materials carry their own
+    /// alpha-only WGSL and are compiled by their own path).
+    fn slot(material: &Material) -> Option<usize> {
+        material.alpha_mask()?;
+        match material {
+            Material::Pbr(_) => Some(0),
+            Material::Unlit(_) => Some(1),
+            Material::Toon(_) => Some(2),
+            Material::FlipBook(_) => Some(3),
+            Material::Custom(_) => None,
+        }
+    }
+
+    fn add(&mut self, slot: Option<usize>) {
+        if let Some(slot) = slot {
+            self.0[slot] += 1;
+        }
+    }
+
+    fn sub(&mut self, slot: Option<usize>) {
+        if let Some(slot) = slot {
+            self.0[slot] = self.0[slot].saturating_sub(1);
+        }
+    }
+
+    /// A material moved from `was` to `is` (an in-place edit).
+    fn moved(&mut self, was: Option<usize>, is: Option<usize>) {
+        if was != is {
+            self.sub(was);
+            self.add(is);
+        }
+    }
+
+    /// The families with at least one alpha-tested material.
+    pub(crate) fn families(
+        &self,
+    ) -> impl Iterator<Item = (MaterialShaderId, crate::dynamic_materials::ShadingBase)> + '_ {
+        MASKED_BUILTIN_FAMILIES
+            .iter()
+            .zip(self.0.iter())
+            .filter(|(_, count)| **count > 0)
+            .map(|(family, _)| *family)
+    }
+
+    /// True when no built-in material is alpha-tested.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.iter().all(|count| *count == 0)
+    }
 }
 
 impl Materials {
@@ -444,6 +535,7 @@ impl Materials {
             transparency_pass_keys: SecondaryMap::new(),
             uploader: crate::buffer::mapped_uploader::MappedUploader::new("Materials"),
             has_seen_transmission: false,
+            masked_builtin: MaskedBuiltinCounts::default(),
         })
     }
 
@@ -457,6 +549,12 @@ impl Materials {
     /// MB on desktop).
     pub fn has_seen_transmission(&self) -> bool {
         self.has_seen_transmission
+    }
+
+    /// Which built-in families have an alpha-tested material right now — the
+    /// families whose masked geometry / shadow variants must exist.
+    pub(crate) fn masked_builtin(&self) -> &MaskedBuiltinCounts {
+        &self.masked_builtin
     }
 
     /// Mapped-ring upload telemetry for this subsystem.
@@ -506,6 +604,9 @@ impl Materials {
         if material.has_transmission() {
             self.has_seen_transmission = true;
         }
+
+        self.masked_builtin
+            .add(MaskedBuiltinCounts::slot(&material));
 
         let key = self.lookup.insert(material);
         if is_transparency_pass {
@@ -557,7 +658,14 @@ impl Materials {
     /// Removes a material from the slotmap + storage buffer. Returns
     /// `true` if the key existed; `false` if it was already gone.
     pub fn remove(&mut self, key: MaterialKey) -> bool {
-        let removed = self.lookup.remove(key).is_some();
+        let removed = match self.lookup.remove(key) {
+            Some(material) => {
+                self.masked_builtin
+                    .sub(MaskedBuiltinCounts::slot(&material));
+                true
+            }
+            None => false,
+        };
         if removed {
             self.transparency_pass_keys.remove(key);
             self.resolved_shader_id.remove(key);
@@ -606,8 +714,13 @@ impl Materials {
     ) {
         if let Some(material) = self.lookup.get_mut(key) {
             let was_transparent = material.is_transparency_pass();
+            let was_masked = MaskedBuiltinCounts::slot(material);
             f(material);
             let is_transparent = material.is_transparency_pass();
+            // An edit can turn a material alpha-tested (or back), or replace
+            // it with one of another family.
+            self.masked_builtin
+                .moved(was_masked, MaskedBuiltinCounts::slot(material));
             if was_transparent != is_transparent {
                 if is_transparent {
                     self.transparency_pass_keys.insert(key, ());
@@ -870,4 +983,71 @@ pub enum AwsmMaterialError {
 
     #[error("[material] buffer slot missing {0:?}")]
     BufferSlotMissing(MaterialKey),
+}
+
+#[cfg(test)]
+mod masked_builtin_counts_tests {
+    use super::*;
+
+    fn pbr(alpha_mode: MaterialAlphaMode) -> Material {
+        Material::Pbr(Box::new(PbrMaterial::new(alpha_mode, false)))
+    }
+
+    fn unlit(alpha_mode: MaterialAlphaMode) -> Material {
+        Material::Unlit(UnlitMaterial::new(alpha_mode, false))
+    }
+
+    const MASK: MaterialAlphaMode = MaterialAlphaMode::Mask { cutoff: 0.5 };
+
+    fn families(counts: &MaskedBuiltinCounts) -> Vec<MaterialShaderId> {
+        counts.families().map(|(family, _)| family).collect()
+    }
+
+    #[test]
+    fn only_alpha_tested_materials_count() {
+        let mut counts = MaskedBuiltinCounts::default();
+        counts.add(MaskedBuiltinCounts::slot(&pbr(MaterialAlphaMode::Opaque)));
+        counts.add(MaskedBuiltinCounts::slot(&pbr(MaterialAlphaMode::Blend)));
+        assert!(counts.is_empty());
+        assert!(families(&counts).is_empty());
+
+        counts.add(MaskedBuiltinCounts::slot(&unlit(MASK)));
+        assert_eq!(families(&counts), vec![MaterialShaderId::UNLIT]);
+    }
+
+    #[test]
+    fn a_family_stays_until_its_last_alpha_tested_material_goes() {
+        let mut counts = MaskedBuiltinCounts::default();
+        let slot = MaskedBuiltinCounts::slot(&pbr(MASK));
+        counts.add(slot);
+        counts.add(slot);
+        counts.sub(slot);
+        assert_eq!(families(&counts), vec![MaterialShaderId::PBR]);
+        counts.sub(slot);
+        assert!(counts.is_empty());
+        // Never underflows, whatever the caller does.
+        counts.sub(slot);
+        assert!(counts.is_empty());
+    }
+
+    #[test]
+    fn an_edit_moves_the_material_between_families() {
+        let mut counts = MaskedBuiltinCounts::default();
+        let opaque = MaskedBuiltinCounts::slot(&pbr(MaterialAlphaMode::Opaque));
+        let masked_pbr = MaskedBuiltinCounts::slot(&pbr(MASK));
+        let masked_unlit = MaskedBuiltinCounts::slot(&unlit(MASK));
+
+        // Opaque → masked: the family appears.
+        counts.moved(opaque, masked_pbr);
+        assert_eq!(families(&counts), vec![MaterialShaderId::PBR]);
+        // A cutoff tweak (masked → masked) changes nothing.
+        counts.moved(masked_pbr, masked_pbr);
+        assert_eq!(families(&counts), vec![MaterialShaderId::PBR]);
+        // Replaced by a masked material of another family.
+        counts.moved(masked_pbr, masked_unlit);
+        assert_eq!(families(&counts), vec![MaterialShaderId::UNLIT]);
+        // Back to opaque: gone.
+        counts.moved(masked_unlit, opaque);
+        assert!(counts.is_empty());
+    }
 }
