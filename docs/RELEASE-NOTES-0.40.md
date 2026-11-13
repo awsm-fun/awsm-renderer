@@ -9,8 +9,22 @@ fixed.
 
 ## 0.40.1
 
-A patch release: no behaviour or API changes for an embedder, a faster cold
-load, one device-class bug and one leak fixed.
+A patch release: no API changes, a faster cold load, one device-class bug and
+one leak fixed. Two things behave differently and are worth knowing:
+
+- **Every cold load now compiles three small texture-upload helper
+  pipelines, used or not** (sRGB conversion and two mipmap variants for plain
+  8-bit RGBA). They are started inside the load's batch so that a texture
+  uploaded after the load — a HUD, a marquee, any `add_image_rgba_raw` —
+  finds them ready instead of waiting ~0.2 s for them. A load that never
+  uploads such a texture pays for one or two small extra compiles.
+- **An SSR composite the driver rejects before the first commit now turns
+  SSR off at the commit.** In 0.40.0 the composite was compiled and awaited
+  by `set_post_processing`, which returned the error (the scene loader logged
+  it and went on with `ssr.enabled` still true and no pass). It is now issued
+  there and collected by the commit, where it is handled like any other
+  rejected pipeline of the SSR pass: SSR off in `renderer.post_processing`,
+  with a warning. On a committed scene the setter still returns the error.
 
 - **Nothing is compiled and awaited ahead of a load's batch any more.** The
   two blit pipelines (awaited in `build()`), the SSR composite (awaited in
