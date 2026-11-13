@@ -2,16 +2,20 @@
   "comment": "Prebuilt, vendored Basis Universal codec modules. NEVER edit these artifacts; re-vendor from the pinned upstreams and update the hashes here.",
   "artifacts": {
     "basis_transcoder.js": {
-      "upstream": "https://github.com/mrdoob/three.js/blob/r185/examples/jsm/libs/basis/basis_transcoder.js",
-      "version": "three.js r185 (transcoder built by the three.js team from BinomialLLC/basis_universal, KTX2+Zstd, non-pthread)",
-      "sha256": "8478b5b6d6b74e7d3082b89f6417321d8d1dc0307f2b30d4484bb11b441696a1",
-      "license": "LICENSE-basis_universal (Apache-2.0); redistributed by three.js (MIT, LICENSE-three.js)"
+      "upstream": "https://github.com/BinomialLLC/basis_universal/tree/073eb6a0a34a23d77e75e54f41dcd9653a52da83/webgl/transcoder",
+      "version": "basis_universal master @ 073eb6a0a34a23d77e75e54f41dcd9653a52da83 (2026-10-30; no release tag contains NO_DYNAMIC_EXECUTION yet), built locally with Emscripten 6.0.10 (emsdk 708dcbcc9ee23bc7d2dad44fc90db377e38b771c). Eval-free embind glue (DYNAMIC_EXECUTION=0 + EMBIND_AOT=1): no eval()/new Function(), loads under a CSP with 'wasm-unsafe-eval' and without 'unsafe-eval'. KTX2+Zstd, non-pthread, MODULARIZE+UMD, EXPORT_NAME=BASIS.",
+      "build": "emcmake cmake -S webgl/transcoder -B build -G \"Unix Makefiles\" -DNO_DYNAMIC_EXECUTION=ON \"-DCMAKE_EXE_LINKER_FLAGS=-sINITIAL_MEMORY=16MB -sMAXIMUM_MEMORY=256MB\" && cmake --build build",
+      "link_command": "em++ -sINITIAL_MEMORY=16MB -sMAXIMUM_MEMORY=256MB --bind -s ALLOW_MEMORY_GROWTH=1 -O3 -s MALLOC=emmalloc -s MODULARIZE=1 -s EXPORT_NAME=BASIS -s ASSERTIONS=0 -s EXPORTED_RUNTIME_METHODS=['HEAP8'] -s DYNAMIC_EXECUTION=0 -s EMBIND_AOT=1 <objs> -o basis_transcoder.js",
+      "compile_flags": "-std=gnu++17 -O3 -fno-strict-aliasing -DNDEBUG -DBASISD_SUPPORT_KTX2=1 -DBASISD_SUPPORT_KTX2_ZSTD=1 -DBASISD_SUPPORT_UASTC=1 -DBASISD_SUPPORT_UASTC_HDR=1 -DBASISD_SUPPORT_BC7=1 -DBASISD_SUPPORT_ETC2_EAC_RG11=0 -DBASISD_SUPPORT_ATC=0 -DBASISD_SUPPORT_PVRTC2=0 -DBASISD_SUPPORT_FXT1=0 -DBASISD_SUPPORT_ASTC_HIGHER_OPAQUE_QUALITY=0 -DBASISU_SUPPORT_ENCODING=0 -DBASISD_ENABLE_DEBUG_FLAGS=1 (upstream CMakeLists defaults, unpatched)",
+      "rebuild": "rebuild-transcoder.sh <work-dir> beside this file (pins both commits, installs emsdk inside <work-dir>, verifies both sha256s)",
+      "sha256": "5e9822cd29f98488db9ef26bc77e6d1dd551ed98d240de8c04cf7139be737b59",
+      "license": "LICENSE-basis_universal (Apache-2.0); statically links Zstd (LICENSE-zstd-BSD-3-clause.txt, BSD-3-Clause; Zstd is dual BSD/GPLv2, BSD chosen)"
     },
     "basis_transcoder.wasm": {
-      "upstream": "https://github.com/mrdoob/three.js/blob/r185/examples/jsm/libs/basis/basis_transcoder.wasm",
-      "version": "three.js r185",
-      "sha256": "6cf17dc889352c42e9acf8897107978d127005fe3386c36a0e3845e27967630a",
-      "license": "LICENSE-basis_universal (Apache-2.0)"
+      "upstream": "same build as basis_transcoder.js",
+      "version": "basis_universal master @ 073eb6a0a34a23d77e75e54f41dcd9653a52da83, Emscripten 6.0.10. Memory: initial 256 pages (16 MiB), maximum 4096 pages (256 MiB); was 16.4 MiB / 2 GiB in the three.js r185 build. Without the two memory flags the .wasm is byte-identical to upstream's own committed webgl/transcoder/build/basis_transcoder.wasm at that commit (sha256 a9a1b1d6655931b5ff167f0727a3917a275ce5d86548448c252ac1f269c8c9bb).",
+      "sha256": "6391a079ee158c9e8eedca879ebd54b35fe6580c32a480ccebe31c72260e7d17",
+      "license": "LICENSE-basis_universal (Apache-2.0) + LICENSE-zstd-BSD-3-clause.txt"
     },
     "basis_encoder.js": {
       "upstream": "https://github.com/BinomialLLC/basis_universal/blob/v2_1_0r/webgl/encoder/build/basis_encoder.js",
@@ -29,7 +33,13 @@
   "notes": [
     "Non-pthread builds only — no SharedArrayBuffer, no COOP/COEP headers required.",
     "Both JS files are Emscripten MODULARIZE+UMD builds and BOTH export the SAME global factory name `BASIS`. Never load both into one scope naively; capture-and-delete the global between loads, or host them in separate workers.",
-    "Encoder (v2_1_0r) is newer than the transcoder (three r185). ETC1S / UASTC-LDR bitstreams are stable across these versions; if a decode incompatibility ever surfaces, swap the transcoder for webgl/transcoder/build/ from the same v2_1_0r tag.",
-    "Encoder ships to the EDITOR only. Player apps copy the transcoder pair only."
+    "Transcoder: eval-free build (no 'unsafe-eval' needed; 'wasm-unsafe-eval' still is). It replaces the three.js r185 copy, which was byte-identical to basis_universal v1_50_0's prebuilt (2024-09-10) and used new Function() in embind. The ENCODER (v2_1_0r prebuilt) still uses new Function(): an app that ships it cannot drop 'unsafe-eval'.",
+    "The transcoder (master @ 073eb6a, 2026-10-30) is now newer than the encoder (v2_1_0r). ETC1S / UASTC-LDR bitstreams are stable across these versions.",
+    "Pair this transcoder with web/workers/basis-worker.js as it is in this repo (sha256 338e3b2a0c474d28d86010434b921e2434428a67df1a00b0f8b72814fb2b3b6d). For ETC1S -> BC7 only, the worker calls transcodeImageWithFlags(..., cDecodeFlagsNoETC1SChromaFiltering=64, ...), so output stays byte-identical to the v1.50/r185 transcoder and as fast; it also reloads the module after a wasm abort. It feature-detects, so it still works with the old transcoder. With an older worker, ETC1S -> BC7 gets v2's chroma filtering: different bytes, 2-5x slower on that path.",
+    "Transcoder max memory is 256 MiB (was 2 GiB). Measured worst case for 4096x4096 (UASTC+Zstd -> RGBA32 fallback) is 115 MiB, 131 MiB after a session of back-to-back 4096 textures. Over the cap, a transcode fails cleanly (transcodeImage returns false -> worker 'transcode-failed'); the module stays usable. First thing that fails: RGBA32 output at 8192x8192 (needs ~278 MiB).",
+    "Rebuilding: use Emscripten 3.1.51..7.0.0. On 7.0.1+ EMBIND_AOT changes meaning (ES-module exports); upstream's NO_DYNAMIC_EXECUTION option still adds -sEMBIND_AOT=1 unconditionally, so re-check before bumping.",
+    "rebuild-transcoder.sh beside this file reproduces both transcoder artifacts byte-for-byte (pins basis_universal + emsdk, installs emsdk inside its work dir). Its own comments call the output directory dist/ — that is where it was developed; here the artifacts live beside it.",
+    "Encoder ships to the EDITOR only. Player apps copy the transcoder pair only.",
+    "LICENSE-three.js is kept for history; no artifact here comes from three.js any more."
   ]
 }

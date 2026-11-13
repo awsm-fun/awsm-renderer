@@ -6,6 +6,17 @@ Basis-supercompressed KTX2, **editor-only** bake path). Provenance, versions,
 and SHA-256 hashes: `BUILD-METADATA.json`. Licenses vendored alongside.
 
 - Non-pthread builds → no COOP/COEP requirement anywhere.
+- The **transcoder** is an eval-free build (no `eval` / `new Function`): a
+  player can serve it under a CSP with `'wasm-unsafe-eval'` and without
+  `'unsafe-eval'`. Its wasm memory is capped at 256 MiB. It is built from
+  pinned upstream sources by `rebuild-transcoder.sh`, which reproduces both
+  files byte-for-byte and checks their hashes. The **encoder** is still
+  upstream's prebuilt and does use `new Function`, so the editor cannot drop
+  `'unsafe-eval'` (it serves no CSP today).
+- Ship the transcoder together with `web/workers/basis-worker.js` from the
+  same revision: the worker keeps ETC1S → BC7 output identical to the previous
+  transcoder and recovers from a wasm abort (see the notes in
+  `BUILD-METADATA.json`).
 - Both `*.js` files are `MODULARIZE` UMD builds with the **same** global
   factory name `BASIS`. They are hosted in Web Workers (isolated scopes) by
   `web/workers/basis-worker.js`; if you ever load them in one page (see

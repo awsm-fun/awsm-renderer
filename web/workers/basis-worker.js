@@ -101,6 +101,27 @@ function resolveTargetFormat(module, target) {
     return typeof entry === 'object' ? entry.value : entry;
 }
 
+// basis_universal v2.x transcoders apply adaptive chroma filtering to ETC1S -> BC7 by default (a
+// little better quality, 2-5x slower on that path). Passing cDecodeFlagsNoETC1SChromaFiltering keeps
+// the output byte-identical to the v1.50 transcoder (three.js r185) and as fast. Only ETC1S -> BC7 is
+// affected, so only that path uses transcodeImageWithFlags(); older builds have neither the flag nor
+// the method and keep using transcodeImage().
+//
+// Unlike transcodeImage(), which fails cleanly (returns 0) when the wasm heap is exhausted,
+// transcodeImageWithFlags() ABORTS the module on allocation failure. So it is used only when level 0's
+// output is at most 64 MiB (8192x8192 BC7), which fits the transcoder's 256 MiB heap with room to
+// spare; bigger textures take the clean-failing transcodeImage() path for every level.
+const WITH_FLAGS_MAX_LEVEL0_BYTES = 64 * 1024 * 1024;
+
+function etc1sBc7DecodeFlags(module, ktx2File, target, level0Bytes) {
+    if (target !== 'bc7' || !ktx2File.isETC1S()) return null;
+    if (typeof ktx2File.transcodeImageWithFlags !== 'function') return null;
+    const flag = module.basisu_decode_flags?.cDecodeFlagsNoETC1SChromaFiltering;
+    if (flag === undefined) return null;
+    if (level0Bytes > WITH_FLAGS_MAX_LEVEL0_BYTES) return null;
+    return typeof flag === 'object' ? flag.value : flag;
+}
+
 async function handleTranscode(req) {
     const module = await getModule('transcoder');
     if (!(req.ktx2 instanceof ArrayBuffer) || req.ktx2.byteLength === 0) {
@@ -143,13 +164,24 @@ async function handleTranscode(req) {
             throw new WorkerError('transcode-failed', 'startTranscoding failed');
         }
 
+        const decodeFlags = etc1sBc7DecodeFlags(
+            module,
+            ktx2File,
+            req.target,
+            ktx2File.getImageTranscodedSizeInBytes(0, layer, face, format)
+        );
+
         const outLevels = [];
         const transfer = [];
         for (let level = 0; level < levels; level++) {
             const info = ktx2File.getImageLevelInfo(level, layer, face);
             const size = ktx2File.getImageTranscodedSizeInBytes(level, layer, face, format);
             const dst = new Uint8Array(size);
-            if (!ktx2File.transcodeImage(dst, level, layer, face, format, 0, -1, -1)) {
+            const ok =
+                decodeFlags === null
+                    ? ktx2File.transcodeImage(dst, level, layer, face, format, 0, -1, -1)
+                    : ktx2File.transcodeImageWithFlags(dst, level, layer, face, format, decodeFlags, -1, -1);
+            if (!ok) {
                 throw new WorkerError('transcode-failed', `transcodeImage failed at level ${level}`);
             }
             outLevels.push({
@@ -173,8 +205,13 @@ async function handleTranscode(req) {
             transfer,
         };
     } finally {
-        ktx2File.close();
-        ktx2File.delete();
+        // After a wasm abort these can throw too; never let that mask the original error.
+        try {
+            ktx2File.close();
+            ktx2File.delete();
+        } catch (_) {
+            // module is being discarded (see onmessage)
+        }
     }
 }
 
@@ -276,6 +313,12 @@ self.onmessage = async (event) => {
         reply.result = outcome.result;
         self.postMessage(reply, outcome.transfer);
     } catch (e) {
+        // An Emscripten abort (e.g. a failed allocation in the wasm heap) leaves that module unusable:
+        // drop it so the next request instantiates a fresh one instead of reusing a dead runtime.
+        if (e instanceof WebAssembly.RuntimeError) {
+            if (req.op === 'transcode') modulePromises.transcoder = null;
+            if (req.op === 'encode') modulePromises.encoder = null;
+        }
         reply.ok = false;
         reply.error = {
             code: e instanceof WorkerError ? e.code : 'internal',
