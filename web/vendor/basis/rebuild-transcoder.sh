@@ -17,7 +17,7 @@ EMSDK_COMMIT=708dcbcc9ee23bc7d2dad44fc90db377e38b771c     # emsdk tip on 2026-11
 EMSCRIPTEN_VERSION=6.0.10                                 # the emcc upstream used for its own artifacts at this commit
 
 EXPECT_JS=5e9822cd29f98488db9ef26bc77e6d1dd551ed98d240de8c04cf7139be737b59
-EXPECT_WASM=6391a079ee158c9e8eedca879ebd54b35fe6580c32a480ccebe31c72260e7d17
+EXPECT_WASM=751a007d46cd295f1aed9bffe593aaf8fbca3b3622aeef5892253845f61ef7fc
 
 mkdir -p "$WORK"
 cd "$WORK"
@@ -39,10 +39,18 @@ emcc --version | head -1
 # to upstream's link flags. EMBIND_AOT=1 means "AOT embind invokers" on Emscripten 3.1.51 .. 7.0.0;
 # on 7.0.1+ it means something else (ES-module exports) -- do NOT bump past 7.0.0 without re-checking.
 # Memory flags go in via CMAKE_EXE_LINKER_FLAGS so upstream sources stay unpatched.
+#
+# BASISD_SUPPORT_ETC2_EAC_RG11=1: upstream's web CMakeLists hard-codes it to 0, which makes every
+# ETC1S -> EAC RG11 transcode fail. The renderer picks EAC RG11 for two-channel-packed normal maps on
+# ETC2-only GPUs (most phones), so an ETC1S normal map never loaded there. The CMakeLists' own
+# -D...=0 comes first on the compile line; -U then -D after it (CMAKE_CXX_FLAGS) turns it on without
+# patching upstream and without a macro-redefinition warning. Costs 5.1 KB of wasm (+0.6 KB brotli);
+# every other target's output is byte-identical with and without it.
 rm -rf build
 emcmake cmake -S basis_universal/webgl/transcoder -B build -G "Unix Makefiles" \
   -DNO_DYNAMIC_EXECUTION=ON \
-  "-DCMAKE_EXE_LINKER_FLAGS=-sINITIAL_MEMORY=16MB -sMAXIMUM_MEMORY=256MB"
+  "-DCMAKE_EXE_LINKER_FLAGS=-sINITIAL_MEMORY=16MB -sMAXIMUM_MEMORY=256MB" \
+  "-DCMAKE_CXX_FLAGS=-UBASISD_SUPPORT_ETC2_EAC_RG11 -DBASISD_SUPPORT_ETC2_EAC_RG11=1"
 cmake --build build -j 8 -- VERBOSE=1 | grep -E -- '-o basis_transcoder\.js' || true
 
 got_js=$(shasum -a 256 build/basis_transcoder.js | cut -d' ' -f1)
