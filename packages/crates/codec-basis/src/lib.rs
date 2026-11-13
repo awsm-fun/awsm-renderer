@@ -293,7 +293,7 @@ struct Shared {
     pending: PendingMap,
     // Keep the JS callbacks alive for the worker's lifetime.
     _onmessage: Option<Closure<dyn FnMut(MessageEvent)>>,
-    _onerror: Option<Closure<dyn FnMut(web_sys::ErrorEvent)>>,
+    _onerror: Option<Closure<dyn FnMut(JsValue)>>,
 }
 
 /// Handle to the Basis codec worker. Cheap to clone; all clones share the one
@@ -530,9 +530,9 @@ impl BasisWorkerClient {
         }) as Box<dyn FnMut(MessageEvent)>);
 
         let weak = Rc::downgrade(&self.shared);
-        let onerror = Closure::wrap(Box::new(move |event: web_sys::ErrorEvent| {
+        let onerror = Closure::wrap(Box::new(move |event: JsValue| {
             let Some(shared) = weak.upgrade() else { return };
-            let message = event.message();
+            let message = worker_error_message(&event);
             tracing::error!("basis worker fatal error: {message}");
             // Restart-on-fatal: drop the worker; the next request re-creates.
             let mut shared = shared.borrow_mut();
@@ -541,7 +541,7 @@ impl BasisWorkerClient {
             }
             shared.initialized = false;
             fail_all_pending(&mut shared.pending, &message);
-        }) as Box<dyn FnMut(web_sys::ErrorEvent)>);
+        }) as Box<dyn FnMut(JsValue)>);
 
         worker.set_onmessage(Some(onmessage.as_ref().unchecked_ref()));
         worker.set_onerror(Some(onerror.as_ref().unchecked_ref()));
@@ -558,6 +558,40 @@ impl Drop for Shared {
         if let Some(worker) = self.worker.take() {
             worker.terminate();
         }
+    }
+}
+
+/// Human-readable text for whatever the worker's `error` event delivered.
+///
+/// An uncaught exception inside a running worker arrives as an `ErrorEvent`
+/// (`message` / `filename` / `lineno`). A worker whose SCRIPT never loaded — a
+/// CSP `worker-src` block, a 404, a wrong MIME type — arrives as a plain
+/// `Event` with none of those. The handler must cope with both: reading
+/// `message` through a typed `ErrorEvent` getter throws on the plain event
+/// (the value is `undefined`, not a string), which used to abort the handler
+/// before it failed the in-flight requests — leaving every caller hanging until
+/// the watchdog fired minutes later.
+fn worker_error_message(event: &JsValue) -> String {
+    let text = |key: &str| {
+        js_sys::Reflect::get(event, &key.into())
+            .ok()
+            .and_then(|v| v.as_string())
+            .filter(|s| !s.is_empty())
+    };
+    match text("message") {
+        Some(message) => match text("filename") {
+            Some(file) => {
+                let line = js_sys::Reflect::get(event, &"lineno".into())
+                    .ok()
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0);
+                format!("{message} ({file}:{line})")
+            }
+            None => message,
+        },
+        None => "the worker script failed to load (blocked by Content-Security-Policy, \
+                 not found, or served with the wrong MIME type)"
+            .to_string(),
     }
 }
 
