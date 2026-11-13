@@ -382,10 +382,17 @@ Notes:
   committed, lights, post-processing and content only *reserve* their
   pipelines, and the commit compiles the whole load as one batch — that is the
   fast path for a cold first view. Anything you add after the commit compiles
-  on its own when you add it (and anything that needs a new pipeline — a new
-  material kind, a material turning alpha-tested — needs another
-  `commit_load`). For a full reload, `begin_load()` puts the renderer back
-  into the reserve-then-batch mode.
+  on its own when you add it. A material you insert and assign on a running
+  scene shades (and, if alpha-tested, cuts out) without a commit, a few frames
+  later — up to about a second the first time its pipeline has to compile
+  cold; commit after a batch of such edits to route new PBR materials to their
+  specialised kernels. For a full reload, `begin_load()` puts the renderer
+  back into the reserve-then-batch mode.
+- **A post-process effect the device cannot compile is turned off, not
+  fatal.** If SSR, bloom or the volumetric atmosphere fails to compile during
+  the commit, the renderer logs a warning, switches that effect off in
+  `renderer.post_processing` and finishes the load. Read the config back after
+  the load if your UI mirrors it.
 - **`assets` for `populate_awsm_scene` is pre-fetched bytes**, not a fetcher —
   load every referenced asset path into the map before calling.
 - **Pin `glam` and `wasm-bindgen`** to the workspace versions, or types won't

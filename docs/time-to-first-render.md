@@ -174,11 +174,29 @@ changes the compile path accordingly.
   must also release the reserved pool slots built from it
   (`release_reserved_by_shader_keys`), or the next drain fails with "missing
   shader".
-- **Anything that needs a new pipeline needs a `commit_load`.** That includes a
-  first-party material whose bucket had no kernel yet and a built-in material
-  that becomes alpha-tested at runtime.
+- **What a commit skips, the render loop compiles on demand.** A commit only
+  compiles for the content it sees, so two things can turn up later on a
+  running scene with no commit after them, and both are picked up by the
+  render preamble (`render_all`), the same kick/poll way lines and decals are:
+  - a material whose bucket has no kernel — the first of its family, or any
+    newly inserted PBR material, which shades through the canonical PBR bucket
+    until a commit routes it to a feature-set variant (`kick_missing_kernels`:
+    one ensure pass, layout untouched). Its pixels are unshaded until the
+    kernel resolves, as with a custom material registered live;
+  - a built-in material that turns alpha-tested when its family had no masked
+    variants (`render_passes::masked_lazy`). It draws solid until they land.
+
+  Warm, either is a few frames; cold it is one compile (about a second).
+  Anything that changes the bucket LAYOUT — a new PBR feature set, a custom
+  material — still needs a `commit_load`, as it always did.
 - **Before the first commit, compile errors surface from `commit_load`**, not
-  from the setter that built the pass.
+  from the setter that built the pass: the setter only reserved. A rejected
+  POST-PROCESS pipeline (SSR, bloom, the froxel volume, the effects / display
+  variant) does not fail the commit — the effect is turned off with a warning
+  and the load goes on (`degrade_failed_post_processing`); a scene on a device
+  that cannot build an effect loads without it. Any other rejected pipeline is
+  the commit's error. On a committed scene the setter compiles on the spot and
+  returns the error itself.
 
 ### What is still serial or wasteful
 
