@@ -383,6 +383,20 @@ pub async fn run_all() {
         );
     }
 
+    // ── 19. a rejected SSR composite is not forgotten by a commit that
+    //        failed for another reason. ───────────────────────────────────────
+    let composite_retry_enabled = filter
+        .as_ref()
+        .map(|f| f.iter().any(|s| s == "ssr-arena"))
+        .unwrap_or(true);
+    if composite_retry_enabled {
+        set_hud("player-tests: ssr-composite-failure-survives-a-failed-commit");
+        report.emit_result(
+            "ssr-composite-failure-survives-a-failed-commit",
+            ssr_composite_failure_survives_a_failed_commit(&origin).await,
+        );
+    }
+
     // ── 10. a pick that rebuilds the render textures must not strand the
     //        frame's bind groups on the old ones. ──────────────────────────────
     if pick_enabled {
@@ -1646,6 +1660,75 @@ async fn postprocess_compile_failure(case: &PostprocessFailure, origin: &str) ->
     Ok(format!(
         "{rejected} compiles rejected; loaded with {state}; 8 frames, no GPU validation error"
     ))
+}
+
+/// Check 19 — `ssr-composite-failure-survives-a-failed-commit`. The SSR
+/// composite's compile is left running until the commit collects it. If the
+/// driver rejects it AND that same commit fails for an unrelated reason (a
+/// rejected pipeline outside post-processing is the commit's error), the
+/// commit never gets to turn SSR off. The retry must still know the composite
+/// failed.
+///
+/// Locks the bug where it did not: the composite reported its rejection once,
+/// the retried commit saw nothing wrong and succeeded with SSR on, and the
+/// composite — the pass's last step — silently never drew.
+async fn ssr_composite_failure_survives_a_failed_commit(origin: &str) -> Result<String> {
+    const SCENE: &str = "ssr-arena";
+    let bundle_base = format!("{origin}/{SCENE}/bundle");
+    let scene = fetch_scene(&bundle_base).await?;
+    let (mut renderer, _canvas) = create_renderer(base_features()).await?;
+    let assets = awsm_renderer_scene_loader::assets::HttpAssets::new(bundle_base);
+
+    // The first commit meets a driver that rejects the composite and material
+    // prep: the second makes it fail outright.
+    let rejected =
+        reject_compute_pipeline_compiles("^(Material Prep|SSR Composite shader)$", u32::MAX)?;
+    let first = load_scene_for_player(&mut renderer, &scene, &assets, |_| {}).await;
+    restore_compute_pipeline_compiles();
+    let rejected: Vec<String> = rejected.iter().filter_map(|l| l.as_string()).collect();
+    if !rejected.iter().any(|l| l == "SSR Composite shader")
+        || !rejected.iter().any(|l| l == "Material Prep")
+    {
+        destroy_renderer(renderer);
+        return Err(anyhow!(
+            "expected both a composite and a material-prep compile to be rejected, got {rejected:?}"
+        ));
+    }
+    if first.is_ok() {
+        destroy_renderer(renderer);
+        return Err(anyhow!(
+            "the load succeeded although material prep was rejected — the check set nothing up"
+        ));
+    }
+
+    // The driver is healthy again; the same commit is retried.
+    let retry = renderer.commit_load(|_| {}).await;
+    let ssr_enabled = renderer.post_processing.ssr.enabled;
+    let ssr_pass = renderer.render_passes.ssr.is_some();
+    let frames = match &retry {
+        Ok(_) => {
+            renderer.update_transforms();
+            let (center, radius) = scene_bounds(&renderer);
+            run_frames(&mut renderer, center, radius, 4, |_| {
+                orbit_eye(center, radius, 2.2, 0.8)
+            })
+            .await
+            .map(|_| ())
+        }
+        Err(_) => Ok(()),
+    };
+    destroy_renderer(renderer);
+    retry.map_err(|e| anyhow!("the retried commit failed: {e}"))?;
+    frames?;
+    if ssr_enabled || ssr_pass {
+        return Err(anyhow!(
+            "the retried commit succeeded with ssr.enabled={ssr_enabled} and an SSR pass={ssr_pass}, although its composite was rejected — the reflection would never be composited"
+        ));
+    }
+    Ok(
+        "first commit failed on material prep with the composite rejected too; the retry committed with SSR off"
+            .to_string(),
+    )
 }
 
 /// Check 14 — `prep-compile-failure-keeps-rendering`. A config change that

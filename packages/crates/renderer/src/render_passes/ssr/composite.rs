@@ -199,9 +199,11 @@ enum CompositePipeline {
     /// collects it ([`SsrComposite::resolve_pipeline`]). Awaiting it where the
     /// pass is built held up everything a cold load still had to issue.
     Pending(wasm_bindgen_futures::JsFuture<web_sys::GpuRenderPipeline>),
-    /// The driver rejected it. The pass skips its draw; the commit that found
-    /// out turns SSR off.
-    Failed,
+    /// The driver rejected it (with this message). The pass skips its draw,
+    /// and [`SsrComposite::resolve_pipeline`] keeps reporting the failure, so
+    /// whichever commit gets as far as acting on it turns SSR off — not only
+    /// the one that happened to be running when the rejection arrived.
+    Failed(String),
 }
 
 pub struct SsrComposite {
@@ -326,20 +328,42 @@ impl SsrComposite {
     }
 
     /// Waits for a compile left running by [`Self::new`] (see
-    /// [`CompositePipeline::Pending`]). A no-op once it has been collected.
-    /// An error means the driver rejected the pipeline: the pass then skips
-    /// its draw, and the caller decides what that costs (SSR, at a commit).
+    /// [`CompositePipeline::Pending`]) and reports the pipeline's state: `Ok`
+    /// once it exists, the driver's error if it was rejected — on this call
+    /// and on every later one. The pass skips its draw while it has no
+    /// pipeline; the caller decides what a rejection costs (SSR, at a commit).
+    ///
+    /// The failure has to stick. The commit that first sees it may fail for
+    /// an unrelated reason before it can turn SSR off (a rejected pipeline
+    /// outside post-processing is that commit's error); the retry must find
+    /// the composite still failed, or it would succeed with SSR on and a
+    /// composite that silently never draws.
     pub(crate) async fn resolve_pipeline(&mut self) -> Result<()> {
-        if !matches!(self.pipeline, CompositePipeline::Pending(_)) {
-            return Ok(());
+        let failed = |message: &str| -> crate::error::AwsmError {
+            awsm_renderer_core::error::AwsmCoreError::PipelineCreation(message.to_string()).into()
+        };
+        match &self.pipeline {
+            CompositePipeline::Ready(_) => return Ok(()),
+            CompositePipeline::Failed(message) => return Err(failed(message)),
+            CompositePipeline::Pending(_) => {}
         }
-        let CompositePipeline::Pending(compile) =
-            std::mem::replace(&mut self.pipeline, CompositePipeline::Failed)
-        else {
+        let CompositePipeline::Pending(compile) = std::mem::replace(
+            &mut self.pipeline,
+            CompositePipeline::Failed("SSR composite compile was interrupted".to_string()),
+        ) else {
             return Ok(());
         };
-        self.pipeline = CompositePipeline::Ready(resolved_pipeline(compile.await)?);
-        Ok(())
+        match resolved_pipeline(compile.await) {
+            Ok(pipeline) => {
+                self.pipeline = CompositePipeline::Ready(pipeline);
+                Ok(())
+            }
+            Err(err) => {
+                let message = err.to_string();
+                self.pipeline = CompositePipeline::Failed(message.clone());
+                Err(failed(&message))
+            }
+        }
     }
 
     fn get_bind_group(&self) -> std::result::Result<&web_sys::GpuBindGroup, AwsmBindGroupError> {
