@@ -536,6 +536,10 @@ impl RenderPipelines {
             .filter(|(_, key)| self.lookup.get(**key).is_some_and(|v| v.is_none()))
             .map(|(cache_key, _)| cache_key.clone())
             .collect();
+        let pending =
+            crate::pipelines::compute_pipeline::largest_shader_first(pending, |cache_key| {
+                crate::pipelines::compute_pipeline::shader_issue_rank(shaders, cache_key.shader_key)
+            });
         if pending.is_empty() {
             return Ok(Default::default());
         }

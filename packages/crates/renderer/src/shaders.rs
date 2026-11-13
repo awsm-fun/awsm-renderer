@@ -31,6 +31,21 @@ use crate::{
 pub struct Shaders {
     lookup: SlotMap<ShaderKey, web_sys::GpuShaderModule>,
     cache: HashMap<ShaderCacheKey, ShaderKey>,
+    /// WGSL length of each cached module, in UTF-16 code units — the only
+    /// cheap handle on how long a pipeline built from it takes to compile.
+    /// See [`Self::source_len`].
+    source_len: slotmap::SecondaryMap<ShaderKey, u32>,
+}
+
+/// The length of a module descriptor's WGSL, read without copying it out of
+/// JS.
+fn descriptor_source_len(descriptor: &web_sys::GpuShaderModuleDescriptor) -> u32 {
+    use wasm_bindgen::JsCast;
+    web_sys::js_sys::Reflect::get(descriptor.as_ref(), &"code".into())
+        .ok()
+        .and_then(|code| code.dyn_into::<web_sys::js_sys::JsString>().ok())
+        .map(|code| code.length())
+        .unwrap_or(0)
 }
 impl Shaders {
     /// Creates an empty shader cache.
@@ -38,7 +53,15 @@ impl Shaders {
         Self {
             lookup: SlotMap::with_key(),
             cache: HashMap::new(),
+            source_len: slotmap::SecondaryMap::new(),
         }
+    }
+
+    /// WGSL length of a cached module (0 for one inserted uncached). The
+    /// pipeline pools order a batch by it — see
+    /// `ComputePipelines::compile_pending_except`.
+    pub fn source_len(&self, shader_key: ShaderKey) -> u32 {
+        self.source_len.get(shader_key).copied().unwrap_or(0)
     }
 
     // usually used with hooks, i.e. third-party shaders that are completely outside
@@ -65,6 +88,7 @@ impl Shaders {
     /// Returns true if a module was removed.
     pub fn remove(&mut self, shader_key: ShaderKey) -> bool {
         let existed = self.lookup.remove(shader_key).is_some();
+        self.source_len.remove(shader_key);
         self.cache.retain(|_, v| *v != shader_key);
         existed
     }
@@ -92,6 +116,7 @@ impl Shaders {
         });
         for shader_key in &removed {
             self.lookup.remove(*shader_key);
+            self.source_len.remove(*shader_key);
         }
         removed
     }
@@ -125,6 +150,8 @@ impl Shaders {
         }
 
         let shader_key = self.lookup.insert(shader_module.clone());
+        self.source_len
+            .insert(shader_key, descriptor_source_len(&shader_descriptor));
 
         self.cache.insert(cache_key.clone(), shader_key);
 
@@ -231,8 +258,10 @@ impl Shaders {
             // Install everything into the cache in one go, then
             // back-fill any unresolved slots.
             let mut pending_keys: Vec<ShaderKey> = Vec::with_capacity(modules.len());
-            for (cache_key, module, _) in modules {
+            for (cache_key, module, descriptor) in modules {
                 let shader_key = self.lookup.insert(module);
+                self.source_len
+                    .insert(shader_key, descriptor_source_len(&descriptor));
                 self.cache.insert(cache_key, shader_key);
                 pending_keys.push(shader_key);
             }
@@ -277,7 +306,7 @@ impl Shaders {
         let inputs: Vec<ShaderCacheKey> = cache_keys.into_iter().collect();
         let mut slots: Vec<Option<ShaderKey>> = Vec::with_capacity(inputs.len());
         let mut pending_for: HashMap<ShaderCacheKey, usize> = HashMap::new();
-        let mut pending: Vec<(ShaderCacheKey, web_sys::GpuShaderModule)> = Vec::new();
+        let mut pending: Vec<(ShaderCacheKey, web_sys::GpuShaderModule, u32)> = Vec::new();
         for cache_key in &inputs {
             if let Some(&shader_key) = self.cache.get(cache_key) {
                 slots.push(Some(shader_key));
@@ -290,13 +319,18 @@ impl Shaders {
             let descriptor = ShaderTemplate::try_from(cache_key)?.into_descriptor()?;
             let module = gpu.compile_shader(&descriptor);
             pending_for.insert(cache_key.clone(), pending.len());
-            pending.push((cache_key.clone(), module));
+            pending.push((
+                cache_key.clone(),
+                module,
+                descriptor_source_len(&descriptor),
+            ));
             slots.push(None);
         }
         // Install everything sync — validate is intentionally skipped.
         let mut pending_keys: Vec<ShaderKey> = Vec::with_capacity(pending.len());
-        for (cache_key, module) in pending {
+        for (cache_key, module, source_len) in pending {
             let shader_key = self.lookup.insert(module);
+            self.source_len.insert(shader_key, source_len);
             self.cache.insert(cache_key, shader_key);
             pending_keys.push(shader_key);
         }

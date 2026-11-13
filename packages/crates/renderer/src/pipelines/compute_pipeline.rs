@@ -88,6 +88,36 @@ pub struct ComputePipelinesPrepWithPromises {
     >,
 }
 
+/// Orders a batch of pipelines for issue: largest shader first.
+///
+/// The browser compiles a batch a few pipelines at a time, and a pipeline's
+/// compile time grows with its shader. A long compile that happens to be
+/// issued late is still running after everything else has finished, and the
+/// batch — a cold load — waits on it alone; issued first, it overlaps the
+/// rest. The pools hold their reservations in a hash map, so without this the
+/// issue order, and with it up to half a second of a cold load, changed from
+/// one build to the next for no reason anyone could see.
+///
+/// `size_and_shader` gives a pipeline's shader source length and its shader
+/// slot (the tie-break, so equal-sized shaders always come out in the same
+/// order).
+pub(crate) fn largest_shader_first<K>(
+    mut pending: Vec<K>,
+    size_and_shader: impl Fn(&K) -> (u32, u64),
+) -> Vec<K> {
+    pending.sort_by_key(|cache_key| {
+        let (size, shader) = size_and_shader(cache_key);
+        (std::cmp::Reverse(size), shader)
+    });
+    pending
+}
+
+/// [`largest_shader_first`]'s key for a pipeline built from `shader_key`.
+pub(crate) fn shader_issue_rank(shaders: &Shaders, shader_key: ShaderKey) -> (u32, u64) {
+    use slotmap::Key;
+    (shaders.source_len(shader_key), shader_key.data().as_ffi())
+}
+
 /// What a reserved-pool drain did (`compile_pending*` on either pipeline
 /// pool).
 #[derive(Debug)]
@@ -696,6 +726,9 @@ impl ComputePipelines {
             .map(|(cache_key, _)| cache_key.clone())
             .filter(|cache_key| !skip(cache_key))
             .collect();
+        let pending = largest_shader_first(pending, |cache_key| {
+            shader_issue_rank(shaders, cache_key.shader_key)
+        });
         if pending.is_empty() {
             return Ok(PendingCompile::default());
         }
@@ -903,5 +936,35 @@ mod tests {
         // Already gone → nothing to release, and nothing else disturbed.
         assert_eq!(pool.release_reserved([keys[0]]), 0);
         assert_eq!(pool.len(), 0);
+    }
+}
+
+#[cfg(test)]
+mod issue_order_tests {
+    use super::largest_shader_first;
+
+    #[test]
+    fn the_largest_shader_is_issued_first() {
+        // (name, shader size, shader slot)
+        let pending = vec![
+            ("blur", 1_800, 7),
+            ("transparent", 245_000, 9),
+            ("prep", 114_000, 3),
+        ];
+        let ordered = largest_shader_first(pending, |(_, size, shader)| (*size, *shader));
+        let names: Vec<_> = ordered.iter().map(|(name, _, _)| *name).collect();
+        assert_eq!(names, ["transparent", "prep", "blur"]);
+    }
+
+    #[test]
+    fn equal_sizes_come_out_in_shader_slot_order_whatever_the_input_order() {
+        let a = vec![("x", 500, 4), ("y", 500, 2), ("z", 500, 3)];
+        let b = vec![("z", 500, 3), ("x", 500, 4), ("y", 500, 2)];
+        let key = |(_, size, shader): &(&str, u32, u64)| (*size, *shader);
+        let names = |v: Vec<(&'static str, u32, u64)>| -> Vec<&'static str> {
+            v.into_iter().map(|(name, _, _)| name).collect()
+        };
+        assert_eq!(names(largest_shader_first(a, key)), ["y", "z", "x"]);
+        assert_eq!(names(largest_shader_first(b, key)), ["y", "z", "x"]);
     }
 }
