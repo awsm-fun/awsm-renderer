@@ -3,18 +3,18 @@
   "artifacts": {
     "basis_transcoder.js": {
       "upstream": "https://github.com/BinomialLLC/basis_universal/tree/073eb6a0a34a23d77e75e54f41dcd9653a52da83/webgl/transcoder",
-      "version": "basis_universal master @ 073eb6a0a34a23d77e75e54f41dcd9653a52da83 (2026-10-30; no release tag contains NO_DYNAMIC_EXECUTION yet), built locally with Emscripten 6.0.10 (emsdk 708dcbcc9ee23bc7d2dad44fc90db377e38b771c). Eval-free embind glue (DYNAMIC_EXECUTION=0 + EMBIND_AOT=1): no eval()/new Function(), loads under a CSP with 'wasm-unsafe-eval' and without 'unsafe-eval'. KTX2+Zstd, non-pthread, MODULARIZE+UMD, EXPORT_NAME=BASIS.",
-      "build": "emcmake cmake -S webgl/transcoder -B build -G \"Unix Makefiles\" -DNO_DYNAMIC_EXECUTION=ON \"-DCMAKE_EXE_LINKER_FLAGS=-sINITIAL_MEMORY=16MB -sMAXIMUM_MEMORY=256MB\" \"-DCMAKE_CXX_FLAGS=-UBASISD_SUPPORT_ETC2_EAC_RG11 -DBASISD_SUPPORT_ETC2_EAC_RG11=1\" && cmake --build build",
+      "version": "basis_universal master @ 073eb6a0a34a23d77e75e54f41dcd9653a52da83 (2026-10-30; no release tag contains NO_DYNAMIC_EXECUTION yet) + basisu-trim.patch, built locally with Emscripten 6.0.10 (emsdk 708dcbcc9ee23bc7d2dad44fc90db377e38b771c). Eval-free embind glue (DYNAMIC_EXECUTION=0 + EMBIND_AOT=1): no eval()/new Function(), loads under a CSP with 'wasm-unsafe-eval' and without 'unsafe-eval'. KTX2+Zstd, non-pthread, MODULARIZE+UMD, EXPORT_NAME=BASIS. Byte-identical to the previous (untrimmed) build's .js: the format trim only changes the .wasm.",
+      "build": "git apply basisu-trim.patch && emcmake cmake -S webgl/transcoder -B build -G \"Unix Makefiles\" -DNO_DYNAMIC_EXECUTION=ON \"-DCMAKE_EXE_LINKER_FLAGS=-sINITIAL_MEMORY=16MB -sMAXIMUM_MEMORY=256MB\" \"-DCMAKE_CXX_FLAGS=-UBASISD_SUPPORT_ETC2_EAC_RG11 -DBASISD_SUPPORT_ETC2_EAC_RG11=1 -UBASISD_SUPPORT_UASTC_HDR -DBASISD_SUPPORT_UASTC_HDR=0 -DBASISD_SUPPORT_XUASTC=0 -DBASISD_SUPPORT_PVRTC1=0\" && cmake --build build",
       "link_command": "em++ -sINITIAL_MEMORY=16MB -sMAXIMUM_MEMORY=256MB --bind -s ALLOW_MEMORY_GROWTH=1 -O3 -s MALLOC=emmalloc -s MODULARIZE=1 -s EXPORT_NAME=BASIS -s ASSERTIONS=0 -s EXPORTED_RUNTIME_METHODS=['HEAP8'] -s DYNAMIC_EXECUTION=0 -s EMBIND_AOT=1 <objs> -o basis_transcoder.js",
-      "compile_flags": "-std=gnu++17 -O3 -fno-strict-aliasing -DNDEBUG -DBASISD_SUPPORT_KTX2=1 -DBASISD_SUPPORT_KTX2_ZSTD=1 -DBASISD_SUPPORT_UASTC=1 -DBASISD_SUPPORT_UASTC_HDR=1 -DBASISD_SUPPORT_BC7=1 -DBASISD_SUPPORT_ETC2_EAC_RG11=1 -DBASISD_SUPPORT_ATC=0 -DBASISD_SUPPORT_PVRTC2=0 -DBASISD_SUPPORT_FXT1=0 -DBASISD_SUPPORT_ASTC_HIGHER_OPAQUE_QUALITY=0 -DBASISU_SUPPORT_ENCODING=0 -DBASISD_ENABLE_DEBUG_FLAGS=1 (upstream CMakeLists defaults, unpatched, except ETC2_EAC_RG11: upstream's 0 is overridden to 1 from the command line with -U/-D in CMAKE_CXX_FLAGS)",
-      "rebuild": "rebuild-transcoder.sh <work-dir> beside this file (pins both commits, installs emsdk inside <work-dir>, verifies both sha256s)",
+      "compile_flags": "-std=gnu++17 -O3 -fno-strict-aliasing -DNDEBUG -DBASISD_SUPPORT_KTX2=1 -DBASISD_SUPPORT_KTX2_ZSTD=1 -DBASISD_SUPPORT_UASTC=1 -DBASISD_SUPPORT_UASTC_HDR=0 -DBASISD_SUPPORT_XUASTC=0 -DBASISD_SUPPORT_PVRTC1=0 -DBASISD_SUPPORT_BC7=1 -DBASISD_SUPPORT_ETC2_EAC_RG11=1 -DBASISD_SUPPORT_ATC=0 -DBASISD_SUPPORT_PVRTC2=0 -DBASISD_SUPPORT_FXT1=0 -DBASISD_SUPPORT_ASTC_HIGHER_OPAQUE_QUALITY=0 -DBASISU_SUPPORT_ENCODING=0 -DBASISD_ENABLE_DEBUG_FLAGS=1 (upstream CMakeLists defaults except ETC2_EAC_RG11=1, UASTC_HDR=0, XUASTC=0, PVRTC1=0, all set from the command line in CMAKE_CXX_FLAGS)",
+      "rebuild": "rebuild-transcoder.sh <work-dir> beside this file (pins both commits, applies basisu-trim.patch beside it, installs emsdk inside <work-dir>, verifies the patch and both artifact sha256s)",
       "sha256": "5e9822cd29f98488db9ef26bc77e6d1dd551ed98d240de8c04cf7139be737b59",
       "license": "LICENSE-basis_universal (Apache-2.0); statically links Zstd (LICENSE-zstd-BSD-3-clause.txt, BSD-3-Clause; Zstd is dual BSD/GPLv2, BSD chosen)"
     },
     "basis_transcoder.wasm": {
       "upstream": "same build as basis_transcoder.js",
-      "version": "basis_universal master @ 073eb6a0a34a23d77e75e54f41dcd9653a52da83, Emscripten 6.0.10. Memory: initial 256 pages (16 MiB), maximum 4096 pages (256 MiB); was 16.4 MiB / 2 GiB in the three.js r185 build. Built with BASISD_SUPPORT_ETC2_EAC_RG11=1 (upstream's web build has it off), which is what lets ETC1S transcode to EAC RG11; it adds 5,130 bytes (1,056,521 -> 1,061,651; +596 bytes brotli). Without that define and the two memory flags the .wasm is byte-identical to upstream's own committed webgl/transcoder/build/basis_transcoder.wasm at that commit (sha256 a9a1b1d6655931b5ff167f0727a3917a275ce5d86548448c252ac1f269c8c9bb).",
-      "sha256": "751a007d46cd295f1aed9bffe593aaf8fbca3b3622aeef5892253845f61ef7fc",
+      "version": "basis_universal master @ 073eb6a0a34a23d77e75e54f41dcd9653a52da83 + basisu-trim.patch, Emscripten 6.0.10. 552,629 bytes (209,607 brotli-11 / 251,961 gzip-9); the untrimmed build was 1,061,651 (360,650 / 451,098) and three.js r185's v1.50 was 527,333 (203,605 / 244,575). Memory: initial 256 pages (16 MiB), maximum 4096 pages (256 MiB). Formats compiled in: sources ETC1S and UASTC LDR 4x4 (KTX2, BasisLZ / Zstd / none), every LDR target incl. ETC2 EAC RG11; compiled out: UASTC HDR 4x4, ASTC HDR 6x6, UASTC HDR 6x6, XUASTC LDR, ASTC LDR and XUBC7 sources, the HDR targets and PVRTC1. Output for every ETC1S / UASTC LDR source x the 9 worker targets is byte-identical to the untrimmed build (sha256 751a007d46cd295f1aed9bffe593aaf8fbca3b3622aeef5892253845f61ef7fc).",
+      "sha256": "2d7805eb0f95e6efaffbe082487fdb278ae02944f69c35e5d48a4673a2bf758f",
       "license": "LICENSE-basis_universal (Apache-2.0) + LICENSE-zstd-BSD-3-clause.txt"
     },
     "basis_encoder.js": {
@@ -28,6 +28,12 @@
       "version": "basis_universal v2_1_0r",
       "sha256": "10ed9ffdfb1e8ec09da98f43c67eca70ea3c1c89ce3bebffbc347d6db76faf13",
       "license": "LICENSE-basis_universal (Apache-2.0)"
+    },
+    "basisu-trim.patch": {
+      "upstream": "local patch to basis_universal 073eb6a0 transcoder/basisu_transcoder.cpp (+18/-4 lines), applied by rebuild-transcoder.sh",
+      "version": "Adds the #if guards upstream's own BASISD_SUPPORT_UASTC_HDR / BASISD_SUPPORT_XUASTC switches need to compile when turned off (at this commit, either switch set to 0 fails to compile). Guards only: with upstream's default defines the patched source builds a .wasm byte-identical to the unpatched one. Drop it once upstream fixes the switches.",
+      "sha256": "b463f81ecfaf66f9c52d258df000099caccd1231ac8c1f710907aa5129f043ed",
+      "license": "same as basis_universal (Apache-2.0)"
     }
   },
   "notes": [
@@ -41,6 +47,8 @@
     "Rebuilding: use Emscripten 3.1.51..7.0.0. On 7.0.1+ EMBIND_AOT changes meaning (ES-module exports); upstream's NO_DYNAMIC_EXECUTION option still adds -sEMBIND_AOT=1 unconditionally, so re-check before bumping.",
     "rebuild-transcoder.sh beside this file reproduces both transcoder artifacts byte-for-byte (pins basis_universal + emsdk, installs emsdk inside its work dir). Its own comments call the output directory dist/ — that is where it was developed; here the artifacts live beside it.",
     "Encoder ships to the EDITOR only. Player apps copy the transcoder pair only.",
-    "LICENSE-three.js is kept for history; no artifact here comes from three.js any more."
+    "LICENSE-three.js is kept for history; no artifact here comes from three.js any more.",
+    "Transcoder format trim (0.40.x follow-up): the renderer only sends the worker KTX2 files with vkFormat 0 (codec-basis selection.rs sniff_basis_ktx2) and only asks for the 9 LDR targets in basis-worker.js TARGET_TO_ENUM; the editor encodes only ETC1S or UASTC LDR 4x4 (setUASTC). So the transcoder is built without UASTC HDR, XUASTC LDR, ASTC LDR, XUBC7 and PVRTC1 support: .wasm 1,061,651 -> 552,629 bytes (brotli 360,650 -> 209,607). Verified in Chrome 157 through the real worker under the strict CSP: 126/126 file x target outputs of the 14-file bench byte-identical, plus UASTC without Zstd, non-multiple-of-4 and linear files; HDR sources fail on every LDR target with or without the trim. What changes: a XUASTC LDR KTX2 (vkFormat 0, supercompression 5, DFD model 169; not allowed by KHR_texture_basisu, never written by our pipeline) used to transcode and now fails cleanly ('transcode-failed', module stays usable), as it did with the r185 transcoder. The embind surface is unchanged (same exports, methods and enum values).",
+    "Since 0.40.1 codec-basis selection.rs sniff_basis_ktx2 also refuses a vkFormat-0 KTX2 whose supercompression scheme is not 0 (none), 1 (BasisLZ) or 2 (Zstandard), so a XUASTC LDR file (scheme 5) or any later scheme is turned away before it reaches the worker, with the same 'not a Basis KTX2 this build can transcode' error a native KTX2 gets."
   ]
 }
