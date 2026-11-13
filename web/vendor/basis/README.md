@@ -13,6 +13,10 @@ and SHA-256 hashes: `BUILD-METADATA.json`. Licenses vendored alongside.
   files byte-for-byte and checks their hashes. The **encoder** is still
   upstream's prebuilt and does use `new Function`, so the editor cannot drop
   `'unsafe-eval'` (it serves no CSP today).
+- The transcoder is built with `BASISD_SUPPORT_ETC2_EAC_RG11=1` (upstream's
+  web build has it off). That is what lets an ETC1S texture transcode to EAC
+  RG11, the target the renderer picks for two-channel-packed normal maps on
+  ETC2-only GPUs. Keep it on when rebuilding.
 - Ship the transcoder together with `web/workers/basis-worker.js` from the
   same revision: the worker keeps ETC1S → BC7 output identical to the previous
   transcoder and recovers from a wasm abort (see the notes in

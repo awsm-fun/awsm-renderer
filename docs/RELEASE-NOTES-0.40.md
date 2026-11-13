@@ -7,6 +7,42 @@ are pixel-identical to 0.39 — but *when* pipelines compile has changed, a
 handful of pool APIs changed shape, and several bugs found on the way are
 fixed.
 
+## 0.40.1
+
+A patch release: no behaviour or API changes for an embedder, a faster cold
+load, one device-class bug and one leak fixed.
+
+- **Nothing is compiled and awaited ahead of a load's batch any more.** The
+  two blit pipelines (awaited in `build()`), the SSR composite (awaited in
+  `set_post_processing`), the default BRDF LUT (awaited at the top of the
+  commit) and the sRGB / mipmap upload helpers (awaited by the first upload
+  that needed them) are now started early and collected later. DANCE-OFF
+  cold: the batch is issued at 0.60 s instead of 0.96 s and nothing compiles
+  after the last kernel — about 0.7 s off the load (7.8 s against 8.5 s,
+  alternating runs). A scene whose SSR composite is rejected by the driver
+  loads with SSR off, like any other pipeline of that pass.
+- **ETC1S normal maps load on ETC2-only GPUs** (most phones). The transcoder
+  is rebuilt with ETC1S → EAC RG11 enabled; upstream's web build has it off,
+  so such a normal map failed to transcode and the surface rendered flat.
+  `basis_transcoder.wasm` grows by 5,130 bytes (+0.6 KB brotli);
+  `basis_transcoder.js` and `basis-worker.js` are unchanged, and every other
+  target's output is byte-identical. **If you copy the vendored transcoder
+  into your own app, copy the new `.wasm`.** UASTC normals were never
+  affected.
+- **Toggling MSAA or SMAA no longer leaks render pipelines.** On a scene with
+  a feature-set variant or a custom material, every bucket re-layout evicted
+  every transparent shader and rebuilt its pipeline under a new key, leaving
+  the old one in the pool: one leaked pipeline (and one needless recompile)
+  per transparent mesh, per toggle. The editor showed it as +6 render
+  pipelines per MSAA toggle.
+- **Switching MSAA before the first commit compiles one mode, not two.** The
+  geometry pipelines, HZB seed and classify pipeline reserved for the mode
+  the renderer was built with are released when it is switched while
+  loading.
+
+New in `awsm-renderer-core`: `TexturePool::upload_pipeline_needs` and
+`UploadPipelineNeeds::compile_in_background`. Nothing removed or changed.
+
 ## Cold-load numbers
 
 M1 Max, Chrome 157, Metal, cold GPU caches (fresh profile, never-used site).

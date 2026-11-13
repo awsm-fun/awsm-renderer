@@ -210,17 +210,32 @@ changes the compile path accordingly.
   and mostly identical text. They also bake in the bucket count, their bucket
   index and their shader id, so any change to the bucket set recompiles all of
   them and identical kernels in different scenes never share a cache entry.
-- The batch's finish time is not fully ours. With several large kernels in
-  it, one of them sometimes resolves after every other pipeline and adds
-  about half a second (DANCE-OFF: 7.7–8.6 s over identical batches — same 54
-  pipelines, same modules, same issue order). Which kernel it is changes run
-  to run, and how often it happens changed with the order the reserved pool
-  was issued in, which is why that order is now deterministic (largest shader
-  first) rather than a hash map's. No order tried avoids it; capping how many
-  compiles are in flight at once is the untested next idea.
-- A few pipelines live outside the pools and are still awaited where they are
-  built: the SSR composite, the BRDF LUT, and the core blit / sRGB / mipmap
-  helpers.
+- The batch is throughput-bound. With several large kernels in it, one of
+  them often resolves after every other pipeline, which looks like a
+  straggler worth removing. Removing it did not buy anything: an experiment
+  that queued every compile in front of the device and released them largest
+  shader first — uncapped, and capped at 12, 8, 6 and 4 in flight — moved the
+  LAST KERNEL from ~8.2 s to ~6.2 s and left the load at ~8.2 s (DANCE-OFF,
+  three alternating rounds each; medians 8.08–8.30 s against 8.21 s
+  uncapped, cap 4 the slowest). The same compile work finished in a
+  different order. So there is no dispatcher and no cap; the reserved pool is
+  issued largest shader first only so that the order is the same on every
+  build. One thing stays unexplained: on 0.40's development builds a single
+  hash-map permutation of the pool finished about half a second sooner two
+  runs in three. Nothing tried since reproduces it.
+- Nothing is awaited ahead of the batch any more (0.40.1). The blit pair, the
+  SSR composite, the default BRDF LUT and the sRGB / mipmap upload helpers
+  live outside the pools (their shaders and layouts are private to their
+  modules), and each used to be compiled and awaited where it was built.
+  They are now started as early as they are known and collected later:
+  `build()` starts the blit compiles first and collects them last; the SSR
+  composite is issued when the pass is built and collected by the commit;
+  the default BRDF LUT is generated in the background of a cold commit; the
+  upload helpers start when an uncompressed image is added, and the three a
+  plain RGBA upload uses start inside every cold batch. The per-thread
+  caches in `renderer-core` dedupe compiles in flight so that "started
+  early" and "needed now" join one compile. `player-tests` locks each with a
+  slow-compile check (`nothing-awaited-ahead-of-the-batch:*`).
 - The first frame still waits for every pipeline. Dispatch already skips a
   pass whose pipeline is missing, but committing with kernels outstanding
   needs a defined look for unshaded buckets first.
