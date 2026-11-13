@@ -423,7 +423,26 @@ impl ShaderCacheKey {
         match self {
             ShaderCacheKey::RenderPass(rp) => match rp {
                 Rp::MaterialOpaque(k) => k.dispatch_hash != current_dispatch_hash,
-                Rp::MaterialTransparent(k) => k.dispatch_hash != current_dispatch_hash,
+                // A transparent shader is specialized for ITS OWN material
+                // only (its family + feature mask, or a custom material's
+                // WGSL) — not for the registered set: its `dispatch_hash` is
+                // always 0. It is stale only when it was built for a custom
+                // material that is no longer registered.
+                //
+                // This used to compare that constant 0 with the live dispatch
+                // hash, i.e. "stale whenever any feature-set variant or custom
+                // material exists". Every bucket re-layout — every MSAA or SMAA
+                // toggle, every commit after a material change — then evicted
+                // EVERY transparent shader, the transparent pass rebuilt each
+                // one under a new shader key, and the render pipelines built
+                // from the evicted ones stayed in the pool for good: one
+                // recompile and one leaked pipeline per transparent mesh, per
+                // toggle.
+                Rp::MaterialTransparent(k) => k.dynamic_shader_id.is_some_and(|shader_id| {
+                    !current_bucket_entries
+                        .iter()
+                        .any(|entry| entry.shader_id == shader_id)
+                }),
                 // Classify is identity-independent since §4a-§4d — its shader
                 // text depends only on the bucket COUNT (via bucket_lut). So it
                 // is stale only when the count changes; a same-count identity
@@ -591,4 +610,73 @@ pub(crate) fn compile_error_with_source(code: &str, err: AwsmCoreError) -> AwsmS
         }
     }
     AwsmShaderError::CompilationDetail(out)
+}
+
+#[cfg(test)]
+mod stale_dynamic_set_tests {
+    use super::*;
+    use crate::dynamic_materials::{first_party_bucket_entries, BucketEntry, ShadingBase};
+    use crate::render_passes::light_culling::buffers::DEFAULT_SLICE_COUNT;
+    use crate::render_passes::material_transparent::shader::cache_key::ShaderCacheKeyMaterialTransparent;
+    use crate::render_passes::shared::material::cache_key::ShaderMaterialVertexAttributes;
+    use awsm_renderer_materials::MaterialShaderId;
+
+    fn transparent(base: ShadingBase, custom: Option<MaterialShaderId>) -> ShaderCacheKey {
+        ShaderCacheKeyMaterialTransparent {
+            instancing_transforms: false,
+            attributes: ShaderMaterialVertexAttributes::default(),
+            texture_pool_arrays_len: 1,
+            texture_pool_samplers_len: 1,
+            msaa_sample_count: Some(4),
+            mipmaps: true,
+            reverse_z: false,
+            base,
+            pbr_features: 0,
+            // What the transparent pass really passes: always 0.
+            dispatch_hash: 0,
+            dynamic_shader_id: custom,
+            dynamic_shader: None,
+            dynamic_vertex_shader: None,
+            froxel_slice_count: DEFAULT_SLICE_COUNT,
+        }
+        .into()
+    }
+
+    fn custom_entry(shader_id: MaterialShaderId) -> BucketEntry {
+        BucketEntry {
+            shader_id,
+            base: ShadingBase::Custom,
+            pbr_features: 0,
+            name: "custom".to_string(),
+        }
+    }
+
+    #[test]
+    fn a_first_party_transparent_shader_is_never_stale() {
+        let key = transparent(ShadingBase::Pbr, None);
+        let entries = first_party_bucket_entries();
+        // No custom material, no variant: dispatch hash 0.
+        assert!(!key.is_stale_dynamic_set(0, &entries));
+        // The case that leaked: the set has grown (the hash is non-zero), and
+        // the shader has nothing to do with it.
+        assert!(!key.is_stale_dynamic_set(0xDEAD_BEEF, &entries));
+    }
+
+    #[test]
+    fn a_custom_transparent_shader_is_stale_once_its_material_is_unregistered() {
+        let id = MaterialShaderId::from_dynamic_raw(MaterialShaderId::DYNAMIC_START);
+        let other = MaterialShaderId::from_dynamic_raw(MaterialShaderId::DYNAMIC_START + 1);
+        let key = transparent(ShadingBase::Custom, Some(id));
+
+        let mut registered = first_party_bucket_entries();
+        registered.push(custom_entry(id));
+        assert!(!key.is_stale_dynamic_set(1, &registered));
+        // Another material coming or going does not touch it.
+        registered.push(custom_entry(other));
+        assert!(!key.is_stale_dynamic_set(2, &registered));
+
+        let mut unregistered = first_party_bucket_entries();
+        unregistered.push(custom_entry(other));
+        assert!(key.is_stale_dynamic_set(3, &unregistered));
+    }
 }
