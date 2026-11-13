@@ -97,10 +97,17 @@ impl DisplayPipelines {
         })
     }
 
-    /// Writes the resolved render pipeline key.
-    pub fn install_resolved(&mut self, resolved: Vec<RenderPipelineKey>) {
+    /// Writes the resolved render pipeline key. Returns the key it displaced,
+    /// if it held a different one, for `RenderPipelines::release_reserved`
+    /// (see `EffectsPipelines::install_resolved`).
+    pub fn install_resolved(
+        &mut self,
+        resolved: Vec<RenderPipelineKey>,
+    ) -> Option<RenderPipelineKey> {
         debug_assert_eq!(resolved.len(), 1);
-        self.render_pipeline_key = Some(resolved[0]);
+        self.render_pipeline_key
+            .replace(resolved[0])
+            .filter(|old| *old != resolved[0])
     }
 
     /// Updates the render pipeline for the current post-processing
@@ -129,7 +136,8 @@ impl DisplayPipelines {
             .render
             .ensure_keys(gpu, shaders, pipeline_layouts, descs.pipeline_cache_keys)
             .await?;
-        self.install_resolved(resolved);
+        let displaced = self.install_resolved(resolved);
+        pipelines.render.release_reserved(displaced);
         Ok(())
     }
 }

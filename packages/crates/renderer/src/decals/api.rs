@@ -93,7 +93,7 @@ impl AwsmRenderer {
                 ),
         };
         // Disjoint field borrows: `ctx` holds cache fields; `render_passes`
-        // is not part of it (same shape as `ensure_material_prep_pipelines`).
+        // is not part of it (same shape as `reserve_material_prep_pipelines`).
         if let Some(decal) = self.render_passes.material_decal.as_mut() {
             decal.kick_compile(&mut ctx)?;
         }

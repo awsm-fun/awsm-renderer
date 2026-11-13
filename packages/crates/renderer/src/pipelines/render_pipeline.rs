@@ -407,6 +407,32 @@ impl RenderPipelines {
             .collect()
     }
 
+    /// True when `key` names a RESERVED slot: allocated, not compiled yet.
+    pub fn is_reserved(&self, key: RenderPipelineKey) -> bool {
+        self.lookup.get(key).is_some_and(Option::is_none)
+    }
+
+    /// Give back reserved slots a pass no longer references (see
+    /// `ComputePipelines::release_reserved`). Compiled slots are left alone.
+    /// Returns how many slots were released.
+    pub fn release_reserved<I>(&mut self, keys: I) -> usize
+    where
+        I: IntoIterator<Item = RenderPipelineKey>,
+    {
+        let stale: std::collections::HashSet<RenderPipelineKey> = keys
+            .into_iter()
+            .filter(|key| self.is_reserved(*key))
+            .collect();
+        if stale.is_empty() {
+            return 0;
+        }
+        self.cache.retain(|_, slot| !stale.contains(slot));
+        for key in &stale {
+            self.lookup.remove(*key);
+        }
+        stale.len()
+    }
+
     /// Number of reserved slots still awaiting their compile.
     pub fn pending_count(&self) -> usize {
         self.lookup.values().filter(|v| v.is_none()).count()

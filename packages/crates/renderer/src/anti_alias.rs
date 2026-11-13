@@ -454,7 +454,8 @@ impl AwsmRenderer {
                 )
                 .await?;
             if let Some(prep) = self.render_passes.material_prep.as_mut() {
-                prep.pipelines.merge_resolved(&prep_descs.slots, prep_keys);
+                let displaced = prep.pipelines.merge_resolved(&prep_descs.slots, prep_keys);
+                self.pipelines.compute.release_reserved(displaced);
             }
         }
 

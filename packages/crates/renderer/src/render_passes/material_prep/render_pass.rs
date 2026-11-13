@@ -45,7 +45,7 @@ use crate::{
 /// `pipeline_cache_keys` vec in [`MaterialPrepPrewarmDescriptors`] — the same
 /// routing trick the classify/HZB passes use so `merge_resolved` can drop each
 /// compiled key into the right [`MaterialPrepPipelines`] field.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PrepPipelineSlot {
     /// `cs_prep` for one MSAA-geometry branch.
     Main { multisampled: bool },
@@ -160,32 +160,90 @@ impl MaterialPrepPipelines {
         })
     }
 
+    /// The field a slot routes to.
+    fn field_mut(&mut self, slot: PrepPipelineSlot) -> &mut Option<ComputePipelineKey> {
+        match slot {
+            PrepPipelineSlot::Main { multisampled: true } => &mut self.multisampled,
+            PrepPipelineSlot::Main {
+                multisampled: false,
+            } => &mut self.singlesampled,
+            PrepPipelineSlot::Edge => &mut self.edge,
+            PrepPipelineSlot::BlurH { multisampled: true } => &mut self.blur_h_multisampled,
+            PrepPipelineSlot::BlurH {
+                multisampled: false,
+            } => &mut self.blur_h_singlesampled,
+            PrepPipelineSlot::BlurV { multisampled: true } => &mut self.blur_v_multisampled,
+            PrepPipelineSlot::BlurV {
+                multisampled: false,
+            } => &mut self.blur_v_singlesampled,
+        }
+    }
+
+    /// Every slot, in a fixed order.
+    const ALL_SLOTS: [PrepPipelineSlot; 7] = [
+        PrepPipelineSlot::Main { multisampled: true },
+        PrepPipelineSlot::Main {
+            multisampled: false,
+        },
+        PrepPipelineSlot::Edge,
+        PrepPipelineSlot::BlurH { multisampled: true },
+        PrepPipelineSlot::BlurH {
+            multisampled: false,
+        },
+        PrepPipelineSlot::BlurV { multisampled: true },
+        PrepPipelineSlot::BlurV {
+            multisampled: false,
+        },
+    ];
+
     /// Route resolved pipeline keys into their branch fields. Preserves
     /// already-populated fields not mentioned in `slots` (the lazy-branch
     /// merge contract, mirroring `GeometryPipelines::merge_resolved`).
-    pub fn merge_resolved(&mut self, slots: &[PrepPipelineSlot], keys: Vec<ComputePipelineKey>) {
+    ///
+    /// Returns the keys this DISPLACED — a slot that held a different key
+    /// before (the config re-keyed it). The caller hands them to
+    /// `ComputePipelines::release_reserved`, so a displaced key that was only
+    /// ever reserved doesn't get compiled for nothing.
+    pub fn merge_resolved(
+        &mut self,
+        slots: &[PrepPipelineSlot],
+        keys: Vec<ComputePipelineKey>,
+    ) -> Vec<ComputePipelineKey> {
         debug_assert_eq!(slots.len(), keys.len());
+        let mut displaced = Vec::new();
         for (slot, key) in slots.iter().zip(keys) {
-            match slot {
-                PrepPipelineSlot::Main { multisampled: true } => self.multisampled = Some(key),
-                PrepPipelineSlot::Main {
-                    multisampled: false,
-                } => self.singlesampled = Some(key),
-                PrepPipelineSlot::Edge => self.edge = Some(key),
-                PrepPipelineSlot::BlurH { multisampled: true } => {
-                    self.blur_h_multisampled = Some(key)
+            if let Some(old) = self.field_mut(*slot).replace(key) {
+                if old != key {
+                    displaced.push(old);
                 }
-                PrepPipelineSlot::BlurH {
-                    multisampled: false,
-                } => self.blur_h_singlesampled = Some(key),
-                PrepPipelineSlot::BlurV { multisampled: true } => {
-                    self.blur_v_multisampled = Some(key)
-                }
-                PrepPipelineSlot::BlurV {
-                    multisampled: false,
-                } => self.blur_v_singlesampled = Some(key),
             }
         }
+        displaced
+    }
+
+    /// Drop every slot the live config does NOT use (`wanted` = the slots its
+    /// descriptors named) whose key `is_reserved` — allocated at boot for the
+    /// boot-time config, never compiled, and not part of the live config (the
+    /// blur pair after denoise was switched off, say). Returns the dropped
+    /// keys for `ComputePipelines::release_reserved`. A COMPILED key in an
+    /// unused slot is kept: that is the flip-back cache `merge_resolved`
+    /// preserves.
+    pub fn take_unwanted_reserved(
+        &mut self,
+        wanted: &[PrepPipelineSlot],
+        is_reserved: impl Fn(ComputePipelineKey) -> bool,
+    ) -> Vec<ComputePipelineKey> {
+        let mut dropped = Vec::new();
+        for slot in Self::ALL_SLOTS {
+            if wanted.contains(&slot) {
+                continue;
+            }
+            let field = self.field_mut(slot);
+            if field.is_some_and(&is_reserved) {
+                dropped.extend(field.take());
+            }
+        }
+        dropped
     }
 
     /// Whether everything the given config needs is already compiled — the

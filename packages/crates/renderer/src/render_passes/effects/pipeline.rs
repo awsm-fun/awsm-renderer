@@ -191,19 +191,32 @@ impl EffectsPipelines {
     /// `slot_inputs_for(post_processing)` size — 1 when bloom is off,
     /// 2 when on. Slot identity comes from the matching `slot_inputs`
     /// list rather than positional indexing. Pure sync.
+    ///
+    /// Returns the keys this DISPLACED (a slot that held a different key —
+    /// the config re-keyed it) so the caller can hand them to
+    /// `ComputePipelines::release_reserved`: a displaced key that was only
+    /// ever reserved (the boot-time variant, re-keyed by a scene's
+    /// post-processing before the first commit) must not be compiled.
     pub fn install_resolved(
         &mut self,
         post_processing: &PostProcessing,
         resolved: Vec<ComputePipelineKey>,
-    ) {
+    ) -> Vec<ComputePipelineKey> {
         let slot_inputs = Self::slot_inputs_for(post_processing);
         debug_assert_eq!(resolved.len(), slot_inputs.len());
+        let mut displaced = Vec::new();
         for (phase, key) in slot_inputs.into_iter().zip(resolved) {
-            match phase {
-                BloomPhase::None => self.no_bloom_pipeline = Some(key),
-                BloomPhase::Blend => self.bloom_blend_pipeline = Some(key),
+            let field = match phase {
+                BloomPhase::None => &mut self.no_bloom_pipeline,
+                BloomPhase::Blend => &mut self.bloom_blend_pipeline,
+            };
+            if let Some(old) = field.replace(key) {
+                if old != key {
+                    displaced.push(old);
+                }
             }
         }
+        displaced
     }
 
     /// Updates pipelines for the current anti-aliasing and
@@ -240,7 +253,8 @@ impl EffectsPipelines {
             .compute
             .ensure_keys(gpu, shaders, pipeline_layouts, descs.pipeline_cache_keys)
             .await?;
-        self.install_resolved(post_processing, resolved);
+        let displaced = self.install_resolved(post_processing, resolved);
+        pipelines.compute.release_reserved(displaced);
         Ok(())
     }
 }

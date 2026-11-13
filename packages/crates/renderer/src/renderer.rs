@@ -577,16 +577,19 @@ impl AwsmRenderer {
     ///
     /// Returns the number of pipelines compiled (0 when already warm).
     pub async fn ensure_config_pipelines(&mut self) -> crate::error::Result<usize> {
-        // 1. Drain the reserved boot pool (concurrent; both classes overlap
-        //    inside Dawn's worker pool).
-        let compiled = self.compile_pending_pipelines().await?;
-
-        // 2. Material prep: re-derive the ACTIVE branch's cache keys from the
-        //    live config and ensure them. Catches SSCS / denoise re-keys that
+        // 1. Material prep: re-derive the ACTIVE branch's cache keys from the
+        //    live config and RESERVE them. Catches SSCS / denoise re-keys that
         //    happened after boot (`set_shadows_config` mirrors them into
         //    `prep_config` but compiles nothing) — unchanged configs resolve
-        //    as cache hits.
-        self.ensure_material_prep_pipelines().await?;
+        //    to the slots they already hold. Done BEFORE the drain so the
+        //    re-keyed pipelines compile in the same batch as the rest of the
+        //    pool, and so a boot-time reservation the live config no longer
+        //    uses is released instead of compiled.
+        self.reserve_material_prep_pipelines().await?;
+
+        // 2. Drain the reserved pool (concurrent; both classes overlap inside
+        //    Dawn's worker pool).
+        let compiled = self.compile_pending_pipelines().await?;
 
         // (The MSAA edge-resolve / material kernels are deliberately NOT ensured
         //  here. They are keyed on the live bucket LAYOUT — every kernel bakes in
@@ -746,7 +749,7 @@ impl AwsmRenderer {
         };
         // Disjoint field borrows: `ctx` holds `&mut` on cache fields only —
         // `render_passes` is not part of it (same shape as
-        // `ensure_material_prep_pipelines`).
+        // `reserve_material_prep_pipelines`).
         let decal = self
             .render_passes
             .material_decal
@@ -876,11 +879,20 @@ impl AwsmRenderer {
         Ok(c + r)
     }
 
-    /// Ensure the material-prep pipelines for the LIVE config (active MSAA
+    /// Reserve the material-prep pipelines for the LIVE config (active MSAA
     /// branch, edge under MSAA + device support, blur pair while denoise is
-    /// on). Re-derives cache keys from `prep_config`, so SSCS / denoise
-    /// changes re-key + recompile here; unchanged configs are cache hits.
-    pub(crate) async fn ensure_material_prep_pipelines(&mut self) -> crate::error::Result<()> {
+    /// on) — compiling nothing. Re-derives cache keys from `prep_config`, so
+    /// an SSCS / denoise change re-keys here; an unchanged config resolves to
+    /// the slots it already holds. The caller follows with
+    /// [`Self::compile_pending_pipelines`], which compiles whatever is still
+    /// reserved in one batch.
+    ///
+    /// Reservations the live config no longer uses are released: the slots it
+    /// re-keyed away from, and the slots it dropped altogether. At a cold
+    /// load that is the boot-time prep megashader after the scene changed
+    /// SSCS or the caster cap — otherwise one of the larger compiles of the
+    /// boot wave, for a pipeline nothing would ever dispatch.
+    pub(crate) async fn reserve_material_prep_pipelines(&mut self) -> crate::error::Result<()> {
         use crate::render_passes::material_prep::render_pass::MaterialPrepPipelines;
         if self.render_passes.material_prep.is_none() {
             return Ok(());
@@ -932,15 +944,15 @@ impl AwsmRenderer {
         let keys = self
             .pipelines
             .compute
-            .ensure_keys(
-                &self.gpu,
-                &self.shaders,
-                &self.pipeline_layouts,
-                descs.pipeline_cache_keys.clone(),
-            )
-            .await?;
+            .reserve_keys(descs.pipeline_cache_keys.clone());
         if let Some(prep) = self.render_passes.material_prep.as_mut() {
-            prep.pipelines.merge_resolved(&descs.slots, keys);
+            let mut stale = prep.pipelines.merge_resolved(&descs.slots, keys);
+            let compute = &self.pipelines.compute;
+            stale.extend(
+                prep.pipelines
+                    .take_unwanted_reserved(&descs.slots, |key| compute.is_reserved(key)),
+            );
+            self.pipelines.compute.release_reserved(stale);
         }
         Ok(())
     }

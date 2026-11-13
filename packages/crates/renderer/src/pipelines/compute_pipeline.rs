@@ -544,6 +544,39 @@ impl ComputePipelines {
             .collect()
     }
 
+    /// True when `key` names a RESERVED slot: allocated, not compiled yet.
+    pub fn is_reserved(&self, key: ComputePipelineKey) -> bool {
+        self.lookup.get(key).is_some_and(Option::is_none)
+    }
+
+    /// Give back reserved slots a pass no longer references — it re-keyed
+    /// (a config change since the reservation) before the slot ever compiled.
+    /// Without this the stale slot stays in the pool and the next
+    /// [`Self::compile_pending`] compiles a pipeline nothing will dispatch.
+    ///
+    /// Only slots that are STILL reserved are released; a key whose pipeline
+    /// has compiled is left alone (it is a valid cache entry for the config it
+    /// was built for, and a flip-back reuses it). The caller must already have
+    /// dropped its own reference to every key it passes. Returns how many
+    /// slots were released.
+    pub fn release_reserved<I>(&mut self, keys: I) -> usize
+    where
+        I: IntoIterator<Item = ComputePipelineKey>,
+    {
+        let stale: std::collections::HashSet<ComputePipelineKey> = keys
+            .into_iter()
+            .filter(|key| self.is_reserved(*key))
+            .collect();
+        if stale.is_empty() {
+            return 0;
+        }
+        self.cache.retain(|_, slot| !stale.contains(slot));
+        for key in &stale {
+            self.lookup.remove(*key);
+        }
+        stale.len()
+    }
+
     /// Number of reserved slots still awaiting their compile.
     pub fn pending_count(&self) -> usize {
         self.lookup.values().filter(|v| v.is_none()).count()
@@ -726,4 +759,46 @@ pub enum AwsmComputePipelineError {
 
     #[error("[compute pipeline] {0:?}")]
     Layout(#[from] AwsmPipelineLayoutError),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(entry_point: &str) -> ComputePipelineCacheKey {
+        ComputePipelineCacheKey::new(ShaderKey::default(), PipelineLayoutKey::default())
+            .with_entry_point(entry_point)
+    }
+
+    /// A reserved slot a pass re-keyed away from must leave the pool, or the
+    /// next `compile_pending` compiles a pipeline nothing dispatches.
+    #[test]
+    fn release_reserved_drops_only_the_named_reserved_slots() {
+        let mut pool = ComputePipelines::new();
+        let keys = pool.reserve_keys([key("stale"), key("live")]);
+        assert_eq!(pool.pending_count(), 2);
+        assert!(pool.is_reserved(keys[0]) && pool.is_reserved(keys[1]));
+
+        assert_eq!(pool.release_reserved([keys[0]]), 1);
+        assert_eq!(pool.pending_count(), 1);
+        assert!(!pool.is_reserved(keys[0]), "released slot is gone");
+        assert!(pool.is_reserved(keys[1]), "the other reservation survives");
+
+        // The cache row went with the slot: reserving the same cache key again
+        // allocates a fresh slot instead of handing back the dead one.
+        let again = pool.reserve_keys([key("stale")]);
+        assert_ne!(again[0], keys[0]);
+        // The live key still resolves to its original slot.
+        assert_eq!(pool.reserve_keys([key("live")])[0], keys[1]);
+    }
+
+    #[test]
+    fn release_reserved_ignores_unknown_and_repeated_keys() {
+        let mut pool = ComputePipelines::new();
+        let keys = pool.reserve_keys([key("a")]);
+        assert_eq!(pool.release_reserved([keys[0], keys[0]]), 1);
+        // Already gone → nothing to release, and nothing else disturbed.
+        assert_eq!(pool.release_reserved([keys[0]]), 0);
+        assert_eq!(pool.len(), 0);
+    }
 }
