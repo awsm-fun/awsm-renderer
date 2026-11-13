@@ -100,66 +100,89 @@ impl ShadowMaskedPipelines {
         masked_bind_group: &ShadowMaskedBindGroup,
         variant: &MaskedShadowVariant,
     ) -> Result<()> {
-        for instancing in [false, true] {
-            let shader_cache = ShaderCacheKeyShadowMasked {
+        self.ensure_variants(ctx, masked_bind_group, std::slice::from_ref(variant))
+            .await
+    }
+
+    /// [`Self::ensure_variant`] for several variants as ONE batch (see
+    /// `GeometryMaskedPipelines::ensure_variants`): both instancing shapes of
+    /// every variant go into a single shader ensure and a single pipeline
+    /// ensure, so they compile concurrently instead of one wave per variant
+    /// per shape. All-or-nothing on error.
+    pub async fn ensure_variants(
+        &mut self,
+        ctx: &mut RenderPassInitContext<'_>,
+        masked_bind_group: &ShadowMaskedBindGroup,
+        variants: &[MaskedShadowVariant],
+    ) -> Result<()> {
+        if variants.is_empty() {
+            return Ok(());
+        }
+        // One entry per (variant, instancing shape).
+        let shapes: Vec<(&MaskedShadowVariant, bool)> = variants
+            .iter()
+            .flat_map(|variant| [false, true].into_iter().map(move |i| (variant, i)))
+            .collect();
+        let shader_caches: Vec<ShaderCacheKeyShadowMasked> = shapes
+            .iter()
+            .map(|(variant, instancing)| ShaderCacheKeyShadowMasked {
                 texture_pool_arrays_len: masked_bind_group.texture_pool_arrays_len,
                 texture_pool_samplers_len: masked_bind_group.texture_pool_samplers_len,
                 shader_id: variant.shader_id,
                 base: variant.base,
                 dynamic_alpha: variant.dynamic_alpha.clone(),
-                instancing_transforms: instancing,
-            };
-            ctx.shaders
-                .ensure_keys(ctx.gpu, vec![shader_cache.clone().into()])
-                .await?;
-            let shader_key = ctx.shaders.get_key(ctx.gpu, shader_cache).await?;
+                instancing_transforms: *instancing,
+            })
+            .collect();
+        let shader_keys = ctx
+            .shaders
+            .ensure_keys(ctx.gpu, shader_caches.into_iter().map(Into::into))
+            .await?;
 
-            let layout_key = if instancing {
+        // Depth-only, bias-matched pipelines shared with the plain caster;
+        // `with_force_fragment_stage` adds the discard fragment. Four cull
+        // variants per shader: (cube_face × double_sided). Single-sided uses
+        // Front cull; double-sided uses no-cull so thin cutout panels cast.
+        let combos: Vec<(bool, bool)> = [false, true]
+            .into_iter()
+            .flat_map(|cube_face| [false, true].into_iter().map(move |ds| (cube_face, ds)))
+            .collect();
+        let mut cache_keys = Vec::with_capacity(shapes.len() * combos.len());
+        let mut slots = Vec::with_capacity(shapes.len() * combos.len());
+        for ((variant, instancing), shader_key) in shapes.iter().zip(shader_keys) {
+            let layout_key = if *instancing {
                 self.pipeline_layout_key_uniform
             } else {
                 self.pipeline_layout_key_storage
             };
-
-            // Depth-only, bias-matched pipelines shared with the plain caster;
-            // `with_force_fragment_stage` adds the discard fragment. Four cull
-            // variants per shader: (cube_face × double_sided). Single-sided uses
-            // Front cull; double-sided uses no-cull so thin cutout panels cast.
-            let combos: Vec<(bool, bool)> = [false, true]
-                .into_iter()
-                .flat_map(|cube_face| [false, true].into_iter().map(move |ds| (cube_face, ds)))
-                .collect();
-            let cache_keys: Vec<_> = combos
-                .iter()
-                .map(|&(cube_face, double_sided)| {
+            for &(cube_face, double_sided) in &combos {
+                cache_keys.push(
                     shadow_pipeline_cache_key(
                         shader_key,
                         layout_key,
-                        instancing,
+                        *instancing,
                         cube_face,
                         double_sided,
                         ctx.features.depth(),
                     )
-                    .with_force_fragment_stage()
-                })
-                .collect();
-
-            let keys = ctx
-                .pipelines
-                .render
-                .ensure_keys(ctx.gpu, ctx.shaders, ctx.pipeline_layouts, cache_keys)
-                .await?;
-
-            for ((cube_face, double_sided), key) in combos.into_iter().zip(keys) {
-                self.main.insert(
-                    MaskedShadowPipelineKeyId {
-                        shader_id: variant.shader_id,
-                        instancing,
-                        cube_face,
-                        double_sided,
-                    },
-                    key,
+                    .with_force_fragment_stage(),
                 );
+                slots.push(MaskedShadowPipelineKeyId {
+                    shader_id: variant.shader_id,
+                    instancing: *instancing,
+                    cube_face,
+                    double_sided,
+                });
             }
+        }
+
+        let keys = ctx
+            .pipelines
+            .render
+            .ensure_keys(ctx.gpu, ctx.shaders, ctx.pipeline_layouts, cache_keys)
+            .await?;
+        for (slot, key) in slots.into_iter().zip(keys) {
+            self.main.insert(slot, key);
         }
         Ok(())
     }

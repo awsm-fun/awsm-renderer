@@ -609,7 +609,10 @@ impl AwsmRenderer {
             // only the cache-key shader_id differs. FlipBook gets its OWN
             // masked WGSL arm (the mask alpha is the time-varying atlas cell,
             // evaluated by the shared cell math the shaded material also runs).
-            for (shader_id, base) in [
+            //
+            // The four compile as ONE batch (they are independent; awaited one
+            // at a time they were four serial waves of a cold load).
+            let builtin_masked: Vec<_> = [
                 (
                     awsm_renderer_materials::MaterialShaderId::PBR,
                     crate::dynamic_materials::ShadingBase::Pbr,
@@ -626,42 +629,50 @@ impl AwsmRenderer {
                     awsm_renderer_materials::MaterialShaderId::FLIPBOOK,
                     crate::dynamic_materials::ShadingBase::Flipbook,
                 ),
-            ] {
-                let variant = crate::render_passes::geometry::masked_pipeline::MaskedVariant {
+            ]
+            .into_iter()
+            .map(|(shader_id, base)| {
+                crate::render_passes::geometry::masked_pipeline::MaskedVariant {
                     shader_id,
                     base,
                     dynamic_alpha: None,
-                };
-                self.render_passes
-                    .geometry
-                    .masked_pipelines
-                    .ensure_variant(
-                        &mut ctx,
-                        &self.render_passes.geometry.masked_bind_group,
-                        &variant,
-                    )
-                    .await?;
-            }
+                }
+            })
+            .collect();
+            self.render_passes
+                .geometry
+                .masked_pipelines
+                .ensure_variants(
+                    &mut ctx,
+                    &self.render_passes.geometry.masked_bind_group,
+                    &builtin_masked,
+                )
+                .await?;
 
             // Custom MASK materials — one masked variant each, emitting the
             // author's alpha-only fragment. Iterate by reference so the same
-            // list feeds the masked-shadow build below.
-            for (shader_id, info) in &custom_masked {
-                let variant = crate::render_passes::geometry::masked_pipeline::MaskedVariant {
-                    shader_id: *shader_id,
-                    base: crate::dynamic_materials::ShadingBase::Custom,
-                    dynamic_alpha: Some(info.clone()),
-                };
-                self.render_passes
-                    .geometry
-                    .masked_pipelines
-                    .ensure_variant(
-                        &mut ctx,
-                        &self.render_passes.geometry.masked_bind_group,
-                        &variant,
-                    )
-                    .await?;
-            }
+            // list feeds the masked-shadow build below. A batch of their own,
+            // AFTER the built-ins have landed: an author's broken alpha WGSL
+            // fails this batch without taking the built-in variants with it.
+            let custom_masked_variants: Vec<_> = custom_masked
+                .iter()
+                .map(|(shader_id, info)| {
+                    crate::render_passes::geometry::masked_pipeline::MaskedVariant {
+                        shader_id: *shader_id,
+                        base: crate::dynamic_materials::ShadingBase::Custom,
+                        dynamic_alpha: Some(info.clone()),
+                    }
+                })
+                .collect();
+            self.render_passes
+                .geometry
+                .masked_pipelines
+                .ensure_variants(
+                    &mut ctx,
+                    &self.render_passes.geometry.masked_bind_group,
+                    &custom_masked_variants,
+                )
+                .await?;
 
             // -------------------------------------------------------------
             // Custom-vertex geometry — rebuild against the new pool. The
@@ -760,7 +771,9 @@ impl AwsmRenderer {
                 &self.render_passes.shadow_masked.bind_group,
                 &self.render_passes.geometry.bind_groups,
             )?;
-            for (shader_id, base) in [
+            // Built-ins as one batch, then the customs as another — same
+            // shape and same reasons as the masked geometry variants above.
+            let builtin_shadow_masked: Vec<_> = [
                 (
                     awsm_renderer_materials::MaterialShaderId::PBR,
                     crate::dynamic_materials::ShadingBase::Pbr,
@@ -777,38 +790,44 @@ impl AwsmRenderer {
                     awsm_renderer_materials::MaterialShaderId::FLIPBOOK,
                     crate::dynamic_materials::ShadingBase::Flipbook,
                 ),
-            ] {
-                let variant = crate::render_passes::shadow_masked::pipeline::MaskedShadowVariant {
+            ]
+            .into_iter()
+            .map(|(shader_id, base)| {
+                crate::render_passes::shadow_masked::pipeline::MaskedShadowVariant {
                     shader_id,
                     base,
                     dynamic_alpha: None,
-                };
-                self.render_passes
-                    .shadow_masked
-                    .pipelines
-                    .ensure_variant(
-                        &mut ctx,
-                        &self.render_passes.shadow_masked.bind_group,
-                        &variant,
-                    )
-                    .await?;
-            }
-            for (shader_id, info) in &custom_masked {
-                let variant = crate::render_passes::shadow_masked::pipeline::MaskedShadowVariant {
-                    shader_id: *shader_id,
-                    base: crate::dynamic_materials::ShadingBase::Custom,
-                    dynamic_alpha: Some(info.clone()),
-                };
-                self.render_passes
-                    .shadow_masked
-                    .pipelines
-                    .ensure_variant(
-                        &mut ctx,
-                        &self.render_passes.shadow_masked.bind_group,
-                        &variant,
-                    )
-                    .await?;
-            }
+                }
+            })
+            .collect();
+            self.render_passes
+                .shadow_masked
+                .pipelines
+                .ensure_variants(
+                    &mut ctx,
+                    &self.render_passes.shadow_masked.bind_group,
+                    &builtin_shadow_masked,
+                )
+                .await?;
+            let custom_shadow_masked: Vec<_> = custom_masked
+                .iter()
+                .map(|(shader_id, info)| {
+                    crate::render_passes::shadow_masked::pipeline::MaskedShadowVariant {
+                        shader_id: *shader_id,
+                        base: crate::dynamic_materials::ShadingBase::Custom,
+                        dynamic_alpha: Some(info.clone()),
+                    }
+                })
+                .collect();
+            self.render_passes
+                .shadow_masked
+                .pipelines
+                .ensure_variants(
+                    &mut ctx,
+                    &self.render_passes.shadow_masked.bind_group,
+                    &custom_shadow_masked,
+                )
+                .await?;
 
             // -------------------------------------------------------------
             // Custom-vertex SHADOW casters — so a custom-vertex material's

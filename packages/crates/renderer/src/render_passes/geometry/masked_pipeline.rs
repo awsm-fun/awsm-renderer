@@ -111,23 +111,47 @@ impl GeometryMaskedPipelines {
         masked_bind_group: &GeometryMaskedBindGroup,
         variant: &MaskedVariant,
     ) -> Result<()> {
+        self.ensure_variants(ctx, masked_bind_group, std::slice::from_ref(variant))
+            .await
+    }
+
+    /// [`Self::ensure_variant`] for several variants as ONE batch: every
+    /// shader module is created before any is validated, and every pipeline
+    /// compile is issued before any is awaited, so the browser compiles them
+    /// concurrently. Compiling them one variant at a time made each wait for
+    /// the previous one — a serial chain of waves on a cold load.
+    ///
+    /// All-or-nothing, like the single form: on an error nothing from this
+    /// batch is inserted.
+    pub async fn ensure_variants(
+        &mut self,
+        ctx: &mut RenderPassInitContext<'_>,
+        masked_bind_group: &GeometryMaskedBindGroup,
+        variants: &[MaskedVariant],
+    ) -> Result<()> {
+        if variants.is_empty() {
+            return Ok(());
+        }
         let msaa_samples = match ctx.anti_aliasing.msaa_sample_count {
             Some(4) => Some(4u32),
             _ => None,
         };
 
-        let shader_cache = ShaderCacheKeyGeometryMasked {
-            texture_pool_arrays_len: masked_bind_group.texture_pool_arrays_len,
-            texture_pool_samplers_len: masked_bind_group.texture_pool_samplers_len,
-            shader_id: variant.shader_id,
-            base: variant.base,
-            dynamic_alpha: variant.dynamic_alpha.clone(),
-            msaa_samples,
-        };
-        ctx.shaders
-            .ensure_keys(ctx.gpu, vec![shader_cache.clone().into()])
+        let shader_caches: Vec<ShaderCacheKeyGeometryMasked> = variants
+            .iter()
+            .map(|variant| ShaderCacheKeyGeometryMasked {
+                texture_pool_arrays_len: masked_bind_group.texture_pool_arrays_len,
+                texture_pool_samplers_len: masked_bind_group.texture_pool_samplers_len,
+                shader_id: variant.shader_id,
+                base: variant.base,
+                dynamic_alpha: variant.dynamic_alpha.clone(),
+                msaa_samples,
+            })
+            .collect();
+        let shader_keys = ctx
+            .shaders
+            .ensure_keys(ctx.gpu, shader_caches.into_iter().map(Into::into))
             .await?;
-        let shader_key = ctx.shaders.get_key(ctx.gpu, shader_cache).await?;
 
         let color_targets = [
             ColorTargetState::new(ctx.render_texture_formats.visiblity_data),
@@ -137,23 +161,25 @@ impl GeometryMaskedPipelines {
         ];
         let depth_format = ctx.render_texture_formats.depth;
 
-        let mut pipeline_cache_keys = Vec::with_capacity(CULL_MODES.len());
-        let mut slots = Vec::with_capacity(CULL_MODES.len());
-        for &cull_mode in CULL_MODES {
-            pipeline_cache_keys.push(build_masked_cache_key(
-                shader_key,
-                self.pipeline_layout_key,
-                depth_format,
-                &color_targets,
-                msaa_samples,
-                cull_mode,
-                ctx.features.depth().compare(),
-            ));
-            slots.push(MaskedPipelineKeyId {
-                msaa_sample_count: msaa_samples,
-                shader_id: variant.shader_id,
-                cull: GeometryCullKey::from_cull_mode(cull_mode)?,
-            });
+        let mut pipeline_cache_keys = Vec::with_capacity(variants.len() * CULL_MODES.len());
+        let mut slots = Vec::with_capacity(variants.len() * CULL_MODES.len());
+        for (variant, shader_key) in variants.iter().zip(shader_keys) {
+            for &cull_mode in CULL_MODES {
+                pipeline_cache_keys.push(build_masked_cache_key(
+                    shader_key,
+                    self.pipeline_layout_key,
+                    depth_format,
+                    &color_targets,
+                    msaa_samples,
+                    cull_mode,
+                    ctx.features.depth().compare(),
+                ));
+                slots.push(MaskedPipelineKeyId {
+                    msaa_sample_count: msaa_samples,
+                    shader_id: variant.shader_id,
+                    cull: GeometryCullKey::from_cull_mode(cull_mode)?,
+                });
+            }
         }
 
         let keys = ctx
