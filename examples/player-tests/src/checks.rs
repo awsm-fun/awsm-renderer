@@ -343,6 +343,15 @@ pub async fn run_all() {
         .map(|f| f.iter().any(|s| s == PICK_SCENE))
         .unwrap_or(true);
 
+    // ── 16. nothing is compiled, and waited for, ahead of the batch. ───────
+    if pick_enabled {
+        for case in ["blit", "ssr-composite", "brdf-lut", "upload-helpers"] {
+            let name = format!("nothing-awaited-ahead-of-the-batch:{case}");
+            set_hud(&format!("player-tests: {name}"));
+            report.emit_result(&name, nothing_awaited_ahead_of_the_batch(case).await);
+        }
+    }
+
     // ── 14 + 15. compile failures and deferral around a committed / an
     //        uncommitted scene. ───────────────────────────────────────────────
     if pick_enabled {
@@ -355,6 +364,22 @@ pub async fn run_all() {
         report.emit_result(
             "aa-before-commit-reserves",
             aa_before_commit_reserves().await,
+        );
+        set_hud("player-tests: aa-flip-before-commit-leaves-nothing");
+        report.emit_result(
+            "aa-flip-before-commit-leaves-nothing",
+            aa_flip_before_commit_leaves_nothing().await,
+        );
+    }
+    let toggle_enabled = filter
+        .as_ref()
+        .map(|f| f.iter().any(|s| s == "pbr-extensions"))
+        .unwrap_or(true);
+    if toggle_enabled {
+        set_hud("player-tests: aa-toggle-pipelines-stable");
+        report.emit_result(
+            "aa-toggle-pipelines-stable",
+            aa_toggle_pipelines_stable(&origin).await,
         );
     }
 
@@ -1115,6 +1140,15 @@ const POSTPROCESS_FAILURES: &[PostprocessFailure] = &[
         limit: u32::MAX,
         expect: FailureOutcome::SsrOff,
     },
+    // The SSR composite is a render pipeline outside the pools; it belongs to
+    // the SSR pass all the same.
+    PostprocessFailure {
+        name: "ssr-composite",
+        scene: "ssr-arena",
+        reject: "^SSR Composite shader$",
+        limit: u32::MAX,
+        expect: FailureOutcome::SsrOff,
+    },
     PostprocessFailure {
         name: "bloom",
         scene: "ssr-arena",
@@ -1161,30 +1195,31 @@ const POSTPROCESS_FAILURES: &[PostprocessFailure] = &[
     },
 ];
 
-/// Makes `createComputePipelineAsync` reject the first `limit` pipelines whose
-/// shader-module label matches `pattern`, the way a driver that cannot build
-/// them would. Returns the (live) list of labels it rejected. Undo with
-/// [`restore_compute_pipeline_compiles`].
+/// Makes `createComputePipelineAsync` / `createRenderPipelineAsync` reject the
+/// first `limit` pipelines whose shader-module label matches `pattern`, the
+/// way a driver that cannot build them would. Returns the (live) list of
+/// labels it rejected. Undo with [`restore_compute_pipeline_compiles`].
 fn reject_compute_pipeline_compiles(pattern: &str, limit: u32) -> Result<js_sys::Array> {
     let install = js_sys::Function::new_with_args(
         "pattern, limit",
         "const proto = GPUDevice.prototype;
-         if (!proto.__playerTestsCreateComputePipelineAsync) {
-           proto.__playerTestsCreateComputePipelineAsync = proto.createComputePipelineAsync;
-         }
-         const original = proto.__playerTestsCreateComputePipelineAsync;
          const re = new RegExp(pattern);
          const rejected = [];
-         proto.createComputePipelineAsync = function (descriptor) {
-           const module = descriptor && descriptor.compute && descriptor.compute.module;
-           const label = (module && module.label) || '';
-           if (rejected.length < limit && re.test(label)) {
-             rejected.push(label);
-             return Promise.reject(new GPUPipelineError(
-               'simulated compile failure: ' + label, { reason: 'internal' }));
-           }
-           return original.call(this, descriptor);
-         };
+         for (const name of ['createComputePipelineAsync', 'createRenderPipelineAsync']) {
+           const saved = '__playerTests_' + name;
+           if (!proto[saved]) proto[saved] = proto[name];
+           const original = proto[saved];
+           proto[name] = function (descriptor) {
+             const stage = descriptor && (descriptor.compute || descriptor.vertex);
+             const label = (stage && stage.module && stage.module.label) || '';
+             if (rejected.length < limit && re.test(label)) {
+               rejected.push(label);
+               return Promise.reject(new GPUPipelineError(
+                 'simulated compile failure: ' + label, { reason: 'internal' }));
+             }
+             return original.call(this, descriptor);
+           };
+         }
          return rejected;",
     );
     install
@@ -1198,14 +1233,294 @@ fn reject_compute_pipeline_compiles(pattern: &str, limit: u32) -> Result<js_sys:
         .map_err(|e| anyhow!("install compile-failure hook: {e:?}"))
 }
 
+/// Undoes every device hook this file installs.
 fn restore_compute_pipeline_compiles() {
     let restore = js_sys::Function::new_no_args(
         "const proto = GPUDevice.prototype;
-         if (proto.__playerTestsCreateComputePipelineAsync) {
-           proto.createComputePipelineAsync = proto.__playerTestsCreateComputePipelineAsync;
+         for (const name of ['createComputePipelineAsync', 'createRenderPipelineAsync', 'createShaderModule']) {
+           const saved = '__playerTests_' + name;
+           if (proto[saved]) proto[name] = proto[saved];
          }",
     );
     let _ = restore.call0(&wasm_bindgen::JsValue::NULL);
+}
+
+/// Records every shader module and pipeline the device is asked for (label +
+/// `performance.now()`), and holds back the RESOLUTION of pipelines whose
+/// shader-module label matches `slow` by `delay_ms` — a compile that takes
+/// that long. The pipeline is still issued at once. Undo with
+/// [`restore_compute_pipeline_compiles`].
+struct CompileTrace(wasm_bindgen::JsValue);
+
+impl CompileTrace {
+    fn install(slow: &str, delay_ms: u32) -> Result<Self> {
+        let install = js_sys::Function::new_with_args(
+            "slow, delayMs",
+            "const proto = GPUDevice.prototype;
+             const re = new RegExp(slow);
+             const trace = { pipelines: [], modules: [] };
+             for (const name of ['createComputePipelineAsync', 'createRenderPipelineAsync']) {
+               const saved = '__playerTests_' + name;
+               if (!proto[saved]) proto[saved] = proto[name];
+               const original = proto[saved];
+               proto[name] = function (descriptor) {
+                 const stage = descriptor && (descriptor.compute || descriptor.vertex);
+                 const label = (stage && stage.module && stage.module.label) || '';
+                 trace.pipelines.push({ label, t: performance.now() });
+                 const compile = original.call(this, descriptor);
+                 if (delayMs > 0 && re.test(label)) {
+                   return new Promise((resolve, reject) =>
+                     setTimeout(() => compile.then(resolve, reject), delayMs));
+                 }
+                 return compile;
+               };
+             }
+             const saved = '__playerTests_createShaderModule';
+             if (!proto[saved]) proto[saved] = proto.createShaderModule;
+             const original = proto[saved];
+             proto.createShaderModule = function (descriptor) {
+               trace.modules.push({ label: (descriptor && descriptor.label) || '', t: performance.now() });
+               return original.call(this, descriptor);
+             };
+             return trace;",
+        );
+        install
+            .call2(
+                &wasm_bindgen::JsValue::NULL,
+                &slow.into(),
+                &f64::from(delay_ms).into(),
+            )
+            .map(Self)
+            .map_err(|e| anyhow!("install compile trace: {e:?}"))
+    }
+
+    /// When the first `kind` (`"pipelines"` / `"modules"`) whose label matches
+    /// `pattern` was asked for, in `performance.now()` ms.
+    fn first(&self, kind: &str, pattern: &str) -> Option<f64> {
+        let find = js_sys::Function::new_with_args(
+            "trace, kind, pattern",
+            "const re = new RegExp(pattern);
+             const hit = trace[kind].find((entry) => re.test(entry.label));
+             return hit ? hit.t : -1;",
+        );
+        find.call3(
+            &wasm_bindgen::JsValue::NULL,
+            &self.0,
+            &kind.into(),
+            &pattern.into(),
+        )
+        .ok()
+        .and_then(|t| t.as_f64())
+        .filter(|t| *t >= 0.0)
+    }
+
+    /// Every `kind` label recorded so far, sorted.
+    fn labels(&self, kind: &str) -> Vec<String> {
+        let labels = js_sys::Function::new_with_args(
+            "trace, kind",
+            "return trace[kind].map((entry) => entry.label).sort();",
+        );
+        labels
+            .call2(&wasm_bindgen::JsValue::NULL, &self.0, &kind.into())
+            .map(|labels| {
+                js_sys::Array::from(&labels)
+                    .iter()
+                    .filter_map(|label| label.as_string())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// How many `kind` entries match `pattern`.
+    fn count(&self, kind: &str, pattern: &str) -> usize {
+        let count = js_sys::Function::new_with_args(
+            "trace, kind, pattern",
+            "const re = new RegExp(pattern);
+             return trace[kind].filter((entry) => re.test(entry.label)).length;",
+        );
+        count
+            .call3(
+                &wasm_bindgen::JsValue::NULL,
+                &self.0,
+                &kind.into(),
+                &pattern.into(),
+            )
+            .ok()
+            .and_then(|n| n.as_f64())
+            .unwrap_or(0.0) as usize
+    }
+}
+
+/// How long the batch checks make one pipeline "take", and how soon the thing
+/// that must NOT wait for it has to have happened. Far apart on purpose.
+const SLOW_COMPILE_MS: u32 = 1500;
+const NOT_WAITING_MS: f64 = 700.0;
+
+/// Check 16 — `nothing-awaited-ahead-of-the-batch`. A cold load compiles as
+/// one batch, issued as early as possible; a pipeline that is created and
+/// AWAITED on its own before that batch delays everything behind it by its
+/// whole compile. Four pipelines used to be: the two blit pipelines (awaited
+/// in `build()` before the boot shader modules were even created), the SSR
+/// composite (awaited in `set_post_processing`), the default BRDF LUT (awaited
+/// at the top of the commit), and the sRGB / mipmap upload helpers (first
+/// created, and awaited, by the upload that needs them).
+///
+/// Each case makes one of them take [`SLOW_COMPILE_MS`] and checks that the
+/// step after it did not wait.
+async fn nothing_awaited_ahead_of_the_batch(case: &str) -> Result<String> {
+    let outcome = async {
+        match case {
+            // build(): the boot shader modules are created while the blit
+            // pipelines compile, not after.
+            "blit" => {
+                let trace = CompileTrace::install("^Blit shader$", SLOW_COMPILE_MS)?;
+                let start = now_ms();
+                let (renderer, _canvas) = create_renderer(base_features()).await?;
+                let built = now_ms() - start;
+                let modules = trace.first("modules", "^Geometry$").map(|t| t - start);
+                destroy_renderer(renderer);
+                let modules = modules.ok_or_else(|| anyhow!("no Geometry module was created"))?;
+                if modules > NOT_WAITING_MS {
+                    return Err(anyhow!(
+                        "the boot shader modules were created {modules:.0}ms into build(), after the {SLOW_COMPILE_MS}ms blit compile — build() waited for it first"
+                    ));
+                }
+                Ok(format!(
+                    "boot shader modules created {modules:.0}ms into a build() whose blit compile took {SLOW_COMPILE_MS}ms (build returned at {built:.0}ms)"
+                ))
+            }
+            // set_post_processing before the commit returns without the
+            // composite; the commit collects it.
+            "ssr-composite" => {
+                let (mut renderer, _canvas) = create_renderer(base_features()).await?;
+                let trace = CompileTrace::install("^SSR Composite shader$", SLOW_COMPILE_MS)?;
+                let mut post_processing = renderer.post_processing.clone();
+                post_processing.ssr.enabled = true;
+                let start = now_ms();
+                let set = renderer.set_post_processing(post_processing).await;
+                let setter = now_ms() - start;
+                let commit = renderer.commit_load(|_| {}).await;
+                let committed = now_ms() - start;
+                let issued = trace.count("pipelines", "^SSR Composite shader$");
+                let ssr_on = renderer.post_processing.ssr.enabled
+                    && renderer.render_passes.ssr.is_some();
+                let frames = run_frames(&mut renderer, glam::Vec3::ZERO, 4.0, 2, |_| {
+                    glam::Vec3::new(0.0, 2.0, 6.0)
+                })
+                .await;
+                destroy_renderer(renderer);
+                set.map_err(|e| anyhow!("set_post_processing: {e}"))?;
+                commit.map_err(|e| anyhow!("commit_load: {e}"))?;
+                frames?;
+                if issued == 0 {
+                    return Err(anyhow!("no SSR composite pipeline was created"));
+                }
+                if setter > NOT_WAITING_MS {
+                    return Err(anyhow!(
+                        "set_post_processing before the commit took {setter:.0}ms — it waited for the {SLOW_COMPILE_MS}ms composite compile"
+                    ));
+                }
+                if !ssr_on || committed < f64::from(SLOW_COMPILE_MS) * 0.9 {
+                    return Err(anyhow!(
+                        "the commit did not collect the composite: returned at {committed:.0}ms, SSR on with a pass = {ssr_on}"
+                    ));
+                }
+                Ok(format!(
+                    "set_post_processing returned in {setter:.0}ms with the composite still compiling; the commit collected it ({committed:.0}ms)"
+                ))
+            }
+            // commit_load: the batch is issued while the default LUT's
+            // pipeline compiles.
+            "brdf-lut" => {
+                let (mut renderer, _canvas) = create_renderer(base_features()).await?;
+                let trace = CompileTrace::install("^BRDF Lut Shader$", SLOW_COMPILE_MS)?;
+                let start = now_ms();
+                let commit = renderer.commit_load(|_| {}).await;
+                let committed = now_ms() - start;
+                let batch = trace.first("pipelines", "^Geometry$").map(|t| t - start);
+                let lut = trace.count("pipelines", "^BRDF Lut Shader$");
+                destroy_renderer(renderer);
+                commit.map_err(|e| anyhow!("commit_load: {e}"))?;
+                let batch = batch.ok_or_else(|| anyhow!("the commit issued no Geometry pipeline"))?;
+                if lut == 0 {
+                    return Err(anyhow!("no BRDF LUT pipeline was created"));
+                }
+                if batch > NOT_WAITING_MS {
+                    return Err(anyhow!(
+                        "the commit issued its batch {batch:.0}ms in — after the {SLOW_COMPILE_MS}ms BRDF LUT compile, which it waited for first"
+                    ));
+                }
+                if committed < f64::from(SLOW_COMPILE_MS) * 0.9 {
+                    return Err(anyhow!(
+                        "the commit returned at {committed:.0}ms without waiting for the LUT it started"
+                    ));
+                }
+                Ok(format!(
+                    "batch issued {batch:.0}ms into a commit whose BRDF LUT compile took {SLOW_COMPILE_MS}ms (commit returned at {committed:.0}ms)"
+                ))
+            }
+            // The upload helpers start compiling when an image arrives, and
+            // the plain-RGBA ones inside a cold load's batch regardless.
+            "upload-helpers" => {
+                use awsm_renderer::core::texture::mipmap::MipmapTextureKind;
+                use awsm_renderer::core::texture::texture_pool::TextureColorInfo;
+                const HELPERS: &str = "^(sRGB Conversion|Mipmap) Shader$";
+
+                let (mut renderer, _canvas) = create_renderer(base_features()).await?;
+                let trace = CompileTrace::install("^$", 0)?;
+                let sampler = renderer
+                    .textures
+                    .get_sampler_key(&renderer.gpu, Default::default())
+                    .map_err(|e| anyhow!("sampler: {e}"))?;
+                // Rgba16float-free: the raw path is 8-bit RGBA, 64² so it has mips.
+                let pixels = vec![200u8; 64 * 64 * 4];
+                renderer
+                    .textures
+                    .add_image_rgba_raw(
+                        &pixels,
+                        64,
+                        64,
+                        sampler,
+                        TextureColorInfo {
+                            mipmap_kind: MipmapTextureKind::Albedo,
+                            srgb_to_linear: true,
+                            premultiplied_alpha: None,
+                        },
+                    )
+                    .map_err(|e| anyhow!("add_image_rgba_raw: {e}"))?;
+                // Two frames for the background tasks to reach the device; no
+                // commit, no upload.
+                crate::harness::next_frame().await;
+                crate::harness::next_frame().await;
+                let on_add = trace.count("pipelines", HELPERS);
+                destroy_renderer(renderer);
+
+                // And a load that adds no image at all.
+                let (mut renderer, _canvas) = create_renderer(base_features()).await?;
+                let commit = renderer.commit_load(|_| {}).await;
+                let in_batch = trace.count("pipelines", HELPERS) - on_add;
+                destroy_renderer(renderer);
+                commit.map_err(|e| anyhow!("commit_load: {e}"))?;
+                if on_add < 2 {
+                    return Err(anyhow!(
+                        "an sRGB image with mips was added and {on_add} upload-helper pipelines were started (expected the sRGB conversion and a mipmap one) — they wait for the upload"
+                    ));
+                }
+                if in_batch < 3 {
+                    return Err(anyhow!(
+                        "a cold commit started {in_batch} plain-RGBA upload-helper pipelines (expected 3)"
+                    ));
+                }
+                Ok(format!(
+                    "{on_add} helper pipelines started when the image was added, {in_batch} more inside a cold commit's batch"
+                ))
+            }
+            other => Err(anyhow!("unknown case {other}")),
+        }
+    }
+    .await;
+    restore_compute_pipeline_compiles();
+    outcome
 }
 
 /// Check 13 — `postprocess-compile-failure`. A post-process pass whose
@@ -1446,7 +1761,10 @@ async fn aa_before_commit_reserves() -> Result<String> {
         .map_err(|e| anyhow!("set_post_processing: {e}"))?;
     let reserved_before = pending(&renderer);
 
-    let rejected = reject_compute_pipeline_compiles("^SSR ", u32::MAX)?;
+    // The pass's POOL pipelines. (Its composite is outside the pools and is
+    // deliberately issued — not awaited — as soon as the pass is built.)
+    let rejected =
+        reject_compute_pipeline_compiles("^SSR (Trace|Resolve|Temporal|BVH Trace)$", u32::MAX)?;
     let set_aa = renderer
         .set_anti_aliasing(AntiAliasing {
             msaa_sample_count: None,
@@ -1481,6 +1799,159 @@ async fn aa_before_commit_reserves() -> Result<String> {
     }
     Ok(format!(
         "set_anti_aliasing compiled nothing with {reserved_before} slots reserved; the commit compiled the batch and turned SSR off ({rejected_total} compiles rejected)"
+    ))
+}
+
+/// Check 17 — `aa-flip-before-commit-leaves-nothing`. A renderer is built
+/// for one MSAA mode, and `build()` reserves that mode's pipelines. An
+/// embedder that switches mode before the first commit must end up compiling
+/// what a renderer BUILT in the new mode compiles — not that plus the
+/// pipelines of the mode it left.
+///
+/// Locks the leftover: the old mode's nine geometry pipelines and HZB seed
+/// stayed reserved and the commit compiled them for nothing.
+async fn aa_flip_before_commit_leaves_nothing() -> Result<String> {
+    use awsm_renderer::anti_alias::AntiAliasing;
+
+    let pools = |renderer: &AwsmRenderer| {
+        (
+            renderer.pipelines.compute.len(),
+            renderer.pipelines.render.len(),
+        )
+    };
+    let mode = |msaa: bool| if msaa { "MSAA" } else { "no MSAA" };
+    let mut detail = Vec::new();
+    for to_msaa in [false, true] {
+        // Built in the target mode.
+        let trace = CompileTrace::install("^$", 0)?;
+        let (mut built, _canvas) = create_renderer_with_msaa(base_features(), to_msaa).await?;
+        let commit = built.commit_load(|_| {}).await;
+        let expected = pools(&built);
+        destroy_renderer(built);
+        let expected_compiles = trace.labels("pipelines");
+        commit.map_err(|e| anyhow!("commit_load (built in the target mode): {e}"))?;
+
+        // Built in the other mode, switched before the commit.
+        let trace = CompileTrace::install("^$", 0)?;
+        let (mut flipped, _canvas) = create_renderer_with_msaa(base_features(), !to_msaa).await?;
+        let set = flipped
+            .set_anti_aliasing(AntiAliasing {
+                msaa_sample_count: to_msaa.then_some(4),
+                ..Default::default()
+            })
+            .await;
+        let commit = match set {
+            Ok(()) => flipped.commit_load(|_| {}).await.map(|_| ()),
+            Err(err) => Err(err),
+        };
+        let got = pools(&flipped);
+        let frames = run_frames(&mut flipped, glam::Vec3::ZERO, 4.0, 2, |_| {
+            glam::Vec3::new(0.0, 2.0, 6.0)
+        })
+        .await;
+        destroy_renderer(flipped);
+        let mut extra = trace.labels("pipelines");
+        restore_compute_pipeline_compiles();
+        commit.map_err(|e| anyhow!("set_anti_aliasing + commit_load: {e}"))?;
+        frames?;
+        // What the switched renderer compiled that the built one did not.
+        for label in &expected_compiles {
+            if let Some(at) = extra.iter().position(|l| l == label) {
+                extra.remove(at);
+            }
+        }
+        if got != expected || !extra.is_empty() {
+            return Err(anyhow!(
+                "built {} then switched to {} before the commit: {} compute + {} render pipelines in the pools, but a renderer built {} has {} + {}; compiled on top of what that one compiles: {extra:?}",
+                mode(!to_msaa),
+                mode(to_msaa),
+                got.0,
+                got.1,
+                mode(to_msaa),
+                expected.0,
+                expected.1
+            ));
+        }
+        detail.push(format!(
+            "{} -> {}: {} compute + {} render, same as built {}",
+            mode(!to_msaa),
+            mode(to_msaa),
+            got.0,
+            got.1,
+            mode(to_msaa)
+        ));
+    }
+    Ok(detail.join("; "))
+}
+
+/// Check 18 — `aa-toggle-pipelines-stable`. On a committed scene both MSAA
+/// modes are kept once compiled, so toggling back and forth must stop
+/// creating pipelines after the first round trip: the second and third are
+/// cache hits.
+///
+/// Locks the leak where every toggle rebuilt every transparent mesh's
+/// pipeline and left the previous one in the pool — the transparent shaders
+/// were wrongly swept as "stale" at each re-layout, so the same pipeline came
+/// back under a new shader key. The editor grew by six render pipelines per
+/// MSAA toggle on a scene with three transparent meshes.
+async fn aa_toggle_pipelines_stable(origin: &str) -> Result<String> {
+    use awsm_renderer::anti_alias::AntiAliasing;
+    const SCENE: &str = "pbr-extensions";
+
+    let bundle_base = format!("{origin}/{SCENE}/bundle");
+    let scene = fetch_scene(&bundle_base).await?;
+    let (mut renderer, _canvas) = create_renderer(base_features()).await?;
+    let assets = awsm_renderer_scene_loader::assets::HttpAssets::new(bundle_base);
+    load_scene_for_player(&mut renderer, &scene, &assets, |_| {}).await?;
+    renderer.update_transforms();
+    let (center, radius) = scene_bounds(&renderer);
+    let eye = orbit_eye(center, radius, 2.2, 0.8);
+    let transparent = renderer
+        .meshes
+        .iter()
+        .filter(|(_, mesh)| renderer.materials.is_transparency_pass(mesh.material_key))
+        .count();
+    if transparent == 0 {
+        destroy_renderer(renderer);
+        return Err(anyhow!(
+            "{SCENE} has no transparent mesh — the check exercises nothing"
+        ));
+    }
+
+    let census = |renderer: &AwsmRenderer| {
+        (
+            renderer.pipelines.compute.len(),
+            renderer.pipelines.render.len(),
+            renderer.shaders.len(),
+        )
+    };
+    let mut rounds = Vec::new();
+    for _ in 0..3 {
+        for msaa in [None, Some(4)] {
+            renderer
+                .set_anti_aliasing(AntiAliasing {
+                    msaa_sample_count: msaa,
+                    ..Default::default()
+                })
+                .await
+                .map_err(|e| anyhow!("set_anti_aliasing({msaa:?}): {e}"))?;
+            renderer
+                .commit_load(|_| {})
+                .await
+                .map_err(|e| anyhow!("commit_load after set_anti_aliasing({msaa:?}): {e}"))?;
+            run_frames(&mut renderer, center, radius, 2, |_| eye).await?;
+        }
+        rounds.push(census(&renderer));
+    }
+    destroy_renderer(renderer);
+    if rounds[1] != rounds[0] || rounds[2] != rounds[0] {
+        return Err(anyhow!(
+            "{transparent} transparent meshes; (compute, render, shaders) after each MSAA off/on round trip: {rounds:?} — later round trips still create pipelines"
+        ));
+    }
+    Ok(format!(
+        "{transparent} transparent meshes; (compute, render, shaders) = {:?} after each of three MSAA off/on round trips",
+        rounds[0]
     ))
 }
 
