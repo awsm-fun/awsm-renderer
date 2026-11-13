@@ -19,7 +19,9 @@ use awsm_renderer_core::image::{CompressedImage, ImageData};
 /// resort), returning it sRGB-agnostic under the linear format variant.
 pub(crate) async fn transcode_ktx2_image(bytes: &[u8]) -> anyhow::Result<ImageData> {
     let sniff = sniff_basis_ktx2(bytes).ok_or_else(|| {
-        anyhow::anyhow!("image is not a Basis-supercompressed KTX2 (native KTX2 unsupported here)")
+        anyhow::anyhow!(
+            "image is not a Basis KTX2 this build can transcode (ETC1S, or UASTC LDR with Zstandard or no supercompression; native KTX2 unsupported here)"
+        )
     })?;
 
     // Machine-constant snapshot; see `latest_texture_compression` docs. Reads

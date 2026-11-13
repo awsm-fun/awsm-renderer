@@ -40,6 +40,13 @@ const KTX2_IDENTIFIER: [u8; 12] = [
     0xAB, b'K', b'T', b'X', b' ', b'2', b'0', 0xBB, 0x0D, 0x0A, 0x1A, 0x0A,
 ];
 
+/// KTX2 `supercompressionScheme` values a Basis container may carry and the
+/// vendored transcoder can read: none and Zstandard (UASTC LDR), BasisLZ
+/// (ETC1S).
+const KTX2_SUPERCOMPRESSION_NONE: u32 = 0;
+const KTX2_SUPERCOMPRESSION_BASIS_LZ: u32 = 1;
+const KTX2_SUPERCOMPRESSION_ZSTD: u32 = 2;
+
 /// Everything transcode-target selection needs from a KTX2 header, read
 /// without decoding the payload.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,12 +67,19 @@ pub struct Ktx2Sniff {
 
 /// Cheap header sniff of a (possibly Basis-supercompressed) KTX2 file —
 /// everything target selection needs before handing the container to the
-/// transcoder worker. `None` when the bytes aren't KTX2 or aren't Basis-encoded
-/// (a native/uncompressed KTX2 belongs on a different path).
+/// transcoder worker. `None` when the bytes aren't KTX2, aren't Basis-encoded
+/// (a native/uncompressed KTX2 belongs on a different path), or use a
+/// supercompression scheme the vendored transcoder isn't built for.
 ///
 /// Codec rule (KTX2 spec): Basis containers have `vkFormat == 0`
 /// (`VK_FORMAT_UNDEFINED`); ETC1S is exactly `supercompressionScheme ==
-/// BasisLZ (1)`, while UASTC rides Zstd (2) or no supercompression.
+/// BasisLZ (1)`, while UASTC rides Zstd (2) or no supercompression (0).
+///
+/// Every other scheme is refused here, on purpose: ZLIB (3) was never
+/// supported, and the vendored transcoder is built without XUASTC LDR
+/// (scheme 5) and the other Basis v2 formats. Refusing up front gives the
+/// caller one clear "not a KTX2 we can transcode" answer instead of a
+/// transcode failure from the worker for a file that was sniffed as UASTC.
 pub fn sniff_basis_ktx2(bytes: &[u8]) -> Option<Ktx2Sniff> {
     if bytes.len() < 48 || bytes[0..12] != KTX2_IDENTIFIER {
         return None;
@@ -79,10 +93,11 @@ pub fn sniff_basis_ktx2(bytes: &[u8]) -> Option<Ktx2Sniff> {
         // A concrete Vulkan format = native KTX2, not Basis.
         return None;
     }
-    let codec = if scheme == 1 {
-        SourceCodec::Etc1s
-    } else {
-        SourceCodec::Uastc
+    let codec = match scheme {
+        KTX2_SUPERCOMPRESSION_BASIS_LZ => SourceCodec::Etc1s,
+        KTX2_SUPERCOMPRESSION_NONE | KTX2_SUPERCOMPRESSION_ZSTD => SourceCodec::Uastc,
+        // ZLIB, XUASTC LDR, anything newer: not something this build transcodes.
+        _ => return None,
     };
     // Alpha matters only for the ETC1S opaque rung (see `Ktx2Sniff::has_alpha`);
     // an unreadable SGD is treated as "has alpha" so we stay on the safe rung.
@@ -395,11 +410,46 @@ mod tests {
                 has_alpha: true,
             })
         );
+        // vkFormat=0 + no supercompression → UASTC too.
+        header[44..48].copy_from_slice(&0u32.to_le_bytes());
+        assert_eq!(
+            sniff_basis_ktx2(&header).map(|sniff| sniff.codec),
+            Some(SourceCodec::Uastc)
+        );
         // Concrete vkFormat → native KTX2, not Basis.
         header[12..16].copy_from_slice(&37u32.to_le_bytes()); // VK_FORMAT_R8G8B8A8_UNORM
         assert_eq!(sniff_basis_ktx2(&header), None);
         // Not KTX2 at all.
         assert_eq!(sniff_basis_ktx2(b"glTF whatever"), None);
+    }
+
+    /// Only the three schemes the vendored transcoder reads are let through.
+    /// A XUASTC LDR file (vkFormat 0, scheme 5) used to be sniffed as UASTC
+    /// and handed to the worker; it — and ZLIB, and any scheme a later KTX2
+    /// revision adds — is refused by the sniff instead.
+    #[test]
+    fn refuses_supercompression_schemes_the_transcoder_cannot_read() {
+        let mut header = vec![0u8; 48];
+        header[0..12].copy_from_slice(&KTX2_IDENTIFIER);
+        header[20..24].copy_from_slice(&64u32.to_le_bytes());
+        header[24..28].copy_from_slice(&64u32.to_le_bytes());
+
+        for scheme in [0u32, 1, 2] {
+            header[44..48].copy_from_slice(&scheme.to_le_bytes());
+            assert!(
+                sniff_basis_ktx2(&header).is_some(),
+                "scheme {scheme} is a Basis container"
+            );
+        }
+        // 3 = ZLIB, 5 = XUASTC LDR; the rest stand in for future schemes.
+        for scheme in [3u32, 4, 5, 6, 255, 0x1_0000, u32::MAX] {
+            header[44..48].copy_from_slice(&scheme.to_le_bytes());
+            assert_eq!(
+                sniff_basis_ktx2(&header),
+                None,
+                "scheme {scheme} must be refused"
+            );
+        }
     }
 
     /// ETC1S alpha comes from the BasisLZ global-data image descriptor:

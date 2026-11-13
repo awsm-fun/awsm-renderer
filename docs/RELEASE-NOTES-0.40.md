@@ -10,7 +10,8 @@ fixed.
 ## 0.40.1
 
 A patch release: no API changes, a faster cold load, one device-class bug and
-one leak fixed. Two things behave differently and are worth knowing:
+one leak fixed. Two things behave differently and are worth knowing (a third
+touches XUASTC textures only; see the transcoder item below):
 
 - **Every cold load now compiles three small texture-upload helper
   pipelines, used or not** (sRGB conversion and two mipmap variants for plain
@@ -38,11 +39,23 @@ one leak fixed. Two things behave differently and are worth knowing:
 - **ETC1S normal maps load on ETC2-only GPUs** (most phones). The transcoder
   is rebuilt with ETC1S → EAC RG11 enabled; upstream's web build has it off,
   so such a normal map failed to transcode and the surface rendered flat.
-  `basis_transcoder.wasm` grows by 5,130 bytes (+0.6 KB brotli);
   `basis_transcoder.js` and `basis-worker.js` are unchanged, and every other
   target's output is byte-identical. **If you copy the vendored transcoder
   into your own app, copy the new `.wasm`.** UASTC normals were never
   affected.
+- **The transcoder is half the size, and a KTX2 it cannot read is refused up
+  front.** `basis_transcoder.wasm` is built without the formats the renderer
+  never uses (UASTC HDR, XUASTC LDR, PVRTC1): 1,056,521 → 552,629 bytes
+  against 0.40.0, about 150 KB less over the wire with brotli (360 KB →
+  210 KB) on every cold 3D view, and back to about the size 0.39 shipped,
+  with the ETC1S → EAC RG11 fix above included. Every ETC1S / UASTC LDR
+  source transcodes to byte-identical output. `sniff_basis_ktx2` now returns
+  `None` for any supercompression scheme other than none, BasisLZ or
+  Zstandard. A XUASTC LDR file (scheme 5) — which the 0.40.0 transcoder
+  accepted, although glTF's `KHR_texture_basisu` does not allow it — is
+  therefore refused up front as "not a Basis KTX2 this build can transcode"
+  rather than reaching a transcoder that no longer reads it.
+  `web/vendor/basis/README.md` says how to build those formats back in.
 - **Toggling MSAA or SMAA no longer leaks render pipelines.** On a scene with
   a feature-set variant or a custom material, every bucket re-layout evicted
   every transparent shader and rebuilt its pipeline under a new key, leaving
@@ -255,7 +268,7 @@ three.js r185 build): eval-free embind glue, so it loads under a CSP with
 where the old build could grow to 2 GiB. The worker is patched to match.
 Transcode output is byte-identical to 0.39 for every format and mip level
 tested. The cost is size: the transcoder wasm goes from 0.53 MB to 1.06 MB
-(about +156 KB over the wire with brotli). The encoder is unchanged. `web/vendor/basis/rebuild-transcoder.sh` reproduces the
+(about +156 KB over the wire with brotli); 0.40.1 takes that back, see above. The encoder is unchanged. `web/vendor/basis/rebuild-transcoder.sh` reproduces the
 build; `BUILD-METADATA.json` records it.
 
 If you copy these files into your own app, copy all three together — the

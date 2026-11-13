@@ -269,7 +269,7 @@ async fn fetch_decode(
                 // the binding slot picks the *Unorm/*UnormSrgb variant.
                 let Some(sniff) = sniff_basis_ktx2(&bytes) else {
                     tracing::warn!(
-                        "scene-loader: texture `{path}` is not a Basis KTX2 (native/uncompressed KTX2 unsupported for materials) — slot left unbound"
+                        "scene-loader: texture `{path}` is not a Basis KTX2 this build can transcode (ETC1S, or UASTC LDR with Zstandard or no supercompression; native KTX2 unsupported for materials) — slot left unbound"
                     );
                     return None;
                 };
