@@ -57,6 +57,19 @@ impl Shaders {
         }
     }
 
+    /// True when `shader_key` is a material-classify module. (A linear scan of
+    /// the cache; for bookkeeping at an ensure pass, not a hot path.)
+    pub(crate) fn is_material_classify(&self, shader_key: ShaderKey) -> bool {
+        use crate::render_passes::shader_cache_key::ShaderCacheKeyRenderPass as Rp;
+        self.cache.iter().any(|(cache_key, key)| {
+            *key == shader_key
+                && matches!(
+                    cache_key,
+                    ShaderCacheKey::RenderPass(Rp::MaterialClassify(_))
+                )
+        })
+    }
+
     /// WGSL length of a cached module (0 for one inserted uncached). The
     /// pipeline pools order a batch by it — see
     /// `ComputePipelines::compile_pending_except`.

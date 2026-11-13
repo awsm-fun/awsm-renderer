@@ -692,6 +692,16 @@ impl ComputePipelines {
         stale.len()
     }
 
+    /// Every slot that is reserved and not yet compiled, with the cache key
+    /// it was reserved for.
+    pub(crate) fn reserved_entries(&self) -> Vec<(ComputePipelineCacheKey, ComputePipelineKey)> {
+        self.cache
+            .iter()
+            .filter(|(_, key)| self.lookup.get(**key).is_some_and(|slot| slot.is_none()))
+            .map(|(cache_key, key)| (cache_key.clone(), *key))
+            .collect()
+    }
+
     /// Number of reserved slots still awaiting their compile.
     pub fn pending_count(&self) -> usize {
         self.lookup.values().filter(|v| v.is_none()).count()

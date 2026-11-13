@@ -227,6 +227,32 @@ impl crate::AwsmRenderer {
         //    `edge_resolve_supported` is false.
         self.launch_edge_resolve_compile(&wanted)?;
 
+        // ── Step 5: a classify pipeline that is reserved but that this pass
+        //    did not ask for is nobody's. `build()` reserves one for the
+        //    first-party layout at the MSAA mode the renderer was built with,
+        //    and no pass holds its key: the scheduler either compiles that
+        //    very key (then it is wanted, and stays) or a different one. A
+        //    layout change already sweeps it with its shader; an MSAA flip
+        //    before the first commit did not, and the commit compiled a
+        //    classify pipeline for a mode nothing would draw in.
+        if self.pipelines.compute.pending_count() > 0 {
+            let unwanted: Vec<_> = self
+                .pipelines
+                .compute
+                .reserved_entries()
+                .into_iter()
+                .filter(|(cache_key, _)| {
+                    self.shaders.is_material_classify(cache_key.shader_key)
+                        && self
+                            .pipeline_scheduler
+                            .desired_compute_install(cache_key)
+                            .is_none()
+                })
+                .map(|(_, key)| key)
+                .collect();
+            self.pipelines.compute.release_reserved(unwanted);
+        }
+
         Ok(())
     }
 

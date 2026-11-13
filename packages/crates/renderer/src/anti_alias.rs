@@ -392,6 +392,31 @@ impl AwsmRenderer {
                 .merge_resolved(&geometry_descs, geometry_pipeline_keys)?;
         }
 
+        // ── Phase 4b′: before the first commit, give back the branch being
+        //    left. `build()` reserved the geometry pipelines and the HZB seed
+        //    for the MSAA mode the renderer was built with; an embedder that
+        //    changes MSAA while loading (a phone player turning it off) would
+        //    otherwise have the commit compile both branches — nine geometry
+        //    pipelines and a seed that nothing has drawn with or will. On a
+        //    committed scene both branches are kept, so a toggle back is a
+        //    cache hit.
+        if self.pipelines.is_deferred() && prev_msaa_on != new_msaa_on {
+            let stale = self
+                .render_passes
+                .geometry
+                .pipelines
+                .take_branch(prev_msaa_on);
+            self.pipelines.render.release_reserved(stale);
+            if let Some(hzb) = self.render_passes.hzb.as_mut() {
+                let seed = if prev_msaa_on {
+                    hzb.pipelines.seed_msaa.take()
+                } else {
+                    hzb.pipelines.seed_single.take()
+                };
+                self.pipelines.compute.release_reserved(seed);
+            }
+        }
+
         // ── Phase 4c: material-prep MSAA branch recompile (lazy-pool,
         //    mirrors Phase 4b). Boot compiled only the then-active branch;
         //    fill the incoming branch's cs_prep (+ cs_prep_edge under MSAA on

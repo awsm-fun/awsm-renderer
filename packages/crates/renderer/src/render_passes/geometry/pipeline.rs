@@ -214,6 +214,36 @@ impl GeometryPipelines {
         }
     }
 
+    /// Forgets one MSAA branch and returns its nine pipeline keys (empty if
+    /// the branch was never built). For a branch the renderer is leaving
+    /// before anything was drawn with it: the caller releases whichever of
+    /// the keys were only reserved. A later flip back rebuilds the branch
+    /// (a cache hit for anything that did compile).
+    pub(crate) fn take_branch(&mut self, msaa_4: bool) -> Vec<RenderPipelineKey> {
+        let branch = if msaa_4 {
+            self.render_pipeline_keys.msaa_4_anti_alias.take()
+        } else {
+            self.render_pipeline_keys.no_anti_alias.take()
+        };
+        let Some(branch) = branch else {
+            return Vec::new();
+        };
+        [
+            branch.no_instancing_storage_meta,
+            branch.no_instancing_uniform_meta,
+            branch.instancing,
+        ]
+        .into_iter()
+        .flat_map(|shape| {
+            [
+                shape.no_cull.render_pipeline_key,
+                shape.back_cull.render_pipeline_key,
+                shape.front_cull.render_pipeline_key,
+            ]
+        })
+        .collect()
+    }
+
     /// Resolves the bind-group-derived pipeline layouts + builds the
     /// **9 leaf render-pipeline cache keys for the requested MSAA
     /// branch** (instancing × meta_storage × cull_mode = 9 leaves).
