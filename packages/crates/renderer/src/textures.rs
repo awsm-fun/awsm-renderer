@@ -1402,28 +1402,48 @@ impl Textures {
             self.sampler_pool_dirty = true;
         }
 
-        self.kick_upload_pipelines();
+        self.kick_upload_pipelines(key);
 
         Ok(key)
     }
 
     /// Starts, in the background, the helper pipelines the pool's next upload
-    /// will need for what has been added so far (sRGB conversion, mipmap
-    /// generation — uncompressed images only). Each is started once.
+    /// will need for the image just added (sRGB conversion, mipmap generation
+    /// — uncompressed images only). Each is started once.
     ///
     /// The upload itself (`finalize_gpu_textures`, inside `commit_load`)
     /// creates them on first use and waits; on a cold load that was about
     /// 0.2 s spent before the load's pipeline batch could even be issued.
     /// Started here, when the image arrives, they are compiling while the
     /// rest of the scene is still being fetched and decoded.
-    fn kick_upload_pipelines(&mut self) {
-        let mut needs = self.pool.upload_pipeline_needs();
-        needs
-            .srgb
-            .retain(|format| !self.kicked_srgb_pipelines.contains(format));
-        needs
-            .mipmap
-            .retain(|pair| !self.kicked_mipmap_pipelines.contains(pair));
+    ///
+    /// Looks only at the array the image landed in, so adding N images costs
+    /// N small checks, not a rescan of the pool per image.
+    fn kick_upload_pipelines(&mut self, key: TextureKey) {
+        let Some(entry) = self.pool_textures.get(key) else {
+            return;
+        };
+        let Some(array) = self.pool.array_by_index(entry.array_index) else {
+            return;
+        };
+        if array.compressed {
+            return;
+        }
+        let format = array.format;
+        let mut needs = awsm_renderer_core::texture::texture_pool::UploadPipelineNeeds::default();
+        if entry.color.srgb_to_linear && !self.kicked_srgb_pipelines.contains(&format) {
+            needs.srgb.push(format);
+        }
+        // Follows the array's layer count so far, as the upload will: the
+        // single-layer pipeline after the first image, the array one from
+        // the second.
+        let mipmap = (format, array.images.len() > 1);
+        if array.mipmap
+            && array.mipmap_levels() >= 2
+            && !self.kicked_mipmap_pipelines.contains(&mipmap)
+        {
+            needs.mipmap.push(mipmap);
+        }
         if needs.srgb.is_empty() && needs.mipmap.is_empty() {
             return;
         }
