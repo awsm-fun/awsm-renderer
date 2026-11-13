@@ -64,6 +64,14 @@ fn atmosphere_phase(post_processing: &PostProcessing) -> AtmospherePhase {
 }
 
 impl EffectsPipelines {
+    /// Every pipeline the pass holds for the live config.
+    pub(crate) fn keys(&self) -> Vec<ComputePipelineKey> {
+        [self.no_bloom_pipeline, self.bloom_blend_pipeline]
+            .into_iter()
+            .flatten()
+            .collect()
+    }
+
     /// Creates pipeline layout state for the effects pass.
     pub async fn new(
         ctx: &mut RenderPassInitContext<'_>,

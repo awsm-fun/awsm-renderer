@@ -38,6 +38,19 @@ pub struct SsrPipelines {
 }
 
 impl SsrPipelines {
+    /// Every pipeline the pass holds (the optional axes only when built).
+    pub(crate) fn keys(&self) -> Vec<ComputePipelineKey> {
+        [
+            Some(self.trace),
+            Some(self.resolve),
+            self.temporal,
+            self.bvh_trace,
+        ]
+        .into_iter()
+        .flatten()
+        .collect()
+    }
+
     /// The M2b variant: glossy reflection (spread-driven blur — spread 0 is a
     /// sharp mirror via a runtime branch), linear DDA. `half_res`
     /// (resolution_scale < 1.0) selects the half-res trace variant; the shader

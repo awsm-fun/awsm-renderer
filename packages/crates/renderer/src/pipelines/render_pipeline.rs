@@ -316,6 +316,22 @@ impl RenderPipelines {
         prep: RenderPipelinesPrep,
         results: Vec<std::result::Result<web_sys::GpuRenderPipeline, JsValue>>,
     ) -> Result<Vec<RenderPipelineKey>> {
+        self.install_results(prep, results, None)
+    }
+
+    /// [`Self::ensure_keys_install`], optionally tolerating failed compiles
+    /// of RESERVED slots: with `failed_reserved` given, such a failure is
+    /// recorded there (the slot stays reserved) and the rest of the batch is
+    /// still installed, instead of the first failure aborting the install
+    /// with everything after it left uncompiled. Used by the reserved-pool
+    /// drain, whose caller decides per failed slot whether the load can go on
+    /// without it.
+    fn install_results(
+        &mut self,
+        prep: RenderPipelinesPrep,
+        results: Vec<std::result::Result<web_sys::GpuRenderPipeline, JsValue>>,
+        mut failed_reserved: Option<&mut Vec<(RenderPipelineKey, AwsmRenderPipelineError)>>,
+    ) -> Result<Vec<RenderPipelineKey>> {
         let RenderPipelinesPrep {
             inputs,
             mut slot,
@@ -368,9 +384,21 @@ impl RenderPipelines {
                     continue;
                 }
                 // RESERVED entry — this compile fills the existing slot.
-                let pipeline: web_sys::GpuRenderPipeline = result.map_err(|e| {
-                    AwsmRenderPipelineError::Core(AwsmCoreError::pipeline_creation(e))
-                })?;
+                let pipeline: web_sys::GpuRenderPipeline = match result {
+                    Ok(pipeline) => pipeline,
+                    Err(e) => {
+                        let err =
+                            AwsmRenderPipelineError::Core(AwsmCoreError::pipeline_creation(e));
+                        let Some(failed) = failed_reserved.as_deref_mut() else {
+                            return Err(err);
+                        };
+                        failed.push((existing, err));
+                        for i in input_targets {
+                            slot[i] = Some(existing);
+                        }
+                        continue;
+                    }
+                };
                 if let Some(entry) = self.lookup.get_mut(existing) {
                     *entry = Some(pipeline);
                 }
@@ -488,13 +516,20 @@ impl RenderPipelines {
     }
 
     /// Compile every reserved slot in one batched pass (the deferred boot
-    /// pool's drain). Idempotent; returns how many pipelines compiled.
+    /// pool's drain). Idempotent. Rejected pipelines come back in
+    /// `PendingCompile::failed` rather than aborting the batch — see
+    /// `ComputePipelines::compile_pending_except`.
     pub async fn compile_pending(
         &mut self,
         gpu: &AwsmRendererWebGpu,
         shaders: &Shaders,
         pipeline_layouts: &PipelineLayouts,
-    ) -> Result<usize> {
+    ) -> Result<
+        crate::pipelines::compute_pipeline::PendingCompile<
+            RenderPipelineKey,
+            AwsmRenderPipelineError,
+        >,
+    > {
         let pending: Vec<RenderPipelineCacheKey> = self
             .cache
             .iter()
@@ -502,14 +537,18 @@ impl RenderPipelines {
             .map(|(cache_key, _)| cache_key.clone())
             .collect();
         if pending.is_empty() {
-            return Ok(0);
+            return Ok(Default::default());
         }
         let n = pending.len();
         let mut prepped = Self::ensure_keys_prepare(gpu, shaders, pipeline_layouts, pending)?;
         let promises = std::mem::take(&mut prepped.promises);
         let results = futures::future::join_all(promises).await;
-        self.ensure_keys_install(prepped.prep, results)?;
-        Ok(n)
+        let mut failed = Vec::new();
+        self.install_results(prepped.prep, results, Some(&mut failed))?;
+        Ok(crate::pipelines::compute_pipeline::PendingCompile {
+            compiled: n - failed.len(),
+            failed,
+        })
     }
 
     /// Returns a render pipeline for a key. A reserved-but-uncompiled slot

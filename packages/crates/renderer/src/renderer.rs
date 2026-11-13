@@ -653,8 +653,29 @@ impl AwsmRenderer {
     /// Compile every reserved pipeline in one concurrent batch, then mark the
     /// eager pass groups registered Pending at build as Ready — they are real
     /// now. Idempotent; returns how many pipelines compiled.
+    ///
+    /// A POST-PROCESS pipeline the driver rejects does not fail the drain:
+    /// the effect it belongs to is turned off, with a warning (see
+    /// [`Self::degrade_failed_post_processing`]). Any other rejected pipeline
+    /// is an error, as before.
     async fn drain_reserved_pool(&mut self) -> crate::error::Result<usize> {
-        let compiled = self.compile_pending_pipelines().await?;
+        let mut compiled = 0;
+        // Turning an effect off re-keys the effects / display variants, which
+        // are then reserved in their turn (while no scene is committed) and
+        // need a drain of their own. Each round turns something off or moves
+        // to the built config, so it ends; the cap is a backstop.
+        const MAX_ROUNDS: usize = 4;
+        for round in 0.. {
+            let pending = self.compile_pending_pipelines().await?;
+            compiled += pending.compiled;
+            if !pending.has_failures() {
+                break;
+            }
+            if round == MAX_ROUNDS {
+                return pending.into_result();
+            }
+            self.degrade_failed_post_processing(pending).await?;
+        }
         let eager_ids = std::mem::take(&mut self.eager_pass_ids);
         for id in &eager_ids {
             self.pipeline_scheduler.mark_ready(*id);
@@ -667,6 +688,134 @@ impl AwsmRenderer {
             );
         }
         Ok(compiled)
+    }
+
+    /// The pipeline keys the post-process passes hold right now — what a
+    /// failed compile is matched against.
+    fn post_process_pipeline_keys(&self) -> crate::post_process::PostProcessPipelineKeys {
+        let passes = &self.render_passes;
+        crate::post_process::PostProcessPipelineKeys {
+            ssr: passes
+                .ssr
+                .as_ref()
+                .map(|pass| pass.pipelines.keys())
+                .unwrap_or_default(),
+            bloom: passes
+                .bloom
+                .as_ref()
+                .map(|pass| pass.pipelines.keys())
+                .unwrap_or_default(),
+            volumetrics: passes
+                .volumetrics
+                .as_ref()
+                .map(|pass| pass.pipelines.keys())
+                .unwrap_or_default(),
+            effects: passes.effects.pipelines.keys(),
+            display: passes
+                .display
+                .pipelines
+                .render_pipeline_key
+                .into_iter()
+                .collect(),
+        }
+    }
+
+    /// A reserved-pool drain came back with pipelines the driver rejected.
+    /// When every one of them belongs to post-processing, carry on without
+    /// the effects they belong to: drop the failed passes, turn those effects
+    /// off in the config, and warn. A scene whose SSR (or bloom, or froxel
+    /// volume) cannot be built on this device then loads without it instead
+    /// of not loading at all.
+    ///
+    /// This is where such a failure surfaces for everything set up before a
+    /// commit: the setter (`set_post_processing`) only reserves, so it has
+    /// nothing to report, and the compile happens in the commit's batch. On a
+    /// committed scene the setter compiles on the spot and returns the error
+    /// itself.
+    ///
+    /// Any failure outside post-processing — or of the effects / display
+    /// variant of the config the renderer was built with, which there is
+    /// nothing to fall back from — is returned as the error.
+    async fn degrade_failed_post_processing(
+        &mut self,
+        pending: PendingPipelines,
+    ) -> crate::error::Result<()> {
+        let keys = self.post_process_pipeline_keys();
+        let failed = keys.attribute(
+            pending.failed_compute.iter().map(|(key, _)| *key),
+            pending.failed_render.iter().map(|(key, _)| *key),
+        );
+        let degraded = failed.and_then(|failed| {
+            self.post_processing
+                .degraded(failed, &self.config_spec.post_processing)
+                .map(|degraded| (failed, degraded))
+        });
+        let Some((failed, degraded)) = degraded else {
+            // Not ours to absorb: report it as the drain always has.
+            pending.into_result()?;
+            return Ok(());
+        };
+
+        for err in pending
+            .failed_compute
+            .iter()
+            .map(|(_, err)| err.to_string())
+            .chain(pending.failed_render.iter().map(|(_, err)| err.to_string()))
+        {
+            tracing::warn!("post-processing pipeline failed to compile: {err}");
+        }
+        tracing::warn!(
+            "post-processing degraded after {} failed pipeline compile(s): {}{}{}{}",
+            pending.failed_compute.len() + pending.failed_render.len(),
+            if failed.ssr { "SSR off; " } else { "" },
+            if failed.bloom { "bloom off; " } else { "" },
+            if failed.volumetrics {
+                "volumetric atmosphere off; "
+            } else {
+                ""
+            },
+            if failed.effects {
+                "effects variant unavailable, using the renderer's built post-processing config"
+            } else {
+                "everything else as authored"
+            },
+        );
+
+        // Drop the passes that cannot run, so a later enable rebuilds them
+        // (and reports its own error) instead of dispatching a pass with no
+        // pipeline — and give their reserved slots back, or every later drain
+        // would compile, and fail, them again.
+        if failed.ssr {
+            self.render_passes.ssr = None;
+        }
+        if failed.bloom {
+            if let Some(bloom) = self.render_passes.bloom.take() {
+                bloom.texture.destroy();
+            }
+        }
+        if failed.volumetrics {
+            if let Some(volumetrics) = self.render_passes.volumetrics.take() {
+                volumetrics.texture.destroy();
+            }
+        }
+        let dropped = [
+            (failed.ssr, keys.ssr),
+            (failed.bloom, keys.bloom),
+            (failed.volumetrics, keys.volumetrics),
+        ];
+        self.pipelines.compute.release_reserved(
+            dropped
+                .into_iter()
+                .filter(|(failed, _)| *failed)
+                .flat_map(|(_, keys)| keys),
+        );
+        self.bind_groups
+            .mark_create(crate::bind_groups::BindGroupCreate::TextureViewRecreate);
+
+        // Re-key everything that depends on the config (effects, display, the
+        // SSR axis of the material kernels). The effects pass releases the
+        // slot of a variant it moves away from, so a failed one goes too.
+        self.set_post_processing(degraded).await
     }
 
     /// Deferred-boot flag clears — called by the real `set_skybox` /
@@ -888,10 +1037,17 @@ impl AwsmRenderer {
 
     /// Drain every reserved (uncompiled) slot in the compute + render
     /// pipeline caches in one concurrent batch. Idempotent.
-    pub(crate) async fn compile_pending_pipelines(&mut self) -> crate::error::Result<usize> {
+    ///
+    /// A pipeline the driver rejects does not stop the rest from compiling:
+    /// it is reported in the returned [`PendingPipelines`], still reserved.
+    /// Callers that cannot go on without every pipeline turn that into the
+    /// error it used to be with [`PendingPipelines::into_result`].
+    pub(crate) async fn compile_pending_pipelines(
+        &mut self,
+    ) -> crate::error::Result<PendingPipelines> {
         if self.pipelines.compute.pending_count() == 0 && self.pipelines.render.pending_count() == 0
         {
-            return Ok(0);
+            return Ok(PendingPipelines::default());
         }
         let pipelines::Pipelines {
             render: render_pipelines,
@@ -916,8 +1072,12 @@ impl AwsmRenderer {
                 .await
                 .map_err(crate::error::AwsmError::from)
         };
-        let (c, r) = futures::future::try_join(compute_fut, render_fut).await?;
-        Ok(c + r)
+        let (compute, render) = futures::future::try_join(compute_fut, render_fut).await?;
+        Ok(PendingPipelines {
+            compiled: compute.compiled + render.compiled,
+            failed_compute: compute.failed,
+            failed_render: render.failed,
+        })
     }
 
     /// Reserve the material-prep pipelines for the LIVE config (active MSAA
@@ -1521,6 +1681,41 @@ pub struct RendererConfigSpec {
     scene_spatial_config: Option<crate::scene_spatial::SceneSpatialConfig>,
     recommended_shadow_quality_tier: Option<crate::shadows::ShadowQualityTier>,
     render_texture_formats_depth_override: Option<awsm_renderer_core::texture::TextureFormat>,
+}
+
+/// What a reserved-pool drain did (`AwsmRenderer::compile_pending_pipelines`).
+#[derive(Default)]
+pub(crate) struct PendingPipelines {
+    /// Reserved slots that now hold a compiled pipeline.
+    pub compiled: usize,
+    /// Compute pipelines the driver rejected. Their slots are still reserved.
+    pub failed_compute: Vec<(
+        pipelines::compute_pipeline::ComputePipelineKey,
+        pipelines::compute_pipeline::AwsmComputePipelineError,
+    )>,
+    /// Render pipelines the driver rejected. Their slots are still reserved.
+    pub failed_render: Vec<(
+        pipelines::render_pipeline::RenderPipelineKey,
+        pipelines::render_pipeline::AwsmRenderPipelineError,
+    )>,
+}
+
+impl PendingPipelines {
+    pub(crate) fn has_failures(&self) -> bool {
+        !self.failed_compute.is_empty() || !self.failed_render.is_empty()
+    }
+
+    /// The strict reading: any rejected pipeline is the error, otherwise the
+    /// number compiled.
+    pub(crate) fn into_result(self) -> crate::error::Result<usize> {
+        if let Some((_, err)) = self.failed_compute.into_iter().next() {
+            return Err(err.into());
+        }
+        if let Some((_, err)) = self.failed_render.into_iter().next() {
+            return Err(err.into());
+        }
+        Ok(self.compiled)
+    }
 }
 
 /// Builder for `AwsmRenderer`.
@@ -3432,7 +3627,22 @@ impl AwsmRenderer {
         // variants, transparent, lines — overlapping with the kernels instead
         // of queueing in front of them. On a live add the pool was drained in
         // phase -1 and passes compiled as they were built, so this is a no-op.
-        self.drain_reserved_pool().await?;
+        //
+        // If the drain had to turn a post-process effect off (its pipeline
+        // failed to compile — see `degrade_failed_post_processing`), what was
+        // issued above was keyed on the config as authored: bring the kernels
+        // and the transparent pipelines in line with the config as it is now,
+        // and drain what that reserves. The stale kernels still in flight are
+        // dropped when they resolve (they are no longer wanted).
+        loop {
+            let post_processing = self.post_processing.clone();
+            self.drain_reserved_pool().await?;
+            if self.post_processing == post_processing {
+                break;
+            }
+            self.reconcile_material_variants()?;
+            self.prewarm_pipelines().await?;
+        }
 
         // Report the initial in-flight count before the drain so the splash
         // shows a number immediately rather than after the first resolution.

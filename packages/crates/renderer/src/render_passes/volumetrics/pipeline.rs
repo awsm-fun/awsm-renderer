@@ -21,6 +21,11 @@ pub struct VolumetricsPipelines {
 }
 
 impl VolumetricsPipelines {
+    /// Every pipeline the pass holds.
+    pub(crate) fn keys(&self) -> Vec<ComputePipelineKey> {
+        vec![self.inject, self.integrate]
+    }
+
     pub async fn new(
         ctx: &mut RenderPassInitContext<'_>,
         bind_groups: &VolumetricsBindGroups,

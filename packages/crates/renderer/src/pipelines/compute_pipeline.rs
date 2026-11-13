@@ -88,6 +88,27 @@ pub struct ComputePipelinesPrepWithPromises {
     >,
 }
 
+/// What a reserved-pool drain did (`compile_pending*` on either pipeline
+/// pool).
+#[derive(Debug)]
+pub struct PendingCompile<K, E> {
+    /// Reserved slots that now hold a compiled pipeline.
+    pub compiled: usize,
+    /// Reserved slots whose compile the driver rejected, with the error.
+    /// Still reserved: the caller either releases them (the pass that held
+    /// the key is being dropped) or reports the error.
+    pub failed: Vec<(K, E)>,
+}
+
+impl<K, E> Default for PendingCompile<K, E> {
+    fn default() -> Self {
+        Self {
+            compiled: 0,
+            failed: Vec::new(),
+        }
+    }
+}
+
 impl ComputePipelines {
     /// Creates an empty compute pipeline cache.
     pub fn new() -> Self {
@@ -100,7 +121,7 @@ impl ComputePipelines {
 
     /// Switch DEFERRED mode on or off. While it is on, [`Self::ensure_keys`]
     /// and [`Self::get_key`] hand back RESERVED slots and return at once
-    /// instead of compiling and awaiting; [`Self::compile_pending`] later
+    /// instead of compiling and awaiting; [`Self::compile_pending_except`] later
     /// compiles everything reserved in one concurrent batch.
     ///
     /// The renderer keeps this on for as long as no scene is committed (from
@@ -446,6 +467,22 @@ impl ComputePipelines {
         prep: ComputePipelinesPrep,
         results: Vec<std::result::Result<web_sys::GpuComputePipeline, JsValue>>,
     ) -> Result<Vec<ComputePipelineKey>> {
+        self.install_results(prep, results, None)
+    }
+
+    /// [`Self::ensure_keys_install`], optionally tolerating failed compiles
+    /// of RESERVED slots: with `failed_reserved` given, such a failure is
+    /// recorded there (the slot stays reserved) and the rest of the batch is
+    /// still installed, instead of the first failure aborting the install
+    /// with everything after it left uncompiled. Used by the reserved-pool
+    /// drain, whose caller decides per failed slot whether the load can go on
+    /// without it.
+    fn install_results(
+        &mut self,
+        prep: ComputePipelinesPrep,
+        results: Vec<std::result::Result<web_sys::GpuComputePipeline, JsValue>>,
+        mut failed_reserved: Option<&mut Vec<(ComputePipelineKey, AwsmComputePipelineError)>>,
+    ) -> Result<Vec<ComputePipelineKey>> {
         let ComputePipelinesPrep {
             inputs,
             mut slot,
@@ -505,9 +542,21 @@ impl ComputePipelines {
                     let _ = result;
                     continue;
                 }
-                let pipeline: web_sys::GpuComputePipeline = result.map_err(|e| {
-                    AwsmComputePipelineError::Core(AwsmCoreError::pipeline_creation(e))
-                })?;
+                let pipeline: web_sys::GpuComputePipeline = match result {
+                    Ok(pipeline) => pipeline,
+                    Err(e) => {
+                        let err =
+                            AwsmComputePipelineError::Core(AwsmCoreError::pipeline_creation(e));
+                        let Some(failed) = failed_reserved.as_deref_mut() else {
+                            return Err(err);
+                        };
+                        failed.push((existing, err));
+                        for i in input_targets {
+                            slot[i] = Some(existing);
+                        }
+                        continue;
+                    }
+                };
                 if let Some(entry) = self.lookup.get_mut(existing) {
                     *entry = Some(pipeline);
                 }
@@ -588,7 +637,7 @@ impl ComputePipelines {
     /// Give back reserved slots a pass no longer references — it re-keyed
     /// (a config change since the reservation) before the slot ever compiled.
     /// Without this the stale slot stays in the pool and the next
-    /// [`Self::compile_pending`] compiles a pipeline nothing will dispatch.
+    /// [`Self::compile_pending_except`] compiles a pipeline nothing will dispatch.
     ///
     /// Only slots that are STILL reserved are released; a key whose pipeline
     /// has compiled is left alone (it is a valid cache entry for the config it
@@ -619,32 +668,27 @@ impl ComputePipelines {
     }
 
     /// Compile every reserved slot in one batched pass (the deferred boot
-    /// pool's drain — `AwsmRenderer::ensure_config_pipelines`). Idempotent:
-    /// no-op when nothing is pending. Returns how many pipelines compiled.
-    pub async fn compile_pending(
-        &mut self,
-        gpu: &AwsmRendererWebGpu,
-        shaders: &Shaders,
-        pipeline_layouts: &PipelineLayouts,
-    ) -> Result<usize> {
-        self.compile_pending_except(gpu, shaders, pipeline_layouts, |_| false)
-            .await
-    }
-
-    /// [`Self::compile_pending`], leaving alone every reserved slot whose
-    /// cache key `skip` accepts. For slots something else is already
-    /// compiling: the scheduler launches a material pipeline straight from
-    /// its cache key, and when that key is also reserved here (the boot-time
-    /// classify, on a scene whose bucket layout is the first-party one) its
-    /// resolution fills the reserved slot — compiling it here too would do
-    /// the same work twice.
+    /// pool's drain — `AwsmRenderer::ensure_config_pipelines`), leaving alone
+    /// every reserved slot whose cache key `skip` accepts. Idempotent: no-op
+    /// when nothing is pending.
+    ///
+    /// `skip` is for slots something else is already compiling: the scheduler
+    /// launches a material pipeline straight from its cache key, and when
+    /// that key is also reserved here (the boot-time classify, on a scene
+    /// whose bucket layout is the first-party one) its resolution fills the
+    /// reserved slot — compiling it here too would do the same work twice.
+    ///
+    /// A pipeline the driver rejects does not abort the batch: every other
+    /// slot is still filled, and the rejected ones come back in
+    /// [`PendingCompile::failed`], still reserved. `Err` is only for a batch
+    /// that could not be issued at all.
     pub async fn compile_pending_except(
         &mut self,
         gpu: &AwsmRendererWebGpu,
         shaders: &Shaders,
         pipeline_layouts: &PipelineLayouts,
         skip: impl Fn(&ComputePipelineCacheKey) -> bool,
-    ) -> Result<usize> {
+    ) -> Result<PendingCompile<ComputePipelineKey, AwsmComputePipelineError>> {
         let pending: Vec<ComputePipelineCacheKey> = self
             .cache
             .iter()
@@ -653,7 +697,7 @@ impl ComputePipelines {
             .filter(|cache_key| !skip(cache_key))
             .collect();
         if pending.is_empty() {
-            return Ok(0);
+            return Ok(PendingCompile::default());
         }
         let n = pending.len();
         let mut prepped = Self::ensure_keys_prepare(gpu, shaders, pipeline_layouts, pending)?;
@@ -661,8 +705,12 @@ impl ComputePipelines {
         let results = futures::future::join_all(promises).await;
         // Install fills the reserved slots via the early-rejoin path (the
         // cache already maps every input to its reserved key).
-        self.ensure_keys_install(prepped.prep, results)?;
-        Ok(n)
+        let mut failed = Vec::new();
+        self.install_results(prepped.prep, results, Some(&mut failed))?;
+        Ok(PendingCompile {
+            compiled: n - failed.len(),
+            failed,
+        })
     }
 
     /// Sync install of a resolved `GpuComputePipeline` — inserts into

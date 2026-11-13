@@ -179,6 +179,101 @@ impl Default for PostProcessing {
     }
 }
 
+/// Which post-process pipelines failed to compile, by the part of the
+/// post-processing config that asked for them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct FailedPostProcess {
+    /// A pipeline of the SSR pass (trace / resolve / temporal / BVH trace).
+    pub ssr: bool,
+    /// A pipeline of the bloom pyramid pass.
+    pub bloom: bool,
+    /// A pipeline of the froxel volumetrics pass.
+    pub volumetrics: bool,
+    /// The effects variant (tone mapping, bloom blend, haze term) or the
+    /// display pipeline — both compiled for the config as a whole, so a
+    /// failure cannot be pinned on one effect.
+    pub effects: bool,
+}
+
+/// The pipeline keys the post-process passes hold right now.
+#[derive(Default)]
+pub(crate) struct PostProcessPipelineKeys {
+    pub ssr: Vec<crate::pipelines::compute_pipeline::ComputePipelineKey>,
+    pub bloom: Vec<crate::pipelines::compute_pipeline::ComputePipelineKey>,
+    pub volumetrics: Vec<crate::pipelines::compute_pipeline::ComputePipelineKey>,
+    pub effects: Vec<crate::pipelines::compute_pipeline::ComputePipelineKey>,
+    pub display: Vec<crate::pipelines::render_pipeline::RenderPipelineKey>,
+}
+
+impl PostProcessPipelineKeys {
+    /// Says which post-process passes the failed pipelines belong to — or
+    /// `None` when any of them is not a post-process pipeline at all. Those
+    /// (geometry, shadows, material prep, …) are pipelines a frame cannot be
+    /// drawn without, so their failure stays an error.
+    pub(crate) fn attribute(
+        &self,
+        failed_compute: impl IntoIterator<Item = crate::pipelines::compute_pipeline::ComputePipelineKey>,
+        failed_render: impl IntoIterator<Item = crate::pipelines::render_pipeline::RenderPipelineKey>,
+    ) -> Option<FailedPostProcess> {
+        let mut failed = FailedPostProcess::default();
+        for key in failed_compute {
+            if self.ssr.contains(&key) {
+                failed.ssr = true;
+            } else if self.bloom.contains(&key) {
+                failed.bloom = true;
+            } else if self.volumetrics.contains(&key) {
+                failed.volumetrics = true;
+            } else if self.effects.contains(&key) {
+                failed.effects = true;
+            } else {
+                return None;
+            }
+        }
+        for key in failed_render {
+            if self.display.contains(&key) {
+                failed.effects = true;
+            } else {
+                return None;
+            }
+        }
+        Some(failed)
+    }
+}
+
+impl PostProcessing {
+    /// The config to run with after `failed` could not be compiled: each
+    /// failed effect turned off, everything else as authored.
+    ///
+    /// A failed effects / display variant belongs to no single effect, so it
+    /// falls back to `fallback` as a whole (the config the renderer was built
+    /// with). `None` when that is already the config in use — there is
+    /// nothing left to fall back to, and the failure is an error.
+    pub(crate) fn degraded(
+        &self,
+        failed: FailedPostProcess,
+        fallback: &PostProcessing,
+    ) -> Option<PostProcessing> {
+        let mut degraded = if failed.effects {
+            if self == fallback {
+                return None;
+            }
+            fallback.clone()
+        } else {
+            self.clone()
+        };
+        if failed.ssr {
+            degraded.ssr.enabled = false;
+        }
+        if failed.bloom {
+            degraded.bloom = false;
+        }
+        if failed.volumetrics && degraded.atmosphere.mode == AtmosphereMode::Volumetric {
+            degraded.atmosphere.mode = AtmosphereMode::Off;
+        }
+        Some(degraded)
+    }
+}
+
 impl AwsmRenderer {
     /// Applies post-processing configuration and recompiles the
     /// dependent pipelines for the new config.
@@ -445,5 +540,165 @@ impl AwsmRenderer {
             )
             .await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod degrade_tests {
+    use super::*;
+    use crate::pipelines::compute_pipeline::ComputePipelineKey;
+    use crate::pipelines::render_pipeline::RenderPipelineKey;
+    use slotmap::SlotMap;
+
+    /// A scene config with every effect on.
+    fn everything_on() -> PostProcessing {
+        let mut pp = PostProcessing {
+            bloom: true,
+            ..Default::default()
+        };
+        pp.ssr.enabled = true;
+        pp.atmosphere.mode = AtmosphereMode::Volumetric;
+        pp
+    }
+
+    /// Keys as the passes would hold them: two per compute pass, one display.
+    fn pass_keys() -> (
+        PostProcessPipelineKeys,
+        ComputePipelineKey,
+        RenderPipelineKey,
+    ) {
+        let mut compute: SlotMap<ComputePipelineKey, ()> = SlotMap::with_key();
+        let mut render: SlotMap<RenderPipelineKey, ()> = SlotMap::with_key();
+        let mut two = || vec![compute.insert(()), compute.insert(())];
+        let keys = PostProcessPipelineKeys {
+            ssr: two(),
+            bloom: two(),
+            volumetrics: two(),
+            effects: two(),
+            display: vec![render.insert(())],
+        };
+        // …and one of each class that belongs to no post-process pass.
+        (keys, compute.insert(()), render.insert(()))
+    }
+
+    #[test]
+    fn a_failed_pass_pipeline_is_attributed_to_its_effect() {
+        let (keys, _, _) = pass_keys();
+        assert_eq!(
+            keys.attribute([keys.ssr[1]], []),
+            Some(FailedPostProcess {
+                ssr: true,
+                ..Default::default()
+            })
+        );
+        assert_eq!(
+            keys.attribute([keys.bloom[0], keys.volumetrics[1]], []),
+            Some(FailedPostProcess {
+                bloom: true,
+                volumetrics: true,
+                ..Default::default()
+            })
+        );
+        // The effects variant and the display pipeline are both "the config
+        // as a whole".
+        let effects = Some(FailedPostProcess {
+            effects: true,
+            ..Default::default()
+        });
+        assert_eq!(keys.attribute([keys.effects[0]], []), effects);
+        assert_eq!(keys.attribute([], [keys.display[0]]), effects);
+    }
+
+    #[test]
+    fn a_failure_outside_post_processing_is_not_attributed() {
+        let (keys, other_compute, other_render) = pass_keys();
+        assert_eq!(keys.attribute([other_compute], []), None);
+        assert_eq!(keys.attribute([], [other_render]), None);
+        // One stray failure makes the whole batch an error, whatever else
+        // failed with it.
+        assert_eq!(keys.attribute([keys.ssr[0], other_compute], []), None);
+        assert_eq!(keys.attribute([keys.bloom[0]], [other_render]), None);
+    }
+
+    #[test]
+    fn a_failed_effect_is_turned_off_and_the_rest_kept() {
+        let authored = everything_on();
+        let fallback = PostProcessing::default();
+
+        let degraded = authored
+            .degraded(
+                FailedPostProcess {
+                    ssr: true,
+                    ..Default::default()
+                },
+                &fallback,
+            )
+            .expect("SSR can be turned off");
+        assert!(!degraded.ssr.enabled);
+        assert!(degraded.bloom);
+        assert_eq!(degraded.atmosphere.mode, AtmosphereMode::Volumetric);
+
+        let degraded = authored
+            .degraded(
+                FailedPostProcess {
+                    bloom: true,
+                    volumetrics: true,
+                    ..Default::default()
+                },
+                &fallback,
+            )
+            .expect("bloom and volumetrics can be turned off");
+        assert!(degraded.ssr.enabled);
+        assert!(!degraded.bloom);
+        assert_eq!(degraded.atmosphere.mode, AtmosphereMode::Off);
+    }
+
+    #[test]
+    fn failed_volumetrics_leave_analytic_fog_alone() {
+        // The pass can outlive the mode that built it; its failure must not
+        // switch off a fog the scene has since moved to.
+        let mut authored = everything_on();
+        authored.atmosphere.mode = AtmosphereMode::Fog;
+        let degraded = authored
+            .degraded(
+                FailedPostProcess {
+                    volumetrics: true,
+                    ..Default::default()
+                },
+                &PostProcessing::default(),
+            )
+            .expect("nothing to turn off is still not an error");
+        assert_eq!(degraded, authored);
+    }
+
+    #[test]
+    fn a_failed_effects_variant_falls_back_to_the_built_config() {
+        let authored = everything_on();
+        let fallback = PostProcessing::default();
+        let failed = FailedPostProcess {
+            effects: true,
+            ..Default::default()
+        };
+        assert_eq!(authored.degraded(failed, &fallback), Some(fallback.clone()));
+        // Already on the built config: nothing left to fall back to.
+        assert_eq!(fallback.degraded(failed, &fallback), None);
+    }
+
+    #[test]
+    fn a_failed_pass_stays_off_in_the_fallback_too() {
+        let mut fallback = PostProcessing::default();
+        fallback.ssr.enabled = true;
+        let degraded = everything_on()
+            .degraded(
+                FailedPostProcess {
+                    ssr: true,
+                    effects: true,
+                    ..Default::default()
+                },
+                &fallback,
+            )
+            .expect("falls back");
+        assert!(!degraded.ssr.enabled);
+        assert!(!degraded.bloom);
     }
 }

@@ -317,6 +317,19 @@ pub async fn run_all() {
         pipeline_invariants(scene.name, scene.features, &origin, &mut report).await;
     }
 
+    // ── 13. a post-process pass that cannot be compiled is turned off; the
+    //        load goes on without it. ─────────────────────────────────────────
+    for case in POSTPROCESS_FAILURES {
+        if let Some(filter) = &filter {
+            if !filter.iter().any(|f| f == case.scene) {
+                continue;
+            }
+        }
+        let name = format!("postprocess-compile-failure:{}", case.name);
+        set_hud(&format!("player-tests: {name}"));
+        report.emit_result(&name, postprocess_compile_failure(case, &origin).await);
+    }
+
     // ── 10. a pick that rebuilds the render textures must not strand the
     //        frame's bind groups on the old ones. ──────────────────────────────
     let pick_enabled = filter
@@ -328,6 +341,17 @@ pub async fn run_all() {
         report.emit_result("pick-after-mip-grow", pick_after_mip_grow(&origin).await);
     }
 
+    // ── 12. a material assigned on a running scene shades without a commit. ─
+    if pick_enabled {
+        for (name, msaa) in [
+            ("material-without-commit", true),
+            ("material-without-commit:no-msaa", false),
+        ] {
+            set_hud(&format!("player-tests: {name}"));
+            report.emit_result(name, material_without_commit(&origin, msaa).await);
+        }
+    }
+
     // ── 11. a material turned alpha-tested on a running scene cuts out
     //        without a commit. ─────────────────────────────────────────────────
     if pick_enabled {
@@ -337,17 +361,6 @@ pub async fn run_all() {
         ] {
             set_hud(&format!("player-tests: {name}"));
             report.emit_result(name, mask_without_commit(&origin, msaa).await);
-        }
-    }
-
-    // ── 12. a material assigned on a running scene shades without a commit. ─
-    if pick_enabled {
-        for (name, msaa) in [
-            ("material-without-commit", true),
-            ("material-without-commit:no-msaa", false),
-        ] {
-            set_hud(&format!("player-tests: {name}"));
-            report.emit_result(name, material_without_commit(&origin, msaa).await);
         }
     }
 
@@ -1039,6 +1052,247 @@ async fn pipeline_invariants(
     .await;
     report.emit_result(&ensure_name, result);
     destroy_renderer(renderer);
+}
+
+/// One simulated compile failure: which pipelines the driver "rejects" while
+/// `scene` loads, and what the load must look like afterwards.
+struct PostprocessFailure {
+    name: &'static str,
+    scene: &'static str,
+    /// Matched against the label of a compute pipeline's shader module.
+    reject: &'static str,
+    /// How many matching compiles to reject (the first N).
+    limit: u32,
+    expect: FailureOutcome,
+}
+
+#[derive(Clone, Copy)]
+enum FailureOutcome {
+    /// The load succeeds with SSR off (its pass gone) and bloom untouched.
+    SsrOff,
+    /// The load succeeds with bloom off (its pass gone) and SSR untouched.
+    BloomOff,
+    /// The load succeeds with the volumetric atmosphere off (its pass gone).
+    VolumetricsOff,
+    /// The load succeeds on the post-processing config the renderer was built
+    /// with (the harness builds with the default).
+    BuiltConfig,
+    /// The load fails: not a post-process pipeline.
+    LoadFails,
+}
+
+const POSTPROCESS_FAILURES: &[PostprocessFailure] = &[
+    PostprocessFailure {
+        name: "ssr",
+        scene: "ssr-arena",
+        reject: "^SSR ",
+        limit: u32::MAX,
+        expect: FailureOutcome::SsrOff,
+    },
+    PostprocessFailure {
+        name: "bloom",
+        scene: "ssr-arena",
+        reject: "^Bloom ",
+        limit: u32::MAX,
+        expect: FailureOutcome::BloomOff,
+    },
+    PostprocessFailure {
+        name: "volumetrics",
+        scene: "volumetrics",
+        reject: "^Volumetrics ",
+        limit: u32::MAX,
+        expect: FailureOutcome::VolumetricsOff,
+    },
+    // The effects variant the scene's config selects fails; the built
+    // config's variant (compiled next, as the fallback) does not.
+    PostprocessFailure {
+        name: "effects",
+        scene: "ssr-arena",
+        reject: "^Effects$",
+        limit: 1,
+        expect: FailureOutcome::BuiltConfig,
+    },
+    // The control: a pipeline from the same reserved batch that is NOT
+    // post-processing (a frame cannot be drawn without it) is still an error.
+    PostprocessFailure {
+        name: "material-prep",
+        scene: "ssr-arena",
+        reject: "^Material Prep$",
+        limit: u32::MAX,
+        expect: FailureOutcome::LoadFails,
+    },
+];
+
+/// Makes `createComputePipelineAsync` reject the first `limit` pipelines whose
+/// shader-module label matches `pattern`, the way a driver that cannot build
+/// them would. Returns the (live) list of labels it rejected. Undo with
+/// [`restore_compute_pipeline_compiles`].
+fn reject_compute_pipeline_compiles(pattern: &str, limit: u32) -> Result<js_sys::Array> {
+    let install = js_sys::Function::new_with_args(
+        "pattern, limit",
+        "const proto = GPUDevice.prototype;
+         if (!proto.__playerTestsCreateComputePipelineAsync) {
+           proto.__playerTestsCreateComputePipelineAsync = proto.createComputePipelineAsync;
+         }
+         const original = proto.__playerTestsCreateComputePipelineAsync;
+         const re = new RegExp(pattern);
+         const rejected = [];
+         proto.createComputePipelineAsync = function (descriptor) {
+           const module = descriptor && descriptor.compute && descriptor.compute.module;
+           const label = (module && module.label) || '';
+           if (rejected.length < limit && re.test(label)) {
+             rejected.push(label);
+             return Promise.reject(new GPUPipelineError(
+               'simulated compile failure: ' + label, { reason: 'internal' }));
+           }
+           return original.call(this, descriptor);
+         };
+         return rejected;",
+    );
+    install
+        .call2(
+            &wasm_bindgen::JsValue::NULL,
+            &pattern.into(),
+            &f64::from(limit).into(),
+        )
+        // The hook's own array, not a copy: it fills as compiles are rejected.
+        .map(wasm_bindgen::JsCast::unchecked_into::<js_sys::Array>)
+        .map_err(|e| anyhow!("install compile-failure hook: {e:?}"))
+}
+
+fn restore_compute_pipeline_compiles() {
+    let restore = js_sys::Function::new_no_args(
+        "const proto = GPUDevice.prototype;
+         if (proto.__playerTestsCreateComputePipelineAsync) {
+           proto.createComputePipelineAsync = proto.__playerTestsCreateComputePipelineAsync;
+         }",
+    );
+    let _ = restore.call0(&wasm_bindgen::JsValue::NULL);
+}
+
+/// Check 13 — `postprocess-compile-failure`. A post-process pass whose
+/// pipeline the driver rejects (an odd device) must cost the scene that
+/// effect, not the load: the effect is turned off with a warning and
+/// everything else loads and renders.
+///
+/// Everything a scene sets up before its commit only RESERVES pipelines, so
+/// the rejection arrives inside `commit_load`'s batch. Locks the regression
+/// where it failed the whole commit — and with it the scene load — where the
+/// same rejection used to be a warning from `set_post_processing`.
+///
+/// The last case is the control: a rejected pipeline that is not
+/// post-processing is still an error.
+async fn postprocess_compile_failure(case: &PostprocessFailure, origin: &str) -> Result<String> {
+    use awsm_renderer::post_process::{AtmosphereMode, PostProcessing};
+
+    let bundle_base = format!("{origin}/{}/bundle", case.scene);
+    let scene = fetch_scene(&bundle_base).await?;
+    let (mut renderer, _canvas) = create_renderer(base_features()).await?;
+    let assets = awsm_renderer_scene_loader::assets::HttpAssets::new(bundle_base);
+
+    // Only the scene load runs against the failing driver.
+    let rejected = reject_compute_pipeline_compiles(case.reject, case.limit)?;
+    let loaded = load_scene_for_player(&mut renderer, &scene, &assets, |_| {}).await;
+    restore_compute_pipeline_compiles();
+    let rejected = rejected.length();
+    if rejected == 0 {
+        destroy_renderer(renderer);
+        return Err(anyhow!(
+            "no pipeline matched /{}/ — the check simulated nothing",
+            case.reject
+        ));
+    }
+
+    if let FailureOutcome::LoadFails = case.expect {
+        destroy_renderer(renderer);
+        return match loaded {
+            Err(err) => Ok(format!(
+                "{rejected} non-post-process compiles rejected: the load fails — {err:#}"
+            )),
+            Ok(_) => Err(anyhow!(
+                "{rejected} non-post-process compiles rejected, yet the load reported success"
+            )),
+        };
+    }
+    if let Err(err) = loaded {
+        destroy_renderer(renderer);
+        return Err(anyhow!(
+            "{rejected} compiles rejected and the whole load failed — {err:#}"
+        ));
+    }
+
+    let pp = &renderer.post_processing;
+    let passes = &renderer.render_passes;
+    let state = format!(
+        "ssr={} (pass {}), bloom={} (pass {}), atmosphere={:?} (volumetrics pass {})",
+        pp.ssr.enabled,
+        passes.ssr.is_some(),
+        pp.bloom,
+        passes.bloom.is_some(),
+        pp.atmosphere.mode,
+        passes.volumetrics.is_some(),
+    );
+    let as_expected = match case.expect {
+        FailureOutcome::SsrOff => {
+            !pp.ssr.enabled && passes.ssr.is_none() && pp.bloom && passes.bloom.is_some()
+        }
+        FailureOutcome::BloomOff => {
+            !pp.bloom && passes.bloom.is_none() && pp.ssr.enabled && passes.ssr.is_some()
+        }
+        FailureOutcome::VolumetricsOff => {
+            pp.atmosphere.mode == AtmosphereMode::Off && passes.volumetrics.is_none()
+        }
+        FailureOutcome::BuiltConfig => *pp == PostProcessing::default(),
+        FailureOutcome::LoadFails => unreachable!("handled above"),
+    };
+    if !as_expected {
+        destroy_renderer(renderer);
+        return Err(anyhow!(
+            "{rejected} compiles rejected; the load succeeded but left {state}"
+        ));
+    }
+    // Everything else the scene needs is compiled…
+    let missing = material_pipelines_missing(&renderer, &material_pipelines(&renderer));
+    if !missing.is_empty() {
+        destroy_renderer(renderer);
+        return Err(anyhow!(
+            "{rejected} compiles rejected; material pipelines not installed after the load: {missing:?}"
+        ));
+    }
+    // …and it renders, cleanly.
+    renderer.update_transforms();
+    let (center, radius) = scene_bounds(&renderer);
+    let device: wasm_bindgen::JsValue = renderer.gpu.device.clone().into();
+    let call = |name: &str, args: &js_sys::Array| -> Result<wasm_bindgen::JsValue> {
+        let f: js_sys::Function = js_sys::Reflect::get(&device, &name.into())
+            .map_err(|e| anyhow!("device.{name}: {e:?}"))?
+            .into();
+        js_sys::Reflect::apply(&f, &device, args).map_err(|e| anyhow!("device.{name}(): {e:?}"))
+    };
+    call("pushErrorScope", &js_sys::Array::of1(&"validation".into()))?;
+    run_frames(&mut renderer, center, radius, 8, |_| {
+        orbit_eye(center, radius, 2.2, 0.8)
+    })
+    .await?;
+    let error = wasm_bindgen_futures::JsFuture::from(js_sys::Promise::from(call(
+        "popErrorScope",
+        &js_sys::Array::new(),
+    )?))
+    .await
+    .map_err(|e| anyhow!("popErrorScope: {e:?}"))?;
+    destroy_renderer(renderer);
+    if !(error.is_null() || error.is_undefined()) {
+        let message = js_sys::Reflect::get(&error, &"message".into())
+            .ok()
+            .and_then(|m| m.as_string())
+            .unwrap_or_else(|| format!("{error:?}"));
+        return Err(anyhow!(
+            "{rejected} compiles rejected; the load succeeded ({state}) but rendering raised a GPU validation error: {message}"
+        ));
+    }
+    Ok(format!(
+        "{rejected} compiles rejected; loaded with {state}; 8 frames, no GPU validation error"
+    ))
 }
 
 /// A canvas pixel showing a plain opaque PBR mesh of [`PICK_SCENE`], found by
