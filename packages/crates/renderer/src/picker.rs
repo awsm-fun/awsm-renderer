@@ -122,6 +122,12 @@ impl AwsmRenderer {
         // runs outside the render loop's `viewport_size` cache, so we
         // fetch the size here directly. Cheap (single wasm↔JS hop on a
         // user-driven path, not per-frame).
+        //
+        // This call may be the one that REBUILDS the render textures (it can
+        // run before the next frame notices a new transmissive material, HUD
+        // mesh or surface size). That is fine: `views()` keeps reporting the
+        // rebuild until the render preamble acknowledges it, so the frame's
+        // bind groups are still rebuilt. Do not acknowledge it here.
         let viewport_size = self.render_size()?;
         let render_texture_views = self.render_textures.views(
             &self.gpu,

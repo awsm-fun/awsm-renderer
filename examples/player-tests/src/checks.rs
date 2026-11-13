@@ -273,6 +273,10 @@ struct PipelineScene {
     features: fn() -> RendererFeatures,
 }
 
+/// The scene the `pick-after-mip-grow` check loads (any small one with no
+/// transmissive material will do).
+const PICK_SCENE: &str = "player-cameras";
+
 /// The scene whose bundle carries `prefab = true` roots — the clone-surface
 /// scene for the prefab-churn check.
 const PREFAB_CHURN_SCENE: &str = "prefab-static";
@@ -311,6 +315,17 @@ pub async fn run_all() {
         }
         set_hud(&format!("player-tests: pipelines {}", scene.name));
         pipeline_invariants(scene.name, scene.features, &origin, &mut report).await;
+    }
+
+    // ── 10. a pick that rebuilds the render textures must not strand the
+    //        frame's bind groups on the old ones. ──────────────────────────────
+    let pick_enabled = filter
+        .as_ref()
+        .map(|f| f.iter().any(|s| s == PICK_SCENE))
+        .unwrap_or(true);
+    if pick_enabled {
+        set_hud("player-tests: pick-after-mip-grow");
+        report.emit_result("pick-after-mip-grow", pick_after_mip_grow(&origin).await);
     }
 
     // ── 5. prefab-churn — spawn/despawn a duplicated subtree, no leak. ──────
@@ -1001,4 +1016,101 @@ async fn pipeline_invariants(
     .await;
     report.emit_result(&ensure_name, result);
     destroy_renderer(renderer);
+}
+
+/// Check 10 — `pick-after-mip-grow`. The render textures are rebuilt lazily by
+/// whoever asks for their views first after something that shapes them changed:
+/// the surface size, the first HUD mesh, or — the case here — the first
+/// transmissive material, which grows the opaque target's mip chain. The render
+/// preamble is one such caller, and it rebuilds every dependent bind group when
+/// that happens. The picker is the other: its first `pick()` compiles the
+/// picker and reads the views itself.
+///
+/// Locks the bug where the picker getting there first swallowed the "views
+/// were recreated" signal: the next frame saw nothing new, kept every bind
+/// group on the previous textures, and three frames later — once those were
+/// destroyed — every submit failed validation ("Destroyed texture "Opaque"
+/// used in a submit"), forever. The editor hit it at boot whenever its warm-up
+/// pick raced a project load that brought in a transmissive material. (A
+/// surface resize takes the same path but is healed by accident when GPU
+/// culling is on: the HZB resize marks the same bind groups.)
+async fn pick_after_mip_grow(origin: &str) -> Result<String> {
+    use awsm_renderer::materials::pbr::{PbrMaterial, PbrMaterialTransmission};
+    use awsm_renderer::materials::{Material, MaterialAlphaMode};
+
+    let bundle_base = format!("{origin}/{PICK_SCENE}/bundle");
+    let scene = fetch_scene(&bundle_base).await?;
+    let features = RendererFeatures {
+        picking: true,
+        ..base_features()
+    };
+    let (mut renderer, _canvas) = create_renderer(features).await?;
+    let assets = awsm_renderer_scene_loader::assets::HttpAssets::new(bundle_base);
+    load_scene_for_player(&mut renderer, &scene, &assets, |_| {}).await?;
+    renderer.update_transforms();
+    let (center, radius) = scene_bounds(&renderer);
+    // Settle first, so the render textures exist in their no-transmission shape.
+    run_frames(&mut renderer, center, radius, 3, |_| {
+        orbit_eye(center, radius, 2.2, 0.8)
+    })
+    .await?;
+    if renderer.materials.has_seen_transmission() {
+        return Err(anyhow!(
+            "{PICK_SCENE} already has a transmissive material — the check needs to introduce the first one itself"
+        ));
+    }
+
+    // The first transmissive material (no mesh needs to use it: the flag is
+    // what reshapes the opaque target) — then pick BEFORE the next frame, so
+    // the picker's compile is the first reader of the render-texture views.
+    let mut glass = PbrMaterial::new(MaterialAlphaMode::Opaque, false);
+    glass.transmission = Some(PbrMaterialTransmission {
+        tex: None,
+        factor: 1.0,
+    });
+    renderer.materials.insert(
+        Material::Pbr(Box::new(glass)),
+        &renderer.textures,
+        &renderer.dynamic_materials,
+        &renderer.extras_pool,
+    );
+    renderer
+        .pick(4, 4)
+        .await
+        .map_err(|e| anyhow!("pick: {e}"))?;
+
+    // Enough frames for the retired textures to be destroyed, under a
+    // validation error scope so a rejected submit is observable.
+    let device: wasm_bindgen::JsValue = renderer.gpu.device.clone().into();
+    let call = |name: &str, args: &js_sys::Array| -> Result<wasm_bindgen::JsValue> {
+        let f: js_sys::Function = js_sys::Reflect::get(&device, &name.into())
+            .map_err(|e| anyhow!("device.{name}: {e:?}"))?
+            .into();
+        js_sys::Reflect::apply(&f, &device, args).map_err(|e| anyhow!("device.{name}(): {e:?}"))
+    };
+    call("pushErrorScope", &js_sys::Array::of1(&"validation".into()))?;
+    run_frames(&mut renderer, center, radius, 8, |_| {
+        orbit_eye(center, radius, 2.2, 0.8)
+    })
+    .await?;
+    let error = wasm_bindgen_futures::JsFuture::from(js_sys::Promise::from(call(
+        "popErrorScope",
+        &js_sys::Array::new(),
+    )?))
+    .await
+    .map_err(|e| anyhow!("popErrorScope: {e:?}"))?;
+    destroy_renderer(renderer);
+    if error.is_null() || error.is_undefined() {
+        return Ok(
+            "8 frames after a pick-triggered render-texture rebuild: no GPU validation error"
+                .to_string(),
+        );
+    }
+    let message = js_sys::Reflect::get(&error, &"message".into())
+        .ok()
+        .and_then(|m| m.as_string())
+        .unwrap_or_else(|| format!("{error:?}"));
+    Err(anyhow!(
+        "GPU validation error in the frames after a pick rebuilt the render textures: {message}"
+    ))
 }

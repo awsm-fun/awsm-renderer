@@ -44,6 +44,24 @@ pub struct RenderTextures {
     /// [`DESTROY_DELAY_FRAMES`] (safely past frames-in-flight), keeping GPU
     /// memory bounded (one or two retired generations) without the hazard.
     pending_destroy: Vec<(RenderTexturesInner, u32)>,
+    /// `inner` was rebuilt and the render preamble has not yet rebuilt the
+    /// bind groups that reference it. Set by ANY [`Self::views`] call that
+    /// rebuilds; cleared only by [`Self::acknowledge_views_recreated`]. Every
+    /// `views()` call reports it as `views_recreated` until then.
+    ///
+    /// It has to be sticky because `views()` has more than one caller. The
+    /// render preamble is the one that reacts — it marks
+    /// `BindGroupCreate::TextureViewRecreate` and invalidates the opaque
+    /// mipgen. The picker's compile (`ensure_picker_compiled`) also calls
+    /// `views()`, for its own bind group only. When the picker's call was the
+    /// one that rebuilt `inner` (it ran first after a transmissive material
+    /// grew the opaque mip chain, a HUD mesh appeared, or the surface
+    /// resized), a one-shot flag was reported to the picker and lost: the
+    /// next frame's `views()` saw nothing new, every bind group stayed on the
+    /// retired textures, and `DESTROY_DELAY_FRAMES` later each submit failed
+    /// with "Destroyed texture used in a submit" — permanently, until some
+    /// unrelated event (an AA toggle) happened to mark the bind groups.
+    views_recreated_unacknowledged: bool,
 }
 
 /// Frames to wait before `destroy()`ing a retired render-texture generation —
@@ -138,6 +156,7 @@ impl RenderTextures {
             frame_count: 0,
             inner: None,
             pending_destroy: Vec::new(),
+            views_recreated_unacknowledged: false,
             opaque_to_transparent_blit_pipeline_msaa_4: msaa_4_pipeline,
             opaque_to_transparent_blit_pipeline_no_anti_alias: single_sample_pipeline.clone(),
             transparent_to_composite_blit_pipeline_no_anti_alias: single_sample_pipeline,
@@ -309,26 +328,22 @@ impl RenderTextures {
                 ssr_bvh,
             )?;
             self.inner = Some(inner);
+            self.views_recreated_unacknowledged = true;
         }
 
-        // `views_recreated` is `true` for ANY reason `inner` was
-        // rebuilt this frame — viewport resize, AA flip, T2.5
-        // opaque-mip-chain growth, or T2.6 HUD-depth materialization.
-        // The caller fires `BindGroupCreate::TextureViewRecreate`
-        // and invalidates the opaque mipgen cache off this flag, so
-        // all four recreation triggers correctly route their bind
-        // groups and mipgen cache through the rebuild path. Earlier
-        // this flag was named `size_changed` and only fired on the
-        // viewport-resize path — leaving stale views behind in the
-        // T2.5 / T2.6 lazy-allocation paths.
-        let views_recreated = size_changed
-            || anti_aliasing_changed
-            || opaque_mips_grown
-            || hud_depth_appeared
-            || ssr_enabled_changed
-            || ssr_half_res_changed
-            || ssr_temporal_changed
-            || ssr_bvh_changed;
+        // `views_recreated` is `true` for ANY reason `inner` was rebuilt —
+        // viewport resize, AA flip, T2.5 opaque-mip-chain growth, T2.6
+        // HUD-depth materialization, an SSR target change — by THIS call or
+        // by an earlier one the render preamble has not acknowledged yet
+        // (see `views_recreated_unacknowledged`). The render preamble fires
+        // `BindGroupCreate::TextureViewRecreate` and invalidates the opaque
+        // mipgen cache off this flag, then acknowledges it, so every
+        // recreation trigger routes its bind groups and mipgen cache through
+        // the rebuild path no matter which caller of `views()` performed the
+        // rebuild. (Earlier this was a one-shot computed from this call's own
+        // triggers, so a rebuild performed by the picker's call was never
+        // seen by the render preamble.)
+        let views_recreated = self.views_recreated_unacknowledged;
         Ok(RenderTextureViews::new(
             self.inner.as_ref().unwrap(),
             self.ping_pong(),
@@ -336,6 +351,17 @@ impl RenderTextures {
             current_size.1,
             views_recreated,
         ))
+    }
+
+    /// The render preamble calls this once it has rebuilt everything that
+    /// references the render textures (the `TextureViewRecreate` bind groups,
+    /// the opaque mipgen cache) for the current `inner`. Until then every
+    /// [`Self::views`] call keeps reporting `views_recreated == true`.
+    ///
+    /// Only the render preamble may call it: it is the one consumer that
+    /// reacts to the flag for the whole frame.
+    pub fn acknowledge_views_recreated(&mut self) {
+        self.views_recreated_unacknowledged = false;
     }
 
     /// Borrows the inner textures (if initialized). Used by per-frame

@@ -937,6 +937,13 @@ impl AwsmRenderer {
             &mut self.render_passes,
             self.picker.as_mut(),
         )?;
+        // Every bind group that references the render textures is now built
+        // against the current ones (and the mipgen cache was invalidated
+        // above), so a rebuild reported by `views()` — performed by this
+        // frame's call or by an earlier caller such as the picker's compile —
+        // has been fully handled. Had anything above returned early, the flag
+        // stays set and the next frame handles it again.
+        self.render_textures.acknowledge_views_recreated();
 
         // Discrete-LOD: pick a level per instance and flip mesh visibility to it
         // BEFORE `collect_renderables` reads the `!hidden` set, so this frame's
