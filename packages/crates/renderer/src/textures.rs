@@ -160,6 +160,41 @@ impl AwsmRenderer {
             Some(4) => Some(4u32),
             _ => None,
         };
+        // The built-in families that have an alpha-tested material right now.
+        // Only these get masked geometry / masked shadow variants below: the
+        // masked pipelines are selected per mesh on `alpha_cutoff().is_some()`,
+        // so a family with no such material never dispatches one. Compiling
+        // all four families regardless was 12 geometry + 32 shadow pipelines
+        // on every load — including the many scenes with no cutout at all.
+        let masked_builtin_families: Vec<(
+            awsm_renderer_materials::MaterialShaderId,
+            crate::dynamic_materials::ShadingBase,
+        )> = [
+            (
+                awsm_renderer_materials::MaterialShaderId::PBR,
+                crate::dynamic_materials::ShadingBase::Pbr,
+            ),
+            (
+                awsm_renderer_materials::MaterialShaderId::UNLIT,
+                crate::dynamic_materials::ShadingBase::Unlit,
+            ),
+            (
+                awsm_renderer_materials::MaterialShaderId::TOON,
+                crate::dynamic_materials::ShadingBase::Toon,
+            ),
+            (
+                awsm_renderer_materials::MaterialShaderId::FLIPBOOK,
+                crate::dynamic_materials::ShadingBase::Flipbook,
+            ),
+        ]
+        .into_iter()
+        .filter(|(family, _)| {
+            self.materials.keys().any(|key| {
+                self.materials.alpha_cutoff(key).is_some()
+                    && self.materials.canonical_shader_id(key) == *family
+            })
+        })
+        .collect();
         let masked_builtin_missing = self.meshes.iter().any(|(_, mesh)| {
             !mesh.instanced
                 && self.materials.alpha_cutoff(mesh.material_key).is_some()
@@ -168,6 +203,16 @@ impl AwsmRenderer {
                     .geometry
                     .masked_pipelines
                     .has_variant(msaa, self.materials.canonical_shader_id(mesh.material_key))
+        })
+        // …or a built-in family that has just gained its first alpha-tested
+        // material (possibly only on instanced meshes, which the mesh probe
+        // above skips but whose masked SHADOW variants are still needed).
+        || masked_builtin_families.iter().any(|(family, _)| {
+            !self
+                .render_passes
+                .geometry
+                .masked_pipelines
+                .has_variant(msaa, *family)
         });
         let was_dirty = pool_dirty || sampler_pool_dirty;
 
@@ -610,35 +655,21 @@ impl AwsmRenderer {
             // masked WGSL arm (the mask alpha is the time-varying atlas cell,
             // evaluated by the shared cell math the shaded material also runs).
             //
-            // The four compile as ONE batch (they are independent; awaited one
-            // at a time they were four serial waves of a cold load).
-            let builtin_masked: Vec<_> = [
-                (
-                    awsm_renderer_materials::MaterialShaderId::PBR,
-                    crate::dynamic_materials::ShadingBase::Pbr,
-                ),
-                (
-                    awsm_renderer_materials::MaterialShaderId::UNLIT,
-                    crate::dynamic_materials::ShadingBase::Unlit,
-                ),
-                (
-                    awsm_renderer_materials::MaterialShaderId::TOON,
-                    crate::dynamic_materials::ShadingBase::Toon,
-                ),
-                (
-                    awsm_renderer_materials::MaterialShaderId::FLIPBOOK,
-                    crate::dynamic_materials::ShadingBase::Flipbook,
-                ),
-            ]
-            .into_iter()
-            .map(|(shader_id, base)| {
-                crate::render_passes::geometry::masked_pipeline::MaskedVariant {
-                    shader_id,
-                    base,
-                    dynamic_alpha: None,
-                }
-            })
-            .collect();
+            // Only the families that have an alpha-tested material (see
+            // `masked_builtin_families`), and those as ONE batch (they are
+            // independent; awaited one at a time they were serial waves of a
+            // cold load).
+            let builtin_masked: Vec<_> = masked_builtin_families
+                .iter()
+                .copied()
+                .map(|(shader_id, base)| {
+                    crate::render_passes::geometry::masked_pipeline::MaskedVariant {
+                        shader_id,
+                        base,
+                        dynamic_alpha: None,
+                    }
+                })
+                .collect();
             self.render_passes
                 .geometry
                 .masked_pipelines
@@ -773,33 +804,17 @@ impl AwsmRenderer {
             )?;
             // Built-ins as one batch, then the customs as another — same
             // shape and same reasons as the masked geometry variants above.
-            let builtin_shadow_masked: Vec<_> = [
-                (
-                    awsm_renderer_materials::MaterialShaderId::PBR,
-                    crate::dynamic_materials::ShadingBase::Pbr,
-                ),
-                (
-                    awsm_renderer_materials::MaterialShaderId::UNLIT,
-                    crate::dynamic_materials::ShadingBase::Unlit,
-                ),
-                (
-                    awsm_renderer_materials::MaterialShaderId::TOON,
-                    crate::dynamic_materials::ShadingBase::Toon,
-                ),
-                (
-                    awsm_renderer_materials::MaterialShaderId::FLIPBOOK,
-                    crate::dynamic_materials::ShadingBase::Flipbook,
-                ),
-            ]
-            .into_iter()
-            .map(|(shader_id, base)| {
-                crate::render_passes::shadow_masked::pipeline::MaskedShadowVariant {
-                    shader_id,
-                    base,
-                    dynamic_alpha: None,
-                }
-            })
-            .collect();
+            let builtin_shadow_masked: Vec<_> = masked_builtin_families
+                .iter()
+                .copied()
+                .map(|(shader_id, base)| {
+                    crate::render_passes::shadow_masked::pipeline::MaskedShadowVariant {
+                        shader_id,
+                        base,
+                        dynamic_alpha: None,
+                    }
+                })
+                .collect();
             self.render_passes
                 .shadow_masked
                 .pipelines
