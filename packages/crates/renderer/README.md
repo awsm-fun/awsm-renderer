@@ -37,9 +37,15 @@ Concretely:
   (their shaders have no feature-gateable paths today).
 - **Custom** materials get one bucket per registration (no feature-set
   deduping).
+- A bucket only gets a compiled pipeline once something shades through it.
+  The canonical first-party buckets always exist in the layout, but a scene
+  with no Toon material compiles no Toon pipeline, and the canonical PBR
+  bucket never compiles one (every opaque PBR material routes to a
+  feature-set bucket). A registered custom material always compiles, so its
+  WGSL errors surface before it is assigned to a mesh.
 
 This is automatic — feature-sets are derived from the material and
-resolved to pipelines during the render preamble. You don't configure it
+resolved to pipelines by `commit_load`. You don't configure it
 and there is no on/off switch; specialization is unconditional.
 
 ### Prep pass (slim shading)

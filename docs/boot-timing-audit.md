@@ -84,3 +84,25 @@ The original (now-superseded) sketch, for history — per the doc these
 The Block B migrations (EVSM / ShadowGen / Line / Picker) took effect cleanly — those subsystems compile 0 pipelines at boot. Block D.1 PART 2 extended this to first-party material opaque pipelines (PBR / UNLIT / TOON / FLIPBOOK), which now also compile lazily on the gltf-populate path's first per-`shader_id` registration. The cold-boot cost reduced from "compile every pipeline the scene could ever need" to "compile only the active default pipelines + the edge_resolve set when MSAA is on". For an Android device booting an empty scene with no shadow casters / no lines / no picker, the savings are substantial (the EVSM + ShadowGen + Line + Picker pipelines were the bulk of the SPIR-V bloat that wasn't already addressed by Stage 3).
 
 The edge_resolve eager set remaining is a deliberate trade-off: those pipelines are small (the Stage 3 SPIR-V split made them tractable on Android) and they're needed before the first material renders with MSAA edge resolution. (PR #105 update: the eager set is retained as the "first-frame-ready" installer; the *runtime* edge rebuild is now layout-level + content-validated rather than per-material — see the "Update (PR #105)" note above.)
+
+## Update (v0.40) — the edge-resolve "remaining drift" is gone
+
+The eager `MaterialEdgePipelines::ensure_compiled` described above no longer
+exists. It was last called from `ensure_config_pipelines` (so at the top of
+every `commit_load`, and standalone from the editor's shadow-denoise toggle)
+with the hard-coded first-party bucket list. Every kernel bakes the bucket
+count and its own index into its WGSL, so on a scene with a feature-set variant
+or a custom material that compiled — and installed — kernels for a layout the
+scene does not have: wasted work inside a commit, corrupted sky / canonical
+buckets outside one.
+
+The MSAA kernels (`cs_shade` per bucket + `final_blend`) now have exactly one
+compile path, `launch_edge_resolve_compile`, driven by
+`ensure_scene_pipelines` against the registry's live bucket list. The cold-boot
+numbers in the table above change accordingly: an empty scene compiles the
+SKYBOX kernel and `final_blend` only (no kernel for a first-party bucket no
+material uses), and it does so at the first `commit_load`.
+
+See `docs/time-to-first-render.md` § "UPDATE (2026-11, v0.40)" for the current
+cold-load compile model.
+

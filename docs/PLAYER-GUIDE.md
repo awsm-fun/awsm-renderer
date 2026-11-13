@@ -378,6 +378,14 @@ Notes:
   models bring their own materials, so they render lit/textured out of the box.
 - **`populate_awsm_scene` commits internally; `populate_gltf` does not.** Call
   `commit_load` yourself only on the glTF path (and after a prefab spawn batch).
+- **Set everything up before the first `commit_load`.** Until a scene is
+  committed, lights, post-processing and content only *reserve* their
+  pipelines, and the commit compiles the whole load as one batch — that is the
+  fast path for a cold first view. Anything you add after the commit compiles
+  on its own when you add it (and anything that needs a new pipeline — a new
+  material kind, a material turning alpha-tested — needs another
+  `commit_load`). For a full reload, `begin_load()` puts the renderer back
+  into the reserve-then-batch mode.
 - **`assets` for `populate_awsm_scene` is pre-fetched bytes**, not a fetcher —
   load every referenced asset path into the map before calling.
 - **Pin `glam` and `wasm-bindgen`** to the workspace versions, or types won't

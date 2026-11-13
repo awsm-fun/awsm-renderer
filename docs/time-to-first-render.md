@@ -102,3 +102,97 @@ Re-investigated with the live editor. The earlier "queued fix" was over-stated:
   a small, non-urgent follow-up, NOT the risky load-path bolt-on first imagined.
   A naive prewarm would be compile-only + lock-serialized (no destroyed-texture
   risk) but ineffective if it runs before the debounced materialization settles.
+
+## UPDATE (2026-11, v0.40) — the cold-load compile model, measured
+
+Everything above describes the renderer as it was in mid-2026 and is kept for
+history (`wait_for_pipelines_ready` and the public `prewarm_pipelines` no
+longer exist; `commit_load` is the one compile point). This section is the
+current model.
+
+A cold first view of a real scene is compile-bound: on desktop Chrome / Metal
+~95 % of it is the platform shader compiler, and nothing is drawn until
+`commit_load` returns. Instrumenting a shipped player (117 pipelines, 5.3 MB of
+WGSL, 13.6 s cold on an M1 Max) showed where the wall time went, and v0.40
+changes the compile path accordingly.
+
+### What a cold load compiles, and when
+
+1. **`build()` compiles nothing.** It reserves a pool slot for every config
+   pipeline (the "boot pool") and leaves the pipeline caches **deferred**.
+2. **While no scene is committed, passes reserve.** In deferred mode
+   `ensure_keys` / `get_key` hand back a reserved slot and return. Shadows (on
+   the first casting light), SSR, bloom, volumetrics, effects and display (from
+   a scene's `set_post_processing`), masked variants (texture finalize) and the
+   transparent / line pipelines therefore cost nothing before the commit.
+   Nothing can dispatch them yet — `render()` only clears until the first
+   commit.
+3. **`commit_load` compiles the load as one batch.** It reserves material prep
+   for the live config, finalizes the texture pool, resolves material variants
+   and kicks the material kernels (`ensure_scene_pipelines`), then compiles the
+   whole reserved pool concurrently while the kernels are in flight, and
+   finally drains the kernels.
+4. **After the commit the caches are no longer deferred.** A live add (the
+   editor's steady state: content added to a scene that is already on screen)
+   compiles passes as they are built, exactly as before.
+
+`begin_load()` puts the caches back into deferred mode for a full reload.
+
+### What it no longer compiles
+
+- **The first-party-only kernel set.** `ensure_config_pipelines` used to
+  compile the MSAA kernels for the five-bucket first-party layout at the top of
+  every commit. Kernels bake in the bucket count and their own index, so on any
+  scene with a feature-set variant or a custom material those were for a layout
+  the scene does not have — the largest serial wave of the measured load after
+  the real kernels — and outside a commit they overwrote the live sky /
+  canonical kernels. Material kernels are compiled only by
+  `ensure_scene_pipelines`, against the live layout.
+- **Kernels for buckets nothing shades through.** The canonical PBR bucket is
+  always in the layout but every opaque PBR material routes to a feature-set
+  variant, so its kernel shaded nothing; likewise Toon / FlipBook / Unlit in a
+  scene with no such material. A first-party bucket gets a kernel only when a
+  material resolves to it. Registered custom materials always compile (that is
+  how an author's WGSL error surfaces right after `register_material`).
+- **Masked variants for families with no alpha-tested material.** The masked
+  geometry / shadow variants of all four built-in families used to compile on
+  every load (44 pipelines).
+- **Stale boot reservations.** A pass that re-keys before the first commit
+  (material prep after an SSCS change, effects after `set_post_processing`)
+  releases the slot reserved for the boot-time config instead of leaving it to
+  be compiled for nothing.
+
+### Rules this relies on
+
+- **A material kernel is keyed on the bucket LAYOUT.** Never build kernel
+  descriptors from any bucket list other than the registry's live one, and
+  never install a kernel without going through the content checks in
+  `pipeline_scheduler::launch` (`is_edge_key_desired`,
+  `desired_compute_install`). A resolved compile installs iff the latest ensure
+  pass still wants its cache key.
+- **A reserved slot must not outlive its shader.** Evicting a shader module
+  must also release the reserved pool slots built from it
+  (`release_reserved_by_shader_keys`), or the next drain fails with "missing
+  shader".
+- **Anything that needs a new pipeline needs a `commit_load`.** That includes a
+  first-party material whose bucket had no kernel yet and a built-in material
+  that becomes alpha-tested at runtime.
+- **Before the first commit, compile errors surface from `commit_load`**, not
+  from the setter that built the pass.
+
+### What is still serial or wasteful
+
+- Kernels remain the long pole, and the per-feature-set PBR kernels are large
+  and mostly identical text. They also bake in the bucket count, their bucket
+  index and their shader id, so any change to the bucket set recompiles all of
+  them and identical kernels in different scenes never share a cache entry.
+- A few pipelines live outside the pools and are still awaited where they are
+  built: the SSR composite, the BRDF LUT, and the core blit / sRGB / mipmap
+  helpers.
+- The first frame still waits for every pipeline. Dispatch already skips a
+  pass whose pipeline is missing, but committing with kernels outstanding
+  needs a defined look for unshaded buckets first.
+
+`examples/player-tests` locks the invariants (`pipelines-ready:<scene>`,
+`config-ensure-keeps-kernels:<scene>`).
+
