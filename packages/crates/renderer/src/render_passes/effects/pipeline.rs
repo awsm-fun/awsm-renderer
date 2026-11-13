@@ -64,12 +64,12 @@ fn atmosphere_phase(post_processing: &PostProcessing) -> AtmospherePhase {
 }
 
 impl EffectsPipelines {
-    /// Every pipeline the pass holds for the live config.
-    pub(crate) fn keys(&self) -> Vec<ComputePipelineKey> {
-        [self.no_bloom_pipeline, self.bloom_blend_pipeline]
-            .into_iter()
-            .flatten()
-            .collect()
+    /// Drops the pass's reference to its bloom-blend variant (the caller
+    /// releases the slot). For a variant that failed to compile: the field
+    /// otherwise survives a bloom toggle, and a later enable would find a key
+    /// with no pipeline behind it instead of compiling afresh.
+    pub(crate) fn forget_bloom_blend(&mut self) {
+        self.bloom_blend_pipeline = None;
     }
 
     /// Creates pipeline layout state for the effects pass.

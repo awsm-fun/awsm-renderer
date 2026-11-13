@@ -313,8 +313,16 @@ pub async fn run_all() {
                 continue;
             }
         }
-        set_hud(&format!("player-tests: pipelines {}", scene.name));
-        pipeline_invariants(scene.name, scene.features, &origin, &mut report).await;
+        // Both shading paths: per-bucket edge kernels with MSAA, the plain
+        // opaque kernel without.
+        for msaa in [true, false] {
+            set_hud(&format!(
+                "player-tests: pipelines {}{}",
+                scene.name,
+                if msaa { "" } else { " (no MSAA)" }
+            ));
+            pipeline_invariants(scene.name, scene.features, &origin, &mut report, msaa).await;
+        }
     }
 
     // ── 13. a post-process pass that cannot be compiled is turned off; the
@@ -330,12 +338,28 @@ pub async fn run_all() {
         report.emit_result(&name, postprocess_compile_failure(case, &origin).await);
     }
 
-    // ── 10. a pick that rebuilds the render textures must not strand the
-    //        frame's bind groups on the old ones. ──────────────────────────────
     let pick_enabled = filter
         .as_ref()
         .map(|f| f.iter().any(|s| s == PICK_SCENE))
         .unwrap_or(true);
+
+    // ── 14 + 15. compile failures and deferral around a committed / an
+    //        uncommitted scene. ───────────────────────────────────────────────
+    if pick_enabled {
+        set_hud("player-tests: prep-compile-failure-keeps-rendering");
+        report.emit_result(
+            "prep-compile-failure-keeps-rendering",
+            prep_compile_failure_keeps_rendering(&origin).await,
+        );
+        set_hud("player-tests: aa-before-commit-reserves");
+        report.emit_result(
+            "aa-before-commit-reserves",
+            aa_before_commit_reserves().await,
+        );
+    }
+
+    // ── 10. a pick that rebuilds the render textures must not strand the
+    //        frame's bind groups on the old ones. ──────────────────────────────
     if pick_enabled {
         set_hud("player-tests: pick-after-mip-grow");
         report.emit_result("pick-after-mip-grow", pick_after_mip_grow(&origin).await);
@@ -949,13 +973,15 @@ async fn pipeline_invariants(
     features: fn() -> RendererFeatures,
     origin: &str,
     report: &mut Report,
+    msaa: bool,
 ) {
-    let ready_name = format!("pipelines-ready:{name}");
-    let ensure_name = format!("config-ensure-keeps-kernels:{name}");
+    let suffix = if msaa { "" } else { ":no-msaa" };
+    let ready_name = format!("pipelines-ready:{name}{suffix}");
+    let ensure_name = format!("config-ensure-keeps-kernels:{name}{suffix}");
     let loaded = async {
         let bundle_base = format!("{origin}/{name}/bundle");
         let scene = fetch_scene(&bundle_base).await?;
-        let (mut renderer, _canvas) = create_renderer(features()).await?;
+        let (mut renderer, _canvas) = create_renderer_with_msaa(features(), msaa).await?;
         let assets = awsm_renderer_scene_loader::assets::HttpAssets::new(bundle_base);
         load_scene_for_player(&mut renderer, &scene, &assets, |_| {}).await?;
         anyhow::Ok(renderer)
@@ -1103,11 +1129,23 @@ const POSTPROCESS_FAILURES: &[PostprocessFailure] = &[
         limit: u32::MAX,
         expect: FailureOutcome::VolumetricsOff,
     },
-    // The effects variant the scene's config selects fails; the built
-    // config's variant (compiled next, as the fallback) does not.
+    // The effects pass's bloom-BLEND variant fails (with bloom on the pass
+    // compiles two variants; the blend one has the larger shader and the
+    // batch is issued largest first, so it is the first "Effects" compile).
+    // Only bloom dispatches it, so that costs bloom and nothing else.
+    PostprocessFailure {
+        name: "effects-bloom-blend",
+        scene: "ssr-arena",
+        reject: "^Effects$",
+        limit: 1,
+        expect: FailureOutcome::BloomOff,
+    },
+    // The effects pass's plain variant for the scene's config fails (no bloom
+    // here, so it is the only one); the built config's variant, compiled next
+    // as the fallback, does not.
     PostprocessFailure {
         name: "effects",
-        scene: "ssr-arena",
+        scene: "volumetrics",
         reject: "^Effects$",
         limit: 1,
         expect: FailureOutcome::BuiltConfig,
@@ -1292,6 +1330,157 @@ async fn postprocess_compile_failure(case: &PostprocessFailure, origin: &str) ->
     }
     Ok(format!(
         "{rejected} compiles rejected; loaded with {state}; 8 frames, no GPU validation error"
+    ))
+}
+
+/// Check 14 — `prep-compile-failure-keeps-rendering`. A config change that
+/// re-keys the material-prep pipelines (here the SSCS step count) is compiled
+/// by the next `commit_load`. On a scene that is already on screen, a compile
+/// the driver rejects must leave the pass on the pipelines it was rendering
+/// with: the commit reports the error and the frames go on.
+///
+/// Locks the regression where the new, uncompiled keys were installed before
+/// the compile: after a failure the pass held keys with no pipeline behind
+/// them, and every frame from then on failed.
+async fn prep_compile_failure_keeps_rendering(origin: &str) -> Result<String> {
+    let bundle_base = format!("{origin}/{PICK_SCENE}/bundle");
+    let scene = fetch_scene(&bundle_base).await?;
+    let (mut renderer, _canvas) = create_renderer(base_features()).await?;
+    let assets = awsm_renderer_scene_loader::assets::HttpAssets::new(bundle_base);
+    load_scene_for_player(&mut renderer, &scene, &assets, |_| {}).await?;
+    renderer.update_transforms();
+    let (center, radius) = scene_bounds(&renderer);
+    let eye = orbit_eye(center, radius, 2.2, 0.8);
+    run_frames(&mut renderer, center, radius, 3, |_| eye).await?;
+
+    // Re-key the prep megashader, then commit against a driver that rejects it.
+    let mut shadows = renderer.shadows_config().clone();
+    shadows.sscs_step_count += 1;
+    renderer.set_shadows_config(shadows);
+    let rejected = reject_compute_pipeline_compiles("^Material Prep$", u32::MAX)?;
+    let commit = renderer.commit_load(|_| {}).await;
+    restore_compute_pipeline_compiles();
+    let rejected = rejected.length();
+    if rejected == 0 {
+        destroy_renderer(renderer);
+        return Err(anyhow!(
+            "the SSCS change compiled no material-prep pipeline — the check simulated nothing"
+        ));
+    }
+    let Err(commit_err) = commit else {
+        destroy_renderer(renderer);
+        return Err(anyhow!(
+            "{rejected} material-prep compiles rejected, yet commit_load reported success"
+        ));
+    };
+
+    // The scene must keep rendering through what it had.
+    let device: wasm_bindgen::JsValue = renderer.gpu.device.clone().into();
+    let call = |name: &str, args: &js_sys::Array| -> Result<wasm_bindgen::JsValue> {
+        let f: js_sys::Function = js_sys::Reflect::get(&device, &name.into())
+            .map_err(|e| anyhow!("device.{name}: {e:?}"))?
+            .into();
+        js_sys::Reflect::apply(&f, &device, args).map_err(|e| anyhow!("device.{name}(): {e:?}"))
+    };
+    call("pushErrorScope", &js_sys::Array::of1(&"validation".into()))?;
+    let frames = run_frames(&mut renderer, center, radius, 8, |_| eye).await;
+    let error = wasm_bindgen_futures::JsFuture::from(js_sys::Promise::from(call(
+        "popErrorScope",
+        &js_sys::Array::new(),
+    )?))
+    .await
+    .map_err(|e| anyhow!("popErrorScope: {e:?}"))?;
+    if let Err(err) = frames {
+        destroy_renderer(renderer);
+        return Err(anyhow!(
+            "frames fail after a rejected live material-prep compile — {err:#}"
+        ));
+    }
+    if !(error.is_null() || error.is_undefined()) {
+        let message = js_sys::Reflect::get(&error, &"message".into())
+            .ok()
+            .and_then(|m| m.as_string())
+            .unwrap_or_else(|| format!("{error:?}"));
+        destroy_renderer(renderer);
+        return Err(anyhow!(
+            "GPU validation error in the frames after a rejected live material-prep compile: {message}"
+        ));
+    }
+
+    // And once the driver accepts it, the same commit goes through.
+    let retry = renderer.commit_load(|_| {}).await;
+    let after = match retry {
+        Ok(_) => run_frames(&mut renderer, center, radius, 4, |_| eye).await,
+        Err(err) => Err(anyhow!("commit_load retry: {err}")),
+    };
+    destroy_renderer(renderer);
+    after?;
+    Ok(format!(
+        "{rejected} material-prep compiles rejected: commit_load returned the error ({commit_err}), 8 frames rendered cleanly on the previous pipelines, and a retry committed"
+    ))
+}
+
+/// Check 15 — `aa-before-commit-reserves`. Until the first commit every
+/// setter only RESERVES its pipelines, so the commit can compile the whole
+/// load as one batch. `set_anti_aliasing` must not be the exception: called
+/// while loading it must compile nothing — neither its own pipelines nor
+/// whatever was reserved before it.
+///
+/// Locks the regression where it drained the reserved pool on the spot: a
+/// compile wave of its own in the middle of a load, and a post-process
+/// pipeline the driver rejects failed the setter instead of being turned off
+/// by the commit.
+async fn aa_before_commit_reserves() -> Result<String> {
+    use awsm_renderer::anti_alias::AntiAliasing;
+
+    let (mut renderer, _canvas) = create_renderer(base_features()).await?;
+    let pending = |renderer: &AwsmRenderer| {
+        renderer.pipelines.compute.pending_count() + renderer.pipelines.render.pending_count()
+    };
+    // Something reserved that the driver will reject: SSR.
+    let mut post_processing = renderer.post_processing.clone();
+    post_processing.ssr.enabled = true;
+    renderer
+        .set_post_processing(post_processing)
+        .await
+        .map_err(|e| anyhow!("set_post_processing: {e}"))?;
+    let reserved_before = pending(&renderer);
+
+    let rejected = reject_compute_pipeline_compiles("^SSR ", u32::MAX)?;
+    let set_aa = renderer
+        .set_anti_aliasing(AntiAliasing {
+            msaa_sample_count: None,
+            ..Default::default()
+        })
+        .await;
+    let compiled_by_setter = reserved_before.saturating_sub(pending(&renderer));
+    let rejected_by_setter = rejected.length();
+    // The commit is where the batch compiles — and where SSR is turned off.
+    let commit = renderer.commit_load(|_| {}).await;
+    restore_compute_pipeline_compiles();
+    let rejected_total = rejected.length();
+    let ssr_enabled = renderer.post_processing.ssr.enabled;
+    let left_reserved = pending(&renderer);
+    destroy_renderer(renderer);
+
+    if let Err(err) = set_aa {
+        return Err(anyhow!(
+            "set_anti_aliasing before the first commit failed (it compiled the reserved pool: {rejected_by_setter} SSR compiles rejected) — {err}"
+        ));
+    }
+    if rejected_by_setter > 0 || compiled_by_setter > 0 {
+        return Err(anyhow!(
+            "set_anti_aliasing before the first commit compiled pipelines ({compiled_by_setter} reserved slots filled, {rejected_by_setter} rejected) instead of leaving them to the commit"
+        ));
+    }
+    commit.map_err(|e| anyhow!("commit_load: {e}"))?;
+    if rejected_total == 0 || ssr_enabled || left_reserved > 0 {
+        return Err(anyhow!(
+            "after the commit: {rejected_total} SSR compiles rejected, ssr.enabled={ssr_enabled}, {left_reserved} slots still reserved (expected >0, false, 0)"
+        ));
+    }
+    Ok(format!(
+        "set_anti_aliasing compiled nothing with {reserved_before} slots reserved; the commit compiled the batch and turned SSR off ({rejected_total} compiles rejected)"
     ))
 }
 

@@ -601,14 +601,15 @@ impl AwsmRenderer {
     /// in flight (`drain_commit_compiles`), so the whole load is one batch.
     async fn ensure_config_pipelines_staged(&mut self, drain: bool) -> crate::error::Result<usize> {
         // 1. Material prep: re-derive the ACTIVE branch's cache keys from the
-        //    live config and RESERVE them. Catches SSCS / denoise re-keys that
+        //    live config and RESERVE them (cold load) or compile them (a
+        //    committed scene — see `ensure_material_prep_pipelines`). Catches SSCS / denoise re-keys that
         //    happened after boot (`set_shadows_config` mirrors them into
         //    `prep_config` but compiles nothing) — unchanged configs resolve
         //    to the slots they already hold. Done BEFORE the drain so the
         //    re-keyed pipelines compile in the same batch as the rest of the
         //    pool, and so a boot-time reservation the live config no longer
         //    uses is released instead of compiled.
-        self.reserve_material_prep_pipelines().await?;
+        self.ensure_material_prep_pipelines().await?;
 
         // 2. Drain the reserved pool (concurrent; both classes overlap inside
         //    Dawn's worker pool) — unless the caller drains later.
@@ -690,6 +691,27 @@ impl AwsmRenderer {
         Ok(compiled)
     }
 
+    /// A pass was rebuilt and holds `new` pipeline keys where it held `old`:
+    /// give back the slots only the old one used, if they never compiled.
+    ///
+    /// Before the first commit a pass's pipelines are only reserved, and one
+    /// rebuilt for a config change (SSR on an MSAA flip or a structural SSR
+    /// change, the froxel volume on its temporal flag) leaves its old
+    /// reservations behind. Nothing would ever dispatch them, but the commit
+    /// would still compile them — and if the driver rejected one, it would
+    /// belong to no pass, so the failure could not be absorbed as "that
+    /// effect off". Compiled slots are left alone (valid cache entries a
+    /// flip-back reuses).
+    pub(crate) fn release_replaced_pass_slots(
+        &mut self,
+        old: Vec<pipelines::compute_pipeline::ComputePipelineKey>,
+        new: &[pipelines::compute_pipeline::ComputePipelineKey],
+    ) {
+        self.pipelines
+            .compute
+            .release_reserved(old.into_iter().filter(|key| !new.contains(key)));
+    }
+
     /// The pipeline keys the post-process passes hold right now — what a
     /// failed compile is matched against.
     fn post_process_pipeline_keys(&self) -> crate::post_process::PostProcessPipelineKeys {
@@ -710,7 +732,22 @@ impl AwsmRenderer {
                 .as_ref()
                 .map(|pass| pass.pipelines.keys())
                 .unwrap_or_default(),
-            effects: passes.effects.pipelines.keys(),
+            effects: passes
+                .effects
+                .pipelines
+                .get_bloom_pipeline(
+                    crate::render_passes::effects::shader::cache_key::BloomPhase::None,
+                )
+                .into_iter()
+                .collect(),
+            effects_bloom_blend: passes
+                .effects
+                .pipelines
+                .get_bloom_pipeline(
+                    crate::render_passes::effects::shader::cache_key::BloomPhase::Blend,
+                )
+                .into_iter()
+                .collect(),
             display: passes
                 .display
                 .pipelines
@@ -798,9 +835,16 @@ impl AwsmRenderer {
                 volumetrics.texture.destroy();
             }
         }
+        // The effects pass keeps its bloom-blend variant across a bloom
+        // toggle, so with bloom going off it has to be told to let go of one
+        // that never compiled.
+        if failed.bloom {
+            self.render_passes.effects.pipelines.forget_bloom_blend();
+        }
         let dropped = [
             (failed.ssr, keys.ssr),
             (failed.bloom, keys.bloom),
+            (failed.bloom, keys.effects_bloom_blend),
             (failed.volumetrics, keys.volumetrics),
         ];
         self.pipelines.compute.release_reserved(
@@ -932,7 +976,7 @@ impl AwsmRenderer {
         };
         // Disjoint field borrows: `ctx` holds `&mut` on cache fields only —
         // `render_passes` is not part of it (same shape as
-        // `reserve_material_prep_pipelines`).
+        // `ensure_material_prep_pipelines`).
         let decal = self
             .render_passes
             .material_decal
@@ -1080,20 +1124,30 @@ impl AwsmRenderer {
         })
     }
 
-    /// Reserve the material-prep pipelines for the LIVE config (active MSAA
-    /// branch, edge under MSAA + device support, blur pair while denoise is
-    /// on) — compiling nothing. Re-derives cache keys from `prep_config`, so
-    /// an SSCS / denoise change re-keys here; an unchanged config resolves to
-    /// the slots it already holds. The caller follows with
-    /// [`Self::compile_pending_pipelines`], which compiles whatever is still
-    /// reserved in one batch.
+    /// Bring the material-prep pipelines in line with the LIVE config (active
+    /// MSAA branch, edge under MSAA + device support, blur pair while denoise
+    /// is on). Re-derives cache keys from `prep_config`, so an SSCS / denoise
+    /// change re-keys here; an unchanged config resolves to the slots it
+    /// already holds.
+    ///
+    /// Before a scene is committed (the pools are deferred) this only
+    /// RESERVES: the caller's drain compiles the new keys in the same batch as
+    /// the rest of the load, and nothing draws through the pass meanwhile.
+    ///
+    /// On a committed scene the pass is drawing every frame, so the new keys
+    /// are COMPILED FIRST and installed only once they exist. If a compile
+    /// fails the error is returned with the pass untouched — it keeps
+    /// rendering through the pipelines it had. (Installing reserved keys and
+    /// compiling afterwards, as the cold path does, would leave the pass
+    /// holding keys with no pipeline behind them after a failure, and every
+    /// frame from then on would fail to find them.)
     ///
     /// Reservations the live config no longer uses are released: the slots it
     /// re-keyed away from, and the slots it dropped altogether. At a cold
     /// load that is the boot-time prep megashader after the scene changed
     /// SSCS or the caster cap — otherwise one of the larger compiles of the
     /// boot wave, for a pipeline nothing would ever dispatch.
-    pub(crate) async fn reserve_material_prep_pipelines(&mut self) -> crate::error::Result<()> {
+    pub(crate) async fn ensure_material_prep_pipelines(&mut self) -> crate::error::Result<()> {
         use crate::render_passes::material_prep::render_pass::MaterialPrepPipelines;
         if self.render_passes.material_prep.is_none() {
             return Ok(());
@@ -1142,10 +1196,18 @@ impl AwsmRenderer {
             edge_resolve,
         )
         .await?;
+        // Deferred: reserves (see `ComputePipelines::set_deferred`).
+        // Committed: compiles and awaits; `?` leaves the pass as it was.
         let keys = self
             .pipelines
             .compute
-            .reserve_keys(descs.pipeline_cache_keys.clone());
+            .ensure_keys(
+                &self.gpu,
+                &self.shaders,
+                &self.pipeline_layouts,
+                descs.pipeline_cache_keys.clone(),
+            )
+            .await?;
         if let Some(prep) = self.render_passes.material_prep.as_mut() {
             let mut stale = prep.pipelines.merge_resolved(&descs.slots, keys);
             let compute = &self.pipelines.compute;
@@ -3634,6 +3696,19 @@ impl AwsmRenderer {
         // and the transparent pipelines in line with the config as it is now,
         // and drain what that reserves. The stale kernels still in flight are
         // dropped when they resolve (they are no longer wanted).
+        //
+        // The batch has no per-pipeline callback, and on a cold load it is the
+        // longest wait there is: say how much is about to compile before it
+        // starts, so a loading UI has a number to show for it.
+        let reserved =
+            self.pipelines.compute.pending_count() + self.pipelines.render.pending_count();
+        if reserved > 0 {
+            let mut progress = self.compile_progress();
+            progress.in_flight_subcompiles = progress
+                .in_flight_subcompiles
+                .saturating_add(reserved as u32);
+            on_progress(progress);
+        }
         loop {
             let post_processing = self.post_processing.clone();
             self.drain_reserved_pool().await?;

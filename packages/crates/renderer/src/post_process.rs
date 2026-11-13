@@ -189,9 +189,10 @@ pub(crate) struct FailedPostProcess {
     pub bloom: bool,
     /// A pipeline of the froxel volumetrics pass.
     pub volumetrics: bool,
-    /// The effects variant (tone mapping, bloom blend, haze term) or the
+    /// The effects pass's plain variant (tone mapping, haze term) or the
     /// display pipeline — both compiled for the config as a whole, so a
-    /// failure cannot be pinned on one effect.
+    /// failure cannot be pinned on one effect. (Its bloom-BLEND variant can:
+    /// that one counts as `bloom`.)
     pub effects: bool,
 }
 
@@ -201,7 +202,11 @@ pub(crate) struct PostProcessPipelineKeys {
     pub ssr: Vec<crate::pipelines::compute_pipeline::ComputePipelineKey>,
     pub bloom: Vec<crate::pipelines::compute_pipeline::ComputePipelineKey>,
     pub volumetrics: Vec<crate::pipelines::compute_pipeline::ComputePipelineKey>,
+    /// The effects pass's plain (no-bloom) variant.
     pub effects: Vec<crate::pipelines::compute_pipeline::ComputePipelineKey>,
+    /// The effects pass's bloom-blend variant — only dispatched while bloom
+    /// is on, so its failure costs bloom and nothing else.
+    pub effects_bloom_blend: Vec<crate::pipelines::compute_pipeline::ComputePipelineKey>,
     pub display: Vec<crate::pipelines::render_pipeline::RenderPipelineKey>,
 }
 
@@ -219,7 +224,7 @@ impl PostProcessPipelineKeys {
         for key in failed_compute {
             if self.ssr.contains(&key) {
                 failed.ssr = true;
-            } else if self.bloom.contains(&key) {
+            } else if self.bloom.contains(&key) || self.effects_bloom_blend.contains(&key) {
                 failed.bloom = true;
             } else if self.volumetrics.contains(&key) {
                 failed.volumetrics = true;
@@ -286,9 +291,20 @@ impl AwsmRenderer {
     /// `ComputePipelines::ensure_keys`. The display pipeline (which
     /// depends on the live tonemapper) is recompiled the same way.
     ///
-    /// Returns only after every newly-required variant is GPU-
-    /// resident, so the next render frame can dispatch without
-    /// further awaits.
+    /// On a committed scene this returns only after every newly-required
+    /// variant is GPU-resident, so the next render frame can dispatch
+    /// without further awaits, and a pipeline the driver rejects is this
+    /// call's error.
+    ///
+    /// **Before the first `commit_load`** (and again between `begin_load()`
+    /// and its commit) nothing is on screen, so the pipelines are only
+    /// RESERVED here and compile in the commit's batch with the rest of the
+    /// load. The shader modules are still created and validated by this
+    /// call (a WGSL error is returned from it), but a pipeline the driver
+    /// rejects surfaces in `commit_load` — where a post-process pass that
+    /// cannot be built is turned off with a warning rather than failing the
+    /// load (`AwsmRenderer::degrade_failed_post_processing`). Read
+    /// `renderer.post_processing` back after the commit if you mirror it.
     pub async fn set_post_processing(&mut self, pp: PostProcessing) -> Result<()> {
         // Race policy per https://github.com/dakom/awsm-renderer/pull/99: config-change
         // APIs return NotReady when called before build() finishes its
@@ -375,7 +391,10 @@ impl AwsmRenderer {
                 max_edge_budget: self.material_edge_buffers.as_ref().map(|b| b.max_edge_budget).unwrap_or(crate::render_passes::material_opaque::edge_buffers::DEFAULT_MAX_EDGE_BUDGET_DESKTOP),
             };
             let ssr = crate::render_passes::ssr::render_pass::SsrRenderPass::new(&mut ctx).await?;
-            self.render_passes.ssr = Some(ssr);
+            let new_keys = ssr.pipelines.keys();
+            if let Some(old) = self.render_passes.ssr.replace(ssr) {
+                self.release_replaced_pass_slots(old.pipelines.keys(), &new_keys);
+            }
             // The reflection / history targets are sized from `temporal` +
             // `resolution_scale` too, so force `views()` to re-evaluate their
             // sizes and rebind the freshly-built SSR bind group against them.
@@ -458,7 +477,9 @@ impl AwsmRenderer {
             // pipelines are cheap to orphan, but the scatter / integrated /
             // history 3D textures are real VRAM the JS GC can't see — the
             // same rule `ensure_size` follows on resize.
+            let new_keys = volumetrics.pipelines.keys();
             if let Some(old) = self.render_passes.volumetrics.take() {
+                self.release_replaced_pass_slots(old.pipelines.keys(), &new_keys);
                 old.texture.destroy();
             }
             self.render_passes.volumetrics = Some(volumetrics);
@@ -575,6 +596,7 @@ mod degrade_tests {
             bloom: two(),
             volumetrics: two(),
             effects: two(),
+            effects_bloom_blend: two(),
             display: vec![render.insert(())],
         };
         // …and one of each class that belongs to no post-process pass.
@@ -607,6 +629,15 @@ mod degrade_tests {
         });
         assert_eq!(keys.attribute([keys.effects[0]], []), effects);
         assert_eq!(keys.attribute([], [keys.display[0]]), effects);
+        // …except the effects pass's bloom-blend variant, which only bloom
+        // dispatches: losing it costs bloom, not the whole config.
+        assert_eq!(
+            keys.attribute([keys.effects_bloom_blend[0]], []),
+            Some(FailedPostProcess {
+                bloom: true,
+                ..Default::default()
+            })
+        );
     }
 
     #[test]

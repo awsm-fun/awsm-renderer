@@ -39,10 +39,16 @@ Concretely:
   deduping).
 - A bucket only gets a compiled pipeline once something shades through it.
   The canonical first-party buckets always exist in the layout, but a scene
-  with no Toon material compiles no Toon pipeline, and the canonical PBR
-  bucket never compiles one (every opaque PBR material routes to a
-  feature-set bucket). A registered custom material always compiles, so its
-  WGSL errors surface before it is assigned to a mesh.
+  with no Toon material compiles no Toon pipeline, and a committed scene
+  compiles none for the canonical PBR bucket either (`commit_load` routes
+  every opaque PBR material to a feature-set bucket). The canonical PBR
+  pipeline is compiled on demand instead: a PBR material inserted and
+  assigned on a running scene with no commit after it shades through that
+  bucket, and the render loop compiles its pipeline when the material
+  appears (the mesh is unshaded for that one compile; the next `commit_load`
+  moves the material to its feature-set bucket). A registered custom
+  material always compiles, so its WGSL errors surface before it is assigned
+  to a mesh.
 
 This is automatic — feature-sets are derived from the material and
 resolved to pipelines by `commit_load`. You don't configure it

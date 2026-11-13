@@ -80,11 +80,21 @@ impl AwsmRenderer {
         if self.anti_aliasing == aa {
             return Ok(());
         }
-        // Deferred-boot: drain any still-reserved boot-pool slots first, so
-        // the branch guards below (`has_branch_for`) reflect COMPILED reality
-        // — a reserved-but-pending branch must not be mistaken for a ready
-        // one. No-op after the first commit_load / ensure_config_pipelines.
-        self.compile_pending_pipelines().await?.into_result()?;
+        // On a committed scene: drain anything still reserved first, so the
+        // branch guards below (`has_branch_for`) reflect COMPILED reality — a
+        // reserved-but-pending branch must not be mistaken for a ready one.
+        // (Normally a no-op: a commit leaves nothing reserved.)
+        //
+        // Not while the pools are deferred (before the first commit, or after
+        // `begin_load`): nothing draws yet, everything this setter builds is
+        // reserved too, and the commit compiles the lot as one batch. Draining
+        // here would bring back a compile wave of its own for an embedder
+        // that sets AA while loading — and would make a post-process pipeline
+        // the driver rejects fail THIS call, when the commit's drain turns
+        // that effect off and carries on.
+        if !self.pipelines.is_deferred() {
+            self.compile_pending_pipelines().await?.into_result()?;
+        }
         let prev_msaa_on = self.anti_aliasing.has_msaa_checked()?;
         self.anti_aliasing = aa;
         let new_msaa_on = self.anti_aliasing.has_msaa_checked()?;
@@ -588,7 +598,10 @@ impl AwsmRenderer {
                     ),
             };
             let ssr = crate::render_passes::ssr::render_pass::SsrRenderPass::new(&mut ctx).await?;
-            self.render_passes.ssr = Some(ssr);
+            let new_keys = ssr.pipelines.keys();
+            if let Some(old) = self.render_passes.ssr.replace(ssr) {
+                self.release_replaced_pass_slots(old.pipelines.keys(), &new_keys);
+            }
         }
 
         Ok(())
