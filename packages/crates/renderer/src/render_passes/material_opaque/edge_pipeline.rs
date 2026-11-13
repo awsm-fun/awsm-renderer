@@ -62,12 +62,11 @@ pub enum EdgePipelineSlot {
     FinalBlend,
 }
 
-/// Pre-resolved descriptors for the edge-resolve pipelines. Used by
-/// both the legacy async [`MaterialEdgePipelines::ensure_compiled`]
-/// path AND the scheduler-driven launch path in
-/// `pipeline_scheduler::launch` (which feeds the resolved shader
-/// keys into `ComputePipelines::ensure_keys_prepare` and pushes the
-/// returned promises into the scheduler's `inflight_compile`).
+/// Pre-resolved descriptors for the edge-resolve pipelines. Consumed by
+/// the scheduler-driven launch path in `pipeline_scheduler::launch`
+/// (which feeds the resolved shader keys into
+/// `ComputePipelines::ensure_keys_prepare` and pushes the returned
+/// promises into the scheduler's `inflight_compile`).
 pub struct MaterialEdgePipelineDescriptors {
     /// Shader cache key for each entry (per-bucket cs_shade + final_blend).
     pub shader_cache_keys: Vec<crate::shaders::ShaderCacheKey>,
@@ -111,8 +110,8 @@ pub struct MaterialEdgePipelines {
     /// The set of compute-pipeline cache keys the CURRENT bucket layout
     /// wants for its edge chain (every per-shader + skybox + final_blend).
     /// Replaced wholesale each time the edge set is (re)built for a layout
-    /// (`build_descriptors` consumers: `ensure_compiled` + the scheduler
-    /// `launch_edge_resolve_compile`). This is the authoritative
+    /// (the scheduler's `launch_edge_resolve_compile`, the one
+    /// `build_descriptors` consumer). This is the authoritative
     /// "is-this-edge-pipeline-still-valid?" signal: a background edge
     /// compile that resolves is installed iff its key is still in this set
     /// (i.e. the layout it was built for is still current), and dropped
@@ -241,10 +240,14 @@ impl MaterialEdgePipelines {
     }
 
     /// Build the descriptor list for the current bucket entries +
-    /// AA config + color format. Sync — caller drives the actual
-    /// shader/pipeline compile (either async via
-    /// [`Self::ensure_compiled`] or one-promise-at-a-time via the
-    /// scheduler launch path in `pipeline_scheduler::launch`).
+    /// AA config + color format. Sync — the caller drives the actual
+    /// shader/pipeline compile, one promise at a time, via the
+    /// scheduler launch path in `pipeline_scheduler::launch`.
+    ///
+    /// `bucket_entries` MUST be the registry's live list: every kernel
+    /// bakes the bucket count and its own index into its WGSL, so a
+    /// kernel built from any other list reads the classify tile lists at
+    /// the wrong offsets.
     ///
     /// Also commits the per-pipeline-layout keys onto `self` (cheap
     /// hash registrations, no Dawn work) so subsequent
@@ -424,117 +427,5 @@ impl MaterialEdgePipelines {
             pipeline_layout_keys,
             entry_points,
         }))
-    }
-
-    /// Compiles the edge-resolve pipelines for the given bucket list,
-    /// anti-aliasing config, color format, and texture pool shape.
-    ///
-    /// Walks the bucket entries to build per-shader-id edge-resolve
-    /// shader/pipeline cache keys, plus the global skybox-edge and
-    /// final-blend keys; runs them through `Shaders::ensure_keys` +
-    /// `ComputePipelines::ensure_keys`; folds the resolved keys back
-    /// into the typed cache via `merge_resolved`.
-    ///
-    /// No-op when MSAA is off (there are no edges to resolve).
-    ///
-    /// The async wrapper is retained for the cold-boot eager path
-    /// (`AwsmRendererBuilder::build`) and for `prewarm_pipelines` —
-    /// the per-material register path uses
-    /// `pipeline_scheduler::launch::launch_edge_resolve_compile`
-    /// which pushes the same descriptors through the scheduler's
-    /// inflight_compile promise queue instead.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn ensure_compiled(
-        &mut self,
-        gpu: &awsm_renderer_core::renderer::AwsmRendererWebGpu,
-        shaders: &mut crate::shaders::Shaders,
-        compute_pipelines: &mut crate::pipelines::compute_pipeline::ComputePipelines,
-        pipeline_layouts: &mut crate::pipeline_layouts::PipelineLayouts,
-        bind_group_layouts: &mut crate::bind_group_layout::BindGroupLayouts,
-        opaque_bind_groups: &MaterialOpaqueBindGroups,
-        edge_layouts: &MaterialEdgeBindGroupLayouts,
-        bucket_entries: &[BucketEntry],
-        anti_aliasing: &AntiAliasing,
-        color_wgsl_format: &str,
-        dynamic_registry: Option<&DynamicMaterials>,
-        max_shadow_casters: u32,
-        sscs_enabled: bool,
-        sscs_step_count: u32,
-        write_ssr_descriptor: bool,
-        reverse_z: bool,
-    ) -> Result<()> {
-        let Some(descs) = self.build_descriptors(
-            gpu,
-            pipeline_layouts,
-            bind_group_layouts,
-            opaque_bind_groups,
-            edge_layouts,
-            bucket_entries,
-            anti_aliasing,
-            color_wgsl_format,
-            dynamic_registry,
-            max_shadow_casters,
-            sscs_enabled,
-            sscs_step_count,
-            write_ssr_descriptor,
-            reverse_z,
-        )?
-        else {
-            return Ok(());
-        };
-        tracing::info!(
-            target: "awsm_renderer::boot_timing",
-            "MaterialEdgePipelines::ensure_compiled: compiling {} buckets + skybox + final_blend",
-            bucket_entries.len()
-        );
-
-        // Compile shaders + pipelines.
-        let shader_keys = shaders
-            .ensure_keys(gpu, descs.shader_cache_keys.iter().cloned())
-            .await?;
-        let pipeline_cache_keys: Vec<ComputePipelineCacheKey> = shader_keys
-            .iter()
-            .zip(descs.pipeline_layout_keys.iter())
-            .zip(descs.entry_points.iter())
-            .map(|((sk, lk), ep)| {
-                let base = ComputePipelineCacheKey::new(*sk, *lk);
-                // § Part B: per-shader edge pipelines select `cs_edge` on the
-                // unified opaque module; skybox/final_blend keep their single
-                // default entry point.
-                match ep {
-                    Some(name) => base.with_entry_point(name),
-                    None => base,
-                }
-            })
-            .collect();
-        // Record this layout's edge key set as the authoritative "desired"
-        // set, so any still-in-flight scheduler edge compile built against a
-        // PRIOR layout is dropped on resolve (its key won't be in this set).
-        self.set_desired_edge_keys(pipeline_cache_keys.iter().cloned());
-        let pipeline_keys = compute_pipelines
-            .ensure_keys(gpu, shaders, pipeline_layouts, pipeline_cache_keys)
-            .await?;
-
-        self.merge_resolved(descs.slots, pipeline_keys);
-        Ok(())
-    }
-
-    /// Folds a flat resolved-keys vec back into the typed cache via
-    /// the per-slot identity. Mirrors `MaterialOpaquePipelines::merge_resolved`.
-    pub fn merge_resolved(
-        &mut self,
-        slots: Vec<EdgePipelineSlot>,
-        pipeline_keys: Vec<ComputePipelineKey>,
-    ) {
-        for (slot, key) in slots.into_iter().zip(pipeline_keys) {
-            match slot {
-                EdgePipelineSlot::Shade(id) => {
-                    self.per_shader_shade.insert(id, key);
-                }
-                EdgePipelineSlot::FinalBlend => {
-                    self.final_blend_pipeline_key = Some(key);
-                }
-            }
-        }
     }
 }

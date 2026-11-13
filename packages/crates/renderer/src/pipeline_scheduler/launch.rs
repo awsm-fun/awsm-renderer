@@ -701,11 +701,9 @@ impl crate::AwsmRenderer {
     /// `apply_compile_resolution_inline` installs a resolved edge pipeline
     /// iff its key is still in that set (`is_edge_key_desired`) — otherwise
     /// the layout moved on and the resolution is dropped. No material
-    /// generation is consulted. The async await paths
-    /// (`MaterialEdgePipelines::ensure_compiled` from build / prewarm / AA +
-    /// texture-pool changes) ALSO update the desired set and share
-    /// `build_descriptors`, so the two paths can never diverge on which
-    /// buckets get an edge pipeline.
+    /// generation is consulted. This is the ONLY edge compile path: there
+    /// is no separate awaited one that could build the set from a different
+    /// bucket list.
     ///
     /// Idempotent: already-compiled keys install inline (cache hit) and
     /// already-in-flight keys are skipped (`edge_key_in_flight`), so a

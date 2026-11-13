@@ -558,9 +558,13 @@ impl AwsmRenderer {
     /// caches make finalize + every compile a hit).
     /// Compile everything the CURRENT config needs that isn't compiled yet —
     /// the deferred boot pool (reserved at `build()`) plus any config-keyed
-    /// piece that re-keyed since (material-prep SSCS/denoise drift, the
-    /// MSAA edge-resolve set). Idempotent and cheap when warm: every ensure
-    /// is cache-keyed, so a second call is a no-op.
+    /// piece that re-keyed since (material-prep SSCS/denoise drift).
+    /// Idempotent and cheap when warm: every ensure is cache-keyed, so a
+    /// second call is a no-op.
+    ///
+    /// Config pipelines only: the material kernels (classify / per-bucket
+    /// shade / final blend) depend on the scene's bucket layout and compile in
+    /// [`Self::commit_load`], never here.
     ///
     /// `build()` compiles NOTHING — an empty project never pays for pipelines
     /// it doesn't draw. This is the single warm-up point:
@@ -584,43 +588,18 @@ impl AwsmRenderer {
         //    as cache hits.
         self.ensure_material_prep_pipelines().await?;
 
-        // 3. The layout-level MSAA edge-resolve set (moved out of build()).
-        //    Cache-keyed like everything else; the commit path's
-        //    `launch_edge_resolve_compile` covers later bucket changes.
-        if self.material_edge_buffers.is_some() {
-            let color_wgsl = awsm_renderer_core::texture::texture_format_to_wgsl_storage(
-                self.render_textures.formats.color,
-            )?;
-            let bucket_entries = crate::dynamic_materials::first_party_bucket_entries();
-            let pipelines::Pipelines {
-                render: _render_pipelines,
-                compute: compute_pipelines,
-            } = &mut self.pipelines;
-            self.render_passes
-                .material_opaque
-                .edge_pipelines
-                .ensure_compiled(
-                    &self.gpu,
-                    &mut self.shaders,
-                    compute_pipelines,
-                    &mut self.pipeline_layouts,
-                    &mut self.bind_group_layouts,
-                    &self.render_passes.material_opaque.bind_groups,
-                    &self.render_passes.material_opaque.edge_bind_group_layouts,
-                    &bucket_entries,
-                    &self.anti_aliasing,
-                    color_wgsl,
-                    None,
-                    self.prep_config.clamped_k(),
-                    self.prep_config.sscs_enabled,
-                    self.prep_config.sscs_step_count,
-                    self.post_processing.ssr.enabled,
-                    self.features.reverse_z,
-                )
-                .await?;
-        }
+        // (The MSAA edge-resolve / material kernels are deliberately NOT ensured
+        //  here. They are keyed on the live bucket LAYOUT — every kernel bakes in
+        //  the bucket count, its own bucket index and the texture-pool tier — so
+        //  they belong to `ensure_scene_pipelines`, which `commit_load` runs once
+        //  the layout and the pool are final. This used to compile the
+        //  FIRST-PARTY-ONLY layout's set here and install it: on any scene with a
+        //  feature-set variant or a custom material that was a wasted compile on
+        //  every commit — the dominant serial wave of a cold load — and, when
+        //  called outside a commit, it replaced the live sky / canonical kernels
+        //  with ones reading the classify tile lists at the wrong offsets.)
 
-        // 4. Real lighting defaults: build() installs 1×1 placeholders for
+        // 3. Real lighting defaults: build() installs 1×1 placeholders for
         //    the skybox / IBL cubemaps and the BRDF LUT. If content hasn't
         //    replaced them by now (the scene loader's environment apply
         //    happens BEFORE its commit, so a real scene skips all of this),
@@ -628,7 +607,7 @@ impl AwsmRenderer {
         //    the same setter paths. One-shot per slot.
         self.ensure_lighting_defaults().await?;
 
-        // 5. Content-gated pipelines that used to compile at build:
+        // 4. Content-gated pipelines that used to compile at build:
         //    the transmission mipgen (only if a transmissive material is
         //    actually attached), the decal compute + classify + composite
         //    (only when a decal is actually live), and the cluster-LOD cut +
@@ -638,7 +617,7 @@ impl AwsmRenderer {
         #[cfg(feature = "lod")]
         self.ensure_cluster_pipelines_compiled().await?;
 
-        // 6. The eager pass groups registered Pending at build are real now.
+        // 5. The eager pass groups registered Pending at build are real now.
         let eager_ids = std::mem::take(&mut self.eager_pass_ids);
         for id in &eager_ids {
             self.pipeline_scheduler.mark_ready(*id);
