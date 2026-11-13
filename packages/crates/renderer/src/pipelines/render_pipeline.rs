@@ -36,6 +36,9 @@ pub struct RenderPipelines {
     // deferred-boot-pool mechanism).
     lookup: SlotMap<RenderPipelineKey, Option<web_sys::GpuRenderPipeline>>,
     cache: HashMap<RenderPipelineCacheKey, RenderPipelineKey>,
+    // While set, `ensure_keys` / `get_key` RESERVE instead of compiling (see
+    // `ComputePipelines::set_deferred`).
+    deferred: bool,
 }
 
 /// Sync-side prep state captured by [`RenderPipelines::ensure_keys_prepare`]
@@ -76,7 +79,21 @@ impl RenderPipelines {
         Self {
             lookup: SlotMap::with_key(),
             cache: HashMap::new(),
+            deferred: false,
         }
+    }
+
+    /// Switch DEFERRED mode on or off: while on, [`Self::ensure_keys`] and
+    /// [`Self::get_key`] reserve instead of compiling, and
+    /// [`Self::compile_pending`] compiles the lot in one batch. See
+    /// `ComputePipelines::set_deferred` for when and why.
+    pub fn set_deferred(&mut self, deferred: bool) {
+        self.deferred = deferred;
+    }
+
+    /// Whether [`Self::set_deferred`] mode is on.
+    pub fn is_deferred(&self) -> bool {
+        self.deferred
     }
 
     /// Number of compiled render pipelines (observability / leak checks —
@@ -153,6 +170,11 @@ impl RenderPipelines {
         // completion and the install-time cache-hit guard discarded
         // all but one — compile cost was already spent.
         let inputs: Vec<RenderPipelineCacheKey> = cache_keys.into_iter().collect();
+        if self.deferred {
+            // No scene is committed, so nothing draws yet: reserve, and let the
+            // commit compile everything in one batch.
+            return Ok(self.reserve_keys(inputs));
+        }
         let mut slot: Vec<Option<RenderPipelineKey>> = vec![None; inputs.len()];
         let mut unique_miss_keys: Vec<RenderPipelineCacheKey> = Vec::new();
         let mut unique_miss_targets: Vec<Vec<usize>> = Vec::new();
@@ -431,6 +453,33 @@ impl RenderPipelines {
             self.lookup.remove(*key);
         }
         stale.len()
+    }
+
+    /// Release every RESERVED slot whose pipeline would be built from one of
+    /// `shader_keys` — shader modules the caller has just evicted. A reserved
+    /// slot holds no pipeline, only the promise to build one; with its shader
+    /// gone that build can only fail ("missing shader"), which would fail the
+    /// whole `compile_pending` batch. Compiled slots are left alone — they
+    /// own their module and stay valid for the config they were built for.
+    /// Returns how many slots were released.
+    ///
+    /// This is the render-side half of the stale-shader sweep after a
+    /// bucket-set change: a transparent pipeline's shader key embeds the
+    /// registry's dispatch hash, so one reserved during a load's texture
+    /// finalize is stale as soon as the load's variant reconcile grows the
+    /// bucket set. Whoever holds the released key re-ensures it against the
+    /// new set (`prewarm_pipelines` does, for every transparent mesh).
+    pub fn release_reserved_by_shader_keys(
+        &mut self,
+        shader_keys: &std::collections::HashSet<ShaderKey>,
+    ) -> usize {
+        let stale: Vec<RenderPipelineKey> = self
+            .cache
+            .iter()
+            .filter(|(cache_key, _)| shader_keys.contains(&cache_key.shader_key))
+            .map(|(_, key)| *key)
+            .collect();
+        self.release_reserved(stale)
     }
 
     /// Number of reserved slots still awaiting their compile.

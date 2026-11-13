@@ -363,6 +363,15 @@ impl crate::AwsmRenderer {
             .take_stale_dynamic_set_shader_keys(current_dispatch_hash, &current_bucket_entries);
         if !stale_shaders.is_empty() {
             self.pipelines.compute.remove_by_shader_keys(&stale_shaders);
+            // Render side: only slots that were RESERVED and never compiled (a
+            // transparent pipeline reserved earlier in this load, before the
+            // bucket set grew). Its module is gone, so compiling the slot
+            // could only fail; `prewarm_pipelines` re-ensures every
+            // transparent mesh against the new set. Compiled render pipelines
+            // are not touched here.
+            self.pipelines
+                .render
+                .release_reserved_by_shader_keys(&stale_shaders);
         }
 
         Ok(())

@@ -376,8 +376,20 @@ impl AwsmRenderer {
             // then drive it. `reconcile_material_variants` → `ensure_scene_pipelines`
             // re-keys every live bucket; the changed `write_ssr_descriptor`
             // MISSES the pipeline cache and recompiles exactly those variants.
+            //
+            // Only when a scene is committed, though. Before the first commit
+            // (the caches are deferred) nothing is on screen to recompile for,
+            // and the commit runs this reconcile itself, once the texture pool
+            // and the bucket layout are final. Kicking the kernels from here
+            // would compile them against a pool tier that may still change —
+            // and, worse for load time, put the largest compiles of the load
+            // at the head of the compiler queue, ahead of everything the
+            // commit still has to await one by one (lighting defaults, texture
+            // uploads) before it can issue the rest of the load's pipelines.
             self.materials.mark_variants_dirty();
-            self.reconcile_material_variants()?;
+            if !self.pipelines.is_deferred() {
+                self.reconcile_material_variants()?;
+            }
             // The SSR `ssr` + `reflection_descriptor` targets are 1×1 placeholders
             // when SSR is off and full-res when on. Flag the bind-group recreate
             // so the next frame's `views()` (which now sees the new `ssr.enabled`)

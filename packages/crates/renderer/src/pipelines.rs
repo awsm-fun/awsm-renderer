@@ -19,6 +19,18 @@ impl Pipelines {
             compute: ComputePipelines::new(),
         }
     }
+
+    /// Put both caches in or out of DEFERRED mode (see
+    /// `ComputePipelines::set_deferred`).
+    pub fn set_deferred(&mut self, deferred: bool) {
+        self.render.set_deferred(deferred);
+        self.compute.set_deferred(deferred);
+    }
+
+    /// Whether the caches are in DEFERRED mode.
+    pub fn is_deferred(&self) -> bool {
+        self.compute.is_deferred()
+    }
 }
 
 impl Default for Pipelines {

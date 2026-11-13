@@ -33,6 +33,9 @@ pub struct ComputePipelines {
     // a reserved cache hit as a miss that fills the reserved slot in place.
     lookup: SlotMap<ComputePipelineKey, Option<web_sys::GpuComputePipeline>>,
     cache: HashMap<ComputePipelineCacheKey, ComputePipelineKey>,
+    // While set, `ensure_keys` / `get_key` RESERVE instead of compiling — see
+    // `set_deferred`.
+    deferred: bool,
 }
 
 /// Sync-side prep state captured by [`ComputePipelines::ensure_keys_prepare`]
@@ -91,7 +94,35 @@ impl ComputePipelines {
         Self {
             lookup: SlotMap::with_key(),
             cache: HashMap::new(),
+            deferred: false,
         }
+    }
+
+    /// Switch DEFERRED mode on or off. While it is on, [`Self::ensure_keys`]
+    /// and [`Self::get_key`] hand back RESERVED slots and return at once
+    /// instead of compiling and awaiting; [`Self::compile_pending`] later
+    /// compiles everything reserved in one concurrent batch.
+    ///
+    /// The renderer keeps this on for as long as no scene is committed (from
+    /// `build()` / `begin_load()` until the end of `commit_load`). Nothing
+    /// dispatches a pipeline in that window — `render()` only clears — so a
+    /// pass that is set up before the commit (shadows on the first casting
+    /// light, SSR / bloom / volumetrics / effects from a scene's
+    /// post-processing, masked variants during texture finalize …) no longer
+    /// has to wait for its own compile before the next one may even be
+    /// issued. The whole load compiles as one batch instead of a chain of
+    /// small waves, each of which used to wait for the one before it.
+    ///
+    /// The scheduler's launch path (`ensure_keys_prepare` +
+    /// `install_resolved_pipeline`) is unaffected: it always issues its
+    /// compiles immediately and never awaits them.
+    pub fn set_deferred(&mut self, deferred: bool) {
+        self.deferred = deferred;
+    }
+
+    /// Whether [`Self::set_deferred`] mode is on.
+    pub fn is_deferred(&self) -> bool {
+        self.deferred
     }
 
     /// Number of compiled compute pipelines (observability / leak checks —
@@ -226,6 +257,11 @@ impl ComputePipelines {
         // cache-hit guard discarded all but one — the compile cost
         // was already spent.
         let inputs: Vec<ComputePipelineCacheKey> = cache_keys.into_iter().collect();
+        if self.deferred {
+            // No scene is committed, so nothing dispatches yet: reserve, and
+            // let the commit compile everything in one batch.
+            return Ok(self.reserve_keys(inputs));
+        }
         let mut slot: Vec<Option<ComputePipelineKey>> = vec![None; inputs.len()];
         let mut unique_miss_keys: Vec<ComputePipelineCacheKey> = Vec::new();
         // For each unique miss key, the input slots that should
@@ -591,11 +627,30 @@ impl ComputePipelines {
         shaders: &Shaders,
         pipeline_layouts: &PipelineLayouts,
     ) -> Result<usize> {
+        self.compile_pending_except(gpu, shaders, pipeline_layouts, |_| false)
+            .await
+    }
+
+    /// [`Self::compile_pending`], leaving alone every reserved slot whose
+    /// cache key `skip` accepts. For slots something else is already
+    /// compiling: the scheduler launches a material pipeline straight from
+    /// its cache key, and when that key is also reserved here (the boot-time
+    /// classify, on a scene whose bucket layout is the first-party one) its
+    /// resolution fills the reserved slot — compiling it here too would do
+    /// the same work twice.
+    pub async fn compile_pending_except(
+        &mut self,
+        gpu: &AwsmRendererWebGpu,
+        shaders: &Shaders,
+        pipeline_layouts: &PipelineLayouts,
+        skip: impl Fn(&ComputePipelineCacheKey) -> bool,
+    ) -> Result<usize> {
         let pending: Vec<ComputePipelineCacheKey> = self
             .cache
             .iter()
             .filter(|(_, key)| self.lookup.get(**key).is_some_and(|v| v.is_none()))
             .map(|(cache_key, _)| cache_key.clone())
+            .filter(|cache_key| !skip(cache_key))
             .collect();
         if pending.is_empty() {
             return Ok(0);

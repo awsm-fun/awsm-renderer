@@ -542,8 +542,14 @@ impl AwsmRenderer {
     /// leaving `scene_committed` true keeps the existing scene on screen while
     /// the new content compiles in the background; the new meshes simply aren't
     /// drawn until the matching `commit_load` resolves.
+    ///
+    /// While no scene is committed the pipeline caches are DEFERRED
+    /// (`ComputePipelines::set_deferred`): everything set up before the commit
+    /// reserves its pipelines instead of compiling and awaiting them one pass
+    /// at a time, and the commit compiles the lot in a single batch.
     pub fn begin_load(&mut self) {
         self.scene_committed = false;
+        self.pipelines.set_deferred(true);
         self.load_phase = crate::loading::LoadPhase::Idle;
     }
 
@@ -577,6 +583,19 @@ impl AwsmRenderer {
     ///
     /// Returns the number of pipelines compiled (0 when already warm).
     pub async fn ensure_config_pipelines(&mut self) -> crate::error::Result<usize> {
+        self.ensure_config_pipelines_staged(true).await
+    }
+
+    /// [`Self::ensure_config_pipelines`] with the pool drain optional.
+    ///
+    /// `drain = false` is `commit_load`'s cold-load form: with no scene
+    /// committed the caches are deferred, so every later phase of the commit
+    /// (texture finalize's masked variants, the transparent and line
+    /// pipelines) only RESERVES. Draining here would compile the boot pool as
+    /// a wave of its own and make those phases wait for it; instead the commit
+    /// drains once, after everything is reserved and the material kernels are
+    /// in flight (`drain_commit_compiles`), so the whole load is one batch.
+    async fn ensure_config_pipelines_staged(&mut self, drain: bool) -> crate::error::Result<usize> {
         // 1. Material prep: re-derive the ACTIVE branch's cache keys from the
         //    live config and RESERVE them. Catches SSCS / denoise re-keys that
         //    happened after boot (`set_shadows_config` mirrors them into
@@ -588,8 +607,12 @@ impl AwsmRenderer {
         self.reserve_material_prep_pipelines().await?;
 
         // 2. Drain the reserved pool (concurrent; both classes overlap inside
-        //    Dawn's worker pool).
-        let compiled = self.compile_pending_pipelines().await?;
+        //    Dawn's worker pool) — unless the caller drains later.
+        let compiled = if drain {
+            self.drain_reserved_pool().await?
+        } else {
+            0
+        };
 
         // (The MSAA edge-resolve / material kernels are deliberately NOT ensured
         //  here. They are keyed on the live bucket LAYOUT — every kernel bakes in
@@ -620,7 +643,14 @@ impl AwsmRenderer {
         #[cfg(feature = "lod")]
         self.ensure_cluster_pipelines_compiled().await?;
 
-        // 5. The eager pass groups registered Pending at build are real now.
+        Ok(compiled)
+    }
+
+    /// Compile every reserved pipeline in one concurrent batch, then mark the
+    /// eager pass groups registered Pending at build as Ready — they are real
+    /// now. Idempotent; returns how many pipelines compiled.
+    async fn drain_reserved_pool(&mut self) -> crate::error::Result<usize> {
+        let compiled = self.compile_pending_pipelines().await?;
         let eager_ids = std::mem::take(&mut self.eager_pass_ids);
         for id in &eager_ids {
             self.pipeline_scheduler.mark_ready(*id);
@@ -628,7 +658,7 @@ impl AwsmRenderer {
         if !eager_ids.is_empty() {
             tracing::info!(
                 target: "awsm_renderer::pipeline_readiness",
-                "ensure_config_pipelines: boot pool drained ({compiled} compiled), {} eager groups marked Ready",
+                "reserved pool drained ({compiled} compiled), {} eager groups marked Ready",
                 eager_ids.len()
             );
         }
@@ -863,9 +893,16 @@ impl AwsmRenderer {
             render: render_pipelines,
             compute: compute_pipelines,
         } = &mut self.pipelines;
+        // A reserved slot the material scheduler is already compiling fills
+        // when that resolution is applied — don't compile it a second time.
+        let scheduler = &self.pipeline_scheduler;
+        let edge_pipelines = &self.render_passes.material_opaque.edge_pipelines;
+        let in_flight = |key: &pipelines::compute_pipeline::ComputePipelineCacheKey| {
+            scheduler.has_compute_compile_waiter(key) || edge_pipelines.edge_key_in_flight(key)
+        };
         let compute_fut = async {
             compute_pipelines
-                .compile_pending(&self.gpu, &self.shaders, &self.pipeline_layouts)
+                .compile_pending_except(&self.gpu, &self.shaders, &self.pipeline_layouts, in_flight)
                 .await
                 .map_err(crate::error::AwsmError::from)
         };
@@ -967,16 +1004,27 @@ impl AwsmRenderer {
         //    config needs that build() only reserved (plus any config re-keys
         //    since). Cheap no-op when already warm. Reported under `Compiling`
         //    so loading UIs label the (first-visit-expensive) wait honestly.
+        //
+        //    COLD LOAD (no scene committed → the caches are deferred): reserve
+        //    only. Every later phase reserves too, and phase 3 compiles the
+        //    whole pool in one batch alongside the material kernels. Draining
+        //    here instead would put the boot pool, then each later phase's
+        //    pipelines, in front of the kernels as separate waves — and the
+        //    kernels are the long pole of a cold load.
+        //
+        //    LIVE ADD (a scene is already on screen): drain now, as before —
+        //    passes built from here on compile as they are created.
+        let cold_load = self.pipelines.is_deferred();
         {
             let pending =
                 self.pipelines.compute.pending_count() + self.pipelines.render.pending_count();
-            if pending > 0 {
+            if pending > 0 && !cold_load {
                 self.load_phase = LoadPhase::Compiling;
                 let mut stats = self.loading_stats();
                 stats.pipelines_pending = pending;
                 on_progress(stats);
             }
-            self.ensure_config_pipelines().await?;
+            self.ensure_config_pipelines_staged(!cold_load).await?;
         }
 
         // ── Phase 0: resolve geometry — derive + upload each registered geometry's
@@ -1046,7 +1094,10 @@ impl AwsmRenderer {
         })
         .await?;
 
-        // ── Phase 4: committed — `render()` switches to `render_all`.
+        // ── Phase 4: committed — `render()` switches to `render_all`, and
+        //    pipelines created from here on compile when they are created
+        //    (every reserved slot was compiled by the drain above).
+        self.pipelines.set_deferred(false);
         self.scene_committed = true;
         self.load_phase = LoadPhase::Ready;
         let final_stats = self.loading_stats();
@@ -2714,6 +2765,13 @@ impl AwsmRendererBuilder {
             config_spec,
         };
 
+        // No scene is committed yet, so nothing can dispatch a pipeline: keep
+        // the caches DEFERRED until the first `commit_load`. Whatever the app
+        // sets up before that commit (lights, post-processing, a scene load)
+        // reserves its pipelines, and the commit compiles them all in one
+        // batch (see `ComputePipelines::set_deferred`).
+        _self.pipelines.set_deferred(true);
+
         // Apply the configured registration ceiling (§2). Validated +
         // clamped in `with_bucket_config`, so this only sets the field; it
         // sizes nothing per-frame (widths follow the live count, §0).
@@ -3360,6 +3418,16 @@ impl AwsmRenderer {
         // compile here so the next frame can dispatch the fat-line pass
         // instead of warn-skipping.
         self.ensure_line_pipelines_compiled().await?;
+
+        // Everything this load needs is now either in flight (the material
+        // kernels, kicked by `ensure_scene_pipelines`) or reserved. Compile
+        // the reserved pool as ONE concurrent batch. On a cold load that is
+        // every config and content pipeline at once — shadows, SSR, bloom,
+        // volumetrics, effects, display, the boot pool, material prep, masked
+        // variants, transparent, lines — overlapping with the kernels instead
+        // of queueing in front of them. On a live add the pool was drained in
+        // phase -1 and passes compiled as they were built, so this is a no-op.
+        self.drain_reserved_pool().await?;
 
         // Report the initial in-flight count before the drain so the splash
         // shows a number immediately rather than after the first resolution.
