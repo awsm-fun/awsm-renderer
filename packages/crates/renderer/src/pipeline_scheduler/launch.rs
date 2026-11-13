@@ -154,14 +154,14 @@ impl crate::AwsmRenderer {
         }
 
         // ── On a bucket-SET change, re-mark every still-tracked material
-        //    `Pending` + bump its generation. The generation bump is what
-        //    makes `apply_compile_resolution`'s stale-generation gate DROP
-        //    any in-flight resolution compiled against the PREVIOUS layout
-        //    (the caches were just cleared in `relayout_bucket_buffers`;
-        //    without the bump a late old-layout promise would install a
-        //    pipeline that dispatches against the new classify offsets).
-        //    It also keeps the compile-status surface honest — existing
-        //    materials show Pending while their replacement compiles.
+        //    `Pending` (+ bump its generation) so the compile-status surface
+        //    stays honest — existing materials show Pending while their
+        //    replacement compiles. This is NOT what keeps a late old-layout
+        //    promise from installing a pipeline that dispatches against the
+        //    new classify offsets: that is the content rule in
+        //    `apply_compile_resolution_inline` — a resolution installs iff
+        //    the ensure pass below still wants its cache key, and an
+        //    old-layout key (it embeds the bucket list) is never wanted again.
         if layout_changed {
             for id in &bucket_ids {
                 if let Some(mid) = self.pipeline_scheduler.find_material_by_shader_id(*id) {
@@ -180,6 +180,9 @@ impl crate::AwsmRenderer {
         //    a Blend-only custom scene whose own opaque compile is skipped.
         let entries = self.dynamic_materials.bucket_entries_cached().to_vec();
 
+        // This pass decides afresh which classify / opaque pipelines the scene
+        // wants; a resolved compile installs iff its key is one of them.
+        self.pipeline_scheduler.clear_desired_compute_installs();
         for shader_id in &bucket_ids {
             if let Err(e) = self.ensure_bucket_pipelines(
                 *shader_id,
@@ -555,6 +558,16 @@ impl crate::AwsmRenderer {
             compute_jobs.push((slot, cache_key));
         }
 
+        // Record what this pass wants, and where: the install-validity signal
+        // for every resolution of these keys, including ones already in flight
+        // from an earlier launch (see `desired_compute_installs`).
+        for (slot, cache_key) in &compute_jobs {
+            self.pipeline_scheduler.want_compute_install(
+                cache_key.clone(),
+                install_target_for(slot, shader_id, dispatch_hash),
+            );
+        }
+
         // Cache-hit + cross-call waiter dedup. The classify cache key is
         // shared by every bucket in this ensure pass: the first bucket
         // issues the promise; later buckets register as waiters (so their
@@ -606,17 +619,7 @@ impl crate::AwsmRenderer {
         if let Some(mut prepped) = prepped_opt {
             let promises = std::mem::take(&mut prepped.promises);
             for ((slot, cache_key), promise) in promise_jobs.into_iter().zip(promises) {
-                let target = match &slot {
-                    LaunchSlot::Classify { msaa } => CompileInstallTarget::ClassifyDynamic {
-                        dispatch_hash,
-                        msaa: *msaa,
-                    },
-                    LaunchSlot::Opaque { msaa, mipmaps } => CompileInstallTarget::OpaqueDynamic {
-                        shader_id,
-                        msaa: *msaa,
-                        mipmaps: *mipmaps,
-                    },
-                };
+                let target = install_target_for(&slot, shader_id, dispatch_hash);
                 let id = group_id;
                 // Clone the shader module so the future can pull a real WGSL
                 // diagnostic (via `getCompilationInfo`) if the compile rejects.
@@ -1002,38 +1005,32 @@ impl crate::AwsmRenderer {
             }
         };
 
-        // Stale-generation drop: a config flip / bucket-grow /
-        // texture-pool-grow bumped this material's generation between
-        // promise-issuance and resolution. The compiled pipeline was
-        // built against an outdated cache key — discard the install.
+        // Content-validated install (see
+        // `PipelineScheduler::desired_compute_installs`): the resolved pipeline
+        // installs iff the latest ensure pass still wants its cache key, into
+        // the slot THAT pass recorded — not the one captured at launch, which
+        // may name a dispatch_hash the registry has since moved past. A key the
+        // latest pass doesn't want was compiled for a superseded layout /
+        // config (bucket set, MSAA, texture-pool tier, SSR …): discard it; the
+        // pass that superseded it launched the replacement.
         //
-        // Subtle: this check uses the PROMISE's launcher generation,
-        // not each waiter's. That's correct — every waiter on this
-        // cache_key wanted THE SAME pipeline (cache keys embed every
-        // input that affects compile output). If the original
-        // launcher's gen is stale, every waiter's wait on this key
-        // is stale too — the bucket-grow / config-flip path would
-        // have triggered fresh launches for the new cache keys for
-        // each of them, and those will resolve and install
-        // separately.
-        let stale = self
-            .pipeline_scheduler
-            .material_generation(mid)
-            .map(|g| g != generation)
-            .unwrap_or(true);
-
-        if stale {
+        // The launcher's `generation` is deliberately not consulted. Every
+        // waiter on this key wants this exact pipeline, so the launcher's
+        // generation having been bumped says nothing about whether the
+        // pipeline is still right — only the key does.
+        let Some(target) = self.pipeline_scheduler.desired_compute_install(&cache_key) else {
             tracing::debug!(
                 target: "awsm_renderer::pipeline_readiness",
-                "apply_compile_resolution: stale resolution dropped (material({:?}), waiters={})",
+                "apply_compile_resolution: resolution no longer desired — dropped (material({:?}), launch generation {}, waiters={})",
                 mid,
+                generation,
                 waiters.len()
             );
             for waiter_mid in waiters {
                 self.pipeline_scheduler.note_subcompile_complete(waiter_mid);
             }
             return;
-        }
+        };
 
         let pipeline = match result {
             Ok(p) => p,
@@ -1135,6 +1132,26 @@ fn opaque_variant_params(
 enum LaunchSlot {
     Classify { msaa: Option<u32> },
     Opaque { msaa: Option<u32>, mipmaps: bool },
+}
+
+/// The per-pass slot a classify / opaque compile installs into, for a launch
+/// against `dispatch_hash` on behalf of bucket `shader_id`.
+fn install_target_for(
+    slot: &LaunchSlot,
+    shader_id: MaterialShaderId,
+    dispatch_hash: u64,
+) -> CompileInstallTarget {
+    match slot {
+        LaunchSlot::Classify { msaa } => CompileInstallTarget::ClassifyDynamic {
+            dispatch_hash,
+            msaa: *msaa,
+        },
+        LaunchSlot::Opaque { msaa, mipmaps } => CompileInstallTarget::OpaqueDynamic {
+            shader_id,
+            msaa: *msaa,
+            mipmaps: *mipmaps,
+        },
+    }
 }
 
 fn launch_slot_from_target(t: &CompileInstallTarget) -> LaunchSlot {

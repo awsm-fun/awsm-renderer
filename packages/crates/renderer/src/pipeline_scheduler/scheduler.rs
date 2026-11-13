@@ -242,6 +242,31 @@ pub struct PipelineScheduler {
     /// `set_render_pipeline_keys_batched`'s within-batch dedup).
     inflight_compute_cache_waiters:
         HashMap<crate::pipelines::compute_pipeline::ComputePipelineCacheKey, Vec<MaterialId>>,
+    /// The classify / opaque compute pipelines the LATEST
+    /// `ensure_scene_pipelines` pass wants, each with the per-pass slot that
+    /// pass wants it installed into. Rebuilt wholesale by every ensure pass.
+    ///
+    /// This is the install-validity signal for a resolved classify / opaque
+    /// compile: it installs iff its cache key is in this map, into the slot
+    /// recorded here. A compute cache key embeds every input of the compile
+    /// (bucket layout, MSAA, texture-pool tier, SSR / shadow config, the
+    /// custom WGSL), so "the latest pass still wants this key" is exactly "this
+    /// pipeline is correct for the live scene" — the same content rule the
+    /// edge-resolve set uses (`MaterialEdgePipelines::is_edge_key_desired`).
+    ///
+    /// It replaces a launcher-GENERATION gate, which dropped a compile whenever
+    /// the launching material's generation had been bumped since the launch.
+    /// That is wrong when the bump didn't change the key: the next ensure pass
+    /// sees the compile still in flight, registers as a waiter instead of
+    /// relaunching, and then the one resolution it is waiting for gets
+    /// discarded — leaving the pipeline uninstalled until some unrelated later
+    /// commit recompiles it. (A scene that turns SSR on kicks the compiles
+    /// from `set_post_processing`, before the load's commit; that commit's
+    /// first texture finalize resets the layout fingerprint and bumps every
+    /// generation, so the classify pipeline was lost and the scene drew
+    /// nothing shaded.)
+    desired_compute_installs:
+        HashMap<crate::pipelines::compute_pipeline::ComputePipelineCacheKey, CompileInstallTarget>,
     events: Vec<StatusEvent>,
 }
 
@@ -261,6 +286,7 @@ impl PipelineScheduler {
             inflight_compile: FuturesUnordered::new(),
             pending_subcompiles: HashMap::new(),
             inflight_compute_cache_waiters: HashMap::new(),
+            desired_compute_installs: HashMap::new(),
             events: Vec::new(),
         }
     }
@@ -323,6 +349,34 @@ impl PipelineScheduler {
         cache_key: &crate::pipelines::compute_pipeline::ComputePipelineCacheKey,
     ) -> bool {
         self.inflight_compute_cache_waiters.contains_key(cache_key)
+    }
+
+    /// Start a new ensure pass: forget what the previous pass wanted. Called
+    /// once at the top of the classify / opaque launch loop, before any
+    /// [`Self::want_compute_install`].
+    pub(crate) fn clear_desired_compute_installs(&mut self) {
+        self.desired_compute_installs.clear();
+    }
+
+    /// Record that the current ensure pass wants `cache_key` installed into
+    /// `target` — whether it is already compiled, in flight, or about to be
+    /// launched.
+    pub(crate) fn want_compute_install(
+        &mut self,
+        cache_key: crate::pipelines::compute_pipeline::ComputePipelineCacheKey,
+        target: CompileInstallTarget,
+    ) {
+        self.desired_compute_installs.insert(cache_key, target);
+    }
+
+    /// The slot the latest ensure pass wants `cache_key` installed into, or
+    /// `None` when that pass no longer wants this pipeline (the layout or
+    /// config it was compiled for has moved on).
+    pub(crate) fn desired_compute_install(
+        &self,
+        cache_key: &crate::pipelines::compute_pipeline::ComputePipelineCacheKey,
+    ) -> Option<CompileInstallTarget> {
+        self.desired_compute_installs.get(cache_key).cloned()
     }
 
     /// Push a raw compile future onto the inflight queue WITHOUT
@@ -602,10 +656,11 @@ impl PipelineScheduler {
     /// previously-compiled pipeline whose cache key embeds
     /// `bucket_entries` or `texture_pool_arrays_len`.
     ///
-    /// Generation bump is what makes the existing apply_compile_resolution
-    /// stale-generation gate discard old in-flight resolutions
-    /// (compiled against the previous bucket / pool shape) instead of
-    /// letting them install into the freshly-cleared typed cache.
+    /// The generation bump keeps the legacy whole-batch `poll_resolved`
+    /// path from applying an out-of-date status. It is NOT what keeps old
+    /// in-flight per-pipeline resolutions (compiled against the previous
+    /// bucket / pool shape) out of the freshly-cleared typed cache — that is
+    /// the content rule on [`Self::desired_compute_install`].
     ///
     /// No-op if `id` isn't a Material or the material isn't tracked.
     /// Idempotent on already-Pending materials (still bumps generation
