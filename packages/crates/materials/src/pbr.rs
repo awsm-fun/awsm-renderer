@@ -371,8 +371,8 @@ impl PbrFeatures {
 ///
 /// | | kernels | GPU time against `EveryFeature` (M1, 1080p–4K) |
 /// |---|---|---|
-/// | `ExpensiveFeatures` | one per combination of the ten features that are not free | frame within ±1 % |
-/// | `LobesOnly` | one per combination of the six lobes | opaque pass +14 to +64 %, frame +3 to +12 % |
+/// | `ExpensiveFeatures` | one per combination of the ten features that are not free | opaque pass within ±5 %, under 1 % of the frame |
+/// | `LobesOnly` | one per combination of the six lobes | opaque pass +15 to +68 %, frame +3 to +13 % |
 /// | `EveryFeature` | one per exact feature set | — |
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 #[non_exhaustive]
@@ -392,7 +392,7 @@ pub enum PbrSpecialization {
     /// kernel, and only the six lobes split buckets. A scene compiles one
     /// kernel fewer for each pair of materials that differ only in those,
     /// and every opaque PBR pixel then runs the unused code: on an Apple M1
-    /// the opaque pass took 14–64 % longer and the frame 3–12 %. For an app
+    /// the opaque pass took 15–68 % longer and the frame 3–13 %. For an app
     /// whose cold-load time matters more than its frame time.
     LobesOnly,
     /// One kernel per exact feature set, with nothing compiled in that the

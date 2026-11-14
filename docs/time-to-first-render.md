@@ -20,8 +20,8 @@ first *correct, non-hitching* viewport frame of the loaded scene.
 First-party **material** shaders (PBR / Unlit / Toon / FlipBook) are NOT
 compiled at boot — they compile lazily on first use via
 `ensure_scene_pipelines`. This is the deliberate **specialize-only** design
-(`materials-overhaul`; since 0.41 PBR kernels are specialized on the
-expensive features only, see the 0.41 update at the end): a project that
+(`materials-overhaul`; since 0.41 PBR kernels are no longer split on the
+features that are free to share, see the 0.41 update at the end): a project that
 uses none pays zero material-compile cost at startup. Compiling the "common set" at boot would regress that on
 purpose, so the lever is *timing*, not *coverage*.
 
@@ -208,9 +208,9 @@ changes the compile path accordingly.
 ### What is still serial or wasteful
 
 - Kernels remain the long pole, and the per-feature-set PBR kernels are large
-  and mostly identical text. (0.41 stops splitting them on the cheap
-  features; the expensive ones still get a kernel each — see the 0.41 update
-  below.) They also bake in the bucket count, their bucket
+  and mostly identical text. (0.41 stops splitting them on the features that
+  are free to share; specular and the lobes still get a kernel each — see the
+  0.41 update below.) They also bake in the bucket count, their bucket
   index and their shader id, so any change to the bucket set recompiles all of
   them and identical kernels in different scenes never share a cache entry.
 - The batch is throughput-bound. With several large kernels in it, one of
@@ -226,7 +226,7 @@ changes the compile path accordingly.
   build. One thing stays unexplained: on 0.40's development builds a single
   hash-map permutation of the pool finished about half a second sooner two
   runs in three. Nothing tried since reproduces it.
-- Nothing is awaited ahead of the batch any more (0.40.1). The blit pair, the
+- Nothing is awaited ahead of the batch any more (0.41; prepared as 0.40.1). The blit pair, the
   SSR composite, the default BRDF LUT and the sRGB / mipmap upload helpers
   live outside the pools (their shaders and layouts are private to their
   modules), and each used to be compiled and awaited where it was built.
@@ -246,86 +246,190 @@ changes the compile path accordingly.
 `examples/player-tests` locks the invariants (`pipelines-ready:<scene>`,
 `config-ensure-keeps-kernels:<scene>`).
 
-## UPDATE (0.41) — PBR kernels are specialized on the expensive features only
+## UPDATE (0.41) — PBR kernels are split only on the features worth a kernel
 
 The batch is throughput-bound at roughly two seconds per megabyte of WGSL,
 and most of that megabyte count is opaque PBR kernels: ~240 KB each, one per
 distinct feature set. Measuring the features themselves showed how little of
-a kernel they are:
+a kernel they are (a kernel with none is 239,552 bytes), and measuring the
+GPU showed which of them are free to carry in a kernel whose materials do
+not use them:
 
-| Feature | WGSL it adds to a 239,552-byte kernel |
-|---|---|
-| IOR | 0 bytes |
-| dispersion | 7 |
-| transmission | 16 |
-| specular | 19 |
-| volume | 47 |
-| emissive strength | 66 |
-| vertex colour | 385 |
-| diffuse transmission | 1,527 |
-| anisotropy | 2,853 |
-| clearcoat | 2,935 |
-| iridescence | 3,144 |
-| sheen | 3,414 |
-| secondary maps | 6,309 |
+| Feature | WGSL it adds | Opaque pass when carried unused (`ssr-arena`, 1080p, 2.18 ms without) | 0.41 default |
+|---|---|---|---|
+| IOR | 0 bytes | 2.19 ms | every kernel |
+| emissive strength | 66 | 2.04 ms (one kernel instead of two) | every kernel |
+| vertex colour | 385 | 2.22 ms | every kernel |
+| dispersion | 7 | 2.18 ms | splits |
+| transmission | 16 | 2.45 ms (+12 %) | splits |
+| volume | 47 | 2.46 ms (+12 %) | splits |
+| specular | 19 | 2.49 ms (+14 %) | splits |
+| all seven | 540 | 3.58 ms (+64 %) | — |
+| diffuse transmission | 1,527 | | splits |
+| anisotropy | 2,853 | changes the image | splits |
+| clearcoat | 2,935 | | splits |
+| iridescence | 3,144 | | splits |
+| sheen | 3,414 | | splits |
+| secondary maps | 6,309 | | splits |
 
-DANCE-OFF compiled five PBR kernels that differed by 66 + 19 + 2,933 bytes.
+Bytes are not cost. The seven smallest features are 540 bytes together and,
+compiled into every kernel, make the opaque pass 64 % slower on that scene —
+the unused code is not executed, but it is no longer dead: values that were
+compile-time constants (specular 1, transmission 0) become loads, an F0 and
+f90 that folded are recomputed per light, four more texture slots get their
+UVs interpolated, and the transmission branch (refraction, up to three
+environment fetches) is live code the compiler must keep registers for.
+(Which of those accounts for how much was not separated; the per-feature
+rows are what was measured.)
 
-So the first seven — 540 bytes together — are no longer worth a kernel.
-`PbrSpecialization::ExpensiveFeatures` (the default) compiles them into every
-opaque PBR kernel; the variant reconcile keys a material's bucket on
-`policy.kernel_features(material_features)`, so materials that differ only in
-those resolve to one bucket. Nothing in the templates changed: the payload
-already carries an index per extension, the `pbr_material_load_*` loaders
-return the glTF-absent value at index 0, and the texture fetches and UV
-gradients of an absent extension are behind `tex_info.exists`. A kernel
-compiled for a superset of a material's cheap features therefore shades it
-as the exact kernel would.
+So `PbrSpecialization` goes by the measurement:
 
-Cold, M1 Max, Chrome 157, alternating runs against 0.40.1 (medians):
+- `PbrFeatures::cheap()` — IOR, emissive strength, vertex colour: compiled
+  into EVERY opaque PBR kernel under the default policy
+  (`ExpensiveFeatures`). Free to compile (451 bytes) and free to run.
+- everything else splits: the four that are neutral but not free (specular,
+  transmission, volume, dispersion) and the six lobes.
 
-| Load | 0.40.1 | 0.41 | PBR kernels | WGSL compiled |
-|---|---|---|---|---|
-| DANCE-OFF stage (player), 6 runs each | 7.60 s | 6.04 s | 5 → 2 | 2.65 → 1.94 MB |
-| `pbr-extensions`, 3 runs each | 8.10 s | 7.23 s | 8 → 6 | 3.33 → 2.87 MB |
-| `ssr-arena` | 6.06 s | 5.63 s | 2 → 1 | 1.69 → 1.45 MB |
-| `kitchen-sink` | 5.35 s | 5.37 s | 1 → 1 | +540 B |
-| `alpha-cutoff` | 4.83 s | 4.84 s | 1 → 1 | +540 B |
-| `contact-shadows` | 3.86 s | 3.90 s | 1 → 1 | +540 B |
+The variant reconcile keys a material's bucket on
+`policy.kernel_features(material_features)` =
+`material ∪ always_compiled`. Nothing in the templates changed: the payload
+already carries an index per extension and the `pbr_material_load_*` loaders
+return the glTF-absent value at index 0.
 
-A scene with one feature set compiles the same number of kernels as before,
-each 540 bytes longer; its load is unchanged within the run-to-run spread.
+`LobesOnly` is the other point on the curve — all seven of the small
+features (`PbrFeatures::neutral()`) in every kernel, only the six lobes
+split: one kernel fewer per pair of materials that differ only in those, and
+the frame cost above. `EveryFeature` is 0.40.
 
-Two more things follow from a material's cheap features no longer deciding
-its bucket:
+Transmission, volume and dispersion look like candidates for "compile into
+no opaque kernel" — a material that transmits is drawn by the transparent
+pass, so for a committed scene that code is a branch never taken. It is not
+done, because it is reachable: a material that carries the extension at
+factor 0 is opaque, and when the factor is raised on a running scene its
+mesh stays in the opaque pass — the mesh was built for that pass, and a
+commit does not move it — where the kernel's environment-only transmission
+is all that can show the edit. Under the default policy such a material
+keeps a kernel with that code, as in 0.40.
 
-- **A cheap feature gained on a running scene shows at once.** The kernel
-  already has the code; `update_material` only gives the payload a value for
-  it. With a kernel per exact set the material kept its old kernel until a
-  commit moved it.
-- **Such an edit never changes the bucket set**, so the commit after it
-  recompiles nothing. (A new EXPENSIVE feature still adds a bucket, and a
-  bucket-set change still recompiles every kernel.)
+### Cold loads
 
-What this leaves, and what it costs:
+M1 Max, Chrome 157, Metal, cold GPU caches (fresh profile, never-used site),
+alternating runs, medians; navigation to the first frame (`player-tests`
+`?soak=<scene>&pbr=every|expensive|lobes&msaa=0|1`).
 
-- **The expensive features still split.** Merging clearcoat, sheen,
-  iridescence and diffuse transmission as well would take DANCE-OFF to about
-  5.6 s (one PBR kernel) and `pbr-extensions` to about 5.1 s, and their
-  unused paths rendered pixel-identically in the measurement — but every PBR
-  pixel would then run those lobes with zero weight, and nobody has measured
-  that on a phone. Anisotropy cannot join until its unused path is neutral:
-  compiled in, it changed 90 pixels (max 162/255) on materials without it.
-- **Per-pixel cost is not measured, on any device.** By reading the code, a
-  material without the cheap features now pays, per shaded pixel: one index
-  test and a constant per extension loader, the UV lookup for four texture
-  slots whose fetch is then skipped (specular, specular colour, transmission,
-  volume thickness), and a few multiplies by 1. That should be noise next to
-  the light loop, shadows and IBL, but it is an argument, not a measurement.
-  `with_pbr_specialization(PbrSpecialization::EveryFeature)` restores a
-  kernel per exact feature set for anyone who finds otherwise.
+| Load | MSAA | `EveryFeature` (= 0.40.1) | **default** | `LobesOnly` | PBR kernels | WGSL compiled |
+|---|---|---|---|---|---|---|
+| DANCE-OFF stage (player), 6 runs | on | 8.22 s | **6.75 s** | 6.36 s | 5 / 3 / 2 | 2.65 / 2.18 / 1.94 MB |
+| DANCE-OFF stage (player), 6 runs | off | 7.34 s | **6.35 s** | 6.05 s | 5 / 3 / 2 | 2.66 / 2.25 / 2.03 MB |
+| `pbr-extensions`, 6 runs | on | 8.71 s | **8.48 s** | 7.96 s | 8 / 7 / 6 | 3.34 / 3.11 / 2.88 MB |
+| `pbr-extensions`, 6 runs | off | 7.60 s | **7.24 s** | 6.88 s | 8 / 7 / 6 | 2.99 / 2.79 / 2.59 MB |
+| `ssr-arena`, 6 runs | on | 6.20 s | **5.89 s** | 5.73 s | 2 / 1 / 1 | 1.69 / 1.46 / 1.46 MB |
+| `ssr-arena`, 6 runs | off | 5.80 s | **5.27 s** | 5.35 s | 2 / 1 / 1 | 1.50 / 1.30 / 1.30 MB |
+| `kitchen-sink`, 3 runs | on | 5.77 s | **5.80 s** | 5.79 s | 1 | +451 B |
+| `kitchen-sink`, 3 runs | off | 5.32 s | **5.32 s** | 5.30 s | 1 | +451 B |
+| `alpha-cutoff`, 3 runs | on | 5.46 s | **5.41 s** | 5.29 s | 1 | +451 B |
+| `alpha-cutoff`, 3 runs | off | 4.79 s | **4.89 s** | 4.78 s | 1 | +451 B |
+| `contact-shadows`, 3 runs | on | 4.00 s | **4.02 s** | 4.11 s | 1 | +451 B |
+| `contact-shadows`, 3 runs | off | 3.63 s | **3.67 s** | 3.66 s | 1 | +451 B |
 
-`player-tests` locks it with `pbr-cheap-features-share-a-kernel` (ten feature
-sets: two buckets by default, ten with `EveryFeature`, and the two renders
-compared pixel for pixel) and `pbr-cheap-feature-edit-keeps-kernels`.
+The test scenes are one build under its three policies. DANCE-OFF is the real
+player, which has no policy switch, so its three columns are three builds of
+it: against the 0.40.1 candidate, against this release, and against this
+release's predecessor on the branch, which compiled the kernels `LobesOnly`
+compiles. The player turns MSAA off by default on a touch device.
 
+DANCE-OFF run by run, MSAA on: 8.25 / 8.10 / 8.24 / 8.32 / 8.02 / 8.20 s
+before; 6.75 / 6.70 / 6.70 / 6.83 / 6.76 / 6.85 s now. A scene with a single
+PBR feature set gains nothing and loses nothing measurable: the six rows at
+the bottom move by 0.1 s either way, inside their own run-to-run spread.
+(The machine was busier than for the 0.40 notes; compare columns, not
+releases.)
+
+### Frame cost
+
+Apple M1 Max (not a phone), Chrome 157, Metal; `timestamp-query` on every
+pass, unquantized (`--enable-webgpu-developer-features`; by default Chrome
+rounds timestamps to 2^16 ns); frames run back to back, each started when
+the GPU has finished the previous one, so the frame interval is CPU + GPU
+time and not vsync. Six alternating rounds of ~4 s, medians.
+
+| Scene | Resolution | Opaque pass: `EveryFeature` / default / `LobesOnly` | Frame: `EveryFeature` / default / `LobesOnly` |
+|---|---|---|---|
+| `pbr-extensions` | 1920×1080 | 1.69 / **1.61** / 1.95 ms | 9.40 / **9.20** / 9.60 ms |
+| `pbr-extensions` | 3840×2160 | 3.58 / **3.57** / 4.78 ms | 22.9 / **22.9** / 24.1 ms |
+| `lights-many` | 1920×1080 | 1.34 / **1.31** / 1.69 ms | 9.70 / **9.60** / 9.65 ms |
+| `lights-many` | 3840×2160 | 2.83 / **2.91** / 4.04 ms | 18.9 / **19.0** / 20.4 ms |
+| `ssr-arena` | 1920×1080 | 2.15 / **2.14** / 3.61 ms | 11.2 / **11.2** / 12.7 ms |
+| `ssr-arena` | 3840×2160 | 6.36 / **6.27** / 9.62 ms | 31.3 / **31.2** / 34.9 ms |
+| `kitchen-sink` | 1920×1080 | 0.91 / **0.95** / 1.27 ms | 8.30 / **8.70** / 8.90 ms |
+| `kitchen-sink` | 3840×2160 | 2.79 / **2.90** / 3.95 ms | 20.2 / **20.4** / 21.5 ms |
+
+The default against `EveryFeature`: the opaque pass moves by −0.09 to +0.11 ms,
+which is −0.8 to +0.5 % of the frame. `LobesOnly` against `EveryFeature`: the
+opaque pass is 15–68 % longer (+0.26 to +3.26 ms), 2.7–13 % of the frame.
+
+The DANCE-OFF player, measured the same way inside its own page at 1920×1080
+(the loaded stage, three builds as in the cold-load table, six rounds): the
+frame takes 37.8 / **35.5** / 43.8 ms and the opaque pass 9.4 / **9.4** /
+15.8 ms. The default costs nothing there either; `LobesOnly` costs 16 % of
+the frame.
+
+(The 3840×2160 rows could only be measured once a dispatch bug was fixed: an
+indirect dispatch of more than 65,535 workgroups in one dimension is silently
+skipped, so a bucket that covered more than 65,535 tiles — the sky, at that
+size — was not shaded at all. The kernels are now dispatched in rows of
+32,768 tiles; grep `classify-dispatch-row`.)
+
+Three things are worth keeping from this:
+
+- **The opaque pass gets faster with fewer kernels**, all else equal: each
+  bucket's kernel is dispatched over the tiles that contain it, so two
+  kernels that share tiles cost more than one that shades both.
+- **Render-pass timestamps on this GPU are not additive.** A tile-based GPU
+  defers a render pass's fragment work, and the begin/end timestamps of
+  consecutive render passes overlap (their sum is several times the frame).
+  Compute-pass timestamps and the unthrottled frame interval agree with each
+  other to within a few percent; those are the numbers above.
+- **The frame interval has a run-order effect.** Each run is a fresh browser,
+  and the arm that runs first in a round reads 0.2–0.4 ms lower at 1080p:
+  `kitchen-sink` shows the default 0.4 ms slower than `EveryFeature` in the
+  table (run second) and 0.2 ms faster in eight more rounds run first (8.35
+  against 8.55 ms). The opaque pass's own time does not move with the order.
+
+### What stays out, and why
+
+- **Specular** is neutral (a material without it renders identically through
+  a kernel that has it) but costs 14 % of the opaque pass, 2.6 % of the
+  frame. Most of that is probably an F0 / f90 recomputed per light once
+  `specular` is not a constant; computed once per pixel it could be free and
+  join the shared set (DANCE-OFF would then compile two PBR kernels).
+- **Clearcoat, sheen, iridescence, diffuse transmission.** Compiled into
+  every kernel ungated they cost 7–29 % of the frame (the opaque pass
+  roughly doubles). Gated at runtime on the material having the lobe,
+  clearcoat and iridescence still cost 2.5–11 % on top of `LobesOnly`, and
+  the output stops being bit-identical: with the branch in place Metal's
+  fast-math compiler orders the surrounding sums differently, a handful of
+  HDR values per frame move by one half-float step and occasionally one
+  8-bit pixel by 1. Under `strictMath` (a Chrome developer feature, not
+  available to a shipped page) the two are bit-identical, which is how the
+  cause was established.
+- **Anisotropy** replaces the isotropic lobe; compiled in, it changes
+  materials without it (90 pixels, up to 162/255).
+
+### How "renders the same" was checked
+
+Screenshots are the wrong tool: SSR's march jitter rotates every frame, so
+two captures a frame apart differ by 1/255 in ~0.4 % of `ssr-arena`'s pixels
+in any build, and a capture taken "1.5 s after load" lands on whatever frame
+that happens to be. The comparison that settled it freezes the harness after
+exactly N rendered frames (an injected `requestAnimationFrame` wrapper),
+reads every live render target back (`copyTextureToBuffer`; the HDR targets
+are `rgba16float`) and compares bytes. On the same frame, all three policies
+and the 0.40.1 candidate produce identical targets in all 23 single-commit
+scenes. `lights-many` alone differs from itself between two runs of one
+build (a few HDR values; its 8-bit image never differs).
+
+`player-tests` locks the policy with `pbr-cheap-features-share-a-kernel`
+(sixteen materials, fifteen feature sets: eleven buckets by default, five
+with `LobesOnly`, fifteen with `EveryFeature`, and the three renders compared
+pixel for pixel) and `pbr-cheap-feature-edit-keeps-kernels`.

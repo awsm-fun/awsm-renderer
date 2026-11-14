@@ -23,8 +23,8 @@ time* (Askama `{% if pbr_features.X %}`) to the features its materials
 use. There is **no "uber" shader** — a scene with no clearcoat compiles
 no clearcoat code, a scene with no sheen no sheen code, etc. The only
 runtime branches are logically necessary ones (lighting geometry, light
-loops) and the per-material "has it / has it not" of the cheap PBR
-features below.
+loops) and the per-material "has it / has it not" of the PBR features a
+kernel shares (below).
 
 Concretely:
 
@@ -37,20 +37,31 @@ Concretely:
   `AwsmRendererBuilder::with_pbr_specialization`). An opaque PBR kernel is
   ~240 KB of WGSL and about half a second of cold compile, and the
   features are a small part of it, so a kernel per exact combination is
-  expensive for what it saves:
+  expensive for what it saves. But a feature compiled into a kernel whose
+  materials do not use it is not always free to run, so the policy goes by
+  what each feature was measured to cost (GPU timestamp queries):
 
-  - `ExpensiveFeatures` (**the default**): the seven cheap features —
-    vertex colour, emissive strength, IOR, specular, transmission, volume,
-    dispersion; about 0.5 KB of WGSL together — are compiled into EVERY
-    opaque PBR kernel. Only clearcoat, sheen, iridescence, anisotropy,
-    diffuse transmission and secondary maps split buckets. A material
-    without a cheap feature reads the glTF-absent value for it (IOR 1.5,
-    specular 1, emissive strength 1, ...) from its own payload and skips
-    its texture fetches, so it renders exactly as it would through a
-    kernel compiled without the feature.
+  - `ExpensiveFeatures` (**the default**): vertex colour, emissive
+    strength and IOR — the three that cost nothing to carry unused — are
+    compiled into EVERY opaque PBR kernel. A material without one reads
+    the glTF-absent value for it (IOR 1.5, emissive strength 1) from its
+    own payload, so it renders exactly as through a kernel compiled
+    without the feature, and the frame costs the same. The other ten
+    features (specular, transmission, volume, dispersion, clearcoat,
+    sheen, iridescence, anisotropy, diffuse transmission, secondary maps)
+    split buckets: a scene's opaque PBR materials occupy one bucket per
+    combination of those they use.
+  - `LobesOnly`: specular, transmission, volume and dispersion are
+    compiled into every kernel as well, so only the six lobes split.
+    Fewer kernels, the same image, slower frames: every opaque PBR pixel
+    runs the unused code (on an Apple M1 the opaque pass took 15–68 %
+    longer, the frame 3–13 %). For an app whose cold-load time matters
+    more than its frame time.
   - `EveryFeature`: one kernel per exact feature set, nothing compiled in
     that the material does not use (the behaviour up to 0.40). Smallest
     kernels, one more of them per combination.
+
+  Numbers and method: `docs/time-to-first-render.md`, "UPDATE (0.41)".
 
   Transparent PBR is not affected by the policy: each transparent
   material compiles a pipeline for exactly its own feature set. The MSAA

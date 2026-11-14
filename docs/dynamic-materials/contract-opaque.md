@@ -24,13 +24,14 @@ instead share a bucket per *feature-set*; custom materials are never
 deduped — one registration is always one bucket.)
 
 A PBR "feature-set" here is the set the KERNEL is compiled for. By default
-(`PbrSpecialization::ExpensiveFeatures`) the cheap PBR features — vertex
-colour, emissive strength, IOR, specular, transmission, volume, dispersion —
-are in every opaque PBR kernel and do not split buckets; only clearcoat,
-sheen, iridescence, anisotropy, diffuse transmission and secondary maps do.
-So a scene's PBR materials occupy one bucket per combination of EXPENSIVE
-features they use. `AwsmRendererBuilder::with_pbr_specialization(EveryFeature)`
-goes back to one bucket per exact feature set (and uses up the cap faster).
+(`PbrSpecialization::ExpensiveFeatures`) vertex colour, emissive strength and
+IOR — the features that cost nothing to carry unused — are in every opaque PBR
+kernel and do not split buckets; the other ten features do. A scene's PBR
+materials occupy one bucket per combination of those ten they use.
+`AwsmRendererBuilder::with_pbr_specialization` takes `LobesOnly` (specular,
+transmission, volume and dispersion share too: fewer buckets, slower frames)
+or `EveryFeature` (one bucket per exact feature set, as up to 0.40; uses up
+the cap faster).
 
 The total number of buckets across the whole renderer (first-party PBR
 feature-sets + every custom registration) is capped at

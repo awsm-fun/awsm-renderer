@@ -2188,7 +2188,7 @@ impl AwsmRendererBuilder {
     /// [`PbrSpecialization::LobesOnly`] shares specular, transmission, volume
     /// and dispersion as well: one kernel fewer for each pair of materials
     /// that differ only in those, at a GPU cost on every opaque PBR pixel
-    /// (opaque pass +14 to +64 %, frame +3 to +12 % on an Apple M1).
+    /// (opaque pass +15 to +68 %, frame +3 to +13 % on an Apple M1).
     /// [`PbrSpecialization::EveryFeature`] restores one kernel per exact
     /// feature set (the behaviour up to 0.40).
     ///

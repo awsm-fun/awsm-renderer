@@ -238,29 +238,51 @@ uses** — there is no shared "core" pile that every material pays for. The
 key pieces:
 
 - **PBR feature gates come in two classes.** A `{% if pbr_features.x %}`
-  gate removes a feature's code from kernels that do not need it. For the
-  EXPENSIVE features (clearcoat, sheen, iridescence, anisotropy, diffuse
-  transmission, secondary maps) "need" is per material: they split
-  buckets. The CHEAP ones (`PbrFeatures::cheap()`: vertex colour, emissive
-  strength, IOR, specular, transmission, volume, dispersion) are compiled
-  into every opaque PBR kernel by the default `PbrSpecialization`, because
-  a ~240 KB kernel per combination of them costs far more to compile than
-  their ~0.5 KB costs to carry. Two rules follow for anyone touching the
-  PBR templates:
-  - **A cheap feature's code must be neutral for a material without it.**
-    It runs for every opaque PBR pixel. Read the value through its
-    `pbr_material_load_*` loader (which returns the glTF-absent value when
-    the material's index is 0), keep texture fetches and UV-gradient work
-    behind `tex_info.exists`, and guard anything else on the material's
-    own index (`if (material.vertex_color_info_index != 0u)`). The result
-    must be bit-for-bit what the `{% else %}` constant gives.
-    `pbr-cheap-features-share-a-kernel` (player-tests) renders ten
-    feature sets both ways and compares the frames.
-  - **A feature moves into the cheap set only if that holds and its
-    unused path costs next to nothing per pixel.** Anisotropy fails the
-    first test today (compiled in, it changes the specular lobe of
-    materials without it); the remaining lobes fail the second until
-    someone measures them on a phone.
+  gate removes a feature's code from kernels that do not need it. What
+  "need" means is the default `PbrSpecialization`'s decision:
+  - **Compiled into every opaque PBR kernel** (`PbrFeatures::cheap()`:
+    vertex colour, emissive strength, IOR), because a ~240 KB kernel per
+    combination of them costs far more to compile than their ~450 bytes
+    cost to carry, and carrying them unused costs no GPU time.
+  - **Per material** (specular, transmission, volume, dispersion,
+    clearcoat, sheen, iridescence, anisotropy, diffuse transmission,
+    secondary maps): they split buckets.
+
+  Two rules follow for anyone touching the PBR templates:
+  - **Code behind an always-compiled feature's gate must be neutral for a
+    material without it.** It runs for every opaque PBR pixel. Read the
+    value through its `pbr_material_load_*` loader (which returns the
+    glTF-absent value when the material's index is 0), keep texture
+    fetches and UV-gradient work behind `tex_info.exists`, and guard
+    anything else on the material's own index
+    (`if (material.vertex_color_info_index != 0u)`). The arithmetic must
+    be the same operations on the same values as the `{% else %}`
+    constant gives. (One place is "same value" rather than "same
+    operation": a kernel without IOR has the literal 1.5 and the driver
+    folds `ior_to_f0` at compile time, a kernel with it divides at
+    runtime. On Metal the two agree to the bit — every HDR target of 23
+    scenes is identical — and WGSL does not promise that on every
+    driver.)
+  - **It must also be free.** A feature joins the always-compiled set only
+    if a GPU-timestamp A/B shows no cost for materials that lack it.
+    Small is not free: specular, transmission, volume and dispersion are
+    89 bytes of WGSL between them and neutral, and compiled into every
+    kernel they cost 3–13 % of frame time on an Apple M1 (values that were
+    compile-time constants become loads, an F0 / f90 that folded is
+    recomputed per light, and the transmission branch becomes live code).
+    `LobesOnly` shares them for apps that prefer the faster load.
+    Anisotropy is not even neutral (compiled in, it replaces the isotropic
+    lobe of materials without it). Clearcoat, sheen, iridescence and
+    diffuse transmission cost 7–29 % of frame time ungated; behind a
+    runtime test of the material having the lobe, clearcoat and
+    iridescence still cost 2.5–11 %, and the branch makes Metal's
+    fast-math compiler order the surrounding sums differently, which moves
+    a few HDR values per frame by one half-float step.
+
+  `pbr-cheap-features-share-a-kernel` (player-tests) renders sixteen
+  materials under all three policies and compares the frames;
+  `policy_kernels_validate` (`wgsl_validation.rs`) pins which code each
+  policy's kernels carry.
 
 - **Each material declares its dependencies.** `MaterialShader` exposes
   `shader_includes()` (`ShaderIncludes` bitflags over the optional shared
