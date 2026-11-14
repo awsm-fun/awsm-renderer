@@ -30,6 +30,21 @@ pub async fn create_renderer_with_msaa(
     features: RendererFeatures,
     msaa: bool,
 ) -> Result<(AwsmRenderer, web_sys::HtmlCanvasElement)> {
+    create_renderer_with_specialization(
+        features,
+        msaa,
+        awsm_renderer::materials::pbr::PbrSpecialization::default(),
+    )
+    .await
+}
+
+/// [`create_renderer_with_msaa`], with the PBR specialization policy chosen
+/// (the builder's `with_pbr_specialization`) instead of the default.
+pub async fn create_renderer_with_specialization(
+    features: RendererFeatures,
+    msaa: bool,
+    specialization: awsm_renderer::materials::pbr::PbrSpecialization,
+) -> Result<(AwsmRenderer, web_sys::HtmlCanvasElement)> {
     let window = web_sys::window().ok_or_else(|| anyhow!("no window"))?;
     let document = window.document().ok_or_else(|| anyhow!("no document"))?;
     if let Some(prev) = document.get_element_by_id("render-canvas") {
@@ -61,6 +76,7 @@ pub async fn create_renderer_with_msaa(
     let renderer = awsm_renderer::AwsmRendererBuilder::new(gpu_builder)
         .with_features(features)
         .with_optimization_policy(policy)
+        .with_pbr_specialization(specialization)
         .with_anti_aliasing(awsm_renderer::anti_alias::AntiAliasing {
             msaa_sample_count: msaa.then_some(4),
             ..Default::default()

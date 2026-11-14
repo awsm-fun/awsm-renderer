@@ -9,8 +9,9 @@ use awsm_renderer_scene::Trs;
 use awsm_renderer_scene_loader::{load_scene_for_player, LoadedScene};
 
 use crate::harness::{
-    count_authored_nodes, create_renderer, create_renderer_with_msaa, destroy_renderer,
-    fetch_scene, now_ms, orbit_eye, run_frames, scene_bounds, url_flag_value, url_has_flag,
+    count_authored_nodes, create_renderer, create_renderer_with_msaa,
+    create_renderer_with_specialization, destroy_renderer, fetch_scene, now_ms, orbit_eye,
+    run_frames, scene_bounds, url_flag_value, url_has_flag,
 };
 use crate::report::{set_hud, Report};
 
@@ -395,6 +396,32 @@ pub async fn run_all() {
             "ssr-composite-failure-survives-a-failed-commit",
             ssr_composite_failure_survives_a_failed_commit(&origin).await,
         );
+    }
+
+    // ── 20. PBR materials that differ only in cheap features share one
+    //        kernel, and render as they do with a kernel each. Needs no
+    //        bundle: the scene is built here. ─────────────────────────────────
+    let feature_grid_enabled = filter
+        .as_ref()
+        .map(|f| f.iter().any(|s| s == FEATURE_GRID_SCENE))
+        .unwrap_or(true);
+    if feature_grid_enabled {
+        for (name, msaa) in [
+            ("pbr-cheap-features-share-a-kernel", true),
+            ("pbr-cheap-features-share-a-kernel:no-msaa", false),
+        ] {
+            set_hud(&format!("player-tests: {name}"));
+            report.emit_result(name, pbr_cheap_features_share_a_kernel(msaa).await);
+        }
+        // ── 21. a cheap feature gained on a running scene shows at once and
+        //        costs no kernel. ──────────────────────────────────────────────
+        for (name, msaa) in [
+            ("pbr-cheap-feature-edit-keeps-kernels", true),
+            ("pbr-cheap-feature-edit-keeps-kernels:no-msaa", false),
+        ] {
+            set_hud(&format!("player-tests: {name}"));
+            report.emit_result(name, pbr_cheap_feature_edit_keeps_kernels(msaa).await);
+        }
     }
 
     // ── 10. a pick that rebuilds the render textures must not strand the
@@ -2101,6 +2128,594 @@ fn read_canvas_pixel(canvas: &web_sys::HtmlCanvasElement, x: i32, y: i32) -> Res
     let rgba = js_sys::Array::from(&rgba);
     let channel = |i: u32| rgba.get(i).as_f64().unwrap_or(0.0) as u8;
     Ok([channel(0), channel(1), channel(2), channel(3)])
+}
+
+/// The whole canvas as 8-bit RGBA, row-major from the top-left. Same rule as
+/// [`read_canvas_pixel`]: call it in the task of the `render()` that drew it.
+fn read_canvas(canvas: &web_sys::HtmlCanvasElement) -> Result<Vec<u8>> {
+    let read = js_sys::Function::new_with_args(
+        "canvas",
+        "const c = document.createElement('canvas');
+         c.width = canvas.width; c.height = canvas.height;
+         const g = c.getContext('2d', { willReadFrequently: true });
+         g.drawImage(canvas, 0, 0);
+         return g.getImageData(0, 0, c.width, c.height).data;",
+    );
+    let data = read
+        .call1(&wasm_bindgen::JsValue::NULL, canvas.as_ref())
+        .map_err(|e| anyhow!("read canvas: {e:?}"))?;
+    Ok(js_sys::Uint8ClampedArray::new(&data).to_vec())
+}
+
+/// The name `?scenes=` knows the `pbr-cheap-features-share-a-kernel` scene by
+/// (it is built in code, not loaded from a bundle).
+const FEATURE_GRID_SCENE: &str = "pbr-feature-grid";
+
+/// One material of the `pbr-cheap-features-share-a-kernel` scene.
+struct FeatureCase {
+    name: &'static str,
+    /// Whether the material carries an EXPENSIVE feature (here: clearcoat),
+    /// i.e. keeps a kernel apart from the cheap-only ones by default.
+    expensive: bool,
+    edit: fn(&mut awsm_renderer::materials::pbr::PbrMaterial),
+}
+
+/// Ten opaque PBR materials: a bare one, one per cheap feature that an
+/// opaque material can carry (transmission routes a material to the
+/// transparent pass, so it cannot), all of those together, and two with
+/// clearcoat. Ten distinct feature sets.
+fn feature_cases() -> Vec<FeatureCase> {
+    use awsm_renderer::materials::pbr::{
+        PbrMaterial, PbrMaterialClearCoat, PbrMaterialDispersion, PbrMaterialEmissiveStrength,
+        PbrMaterialIor, PbrMaterialSpecular, PbrMaterialVertexColorInfo, PbrMaterialVolume,
+    };
+    fn emissive_strength(m: &mut PbrMaterial) {
+        m.emissive_factor = [0.10, 0.04, 0.0];
+        m.emissive_strength = Some(PbrMaterialEmissiveStrength { strength: 4.0 });
+    }
+    fn ior(m: &mut PbrMaterial) {
+        m.ior = Some(PbrMaterialIor { ior: 2.4 });
+    }
+    fn specular(m: &mut PbrMaterial) {
+        m.specular = Some(PbrMaterialSpecular {
+            tex: None,
+            // No specular at all: the light's highlight goes.
+            factor: 0.0,
+            color_tex: None,
+            color_factor: [1.0, 0.35, 0.1],
+        });
+    }
+    fn volume(m: &mut PbrMaterial) {
+        m.volume = Some(PbrMaterialVolume {
+            thickness_tex: None,
+            thickness_factor: 0.5,
+            attenuation_distance: 1.0,
+            attenuation_color: [0.2, 0.8, 0.4],
+        });
+    }
+    fn dispersion(m: &mut PbrMaterial) {
+        m.dispersion = Some(PbrMaterialDispersion { dispersion: 0.5 });
+    }
+    fn vertex_color(m: &mut PbrMaterial) {
+        m.vertex_color_info = Some(PbrMaterialVertexColorInfo { set_index: 0 });
+    }
+    fn clearcoat(m: &mut PbrMaterial) {
+        m.clearcoat = Some(PbrMaterialClearCoat {
+            tex: None,
+            factor: 1.0,
+            roughness_tex: None,
+            roughness_factor: 0.1,
+            normal_tex: None,
+            normal_scale: 1.0,
+        });
+    }
+    vec![
+        FeatureCase {
+            name: "bare",
+            expensive: false,
+            edit: |_| {},
+        },
+        FeatureCase {
+            name: "emissive_strength",
+            expensive: false,
+            edit: emissive_strength,
+        },
+        FeatureCase {
+            name: "ior",
+            expensive: false,
+            edit: ior,
+        },
+        FeatureCase {
+            name: "specular",
+            expensive: false,
+            edit: specular,
+        },
+        FeatureCase {
+            name: "volume",
+            expensive: false,
+            edit: volume,
+        },
+        FeatureCase {
+            name: "dispersion",
+            expensive: false,
+            edit: dispersion,
+        },
+        FeatureCase {
+            name: "vertex_color",
+            expensive: false,
+            edit: vertex_color,
+        },
+        FeatureCase {
+            name: "all-cheap",
+            expensive: false,
+            edit: |m| {
+                emissive_strength(m);
+                ior(m);
+                specular(m);
+                volume(m);
+                dispersion(m);
+                vertex_color(m);
+            },
+        },
+        FeatureCase {
+            name: "clearcoat",
+            expensive: true,
+            edit: clearcoat,
+        },
+        FeatureCase {
+            name: "clearcoat+cheap",
+            expensive: true,
+            edit: |m| {
+                clearcoat(m);
+                emissive_strength(m);
+                specular(m);
+                vertex_color(m);
+            },
+        },
+    ]
+}
+
+/// What one policy made of the [`feature_cases`] scene.
+struct FeatureSceneRender {
+    /// The bucket (shader id) each case's material resolved to, in case order.
+    buckets: Vec<awsm_renderer::materials::MaterialShaderId>,
+    /// The frame, 8-bit RGBA.
+    frame: Vec<u8>,
+    /// The canvas pixel inside each case's quad, in case order.
+    samples: Vec<[u8; 4]>,
+}
+
+/// The [`feature_cases`] scene, committed, in a live renderer.
+struct FeatureScene {
+    renderer: AwsmRenderer,
+    canvas: web_sys::HtmlCanvasElement,
+    /// Each case's material, in case order.
+    keys: Vec<awsm_renderer::materials::MaterialKey>,
+    /// Each case's quad centre (world space), in case order.
+    centers: Vec<glam::Vec3>,
+}
+
+impl FeatureScene {
+    const HALF: f32 = 0.42;
+    const EYE: glam::Vec3 = glam::Vec3::new(0.0, 0.0, 7.0);
+    const RADIUS: f32 = 3.0;
+
+    /// Renders `frames` frames and reads the last one back: the frame, and
+    /// the canvas pixel inside each case's quad.
+    async fn render(&mut self, frames: usize) -> Result<(Vec<u8>, Vec<[u8; 4]>)> {
+        use glam::{Mat4, Vec3};
+        let center = Vec3::ZERO;
+        run_frames(
+            &mut self.renderer,
+            center,
+            Self::RADIUS,
+            frames.saturating_sub(1),
+            |_| Self::EYE,
+        )
+        .await?;
+        // The last frame is read back in the task that drew it.
+        crate::harness::next_frame().await;
+        crate::harness::set_camera(&mut self.renderer, Self::EYE, center, Self::RADIUS)?;
+        self.renderer.update_transforms();
+        self.renderer
+            .render(None)
+            .map_err(|e| anyhow!("render: {e}"))?;
+        let frame = read_canvas(&self.canvas)?;
+
+        // Where each quad lands: the harness camera is a 45° perspective
+        // looking down -Z. Sample off the quad's centre, inside its first
+        // triangle.
+        let (width, height) = (self.canvas.width() as usize, self.canvas.height() as usize);
+        let view_proj = Mat4::perspective_rh(
+            45.0_f32.to_radians(),
+            width as f32 / height as f32,
+            0.1,
+            100.0,
+        ) * Mat4::look_at_rh(Self::EYE, center, Vec3::Y);
+        let samples = self
+            .centers
+            .iter()
+            .map(|c| {
+                let clip = view_proj
+                    * (*c + Vec3::new(Self::HALF * 0.4, -Self::HALF * 0.4, 0.0)).extend(1.0);
+                let x = ((clip.x / clip.w * 0.5 + 0.5) * width as f32) as usize;
+                let y = ((1.0 - (clip.y / clip.w * 0.5 + 0.5)) * height as f32) as usize;
+                let at = (y.min(height - 1) * width + x.min(width - 1)) * 4;
+                [frame[at], frame[at + 1], frame[at + 2], frame[at + 3]]
+            })
+            .collect();
+        Ok((frame, samples))
+    }
+}
+
+/// Builds the [`feature_cases`] scene — a 5 × 2 grid of camera-facing quads
+/// with per-vertex colours, one material each, one directional light — in a
+/// fresh renderer under `specialization`, and commits it once.
+async fn build_feature_scene(
+    msaa: bool,
+    specialization: awsm_renderer::materials::pbr::PbrSpecialization,
+) -> Result<FeatureScene> {
+    use awsm_renderer::lights::Light;
+    use awsm_renderer::materials::pbr::PbrMaterial;
+    use awsm_renderer::materials::{Material, MaterialAlphaMode};
+    use awsm_renderer::raw_mesh::RawMeshData;
+    use awsm_renderer::transforms::Transform;
+    use glam::Vec3;
+
+    const COLUMNS: usize = 5;
+    const SPACING: f32 = 1.0;
+    const HALF: f32 = FeatureScene::HALF;
+
+    let cases = feature_cases();
+    let (mut renderer, canvas) =
+        create_renderer_with_specialization(base_features(), msaa, specialization).await?;
+    renderer
+        .insert_light(
+            Light::Directional {
+                color: [1.0, 1.0, 1.0],
+                intensity: 2.0,
+                // Nearly along the view axis, so every quad carries the
+                // light's specular highlight.
+                direction: [-0.05, -0.08, -1.0],
+                volumetric_intensity: 0.0,
+            },
+            None,
+        )
+        .map_err(|e| anyhow!("insert_light: {e}"))?;
+
+    let rows = cases.len().div_ceil(COLUMNS);
+    let mut keys = Vec::with_capacity(cases.len());
+    let mut centers = Vec::with_capacity(cases.len());
+    for (index, case) in cases.iter().enumerate() {
+        let mut pbr = PbrMaterial::new(MaterialAlphaMode::Opaque, false);
+        pbr.base_color_factor = [0.15, 0.15, 0.15, 1.0];
+        pbr.metallic_factor = 0.0;
+        pbr.roughness_factor = 0.35;
+        (case.edit)(&mut pbr);
+        let key = renderer.materials.insert(
+            Material::Pbr(Box::new(pbr)),
+            &renderer.textures,
+            &renderer.dynamic_materials,
+            &renderer.extras_pool,
+        );
+        let center = Vec3::new(
+            ((index % COLUMNS) as f32 - (COLUMNS as f32 - 1.0) * 0.5) * SPACING,
+            ((rows - 1) as f32 * 0.5 - (index / COLUMNS) as f32) * SPACING,
+            0.0,
+        );
+        let transform = renderer.transforms.insert(
+            Transform {
+                translation: center,
+                ..Transform::IDENTITY
+            },
+            None,
+        );
+        // Every quad carries the same vertex colours; only a material with
+        // the vertex-colour feature reads them.
+        let quad = RawMeshData {
+            positions: vec![
+                [-HALF, -HALF, 0.0],
+                [HALF, -HALF, 0.0],
+                [HALF, HALF, 0.0],
+                [-HALF, HALF, 0.0],
+            ],
+            normals: Some(vec![[0.0, 0.0, 1.0]; 4]),
+            uv_sets: vec![vec![[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]]],
+            colors: Some(vec![
+                [1.0, 0.1, 0.1, 1.0],
+                [0.1, 1.0, 0.1, 1.0],
+                [0.1, 0.1, 1.0, 1.0],
+                [1.0, 1.0, 0.1, 1.0],
+            ]),
+            indices: vec![0, 1, 2, 0, 2, 3],
+            ..Default::default()
+        };
+        renderer
+            .add_raw_mesh(quad, transform, key)
+            .map_err(|e| anyhow!("add_raw_mesh({}): {e}", case.name))?;
+        keys.push(key);
+        centers.push(center);
+    }
+    renderer
+        .commit_load(|_| {})
+        .await
+        .map_err(|e| anyhow!("commit_load: {e}"))?;
+    renderer.update_transforms();
+    Ok(FeatureScene {
+        renderer,
+        canvas,
+        keys,
+        centers,
+    })
+}
+
+/// Builds the [`feature_cases`] scene under `specialization`, renders it and
+/// reports the buckets its materials resolved to.
+async fn render_feature_scene(
+    msaa: bool,
+    specialization: awsm_renderer::materials::pbr::PbrSpecialization,
+) -> Result<FeatureSceneRender> {
+    let mut scene = build_feature_scene(msaa, specialization).await?;
+    let (frame, samples) = scene.render(5).await?;
+    let buckets = scene
+        .keys
+        .iter()
+        .map(|key| scene.renderer.materials.shader_id(*key))
+        .collect();
+    destroy_renderer(scene.renderer);
+    Ok(FeatureSceneRender {
+        buckets,
+        frame,
+        samples,
+    })
+}
+
+/// Check 20 — `pbr-cheap-features-share-a-kernel`. An opaque PBR kernel is
+/// ~240 KB of WGSL and the features a material uses are a few hundred bytes
+/// to a few kilobytes of it, so a kernel per exact feature set costs a cold
+/// load one kernel for every combination its materials happen to use. The
+/// default policy ([`PbrSpecialization::ExpensiveFeatures`]) compiles the
+/// cheap features into every kernel instead. Over ten materials with ten
+/// different feature sets (see [`feature_cases`]):
+///
+/// - by default the eight that differ only in cheap features resolve to ONE
+///   bucket and the two with clearcoat to another — two kernels, not ten;
+/// - `with_pbr_specialization(EveryFeature)` gives every set its own bucket
+///   again (the opt-out works); and
+/// - the two renders agree pixel for pixel: a material shades the same
+///   through the shared kernel as through one compiled for exactly its
+///   features, whether it has a given cheap feature or not.
+///
+/// Locks both directions: cheap features splitting buckets again, and a
+/// shared kernel that drops or invents a feature for some material.
+///
+/// [`PbrSpecialization::ExpensiveFeatures`]: awsm_renderer::materials::pbr::PbrSpecialization::ExpensiveFeatures
+async fn pbr_cheap_features_share_a_kernel(msaa: bool) -> Result<String> {
+    use awsm_renderer::materials::pbr::PbrSpecialization;
+    use std::collections::HashSet;
+
+    /// Largest per-channel difference tolerated between the two renders. The
+    /// shared kernel reads from the material what the exact one has as a
+    /// compile-time constant, so a driver may fold a value differently in the
+    /// last float bit; a feature gone missing is tens of levels.
+    const MAX_CHANNEL_DIFF: u8 = 1;
+
+    let cases = feature_cases();
+    let shared = render_feature_scene(msaa, PbrSpecialization::ExpensiveFeatures).await?;
+    let exact = render_feature_scene(msaa, PbrSpecialization::EveryFeature).await?;
+
+    // ── bucket counts. ──
+    let distinct = |r: &FeatureSceneRender| r.buckets.iter().collect::<HashSet<_>>().len();
+    let cheap_buckets: HashSet<_> = cases
+        .iter()
+        .zip(&shared.buckets)
+        .filter(|(case, _)| !case.expensive)
+        .map(|(_, id)| *id)
+        .collect();
+    let expensive_buckets: HashSet<_> = cases
+        .iter()
+        .zip(&shared.buckets)
+        .filter(|(case, _)| case.expensive)
+        .map(|(_, id)| *id)
+        .collect();
+    if cheap_buckets.len() != 1 {
+        let split: Vec<String> = cases
+            .iter()
+            .zip(&shared.buckets)
+            .filter(|(case, _)| !case.expensive)
+            .map(|(case, id)| format!("{}→{}", case.name, id.as_u32()))
+            .collect();
+        return Err(anyhow!(
+            "materials that differ only in cheap features were split over {} buckets (a ~240 KB kernel each): {}",
+            cheap_buckets.len(),
+            split.join(", ")
+        ));
+    }
+    if expensive_buckets.len() != 1 || !cheap_buckets.is_disjoint(&expensive_buckets) {
+        return Err(anyhow!(
+            "the two clearcoat materials must share one bucket of their own; got {expensive_buckets:?} against the cheap bucket {cheap_buckets:?}"
+        ));
+    }
+    if distinct(&exact) != cases.len() {
+        return Err(anyhow!(
+            "with_pbr_specialization(EveryFeature) must give each of the {} feature sets its own bucket; got {}",
+            cases.len(),
+            distinct(&exact)
+        ));
+    }
+
+    // ── the scene is really there, and the features really show. ──
+    let sample = |r: &FeatureSceneRender, name: &str| {
+        let index = cases.iter().position(|c| c.name == name).unwrap_or(0);
+        r.samples[index]
+    };
+    let differs = |a: [u8; 4], b: [u8; 4]| (0..3).any(|i| a[i].abs_diff(b[i]) > 12);
+    let bare = sample(&shared, "bare");
+    for name in ["emissive_strength", "ior", "specular", "vertex_color"] {
+        if !differs(sample(&shared, name), bare) {
+            let all: Vec<String> = cases
+                .iter()
+                .zip(&shared.samples)
+                .map(|(case, rgba)| format!("{} rgba{rgba:?}", case.name))
+                .collect();
+            return Err(anyhow!(
+                "the {name} quad renders like the bare one (rgba{:?} against rgba{bare:?}) — the scene shows nothing, so the comparison proves nothing; quads: {}",
+                sample(&shared, name),
+                all.join(", ")
+            ));
+        }
+    }
+
+    // ── the two renders agree. ──
+    if shared.frame.len() != exact.frame.len() {
+        return Err(anyhow!("the two renders differ in size"));
+    }
+    let mut max_diff = 0u8;
+    let mut over = 0usize;
+    for (a, b) in shared
+        .frame
+        .chunks_exact(4)
+        .zip(exact.frame.chunks_exact(4))
+    {
+        let diff = (0..3).map(|i| a[i].abs_diff(b[i])).max().unwrap_or(0);
+        max_diff = max_diff.max(diff);
+        if diff > MAX_CHANNEL_DIFF {
+            over += 1;
+        }
+    }
+    if over > 0 {
+        let worst: Vec<String> = cases
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| {
+                (0..3).any(|k| {
+                    shared.samples[*i][k].abs_diff(exact.samples[*i][k]) > MAX_CHANNEL_DIFF
+                })
+            })
+            .map(|(i, case)| {
+                format!(
+                    "{}: rgba{:?} shared against rgba{:?} exact",
+                    case.name, shared.samples[i], exact.samples[i]
+                )
+            })
+            .collect();
+        return Err(anyhow!(
+            "the shared kernels render differently from one kernel per feature set: {over} pixels differ by more than {MAX_CHANNEL_DIFF}/255 (max {max_diff}); {}",
+            if worst.is_empty() {
+                "no quad centre differs".to_string()
+            } else {
+                worst.join("; ")
+            }
+        ));
+    }
+    let shown: Vec<String> = cases
+        .iter()
+        .zip(&shared.samples)
+        .map(|(case, [r, g, b, _])| format!("{} {r}/{g}/{b}", case.name))
+        .collect();
+    Ok(format!(
+        "{} feature sets: {} buckets by default ({} with EveryFeature); renders agree (max channel diff {max_diff}/255 over {} pixels); quads: {}",
+        cases.len(),
+        distinct(&shared),
+        distinct(&exact),
+        shared.frame.len() / 4,
+        shown.join(", ")
+    ))
+}
+
+/// Check 21 — `pbr-cheap-feature-edit-keeps-kernels`. With the cheap features
+/// in every opaque PBR kernel, a material that GAINS one on a running scene
+/// (`update_material`) is already in the right bucket:
+///
+/// - the feature shows on the next frame, with no commit (the kernel has the
+///   code; the edit only gave the material's payload a value for it); and
+/// - the next `commit_load` changes nothing: same buckets, same kernels,
+///   nothing recompiled.
+///
+/// With a kernel per exact feature set the material stayed in a kernel
+/// without the feature until a commit moved it, and that commit could grow
+/// the bucket set, which recompiles every kernel.
+///
+/// The edit is IOR 1.5 → 2.4 on the bare material, which nothing but the
+/// IOR feature's code can show.
+async fn pbr_cheap_feature_edit_keeps_kernels(msaa: bool) -> Result<String> {
+    use awsm_renderer::materials::pbr::{PbrMaterialIor, PbrSpecialization};
+    use awsm_renderer::materials::Material;
+
+    let mut scene = build_feature_scene(msaa, PbrSpecialization::default()).await?;
+    let bare = feature_cases()
+        .iter()
+        .position(|case| case.name == "bare")
+        .unwrap_or(0);
+    let key = scene.keys[bare];
+    let (_, before) = scene.render(5).await?;
+    let pipelines_before = material_pipelines(&scene.renderer);
+    let missing = material_pipelines_missing(&scene.renderer, &pipelines_before);
+    if !missing.is_empty() {
+        destroy_renderer(scene.renderer);
+        return Err(anyhow!("not installed after the commit: {missing:?}"));
+    }
+    let bucket_before = scene.renderer.materials.shader_id(key);
+    let compute_before = scene.renderer.pipelines.compute.len();
+
+    scene.renderer.update_material(key, |material| {
+        if let Material::Pbr(pbr) = material {
+            pbr.ior = Some(PbrMaterialIor { ior: 2.4 });
+        }
+    });
+    // No commit: the feature must show by itself.
+    let (_, edited) = scene.render(3).await?;
+    let shows = (0..3).any(|i| edited[bare][i].abs_diff(before[bare][i]) > 30);
+    if !shows {
+        destroy_renderer(scene.renderer);
+        return Err(anyhow!(
+            "IOR set on a running scene does not show without a commit: the quad is rgba{:?}, was rgba{:?} — its kernel has no IOR code",
+            edited[bare],
+            before[bare]
+        ));
+    }
+
+    scene
+        .renderer
+        .commit_load(|_| {})
+        .await
+        .map_err(|e| anyhow!("commit_load after the edit: {e}"))?;
+    let pipelines_after = material_pipelines(&scene.renderer);
+    let bucket_after = scene.renderer.materials.shader_id(key);
+    let compute_after = scene.renderer.pipelines.compute.len();
+    let (_, committed) = scene.render(3).await?;
+    destroy_renderer(scene.renderer);
+    if bucket_after != bucket_before {
+        return Err(anyhow!(
+            "the commit moved the material from bucket {} to {} for a cheap feature",
+            bucket_before.as_u32(),
+            bucket_after.as_u32()
+        ));
+    }
+    if pipelines_after != pipelines_before || compute_after != compute_before {
+        return Err(anyhow!(
+            "the commit after a cheap-feature edit changed the material pipelines: {} → {} buckets, {} → {} compute pipelines, kernels changed: {}",
+            pipelines_before.buckets,
+            pipelines_after.buckets,
+            compute_before,
+            compute_after,
+            pipelines_before.kernels != pipelines_after.kernels
+        ));
+    }
+    if (0..3).any(|i| committed[bare][i].abs_diff(edited[bare][i]) > 1) {
+        return Err(anyhow!(
+            "the commit changed how the edited material renders: rgba{:?} → rgba{:?}",
+            edited[bare],
+            committed[bare]
+        ));
+    }
+    Ok(format!(
+        "IOR set with no commit: quad rgba{:?} → rgba{:?} on the next frames; the following commit kept all {} buckets and {} kernels",
+        before[bare],
+        edited[bare],
+        pipelines_after.buckets,
+        pipelines_after.kernels.len()
+    ))
 }
 
 /// How long `material-without-commit` gives a newly assigned material to
