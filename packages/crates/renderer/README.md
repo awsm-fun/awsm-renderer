@@ -19,20 +19,42 @@ There are two ways to get a material onto a mesh:
 ### Specialize-only (compile-time feature gating)
 
 The renderer is **specialize-only**: every shader is gated *at compile
-time* (Askama `{% if pbr_features.X %}`) to exactly the features the
-material uses. There is **no "uber" shader** — a material with no normal
-map compiles no normal-map code, a scene with no clearcoat compiles no
-clearcoat code, etc. The only runtime branches are logically necessary
-ones (lighting geometry, light loops).
+time* (Askama `{% if pbr_features.X %}`) to the features its materials
+use. There is **no "uber" shader** — a scene with no clearcoat compiles
+no clearcoat code, a scene with no sheen no sheen code, etc. The only
+runtime branches are logically necessary ones (lighting geometry, light
+loops) and the per-material "has it / has it not" of the cheap PBR
+features below.
 
 Concretely:
 
-- **PBR** specializes per *feature-set* — the set of present texture
-  slots + KHR extensions (`PbrFeatures`). Each distinct feature-set gets
-  its own compiled pipeline (a "bucket"); two PBR materials with the same
-  feature-set **share** one pipeline. Transparent PBR specializes the
-  same way (each transparent material compiles its own pipeline), as does
-  the MSAA edge-resolve pass.
+- **PBR** specializes per *feature-set* — the KHR extensions a material
+  uses (`PbrFeatures`). Each distinct feature-set of the OPAQUE kernels
+  gets its own compiled pipeline (a "bucket"); two PBR materials with the
+  same feature-set **share** one pipeline.
+
+  Which features count is a policy (`PbrSpecialization`, set with
+  `AwsmRendererBuilder::with_pbr_specialization`). An opaque PBR kernel is
+  ~240 KB of WGSL and about half a second of cold compile, and the
+  features are a small part of it, so a kernel per exact combination is
+  expensive for what it saves:
+
+  - `ExpensiveFeatures` (**the default**): the seven cheap features —
+    vertex colour, emissive strength, IOR, specular, transmission, volume,
+    dispersion; about 0.5 KB of WGSL together — are compiled into EVERY
+    opaque PBR kernel. Only clearcoat, sheen, iridescence, anisotropy,
+    diffuse transmission and secondary maps split buckets. A material
+    without a cheap feature reads the glTF-absent value for it (IOR 1.5,
+    specular 1, emissive strength 1, ...) from its own payload and skips
+    its texture fetches, so it renders exactly as it would through a
+    kernel compiled without the feature.
+  - `EveryFeature`: one kernel per exact feature set, nothing compiled in
+    that the material does not use (the behaviour up to 0.40). Smallest
+    kernels, one more of them per combination.
+
+  Transparent PBR is not affected by the policy: each transparent
+  material compiles a pipeline for exactly its own feature set. The MSAA
+  edge-resolve pass follows the opaque kernels.
 - **Toon / Unlit / FlipBook** render as a single canonical bucket each
   (their shaders have no feature-gateable paths today).
 - **Custom** materials get one bucket per registration (no feature-set
@@ -51,8 +73,9 @@ Concretely:
   to a mesh.
 
 This is automatic — feature-sets are derived from the material and
-resolved to pipelines by `commit_load`. You don't configure it
-and there is no on/off switch; specialization is unconditional.
+resolved to pipelines by `commit_load`. The one knob is the PBR
+specialization policy above (build-time); everything else is
+unconditional.
 
 ### Prep pass (slim shading)
 

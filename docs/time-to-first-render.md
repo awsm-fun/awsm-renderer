@@ -20,8 +20,9 @@ first *correct, non-hitching* viewport frame of the loaded scene.
 First-party **material** shaders (PBR / Unlit / Toon / FlipBook) are NOT
 compiled at boot — they compile lazily on first use via
 `ensure_scene_pipelines`. This is the deliberate **specialize-only** design
-(`materials-overhaul`): a project that uses none pays zero material-compile
-cost at startup. Compiling the "common set" at boot would regress that on
+(`materials-overhaul`; since 0.41 PBR kernels are specialized on the
+expensive features only, see the 0.41 update at the end): a project that
+uses none pays zero material-compile cost at startup. Compiling the "common set" at boot would regress that on
 purpose, so the lever is *timing*, not *coverage*.
 
 ## The residual hitch (identified)
@@ -207,7 +208,9 @@ changes the compile path accordingly.
 ### What is still serial or wasteful
 
 - Kernels remain the long pole, and the per-feature-set PBR kernels are large
-  and mostly identical text. They also bake in the bucket count, their bucket
+  and mostly identical text. (0.41 stops splitting them on the cheap
+  features; the expensive ones still get a kernel each — see the 0.41 update
+  below.) They also bake in the bucket count, their bucket
   index and their shader id, so any change to the bucket set recompiles all of
   them and identical kernels in different scenes never share a cache entry.
 - The batch is throughput-bound. With several large kernels in it, one of
@@ -242,4 +245,87 @@ changes the compile path accordingly.
 
 `examples/player-tests` locks the invariants (`pipelines-ready:<scene>`,
 `config-ensure-keeps-kernels:<scene>`).
+
+## UPDATE (0.41) — PBR kernels are specialized on the expensive features only
+
+The batch is throughput-bound at roughly two seconds per megabyte of WGSL,
+and most of that megabyte count is opaque PBR kernels: ~240 KB each, one per
+distinct feature set. Measuring the features themselves showed how little of
+a kernel they are:
+
+| Feature | WGSL it adds to a 239,552-byte kernel |
+|---|---|
+| IOR | 0 bytes |
+| dispersion | 7 |
+| transmission | 16 |
+| specular | 19 |
+| volume | 47 |
+| emissive strength | 66 |
+| vertex colour | 385 |
+| diffuse transmission | 1,527 |
+| anisotropy | 2,853 |
+| clearcoat | 2,935 |
+| iridescence | 3,144 |
+| sheen | 3,414 |
+| secondary maps | 6,309 |
+
+DANCE-OFF compiled five PBR kernels that differed by 66 + 19 + 2,933 bytes.
+
+So the first seven — 540 bytes together — are no longer worth a kernel.
+`PbrSpecialization::ExpensiveFeatures` (the default) compiles them into every
+opaque PBR kernel; the variant reconcile keys a material's bucket on
+`policy.kernel_features(material_features)`, so materials that differ only in
+those resolve to one bucket. Nothing in the templates changed: the payload
+already carries an index per extension, the `pbr_material_load_*` loaders
+return the glTF-absent value at index 0, and the texture fetches and UV
+gradients of an absent extension are behind `tex_info.exists`. A kernel
+compiled for a superset of a material's cheap features therefore shades it
+as the exact kernel would.
+
+Cold, M1 Max, Chrome 157, alternating runs against 0.40.1 (medians):
+
+| Load | 0.40.1 | 0.41 | PBR kernels | WGSL compiled |
+|---|---|---|---|---|
+| DANCE-OFF stage (player), 6 runs each | 7.60 s | 6.04 s | 5 → 2 | 2.65 → 1.94 MB |
+| `pbr-extensions`, 3 runs each | 8.10 s | 7.23 s | 8 → 6 | 3.33 → 2.87 MB |
+| `ssr-arena` | 6.06 s | 5.63 s | 2 → 1 | 1.69 → 1.45 MB |
+| `kitchen-sink` | 5.35 s | 5.37 s | 1 → 1 | +540 B |
+| `alpha-cutoff` | 4.83 s | 4.84 s | 1 → 1 | +540 B |
+| `contact-shadows` | 3.86 s | 3.90 s | 1 → 1 | +540 B |
+
+A scene with one feature set compiles the same number of kernels as before,
+each 540 bytes longer; its load is unchanged within the run-to-run spread.
+
+Two more things follow from a material's cheap features no longer deciding
+its bucket:
+
+- **A cheap feature gained on a running scene shows at once.** The kernel
+  already has the code; `update_material` only gives the payload a value for
+  it. With a kernel per exact set the material kept its old kernel until a
+  commit moved it.
+- **Such an edit never changes the bucket set**, so the commit after it
+  recompiles nothing. (A new EXPENSIVE feature still adds a bucket, and a
+  bucket-set change still recompiles every kernel.)
+
+What this leaves, and what it costs:
+
+- **The expensive features still split.** Merging clearcoat, sheen,
+  iridescence and diffuse transmission as well would take DANCE-OFF to about
+  5.6 s (one PBR kernel) and `pbr-extensions` to about 5.1 s, and their
+  unused paths rendered pixel-identically in the measurement — but every PBR
+  pixel would then run those lobes with zero weight, and nobody has measured
+  that on a phone. Anisotropy cannot join until its unused path is neutral:
+  compiled in, it changed 90 pixels (max 162/255) on materials without it.
+- **Per-pixel cost is not measured, on any device.** By reading the code, a
+  material without the cheap features now pays, per shaded pixel: one index
+  test and a constant per extension loader, the UV lookup for four texture
+  slots whose fetch is then skipped (specular, specular colour, transmission,
+  volume thickness), and a few multiplies by 1. That should be noise next to
+  the light loop, shadows and IBL, but it is an argument, not a measurement.
+  `with_pbr_specialization(PbrSpecialization::EveryFeature)` restores a
+  kernel per exact feature set for anyone who finds otherwise.
+
+`player-tests` locks it with `pbr-cheap-features-share-a-kernel` (ten feature
+sets: two buckets by default, ten with `EveryFeature`, and the two renders
+compared pixel for pixel) and `pbr-cheap-feature-edit-keeps-kernels`.
 

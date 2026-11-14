@@ -17,11 +17,20 @@ For transparent materials (`alpha_mode = Blend`) see
 ## Specialization & the bucket cap
 
 The renderer is **specialize-only**: every shader is gated at compile time
-to exactly the features it needs (there is no shared "uber" shader). Each
+to the features it needs (there is no shared "uber" shader). Each
 registered custom material compiles into its **own pipeline** — a "bucket",
 keyed by its registry-assigned `shader_id`. (First-party PBR materials
 instead share a bucket per *feature-set*; custom materials are never
 deduped — one registration is always one bucket.)
+
+A PBR "feature-set" here is the set the KERNEL is compiled for. By default
+(`PbrSpecialization::ExpensiveFeatures`) the cheap PBR features — vertex
+colour, emissive strength, IOR, specular, transmission, volume, dispersion —
+are in every opaque PBR kernel and do not split buckets; only clearcoat,
+sheen, iridescence, anisotropy, diffuse transmission and secondary maps do.
+So a scene's PBR materials occupy one bucket per combination of EXPENSIVE
+features they use. `AwsmRendererBuilder::with_pbr_specialization(EveryFeature)`
+goes back to one bucket per exact feature set (and uses up the cap faster).
 
 The total number of buckets across the whole renderer (first-party PBR
 feature-sets + every custom registration) is capped at

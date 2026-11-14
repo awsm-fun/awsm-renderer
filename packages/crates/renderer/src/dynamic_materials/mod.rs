@@ -6,8 +6,12 @@
 //! - **First-party feature-set variant** `(ShadingBase, features)` — the
 //!   built-in PBR/Toon/Unlit/Flipbook shader templated (Askama, compile-time)
 //!   from its [`ShadingBase`] + feature mask. PBR fans out one bucket per
-//!   distinct [`awsm_renderer_materials::pbr::PbrFeatures`] set (allocated via
-//!   [`DynamicMaterials::resolve_first_party_variant_or_cap_err`]);
+//!   distinct KERNEL [`awsm_renderer_materials::pbr::PbrFeatures`] set
+//!   (allocated via [`DynamicMaterials::resolve_first_party_variant_or_cap_err`]).
+//!   The kernel set is the material's own plus whatever the
+//!   [`awsm_renderer_materials::pbr::PbrSpecialization`] policy compiles into
+//!   every kernel — by default the seven cheap features, so only the
+//!   expensive ones fan out;
 //!   Toon/Unlit/Flipbook have no compile-gateable shading paths today, so
 //!   they stay single-bucket.
 //! - **Custom variant** — the author's WGSL fragment + layout
@@ -16,8 +20,10 @@
 //! [`bucket_entries`] is the single source of truth the classify + opaque +
 //! edge + transparent templates all walk. There is **no uber shader** — every
 //! bucket compiles only the code its `(base, features)` needs; absent
-//! features/textures emit nothing (DCE → lower register pressure → higher
-//! occupancy). See [`ShadingBase`].
+//! features emit nothing (DCE → lower register pressure → higher
+//! occupancy). See [`ShadingBase`]. (Under the default policy a bucket's
+//! features include the cheap PBR ones whether its materials use them or
+//! not; `PbrSpecialization::EveryFeature` is the strict form.)
 //!
 //! **Cost model (honest):** steady-state cost scales with the
 //! *active-in-view* bucket fanout (one classify extract arm + one opaque

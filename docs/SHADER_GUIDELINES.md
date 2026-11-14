@@ -237,6 +237,31 @@ Every opaque/transparent material pipeline is specialized to one
 uses** — there is no shared "core" pile that every material pays for. The
 key pieces:
 
+- **PBR feature gates come in two classes.** A `{% if pbr_features.x %}`
+  gate removes a feature's code from kernels that do not need it. For the
+  EXPENSIVE features (clearcoat, sheen, iridescence, anisotropy, diffuse
+  transmission, secondary maps) "need" is per material: they split
+  buckets. The CHEAP ones (`PbrFeatures::cheap()`: vertex colour, emissive
+  strength, IOR, specular, transmission, volume, dispersion) are compiled
+  into every opaque PBR kernel by the default `PbrSpecialization`, because
+  a ~240 KB kernel per combination of them costs far more to compile than
+  their ~0.5 KB costs to carry. Two rules follow for anyone touching the
+  PBR templates:
+  - **A cheap feature's code must be neutral for a material without it.**
+    It runs for every opaque PBR pixel. Read the value through its
+    `pbr_material_load_*` loader (which returns the glTF-absent value when
+    the material's index is 0), keep texture fetches and UV-gradient work
+    behind `tex_info.exists`, and guard anything else on the material's
+    own index (`if (material.vertex_color_info_index != 0u)`). The result
+    must be bit-for-bit what the `{% else %}` constant gives.
+    `pbr-cheap-features-share-a-kernel` (player-tests) renders ten
+    feature sets both ways and compares the frames.
+  - **A feature moves into the cheap set only if that holds and its
+    unused path costs next to nothing per pixel.** Anisotropy fails the
+    first test today (compiled in, it changes the specular lobe of
+    materials without it); the remaining lobes fail the second until
+    someone measures them on a phone.
+
 - **Each material declares its dependencies.** `MaterialShader` exposes
   `shader_includes()` (`ShaderIncludes` bitflags over the optional shared
   modules — `brdf`, `apply_lighting`, `material_color_calc`, `ibl`,
