@@ -2179,23 +2179,23 @@ impl AwsmRendererBuilder {
     /// cold compile, so every distinct feature set costs a load that much.
     ///
     /// The default, [`PbrSpecialization::ExpensiveFeatures`], compiles the
-    /// seven cheap features (vertex colour, emissive strength, IOR, specular,
-    /// transmission, volume, dispersion — about 0.5 KB of WGSL together)
-    /// into every opaque PBR kernel, so materials that differ only in those
-    /// share one kernel; clearcoat, sheen, iridescence, anisotropy, diffuse
-    /// transmission and secondary maps still get their own. A material
-    /// without a cheap feature renders exactly as before: the code is there,
-    /// reads the glTF-absent value, and its texture fetches are skipped.
+    /// three features that are free to carry unused (vertex colour, emissive
+    /// strength, IOR) into every opaque PBR kernel, so materials that differ
+    /// only in those share one kernel; every other feature still gets its
+    /// own. A scene renders exactly as with one kernel per feature set, and
+    /// a frame costs the same.
     ///
+    /// [`PbrSpecialization::LobesOnly`] shares specular, transmission, volume
+    /// and dispersion as well: one kernel fewer for each pair of materials
+    /// that differ only in those, at a GPU cost on every opaque PBR pixel
+    /// (opaque pass +14 to +64 %, frame +3 to +12 % on an Apple M1).
     /// [`PbrSpecialization::EveryFeature`] restores one kernel per exact
-    /// feature set (the behaviour up to 0.40): the smallest kernels, and one
-    /// more of them for every combination a scene uses. Choose it if a
-    /// device shows a per-pixel cost for the unused cheap features — that
-    /// cost has not been measured on phones.
+    /// feature set (the behaviour up to 0.40).
     ///
     /// Build-time only. The transparent pass is not affected.
     ///
     /// [`PbrSpecialization::ExpensiveFeatures`]: awsm_renderer_materials::pbr::PbrSpecialization::ExpensiveFeatures
+    /// [`PbrSpecialization::LobesOnly`]: awsm_renderer_materials::pbr::PbrSpecialization::LobesOnly
     /// [`PbrSpecialization::EveryFeature`]: awsm_renderer_materials::pbr::PbrSpecialization::EveryFeature
     pub fn with_pbr_specialization(
         mut self,

@@ -1685,8 +1685,8 @@ impl crate::AwsmRenderer {
     /// and re-laying-out the bucket-dependent GPU state when the set grows.
     /// "Feature set" here is the KERNEL's
     /// ([`PbrSpecialization::kernel_features`](awsm_renderer_materials::pbr::PbrSpecialization::kernel_features)):
-    /// by default the cheap features are in every kernel and only the
-    /// expensive ones split buckets.
+    /// by default the features that are free to carry unused are in every
+    /// kernel and only the rest split buckets.
     ///
     /// Called ONLY from `commit_load` (the one compile path) — never per render
     /// frame; a cheap no-op when the `variants_dirty` flag is clear (a commit
@@ -1724,12 +1724,12 @@ impl crate::AwsmRenderer {
         //    `wants`, but the ensure pass below still runs.
         //    The bucket is keyed on the KERNEL's feature set, not the
         //    material's: the policy adds the features every kernel carries
-        //    (by default the seven cheap ones), so materials that differ
-        //    only in those resolve to one bucket and one ~240 KB kernel.
-        //    A kernel compiled for a superset of a material's features
-        //    shades it identically — the per-extension payload indices are
-        //    0 for what the material lacks and the loaders return the
-        //    glTF-absent value there.
+        //    (by default vertex colour, emissive strength, IOR), so
+        //    materials that differ only in those resolve to one bucket and
+        //    one ~240 KB kernel. A kernel compiled for a superset of a
+        //    material's features shades it identically — the per-extension
+        //    payload indices are 0 for what the material lacks and the
+        //    loaders return the glTF-absent value there.
         let specialization = self.dynamic_materials.pbr_specialization();
         let mut wants: Vec<(crate::materials::MaterialKey, ShadingBase, u32)> = Vec::new();
         for (key, mat) in self.materials.iter_for_variant_reconcile() {

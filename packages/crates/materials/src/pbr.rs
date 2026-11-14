@@ -91,9 +91,9 @@ pub struct PbrMaterial {
 ///    maps a feature-set to its own `shader_id` / bucket, so two materials
 ///    with the same feature-set share one specialized pipeline. For the
 ///    OPAQUE kernels the set that is hashed is not the material's own but
-///    [`PbrSpecialization::kernel_features`] of it: by default the cheap
-///    features are compiled into every kernel, so only the expensive ones
-///    split buckets.
+///    [`PbrSpecialization::kernel_features`] of it: by default the features
+///    that are free to carry unused are compiled into every kernel, so only
+///    the rest split buckets.
 ///
 /// `double_sided` and `alpha_mode` are deliberately NOT here — the former
 /// is raster state (a pipeline-variant dimension, not shader code), and
@@ -205,31 +205,57 @@ impl PbrFeatures {
         }
     }
 
-    /// The features that are cheap to compile in and cheap to leave unused:
-    /// together they are about half a kilobyte of WGSL in a ~240 KB opaque
-    /// kernel, and a material without one of them pays an index test and a
-    /// neutral constant for it (their texture fetches and UV gradients are
-    /// behind `tex_info.exists`). They are what
+    /// The features that cost nothing to carry unused: vertex colour,
+    /// emissive strength and IOR. Together they are about 450 bytes of WGSL
+    /// in a ~240 KB opaque kernel, and a material without one of them pays
+    /// an index test and a neutral constant for it. Measured on an Apple M1
+    /// (GPU timestamp queries, 1080p and 4K): compiled into a kernel that
+    /// shades materials without them, they move the opaque pass by at most
+    /// 4 % and the frame by at most 0.5 %. They are what
     /// [`PbrSpecialization::ExpensiveFeatures`] compiles into every opaque
     /// PBR kernel.
     ///
-    /// A feature belongs here only if a kernel compiled WITH it shades a
-    /// material WITHOUT it exactly as a kernel compiled without it would.
-    /// The extension loaders give that for free for these seven
-    /// (`pbr_material_load_*` return the glTF-absent value at index 0, and
-    /// the vertex-colour multiply is skipped when the material has none).
-    /// Anisotropy does NOT qualify (its unused path changes the specular
-    /// lobe), and the remaining lobes cost real per-pixel work.
+    /// A feature belongs here only if a kernel compiled WITH it
+    ///
+    /// 1. shades a material WITHOUT it exactly as a kernel compiled without
+    ///    it would (the extension loaders give that: `pbr_material_load_*`
+    ///    return the glTF-absent value at index 0, and the vertex-colour
+    ///    multiply is skipped when the material has none), and
+    /// 2. costs no measurable GPU time doing so.
+    ///
+    /// Specular, transmission and volume pass the first test and fail the
+    /// second (each about 2.5 % of frame time on that M1; see
+    /// [`Self::neutral`]), so they keep a kernel of their own. Anisotropy
+    /// fails the first (its lobe replaces the isotropic one), and the
+    /// remaining lobes are real per-pixel work.
     pub fn cheap() -> Self {
         Self {
             vertex_color: true,
             emissive_strength: true,
             ior: true,
+            ..Self::default()
+        }
+    }
+
+    /// Every feature whose unused code leaves a material's shading unchanged:
+    /// [`Self::cheap`] plus specular, transmission, volume and dispersion —
+    /// 540 bytes of WGSL between them. [`PbrSpecialization::LobesOnly`]
+    /// compiles all seven into every opaque PBR kernel.
+    ///
+    /// The four that are not in [`Self::cheap`] are neutral but not free.
+    /// Carried by a kernel whose materials lack them, on an Apple M1 at
+    /// 1080p: specular +14 % of the opaque pass (two more texture-slot
+    /// lookups per pixel, and an F0 / f90 the compiler can no longer fold
+    /// per light), transmission +12 %, volume +12 %, dispersion nothing on
+    /// its own; all seven together +64 %, because the transmission path
+    /// (refraction, up to three environment fetches) becomes live code.
+    pub fn neutral() -> Self {
+        Self {
             specular: true,
             transmission: true,
             volume: true,
             dispersion: true,
-            ..Self::default()
+            ..Self::cheap()
         }
     }
 
@@ -330,22 +356,45 @@ impl PbrFeatures {
 /// one more ~240 KB kernel to compile on a cold load, at roughly two seconds
 /// of compile per megabyte of WGSL. The features themselves are a small part
 /// of that text, so splitting on all of them buys little and costs a kernel
-/// per combination. This policy decides which ones are worth a kernel.
+/// per combination. But a feature compiled into a kernel whose materials do
+/// not use it is not always free to RUN. This policy decides, per feature,
+/// between a kernel of its own and a place in every kernel.
 ///
 /// Set once, on the builder
 /// (`AwsmRendererBuilder::with_pbr_specialization`). It only affects the
 /// opaque (visibility-buffer) kernels; the transparent pass keeps one
 /// pipeline per exact feature set.
+///
+/// All three render a scene identically (checked bit for bit in the HDR
+/// targets on an Apple M1 / Metal). They differ in how many kernels a load
+/// compiles and in what a frame costs:
+///
+/// | | kernels | GPU time against `EveryFeature` (M1, 1080p–4K) |
+/// |---|---|---|
+/// | `ExpensiveFeatures` | one per combination of the ten features that are not free | frame within ±1 % |
+/// | `LobesOnly` | one per combination of the six lobes | opaque pass +14 to +64 %, frame +3 to +12 % |
+/// | `EveryFeature` | one per exact feature set | — |
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub enum PbrSpecialization {
-    /// The default. The cheap features ([`PbrFeatures::cheap`]: vertex colour,
-    /// emissive strength, IOR, specular, transmission, volume, dispersion)
-    /// are compiled into EVERY opaque PBR kernel, and only the expensive ones
-    /// (clearcoat, sheen, iridescence, anisotropy, diffuse transmission,
-    /// secondary maps) split buckets. Two materials that differ only in
-    /// cheap features share one kernel.
+    /// The default. The features that are free to carry unused
+    /// ([`PbrFeatures::cheap`]: vertex colour, emissive strength, IOR) are
+    /// compiled into EVERY opaque PBR kernel. Everything else — specular,
+    /// transmission, volume, dispersion, clearcoat, sheen, iridescence,
+    /// anisotropy, diffuse transmission, secondary maps — still splits
+    /// buckets. Two materials that differ only in the first three share one
+    /// kernel, at no cost per frame.
     #[default]
     ExpensiveFeatures,
+    /// Fewer kernels, slower frames. Every feature whose unused code leaves
+    /// shading unchanged ([`PbrFeatures::neutral`]: the cheap three, specular,
+    /// transmission, volume, dispersion) is compiled into every opaque PBR
+    /// kernel, and only the six lobes split buckets. A scene compiles one
+    /// kernel fewer for each pair of materials that differ only in those,
+    /// and every opaque PBR pixel then runs the unused code: on an Apple M1
+    /// the opaque pass took 14–64 % longer and the frame 3–12 %. For an app
+    /// whose cold-load time matters more than its frame time.
+    LobesOnly,
     /// One kernel per exact feature set, with nothing compiled in that the
     /// material does not use — the behaviour up to 0.40. Smallest possible
     /// kernels, most of them.
@@ -358,6 +407,7 @@ impl PbrSpecialization {
     pub fn always_compiled(self) -> PbrFeatures {
         match self {
             Self::ExpensiveFeatures => PbrFeatures::cheap(),
+            Self::LobesOnly => PbrFeatures::neutral(),
             Self::EveryFeature => PbrFeatures::default(),
         }
     }
@@ -1026,20 +1076,21 @@ mod pbr_features_tests {
         ]
     }
 
-    const CHEAP: [&str; 7] = [
-        "vertex_color",
-        "emissive_strength",
-        "ior",
-        "specular",
-        "transmission",
-        "volume",
-        "dispersion",
+    const CHEAP: [&str; 3] = ["vertex_color", "emissive_strength", "ior"];
+    const NEUTRAL_NOT_FREE: [&str; 4] = ["specular", "transmission", "volume", "dispersion"];
+    const LOBES: [&str; 6] = [
+        "diffuse_transmission",
+        "clearcoat",
+        "sheen",
+        "anisotropy",
+        "iridescence",
+        "secondary_maps",
     ];
 
-    /// The default policy: a cheap feature never gives a material a kernel of
-    /// its own, an expensive one always does.
+    /// The default policy: a free feature never gives a material a kernel of
+    /// its own; every other feature does.
     #[test]
-    fn cheap_features_do_not_split_kernels_by_default() {
+    fn free_features_do_not_split_kernels_by_default() {
         let policy = PbrSpecialization::default();
         assert_eq!(policy, PbrSpecialization::ExpensiveFeatures);
         let bare = policy.kernel_features(PbrFeatures::default());
@@ -1057,13 +1108,13 @@ mod pbr_features_tests {
                 );
             }
         }
-        // Any mix of cheap features on top of an expensive one lands in that
+        // Any mix of free features on top of an expensive one lands in that
         // expensive feature's kernel.
         let clearcoat = with(|f| f.clearcoat = true);
         let mixed = with(|f| {
             f.clearcoat = true;
             f.emissive_strength = true;
-            f.specular = true;
+            f.ior = true;
             f.vertex_color = true;
         });
         assert_eq!(
@@ -1072,11 +1123,30 @@ mod pbr_features_tests {
         );
     }
 
-    /// A kernel must never lack code its material needs, under either policy.
+    /// `LobesOnly`: the neutral seven share, the six lobes split.
+    #[test]
+    fn lobes_only_splits_on_the_six_lobes() {
+        let policy = PbrSpecialization::LobesOnly;
+        let bare = policy.kernel_features(PbrFeatures::default());
+        assert_eq!(bare, PbrFeatures::neutral());
+        assert_eq!(bare.bits().count_ones(), 7);
+        for (name, features) in single_features() {
+            let kernel = policy.kernel_features(features);
+            if LOBES.contains(&name) {
+                assert_ne!(kernel, bare, "{name} must keep a kernel of its own");
+                assert_eq!(kernel, features.union(PbrFeatures::neutral()), "{name}");
+            } else {
+                assert_eq!(kernel, bare, "{name} must share the bare kernel");
+            }
+        }
+    }
+
+    /// A kernel must never lack code its material needs, under any policy.
     #[test]
     fn kernel_features_are_a_superset_of_the_materials() {
         for policy in [
             PbrSpecialization::ExpensiveFeatures,
+            PbrSpecialization::LobesOnly,
             PbrSpecialization::EveryFeature,
         ] {
             for bits in 0..(1u32 << PbrFeatures::COUNT) {
@@ -1111,21 +1181,47 @@ mod pbr_features_tests {
         );
     }
 
-    /// The retired texture-slot bits and the expensive features are never
-    /// part of the cheap set.
+    /// The sets partition the thirteen features as documented: three free,
+    /// four neutral but not free, six lobes.
     #[test]
-    fn the_cheap_set_is_exactly_the_seven() {
-        let cheap = PbrFeatures::cheap();
-        let expect = single_features()
-            .into_iter()
-            .filter(|(name, _)| CHEAP.contains(name))
-            .fold(PbrFeatures::default(), |acc, (_, f)| acc.union(f));
-        assert_eq!(cheap, expect);
-        assert_eq!(cheap.bits().count_ones(), 7);
+    fn the_feature_sets_are_what_the_policy_documents() {
+        let named = |names: &[&str]| {
+            single_features()
+                .into_iter()
+                .filter(|(name, _)| names.contains(name))
+                .fold(PbrFeatures::default(), |acc, (_, f)| acc.union(f))
+        };
+        assert_eq!(PbrFeatures::cheap(), named(&CHEAP));
+        assert_eq!(
+            PbrFeatures::neutral(),
+            named(&CHEAP).union(named(&NEUTRAL_NOT_FREE))
+        );
+        assert_eq!(
+            PbrFeatures::neutral().bits() & named(&LOBES).bits(),
+            0,
+            "no lobe is neutral"
+        );
+        assert_eq!(
+            named(&CHEAP)
+                .union(named(&NEUTRAL_NOT_FREE))
+                .union(named(&LOBES))
+                .bits()
+                .count_ones(),
+            13
+        );
         assert!(
-            !cheap.anisotropy,
+            !PbrFeatures::neutral().anisotropy,
             "anisotropy's unused path is not neutral; it must stay specialized"
         );
+        for (name, features) in single_features() {
+            if NEUTRAL_NOT_FREE.contains(&name) {
+                assert_eq!(
+                    PbrFeatures::cheap().bits() & features.bits(),
+                    0,
+                    "{name} costs GPU time when unused; it must not be in the default set"
+                );
+            }
+        }
     }
 
     #[test]
