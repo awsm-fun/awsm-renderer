@@ -201,14 +201,25 @@ fn cs_main(
         // mask word; `bucket_index = w*32 + bit` indexes the `args` /
         // `offsets` arrays directly. The atomicAdd returns the previous
         // count, which doubles as the next free slot into the bucket's
-        // `tiles` sub-range at `offsets[bucket_index] + idx`.
+        // `tiles` sub-range at `offsets[bucket_index] + idx`. The dispatch
+        // dimensions follow the count in rows of CLASSIFY_DISPATCH_ROW
+        // (classify-dispatch-row): x fills the first row, y counts rows
+        // (the host resets it to 1 each frame).
         for (var w = 0u; w < {{ n_words }}u; w = w + 1u) {
             var bits = atomicLoad(&tile_mask[w]);
             while (bits != 0u) {
                 let b = firstTrailingBit(bits);
                 bits = bits & (bits - 1u);
                 let bucket_index = w * 32u + b;
-                let idx = atomicAdd(&classify_output.args[bucket_index].workgroup_count_x, 1u);
+                let idx = atomicAdd(&classify_output.args[bucket_index].tile_count, 1u);
+                if idx < CLASSIFY_DISPATCH_ROW {
+                    atomicAdd(&classify_output.args[bucket_index].workgroup_count_x, 1u);
+                } else {
+                    atomicMax(
+                        &classify_output.args[bucket_index].workgroup_count_y,
+                        idx / CLASSIFY_DISPATCH_ROW + 1u,
+                    );
+                }
                 let base = classify_output.offsets[bucket_index];
                 let slot = base + idx;
                 if slot < base + classify_output.bucket_capacity {

@@ -29,11 +29,27 @@
 
 @group(0) @binding(2) var<storage, read> materials_data: array<u32>;
 
+// One bucket's indirect dispatch: `(x, y, z)` is what
+// `dispatchWorkgroupsIndirect` reads, `tile_count` is how many tiles the
+// bucket holds this frame.
+//
+// classify-dispatch-row: a dispatch dimension may not exceed the device's
+// `maxComputeWorkgroupsPerDimension` (65,535 at best), and an indirect
+// dispatch that does is silently a no-op — the bucket is simply not shaded.
+// One workgroup per tile in x alone therefore capped a bucket at 65,535
+// tiles: 4.2 megapixels, less than a 4K canvas whose every pixel is one
+// material (or sky). The dispatch is laid out in rows of
+// CLASSIFY_DISPATCH_ROW tiles instead: x counts up to one full row, y is the
+// number of rows, and the kernel finds its tile at `y * ROW + x`, skipping
+// the unused tail of the last row. Below one row (any canvas up to
+// 1920x1080) that is the old `(tile_count, 1, 1)` exactly. The kernels in
+// material_opaque_wgsl carry the same constant.
+const CLASSIFY_DISPATCH_ROW: u32 = 32768u;
 struct ClassifyIndirectArgs {
     workgroup_count_x: atomic<u32>,
-    workgroup_count_y: u32,
+    workgroup_count_y: atomic<u32>,
     workgroup_count_z: u32,
-    _pad: u32,
+    tile_count: atomic<u32>,
 };
 
 // Storage-buffer layout — must stay in lockstep with the byte writer

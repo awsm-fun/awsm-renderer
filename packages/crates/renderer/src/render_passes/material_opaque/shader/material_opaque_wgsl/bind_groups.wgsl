@@ -57,8 +57,13 @@ struct TransformPacked {
 // Data-driven layout (matches the classify writer's `ClassifyOutput`, §4b):
 // `args`/`offsets` arrays indexed by bucket index, byte-identical to the old 2N
 // named per-bucket fields but O(1) struct text (the O(N²) fix — a 1024-bucket
-// scene no longer embeds 2048 field decls in every shader). Reads only
-// `offsets[bucket_index]`; `args` is host-consumed (indirect dispatch), layout-only.
+// scene no longer embeds 2048 field decls in every shader). Reads
+// `offsets[bucket_index]` and the bucket's tile count (`args[bucket_index].w`);
+// the rest of `args` is host-consumed (indirect dispatch).
+//
+// classify-dispatch-row: must equal the constant of the same name in
+// material_classify_wgsl/bind_groups.wgsl, which explains it.
+const CLASSIFY_DISPATCH_ROW: u32 = 32768u;
 struct ClassifyBuckets {
     args: array<vec4<u32>, {{ bucket_entries.len() }}u>,
     offsets: array<u32, {{ bucket_entries.len() }}u>,

@@ -365,6 +365,69 @@ fn default_policy_kernels_validate() {
     }
 }
 
+/// classify-dispatch-row: the classify pass lays each bucket's indirect
+/// dispatch out in rows of `CLASSIFY_DISPATCH_ROW` tiles, because one
+/// dimension cannot count more than `maxComputeWorkgroupsPerDimension`
+/// (65,535) and an indirect dispatch over the limit is silently skipped. The
+/// kernels must find their tile with the SAME row length, bound the lookup by
+/// the bucket's tile count (the last row is partial), and never go back to
+/// indexing by `workgroup_id.x` alone.
+#[test]
+fn classify_dispatch_rows_agree_between_classify_and_kernels() {
+    fn row_const(src: &str, label: &str) -> u32 {
+        let at = src
+            .find("const CLASSIFY_DISPATCH_ROW: u32 = ")
+            .unwrap_or_else(|| panic!("{label}: no CLASSIFY_DISPATCH_ROW"));
+        let rest = &src[at + "const CLASSIFY_DISPATCH_ROW: u32 = ".len()..];
+        rest[..rest.find('u').expect("u32 literal")]
+            .parse()
+            .expect("row length")
+    }
+
+    let mut rows = Vec::new();
+    for (msaa, mips) in CONFIGS {
+        for (base, id, skybox) in [
+            (ShadingBase::Pbr, MaterialShaderId::PBR, false),
+            (ShadingBase::Pbr, MaterialShaderId::PBR, true),
+        ] {
+            let label = format!("opaque skybox={skybox} msaa={msaa:?} mips={mips}");
+            let src = render(&first_party_key(id, base, skybox, msaa, mips), &label);
+            let row = row_const(&src, &label);
+            assert!(
+                (1..=65_535).contains(&row),
+                "{label}: a dispatch row must fit one dispatch dimension"
+            );
+            assert!(
+                src.contains("wg_id.y * CLASSIFY_DISPATCH_ROW + wg_id.x"),
+                "{label}: the kernel must find its tile by row and column"
+            );
+            assert!(
+                src.contains("].w, classify_buckets.bucket_capacity)"),
+                "{label}: the tile lookup must be bounded by the bucket's tile count"
+            );
+            assert!(
+                !src.contains("classify_buckets.tiles[bucket_offset + wg_id.x]"),
+                "{label}: indexing tiles by workgroup_id.x alone caps a bucket at 65,535 tiles"
+            );
+            rows.push(row);
+        }
+    }
+    for (msaa, emit) in [(None, false), (Some(4u32), true)] {
+        let label = format!("classify msaa={msaa:?} emit={emit}");
+        let src = render_classify(msaa, emit, &label);
+        naga_validate(&src, &label);
+        assert!(
+            src.contains("idx / CLASSIFY_DISPATCH_ROW + 1u"),
+            "{label}: classify must count dispatch rows"
+        );
+        rows.push(row_const(&src, &label));
+    }
+    assert!(
+        rows.windows(2).all(|pair| pair[0] == pair[1]),
+        "classify and the kernels must agree on the row length: {rows:?}"
+    );
+}
+
 #[test]
 fn first_party_opaque_shaders_validate() {
     let bases = [

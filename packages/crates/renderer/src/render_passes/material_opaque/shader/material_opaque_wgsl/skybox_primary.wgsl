@@ -31,7 +31,14 @@ fn cs_opaque(
     // is reserved at index 0 (see `first_party_bucket_entries`), so read
     // `offsets[0]` from the data-driven ClassifyBuckets layout.
     let bucket_offset = classify_buckets.offsets[0u];
-    let tile = classify_buckets.tiles[bucket_offset + wg_id.x];
+    // classify-dispatch-row: the dispatch is `tile_count` workgroups laid out
+    // in rows of CLASSIFY_DISPATCH_ROW (y is 0 until a bucket holds more than
+    // one row); the last row's unused tail returns here.
+    let tile_slot = wg_id.y * CLASSIFY_DISPATCH_ROW + wg_id.x;
+    if (tile_slot >= min(classify_buckets.args[0u].w, classify_buckets.bucket_capacity)) {
+        return;
+    }
+    let tile = classify_buckets.tiles[bucket_offset + tile_slot];
     let coords = vec2<i32>(i32(tile.x * 8u + lid.x), i32(tile.y * 8u + lid.y));
     let screen_dims = textureDimensions(opaque_tex);
     let screen_dims_i32 = vec2<i32>(i32(screen_dims.x), i32(screen_dims.y));
@@ -79,7 +86,14 @@ fn cs_shade(
 ) {
     // SKYBOX bucket is reserved at index 0 (see first_party_bucket_entries).
     let bucket_offset = classify_buckets.offsets[0u];
-    let tile = classify_buckets.tiles[bucket_offset + wg_id.x];
+    // classify-dispatch-row: the dispatch is `tile_count` workgroups laid out
+    // in rows of CLASSIFY_DISPATCH_ROW (y is 0 until a bucket holds more than
+    // one row); the last row's unused tail returns here.
+    let tile_slot = wg_id.y * CLASSIFY_DISPATCH_ROW + wg_id.x;
+    if (tile_slot >= min(classify_buckets.args[0u].w, classify_buckets.bucket_capacity)) {
+        return;
+    }
+    let tile = classify_buckets.tiles[bucket_offset + tile_slot];
     let coords = vec2<i32>(i32(tile.x * 8u + lid.x), i32(tile.y * 8u + lid.y));
     let screen_dims = textureDimensions(opaque_tex);
     let screen_dims_i32 = vec2<i32>(i32(screen_dims.x), i32(screen_dims.y));

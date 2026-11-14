@@ -56,7 +56,14 @@ fn cs_opaque(
     // the old per-name `<name>_offset` field held) from the `offsets` array —
     // no O(N) per-bucket field walk.
     let bucket_offset = classify_buckets.offsets[{{ bucket_index }}u];
-    let tile = classify_buckets.tiles[bucket_offset + wg_id.x];
+    // classify-dispatch-row: the dispatch is `tile_count` workgroups laid out
+    // in rows of CLASSIFY_DISPATCH_ROW (y is 0 until a bucket holds more than
+    // one row); the last row's unused tail returns here.
+    let tile_slot = wg_id.y * CLASSIFY_DISPATCH_ROW + wg_id.x;
+    if (tile_slot >= min(classify_buckets.args[{{ bucket_index }}u].w, classify_buckets.bucket_capacity)) {
+        return;
+    }
+    let tile = classify_buckets.tiles[bucket_offset + tile_slot];
     let coords = vec2<i32>(i32(tile.x * 8u + lid.x), i32(tile.y * 8u + lid.y));
     {% if prep_present %}g_prep_ctx = PrepReadContext(PREP_MODE_PRIMARY, coords, vec2<i32>(0, 0));{% endif %}
     let screen_dims = textureDimensions(opaque_tex);
@@ -868,7 +875,14 @@ fn cs_shade(
     // list; `workgroup_id.x` is the bucket entry index, `local_invocation_id`
     // the 8×8 thread → pixel offset).
     let bucket_offset = classify_buckets.offsets[{{ bucket_index }}u];
-    let tile = classify_buckets.tiles[bucket_offset + wg_id.x];
+    // classify-dispatch-row: the dispatch is `tile_count` workgroups laid out
+    // in rows of CLASSIFY_DISPATCH_ROW (y is 0 until a bucket holds more than
+    // one row); the last row's unused tail returns here.
+    let tile_slot = wg_id.y * CLASSIFY_DISPATCH_ROW + wg_id.x;
+    if (tile_slot >= min(classify_buckets.args[{{ bucket_index }}u].w, classify_buckets.bucket_capacity)) {
+        return;
+    }
+    let tile = classify_buckets.tiles[bucket_offset + tile_slot];
     let coords = vec2<i32>(i32(tile.x * 8u + lid.x), i32(tile.y * 8u + lid.y));
     let screen_dims = textureDimensions(opaque_tex);
     let screen_dims_i32 = vec2<i32>(i32(screen_dims.x), i32(screen_dims.y));

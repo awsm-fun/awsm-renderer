@@ -194,8 +194,9 @@ impl ClassifyBuffers {
     }
 
     /// Writes the per-frame header reset into the buffer: zeroes the
-    /// per-bucket `workgroup_count_x` atomics, re-asserts `(y=1, z=1)`,
-    /// and re-emits the bucket offsets + capacity. The tile array tail
+    /// per-bucket `workgroup_count_x` and `tile_count` atomics, re-asserts
+    /// `(y=1, z=1)` (classify raises `y` when a bucket holds more than one
+    /// dispatch row of tiles), and re-emits the bucket offsets + capacity. The tile array tail
     /// is left alone — classify overwrites each entry it appends.
     pub fn reset_header(&self, gpu: &AwsmRendererWebGpu) -> Result<(), AwsmCoreError> {
         gpu.write_buffer(
@@ -211,7 +212,7 @@ impl ClassifyBuffers {
 /// Layouts the header for `bucket_count` buckets.
 ///
 /// Layout order (matches the templated WGSL `ClassifyOutput` struct):
-///   1. `bucket_count` × `ClassifyIndirectArgs { x:0, y:1, z:1, _pad:0 }`
+///   1. `bucket_count` × `ClassifyIndirectArgs { x:0, y:1, z:1, tile_count:0 }`
 ///   2. `bucket_count` × per-bucket starting offset into the
 ///      `tiles` array (in entry-count units, each entry 8 B).
 ///      Bucket `i` starts at `i * bucket_capacity`.
@@ -226,7 +227,7 @@ pub fn write_header(dst: &mut [u8], bucket_capacity: u32, bucket_count: u32) {
         dst[base..base + 4].copy_from_slice(&[0; 4]); // x
         dst[base + 4..base + 8].copy_from_slice(&one); // y
         dst[base + 8..base + 12].copy_from_slice(&one); // z
-        dst[base + 12..base + 16].copy_from_slice(&[0; 4]); // _pad
+        dst[base + 12..base + 16].copy_from_slice(&[0; 4]); // tile_count
     }
     // 2. Per-bucket offsets.
     let offsets_base = (bucket_count * INDIRECT_ARGS_STRIDE) as usize;
