@@ -342,18 +342,18 @@ impl SsrComposite {
         let failed = |message: &str| -> crate::error::AwsmError {
             awsm_renderer_core::error::AwsmCoreError::PipelineCreation(message.to_string()).into()
         };
-        match &self.pipeline {
+        let compile = match &mut self.pipeline {
             CompositePipeline::Ready(_) => return Ok(()),
             CompositePipeline::Failed(message) => return Err(failed(message)),
-            CompositePipeline::Pending(_) => {}
-        }
-        let CompositePipeline::Pending(compile) = std::mem::replace(
-            &mut self.pipeline,
-            CompositePipeline::Failed("SSR composite compile was interrupted".to_string()),
-        ) else {
-            return Ok(());
+            CompositePipeline::Pending(compile) => compile,
         };
-        match resolved_pipeline(compile.await) {
+        // Awaited in place, never moved out: a commit that is dropped while
+        // it waits here (an app that races its load against a cancel) must
+        // leave the compile `Pending` for the next commit to collect. Taking
+        // it out first left the composite marked failed, and the next commit
+        // turned SSR off over a pipeline the driver never rejected.
+        let compiled = compile.await;
+        match resolved_pipeline(compiled) {
             Ok(pipeline) => {
                 self.pipeline = CompositePipeline::Ready(pipeline);
                 Ok(())

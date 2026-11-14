@@ -105,8 +105,11 @@ fn brdf_direct(color: PbrMaterialColor, light_brdf: LightSample, surface_to_came
 
         // KHR_materials_anisotropy: an anisotropy bucket overrides the
         // isotropic base above with anisotropic GGX (the iso compute is
-        // then dead → DCE). Compile-time gated; no runtime strength check
-        // (strength 0 → anisotropic == isotropic anyway).
+        // then dead → DCE). Compile-time gated, no runtime strength check:
+        // every material this kernel shades takes the anisotropic lobe, and
+        // at strength 0 that is NOT the isotropic one above (another
+        // visibility term; a tangent frame that is not orthogonal to the
+        // shading normal). Anisotropy therefore always keeps its own kernel.
         {% if pbr_features.anisotropy %}
         let a = anisotropic_alpha(roughness, color.anisotropy_strength);
         let t = safe_normalize(color.anisotropy_t);

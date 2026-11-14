@@ -975,9 +975,11 @@ impl AwsmRenderer {
         // A cancelled channel means the generating task was dropped (page
         // teardown): leave the placeholder; the next commit retries.
         if let Ok(result) = pending.await {
-            let lut = result?;
+            // Only a LUT that is still needed can fail the commit: if content
+            // installed its own while this one was generating, the default —
+            // and whatever went wrong making it — is dropped.
             if self.brdf_lut_is_placeholder {
-                self.set_brdf_lut(lut);
+                self.set_brdf_lut(result?);
             }
         }
         Ok(())

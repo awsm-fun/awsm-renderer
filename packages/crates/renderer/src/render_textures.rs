@@ -131,10 +131,9 @@ impl RenderTextures {
         // the two destination fields (wasm-bindgen JS handle clone =
         // refcount bump, not a pipeline copy).
         //
-        // Earlier shape compiled the `None` variant twice inside one
-        // `try_join3` — `blit_get_pipeline` has no in-flight dedupe,
-        // so the two futures genuinely did the same work twice. Fixed
-        // here by compiling each variant exactly once.
+        // Each variant is asked for exactly once. (`blit_get_pipeline`
+        // would dedupe a second request for a key that is still compiling,
+        // but there is no reason to make one.)
         let (single_sample_pipeline, msaa_4_pipeline) = futures::future::try_join(
             async {
                 blit_get_pipeline(gpu, formats.color, None)
