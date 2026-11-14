@@ -611,6 +611,11 @@ pub struct DynamicMaterials {
     /// Does NOT size any per-frame shader/buffer — those follow the live
     /// count (§0). Validated `1..=65534` by the builder before it lands here.
     max_bucket_entries: usize,
+    /// Which PBR features split opaque buckets (the builder's
+    /// `with_pbr_specialization`). The variant reconcile maps each opaque
+    /// PBR material's own feature set through it before resolving the
+    /// bucket, so the registry itself only ever sees kernel feature sets.
+    pbr_specialization: awsm_renderer_materials::pbr::PbrSpecialization,
 }
 
 /// Parse + validate an assembled WGSL module with `naga` (Capabilities::all).
@@ -649,7 +654,24 @@ impl DynamicMaterials {
             bucket_entries_cache: first_party_bucket_entries(),
             dispatch_hash_cache: 0,
             max_bucket_entries: MAX_BUCKET_ENTRIES,
+            pbr_specialization: awsm_renderer_materials::pbr::PbrSpecialization::default(),
         }
+    }
+
+    /// Sets which PBR features split opaque buckets (from the builder). Must
+    /// be set before the first variant reconcile: buckets already resolved
+    /// keep the feature sets they were resolved with.
+    pub(crate) fn set_pbr_specialization(
+        &mut self,
+        specialization: awsm_renderer_materials::pbr::PbrSpecialization,
+    ) {
+        self.pbr_specialization = specialization;
+    }
+
+    /// Which PBR features give a material an opaque kernel of its own. See
+    /// [`awsm_renderer_materials::pbr::PbrSpecialization`].
+    pub fn pbr_specialization(&self) -> awsm_renderer_materials::pbr::PbrSpecialization {
+        self.pbr_specialization
     }
 
     /// Sets the registration ceiling (from the builder's resolved
@@ -1661,12 +1683,16 @@ impl crate::AwsmRenderer {
     /// Per-frame reconcile: route each opaque PBR material to its
     /// per-feature-set *variant* bucket, allocating + compiling new variants
     /// and re-laying-out the bucket-dependent GPU state when the set grows.
+    /// "Feature set" here is the KERNEL's
+    /// ([`PbrSpecialization::kernel_features`](awsm_renderer_materials::pbr::PbrSpecialization::kernel_features)):
+    /// by default the cheap features are in every kernel and only the
+    /// expensive ones split buckets.
     ///
     /// Called ONLY from `commit_load` (the one compile path) — never per render
     /// frame; a cheap no-op when the `variants_dirty` flag is clear (a commit
     /// with no material change since the last one). When a material entered / a
     /// feature-set changed since the last commit, it:
-    /// 1. derives `PbrFeatures` for every opaque PBR material,
+    /// 1. derives the kernel `PbrFeatures` for every opaque PBR material,
     /// 2. resolves each to a variant `shader_id` (deduped; allocates a
     ///    new bucket on first sight of a feature-set),
     /// 3. stamps the resolved id into the material payload's first u32
@@ -1696,10 +1722,20 @@ impl crate::AwsmRenderer {
         // ── PBR feature-set variant resolution. Only PBR specializes
         //    per feature-set; a custom-only / unlit-only scene has no
         //    `wants`, but the ensure pass below still runs.
+        //    The bucket is keyed on the KERNEL's feature set, not the
+        //    material's: the policy adds the features every kernel carries
+        //    (by default the seven cheap ones), so materials that differ
+        //    only in those resolve to one bucket and one ~240 KB kernel.
+        //    A kernel compiled for a superset of a material's features
+        //    shades it identically — the per-extension payload indices are
+        //    0 for what the material lacks and the loaders return the
+        //    glTF-absent value there.
+        let specialization = self.dynamic_materials.pbr_specialization();
         let mut wants: Vec<(crate::materials::MaterialKey, ShadingBase, u32)> = Vec::new();
         for (key, mat) in self.materials.iter_for_variant_reconcile() {
             if let crate::materials::Material::Pbr(m) = mat {
-                wants.push((key, ShadingBase::Pbr, PbrFeatures::from_material(m).bits()));
+                let kernel_features = specialization.kernel_features(PbrFeatures::from_material(m));
+                wants.push((key, ShadingBase::Pbr, kernel_features.bits()));
             }
         }
         if !wants.is_empty() {

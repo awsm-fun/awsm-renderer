@@ -89,7 +89,11 @@ pub struct PbrMaterial {
 ///    present and unbound slots sample the 1×1 neutral.)
 /// 2. **Bucket identity** — [`Self::bits`] is the stable feature-hash that
 ///    maps a feature-set to its own `shader_id` / bucket, so two materials
-///    with the same feature-set share one specialized pipeline.
+///    with the same feature-set share one specialized pipeline. For the
+///    OPAQUE kernels the set that is hashed is not the material's own but
+///    [`PbrSpecialization::kernel_features`] of it: by default the cheap
+///    features are compiled into every kernel, so only the expensive ones
+///    split buckets.
 ///
 /// `double_sided` and `alpha_mode` are deliberately NOT here — the former
 /// is raster state (a pipeline-variant dimension, not shader code), and
@@ -201,6 +205,39 @@ impl PbrFeatures {
         }
     }
 
+    /// The features that are cheap to compile in and cheap to leave unused:
+    /// together they are about half a kilobyte of WGSL in a ~240 KB opaque
+    /// kernel, and a material without one of them pays an index test and a
+    /// neutral constant for it (their texture fetches and UV gradients are
+    /// behind `tex_info.exists`). They are what
+    /// [`PbrSpecialization::ExpensiveFeatures`] compiles into every opaque
+    /// PBR kernel.
+    ///
+    /// A feature belongs here only if a kernel compiled WITH it shades a
+    /// material WITHOUT it exactly as a kernel compiled without it would.
+    /// The extension loaders give that for free for these seven
+    /// (`pbr_material_load_*` return the glTF-absent value at index 0, and
+    /// the vertex-colour multiply is skipped when the material has none).
+    /// Anisotropy does NOT qualify (its unused path changes the specular
+    /// lobe), and the remaining lobes cost real per-pixel work.
+    pub fn cheap() -> Self {
+        Self {
+            vertex_color: true,
+            emissive_strength: true,
+            ior: true,
+            specular: true,
+            transmission: true,
+            volume: true,
+            dispersion: true,
+            ..Self::default()
+        }
+    }
+
+    /// Every feature that is in `self` or in `other`.
+    pub fn union(self, other: Self) -> Self {
+        Self::from_bits(self.bits() | other.bits())
+    }
+
     /// Stable one-bit-per-feature packing. Doubles as the feature-hash
     /// keying a feature-set to its opaque bucket.
     pub fn bits(&self) -> u32 {
@@ -284,6 +321,53 @@ impl PbrFeatures {
             iridescence: b & Self::BIT_IRIDESCENCE != 0,
             secondary_maps: b & Self::BIT_SECONDARY_MAPS != 0,
         }
+    }
+}
+
+/// Which PBR features give a material an opaque kernel (bucket) of its own.
+///
+/// Every distinct feature set a scene's opaque PBR materials resolve to is
+/// one more ~240 KB kernel to compile on a cold load, at roughly two seconds
+/// of compile per megabyte of WGSL. The features themselves are a small part
+/// of that text, so splitting on all of them buys little and costs a kernel
+/// per combination. This policy decides which ones are worth a kernel.
+///
+/// Set once, on the builder
+/// (`AwsmRendererBuilder::with_pbr_specialization`). It only affects the
+/// opaque (visibility-buffer) kernels; the transparent pass keeps one
+/// pipeline per exact feature set.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum PbrSpecialization {
+    /// The default. The cheap features ([`PbrFeatures::cheap`]: vertex colour,
+    /// emissive strength, IOR, specular, transmission, volume, dispersion)
+    /// are compiled into EVERY opaque PBR kernel, and only the expensive ones
+    /// (clearcoat, sheen, iridescence, anisotropy, diffuse transmission,
+    /// secondary maps) split buckets. Two materials that differ only in
+    /// cheap features share one kernel.
+    #[default]
+    ExpensiveFeatures,
+    /// One kernel per exact feature set, with nothing compiled in that the
+    /// material does not use — the behaviour up to 0.40. Smallest possible
+    /// kernels, most of them.
+    EveryFeature,
+}
+
+impl PbrSpecialization {
+    /// The features compiled into every opaque PBR kernel under this policy,
+    /// whether the material has them or not.
+    pub fn always_compiled(self) -> PbrFeatures {
+        match self {
+            Self::ExpensiveFeatures => PbrFeatures::cheap(),
+            Self::EveryFeature => PbrFeatures::default(),
+        }
+    }
+
+    /// The feature set of the opaque kernel that shades a material with
+    /// `material` features: the material's own, plus whatever this policy
+    /// compiles into every kernel. Always a superset of `material`, so the
+    /// kernel never lacks code the material needs.
+    pub fn kernel_features(self, material: PbrFeatures) -> PbrFeatures {
+        material.union(self.always_compiled())
     }
 }
 
@@ -912,6 +996,136 @@ mod pbr_features_tests {
             ..Default::default()
         };
         assert_eq!(f.bits(), expect.bits());
+    }
+
+    fn with(edit: impl FnOnce(&mut PbrFeatures)) -> PbrFeatures {
+        let mut f = PbrFeatures::default();
+        edit(&mut f);
+        f
+    }
+
+    /// Every single-feature set, by name.
+    fn single_features() -> Vec<(&'static str, PbrFeatures)> {
+        vec![
+            ("vertex_color", with(|f| f.vertex_color = true)),
+            ("emissive_strength", with(|f| f.emissive_strength = true)),
+            ("ior", with(|f| f.ior = true)),
+            ("specular", with(|f| f.specular = true)),
+            ("transmission", with(|f| f.transmission = true)),
+            ("volume", with(|f| f.volume = true)),
+            ("dispersion", with(|f| f.dispersion = true)),
+            (
+                "diffuse_transmission",
+                with(|f| f.diffuse_transmission = true),
+            ),
+            ("clearcoat", with(|f| f.clearcoat = true)),
+            ("sheen", with(|f| f.sheen = true)),
+            ("anisotropy", with(|f| f.anisotropy = true)),
+            ("iridescence", with(|f| f.iridescence = true)),
+            ("secondary_maps", with(|f| f.secondary_maps = true)),
+        ]
+    }
+
+    const CHEAP: [&str; 7] = [
+        "vertex_color",
+        "emissive_strength",
+        "ior",
+        "specular",
+        "transmission",
+        "volume",
+        "dispersion",
+    ];
+
+    /// The default policy: a cheap feature never gives a material a kernel of
+    /// its own, an expensive one always does.
+    #[test]
+    fn cheap_features_do_not_split_kernels_by_default() {
+        let policy = PbrSpecialization::default();
+        assert_eq!(policy, PbrSpecialization::ExpensiveFeatures);
+        let bare = policy.kernel_features(PbrFeatures::default());
+        assert_eq!(bare, PbrFeatures::cheap());
+        for (name, features) in single_features() {
+            let kernel = policy.kernel_features(features);
+            if CHEAP.contains(&name) {
+                assert_eq!(kernel, bare, "{name} must share the bare kernel");
+            } else {
+                assert_ne!(kernel, bare, "{name} must keep a kernel of its own");
+                assert_eq!(
+                    kernel,
+                    features.union(PbrFeatures::cheap()),
+                    "{name}: its kernel is itself plus the cheap set"
+                );
+            }
+        }
+        // Any mix of cheap features on top of an expensive one lands in that
+        // expensive feature's kernel.
+        let clearcoat = with(|f| f.clearcoat = true);
+        let mixed = with(|f| {
+            f.clearcoat = true;
+            f.emissive_strength = true;
+            f.specular = true;
+            f.vertex_color = true;
+        });
+        assert_eq!(
+            policy.kernel_features(clearcoat),
+            policy.kernel_features(mixed)
+        );
+    }
+
+    /// A kernel must never lack code its material needs, under either policy.
+    #[test]
+    fn kernel_features_are_a_superset_of_the_materials() {
+        for policy in [
+            PbrSpecialization::ExpensiveFeatures,
+            PbrSpecialization::EveryFeature,
+        ] {
+            for bits in 0..(1u32 << PbrFeatures::COUNT) {
+                // Every 97th set keeps this quick; it still covers each bit
+                // on and off many times over.
+                if bits % 97 != 0 && bits != (1 << PbrFeatures::COUNT) - 1 {
+                    continue;
+                }
+                let material = PbrFeatures::from_bits(bits);
+                let kernel = policy.kernel_features(material);
+                assert_eq!(
+                    kernel.bits() & material.bits(),
+                    material.bits(),
+                    "{policy:?} dropped a feature of {material:?}"
+                );
+            }
+        }
+    }
+
+    /// `EveryFeature` is the pre-0.41 behaviour: the material's own set,
+    /// untouched.
+    #[test]
+    fn every_feature_policy_is_the_identity() {
+        let policy = PbrSpecialization::EveryFeature;
+        assert_eq!(policy.always_compiled(), PbrFeatures::default());
+        for (name, features) in single_features() {
+            assert_eq!(policy.kernel_features(features), features, "{name}");
+        }
+        assert_eq!(
+            policy.kernel_features(PbrFeatures::default()),
+            PbrFeatures::default()
+        );
+    }
+
+    /// The retired texture-slot bits and the expensive features are never
+    /// part of the cheap set.
+    #[test]
+    fn the_cheap_set_is_exactly_the_seven() {
+        let cheap = PbrFeatures::cheap();
+        let expect = single_features()
+            .into_iter()
+            .filter(|(name, _)| CHEAP.contains(name))
+            .fold(PbrFeatures::default(), |acc, (_, f)| acc.union(f));
+        assert_eq!(cheap, expect);
+        assert_eq!(cheap.bits().count_ones(), 7);
+        assert!(
+            !cheap.anisotropy,
+            "anisotropy's unused path is not neutral; it must stay specialized"
+        );
     }
 
     #[test]

@@ -1810,6 +1810,7 @@ pub struct RendererConfigSpec {
     features: RendererFeatures,
     max_edge_budget: Option<u32>,
     bucket_config: Option<crate::dynamic_materials::BucketConfig>,
+    pbr_specialization: awsm_renderer_materials::pbr::PbrSpecialization,
     prep_config: crate::render_passes::material_prep::PrepPassConfig,
     optimization_policy: crate::optimization_policy::RendererOptimizationPolicy,
     scene_spatial_config: Option<crate::scene_spatial::SceneSpatialConfig>,
@@ -1889,6 +1890,12 @@ pub struct AwsmRendererBuilder {
     /// → default 32 (identical to today). Set via
     /// [`AwsmRendererBuilder::with_bucket_config`]; validated `1..=65534`.
     bucket_config: Option<crate::dynamic_materials::BucketConfig>,
+    /// Which PBR features give a material an opaque kernel of its own.
+    /// Default [`PbrSpecialization::ExpensiveFeatures`]; set via
+    /// [`AwsmRendererBuilder::with_pbr_specialization`].
+    ///
+    /// [`PbrSpecialization::ExpensiveFeatures`]: awsm_renderer_materials::pbr::PbrSpecialization::ExpensiveFeatures
+    pbr_specialization: awsm_renderer_materials::pbr::PbrSpecialization,
     /// Plan B shared-prep + deferred-shadow config
     /// (`docs/plans/deferred-shared-prep-pass.md`). Inert until the prep pass is
     /// wired in; `enabled` defaults `false` (legacy recompute-in-shader path).
@@ -1992,6 +1999,7 @@ impl AwsmRendererBuilder {
             features: RendererFeatures::default(),
             max_edge_budget: None,
             bucket_config: None,
+            pbr_specialization: awsm_renderer_materials::pbr::PbrSpecialization::default(),
             prep_config: crate::render_passes::material_prep::PrepPassConfig::default(),
             optimization_policy: crate::optimization_policy::RendererOptimizationPolicy::default(),
             phase_handler: None,
@@ -2019,6 +2027,7 @@ impl AwsmRendererBuilder {
             features: self.features.clone(),
             max_edge_budget: self.max_edge_budget,
             bucket_config: self.bucket_config,
+            pbr_specialization: self.pbr_specialization,
             prep_config: self.prep_config,
             optimization_policy: self.optimization_policy.clone(),
             scene_spatial_config: self.scene_spatial_config,
@@ -2046,6 +2055,7 @@ impl AwsmRendererBuilder {
             features: spec.features,
             max_edge_budget: spec.max_edge_budget,
             bucket_config: spec.bucket_config,
+            pbr_specialization: spec.pbr_specialization,
             prep_config: spec.prep_config,
             optimization_policy: spec.optimization_policy,
             phase_handler: None,
@@ -2159,6 +2169,37 @@ impl AwsmRendererBuilder {
             }
         };
         self.bucket_config = Some(config);
+        self
+    }
+
+    /// Chooses which PBR features give a material an opaque kernel (bucket)
+    /// of its own. A kernel is ~240 KB of WGSL and about half a second of
+    /// cold compile, so every distinct feature set costs a load that much.
+    ///
+    /// The default, [`PbrSpecialization::ExpensiveFeatures`], compiles the
+    /// seven cheap features (vertex colour, emissive strength, IOR, specular,
+    /// transmission, volume, dispersion — about 0.5 KB of WGSL together)
+    /// into every opaque PBR kernel, so materials that differ only in those
+    /// share one kernel; clearcoat, sheen, iridescence, anisotropy, diffuse
+    /// transmission and secondary maps still get their own. A material
+    /// without a cheap feature renders exactly as before: the code is there,
+    /// reads the glTF-absent value, and its texture fetches are skipped.
+    ///
+    /// [`PbrSpecialization::EveryFeature`] restores one kernel per exact
+    /// feature set (the behaviour up to 0.40): the smallest kernels, and one
+    /// more of them for every combination a scene uses. Choose it if a
+    /// device shows a per-pixel cost for the unused cheap features — that
+    /// cost has not been measured on phones.
+    ///
+    /// Build-time only. The transparent pass is not affected.
+    ///
+    /// [`PbrSpecialization::ExpensiveFeatures`]: awsm_renderer_materials::pbr::PbrSpecialization::ExpensiveFeatures
+    /// [`PbrSpecialization::EveryFeature`]: awsm_renderer_materials::pbr::PbrSpecialization::EveryFeature
+    pub fn with_pbr_specialization(
+        mut self,
+        specialization: awsm_renderer_materials::pbr::PbrSpecialization,
+    ) -> Self {
+        self.pbr_specialization = specialization;
         self
     }
 
@@ -2329,6 +2370,7 @@ impl AwsmRendererBuilder {
             mut features,
             max_edge_budget,
             bucket_config,
+            pbr_specialization,
             prep_config,
             optimization_policy,
             phase_handler,
@@ -3137,6 +3179,9 @@ impl AwsmRendererBuilder {
                 .dynamic_materials
                 .set_max_bucket_entries(bucket_config.max_bucket_entries);
         }
+        _self
+            .dynamic_materials
+            .set_pbr_specialization(pbr_specialization);
 
         // Initial AA + PP state — the effects + display pipelines we
         // installed in the cross-tail pool above already match the

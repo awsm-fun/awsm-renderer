@@ -291,6 +291,80 @@ fn secondary_maps_shaders_validate_and_gate() {
     }
 }
 
+/// The kernels the DEFAULT specialization policy compiles: the cheap
+/// features in every one, plus each expensive feature on its own and all of
+/// them together. They must render and validate in every AA config, carry
+/// the cheap features' code, and still leave an absent expensive feature
+/// out.
+#[test]
+fn default_policy_kernels_validate() {
+    use awsm_renderer_materials::pbr::{PbrFeatures, PbrSpecialization};
+    let policy = PbrSpecialization::default();
+    let expensive: [(&str, fn(&mut PbrFeatures)); 6] = [
+        ("diffuse_transmission", |f| f.diffuse_transmission = true),
+        ("clearcoat", |f| f.clearcoat = true),
+        ("sheen", |f| f.sheen = true),
+        ("anisotropy", |f| f.anisotropy = true),
+        ("iridescence", |f| f.iridescence = true),
+        ("secondary_maps", |f| f.secondary_maps = true),
+    ];
+    let mut sets: Vec<(String, PbrFeatures)> = vec![(
+        "bare".to_string(),
+        policy.kernel_features(PbrFeatures::default()),
+    )];
+    let mut every = PbrFeatures::default();
+    for (name, set) in expensive {
+        let mut material = PbrFeatures::default();
+        set(&mut material);
+        set(&mut every);
+        sets.push((name.to_string(), policy.kernel_features(material)));
+    }
+    sets.push(("every".to_string(), policy.kernel_features(every)));
+
+    for (name, features) in &sets {
+        for (msaa, mips) in CONFIGS {
+            let label = format!("opaque/pbr default-policy {name} msaa={msaa:?} mips={mips}");
+            let mut key =
+                first_party_key(MaterialShaderId::PBR, ShadingBase::Pbr, false, msaa, mips);
+            key.pbr_features = features.bits();
+            let src = render(&key, &label);
+            naga_validate(&src, &label);
+            // The cheap features are compiled in...
+            assert!(
+                src.contains(
+                    "pbr_material_load_emissive_strength(material.emissive_strength_index)"
+                ),
+                "{label}: emissive strength must be read from the material"
+            );
+            assert!(
+                src.contains("material.vertex_color_info_index != 0u"),
+                "{label}: the vertex-colour multiply must be present and guarded by the material's index"
+            );
+            // ...and an expensive one only where the material set asks for it.
+            assert_eq!(
+                src.contains("pbr_material_load_secondary_maps(material.secondary_maps_index)"),
+                features.secondary_maps,
+                "{label}: secondary maps must follow the feature set"
+            );
+        }
+    }
+
+    // The same two materials under `EveryFeature`: nothing is added, so the
+    // bare kernel has neither of the cheap paths above.
+    let bare = PbrSpecialization::EveryFeature.kernel_features(PbrFeatures::default());
+    for (msaa, mips) in CONFIGS {
+        let label = format!("opaque/pbr every-feature bare msaa={msaa:?} mips={mips}");
+        let mut key = first_party_key(MaterialShaderId::PBR, ShadingBase::Pbr, false, msaa, mips);
+        key.pbr_features = bare.bits();
+        let src = render(&key, &label);
+        assert!(
+            !src.contains("pbr_material_load_emissive_strength(material.emissive_strength_index)")
+                && !src.contains("material.vertex_color_info_index != 0u"),
+            "{label}: a bare kernel compiles no cheap-feature code under EveryFeature"
+        );
+    }
+}
+
 #[test]
 fn first_party_opaque_shaders_validate() {
     let bases = [
