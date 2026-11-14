@@ -9,7 +9,7 @@ use awsm_renderer_scene::Trs;
 use awsm_renderer_scene_loader::{load_scene_for_player, LoadedScene};
 
 use crate::harness::{
-    count_authored_nodes, create_renderer, create_renderer_with_msaa,
+    count_authored_nodes, create_renderer, create_renderer_sized, create_renderer_with_msaa,
     create_renderer_with_specialization, destroy_renderer, fetch_scene, now_ms, orbit_eye,
     run_frames, scene_bounds, url_flag_value, url_has_flag,
 };
@@ -396,6 +396,13 @@ pub async fn run_all() {
             "ssr-composite-failure-survives-a-failed-commit",
             ssr_composite_failure_survives_a_failed_commit(&origin).await,
         );
+        // ── 22. …and a composite that was only still COMPILING when a commit
+        //        was cancelled is not mistaken for a rejected one. ────────────
+        set_hud("player-tests: ssr-composite-survives-a-cancelled-commit");
+        report.emit_result(
+            "ssr-composite-survives-a-cancelled-commit",
+            ssr_composite_survives_a_cancelled_commit(&origin).await,
+        );
     }
 
     // ── 20. PBR materials that differ only in cheap features share one
@@ -421,6 +428,18 @@ pub async fn run_all() {
         ] {
             set_hud(&format!("player-tests: {name}"));
             report.emit_result(name, pbr_cheap_feature_edit_keeps_kernels(msaa).await);
+        }
+    }
+
+    // ── 23. a bucket that covers more tiles than one dispatch dimension can
+    //        count is still shaded. Needs no bundle. ──────────────────────────
+    if feature_grid_enabled {
+        for (name, msaa) in [
+            ("large-canvas-bucket-is-shaded", true),
+            ("large-canvas-bucket-is-shaded:no-msaa", false),
+        ] {
+            set_hud(&format!("player-tests: {name}"));
+            report.emit_result(name, large_canvas_bucket_is_shaded(msaa).await);
         }
     }
 
@@ -1758,6 +1777,176 @@ async fn ssr_composite_failure_survives_a_failed_commit(origin: &str) -> Result<
     )
 }
 
+/// Holds back the RESOLUTION of every pipeline whose shader-module label
+/// matches a pattern until [`Self::release`] — a compile that is still
+/// running for as long as the check wants — and counts the other pipelines
+/// in flight. Undo with [`restore_compute_pipeline_compiles`].
+struct CompileGate(wasm_bindgen::JsValue);
+
+impl CompileGate {
+    fn install(hold: &str) -> Result<Self> {
+        let install = js_sys::Function::new_with_args(
+            "hold",
+            "const proto = GPUDevice.prototype;
+             const re = new RegExp(hold);
+             const gate = { held: [], heldCount: 0, inFlight: 0, kernels: 0 };
+             for (const name of ['createComputePipelineAsync', 'createRenderPipelineAsync']) {
+               const saved = '__playerTests_' + name;
+               if (!proto[saved]) proto[saved] = proto[name];
+               const original = proto[saved];
+               proto[name] = function (descriptor) {
+                 const stage = descriptor && (descriptor.compute || descriptor.vertex);
+                 const label = (stage && stage.module && stage.module.label) || '';
+                 const compile = original.call(this, descriptor);
+                 if (re.test(label)) {
+                   gate.heldCount++;
+                   return new Promise((resolve, reject) =>
+                     gate.held.push(() => compile.then(resolve, reject)));
+                 }
+                 if (/^Material Opaque/.test(label)) gate.kernels++;
+                 gate.inFlight++;
+                 const done = () => { gate.inFlight--; };
+                 compile.then(done, done);
+                 return compile;
+               };
+             }
+             gate.release = () => { for (const settle of gate.held.splice(0)) settle(); };
+             return gate;",
+        );
+        install
+            .call1(&wasm_bindgen::JsValue::NULL, &hold.into())
+            .map(Self)
+            .map_err(|e| anyhow!("install compile gate: {e:?}"))
+    }
+
+    fn number(&self, field: &str) -> f64 {
+        js_sys::Reflect::get(&self.0, &field.into())
+            .ok()
+            .and_then(|v| v.as_f64())
+            .unwrap_or(0.0)
+    }
+
+    /// Lets every held compile settle.
+    fn release(&self) {
+        if let Ok(release) = js_sys::Reflect::get(&self.0, &"release".into()) {
+            let release: js_sys::Function = wasm_bindgen::JsCast::unchecked_into(release);
+            let _ = release.call0(&self.0);
+        }
+    }
+}
+
+/// Resolves after `ms` milliseconds (a `setTimeout`).
+async fn sleep_ms(ms: u32) {
+    let timer = js_sys::Function::new_with_args(
+        "ms",
+        "return new Promise((resolve) => setTimeout(resolve, ms));",
+    );
+    if let Ok(promise) = timer.call1(&wasm_bindgen::JsValue::NULL, &f64::from(ms).into()) {
+        let promise: js_sys::Promise = wasm_bindgen::JsCast::unchecked_into(promise);
+        let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+    }
+}
+
+/// Check 22 — `ssr-composite-survives-a-cancelled-commit`. The SSR composite's
+/// compile is left running when the pass is built and collected by the
+/// commit. An app may drop the `commit_load` future while it waits there — a
+/// load raced against a cancel, a route change. The compile is still good:
+/// the next commit must collect it and keep SSR on.
+///
+/// Locks the regression where the commit took the pending compile out of the
+/// pass before awaiting it, leaving "failed" behind; a commit dropped at that
+/// point left the composite failed for good and the next one turned SSR off
+/// over a pipeline the driver never rejected.
+///
+/// The check holds the composite's compile open, drives a load until every
+/// other pipeline has settled (so the commit can only be waiting for the
+/// composite), drops it, lets the compile finish and commits again.
+async fn ssr_composite_survives_a_cancelled_commit(origin: &str) -> Result<String> {
+    const SCENE: &str = "ssr-arena";
+    /// The commit is parked on the composite once the kernels have been
+    /// issued and nothing else has been in flight for this many 100 ms ticks.
+    const QUIET_TICKS: u32 = 5;
+    const DEADLINE_MS: f64 = 120_000.0;
+
+    let bundle_base = format!("{origin}/{SCENE}/bundle");
+    let scene = fetch_scene(&bundle_base).await?;
+    let (mut renderer, _canvas) = create_renderer(base_features()).await?;
+    let assets = awsm_renderer_scene_loader::assets::HttpAssets::new(bundle_base);
+
+    let gate = CompileGate::install("^SSR Composite shader$")?;
+    let started = now_ms();
+    let cancelled = {
+        let load = load_scene_for_player(&mut renderer, &scene, &assets, |_| {});
+        futures::pin_mut!(load);
+        let mut quiet = 0;
+        loop {
+            let tick = sleep_ms(100);
+            futures::pin_mut!(tick);
+            if let futures::future::Either::Left((finished, _)) =
+                futures::future::select(load.as_mut(), tick).await
+            {
+                break Err(anyhow!(
+                    "the load finished ({}) although the composite's compile was held back — the check set nothing up",
+                    if finished.is_ok() { "ok" } else { "with an error" }
+                ));
+            }
+            let parked = gate.number("heldCount") > 0.0
+                && gate.number("kernels") > 0.0
+                && gate.number("inFlight") == 0.0;
+            quiet = if parked { quiet + 1 } else { 0 };
+            if quiet >= QUIET_TICKS {
+                break Ok(now_ms() - started);
+            }
+            if now_ms() - started > DEADLINE_MS {
+                break Err(anyhow!(
+                    "the load never came to rest on the held composite ({} held, {} kernels issued, {} in flight)",
+                    gate.number("heldCount"),
+                    gate.number("kernels"),
+                    gate.number("inFlight")
+                ));
+            }
+        }
+        // `load` is dropped here: the commit is cancelled where it waits.
+    };
+    // The compile finishes after the commit that issued it is gone.
+    gate.release();
+    restore_compute_pipeline_compiles();
+    let cancelled_after = match cancelled {
+        Ok(ms) => ms,
+        Err(e) => {
+            destroy_renderer(renderer);
+            return Err(e);
+        }
+    };
+
+    let retry = renderer.commit_load(|_| {}).await;
+    let ssr_enabled = renderer.post_processing.ssr.enabled;
+    let ssr_pass = renderer.render_passes.ssr.is_some();
+    let frames = match &retry {
+        Ok(_) => {
+            renderer.update_transforms();
+            let (center, radius) = scene_bounds(&renderer);
+            run_frames(&mut renderer, center, radius, 4, |_| {
+                orbit_eye(center, radius, 2.2, 0.8)
+            })
+            .await
+            .map(|_| ())
+        }
+        Err(_) => Ok(()),
+    };
+    destroy_renderer(renderer);
+    retry.map_err(|e| anyhow!("the commit after the cancelled one failed: {e}"))?;
+    frames?;
+    if !ssr_enabled || !ssr_pass {
+        return Err(anyhow!(
+            "the commit after a cancelled one left ssr.enabled={ssr_enabled}, SSR pass={ssr_pass}: a composite that was only still compiling was treated as rejected"
+        ));
+    }
+    Ok(format!(
+        "commit dropped {cancelled_after:.0} ms in, waiting for the composite; the next commit collected it and kept SSR on"
+    ))
+}
+
 /// Check 14 — `prep-compile-failure-keeps-rendering`. A config change that
 /// re-keys the material-prep pipelines (here the SSCS step count) is compiled
 /// by the next `commit_load`. On a scene that is already on screen, a compile
@@ -2154,21 +2343,71 @@ const FEATURE_GRID_SCENE: &str = "pbr-feature-grid";
 /// One material of the `pbr-cheap-features-share-a-kernel` scene.
 struct FeatureCase {
     name: &'static str,
-    /// Whether the material carries an EXPENSIVE feature (here: clearcoat),
-    /// i.e. keeps a kernel apart from the cheap-only ones by default.
-    expensive: bool,
+    /// The kernel the material shades through under the default policy
+    /// (`ExpensiveFeatures`): `""` for the one every material shares that
+    /// has only free features, else a name for the features that keep it
+    /// apart.
+    kernel: &'static str,
+    /// The same under `LobesOnly`, where specular, transmission, volume and
+    /// dispersion join the shared kernel.
+    lobes_kernel: &'static str,
     edit: fn(&mut awsm_renderer::materials::pbr::PbrMaterial),
 }
 
-/// Ten opaque PBR materials: a bare one, one per cheap feature that an
-/// opaque material can carry (transmission routes a material to the
-/// transparent pass, so it cannot), all of those together, and two with
-/// clearcoat. Ten distinct feature sets.
+/// Sixteen opaque PBR materials: a bare one; one per feature that is free to
+/// share (emissive strength, IOR, vertex colour); one per feature that is
+/// neutral but not free (specular, volume, dispersion, and transmission at
+/// factor 0, because a material that actually transmits is drawn by the
+/// transparent pass) and two combinations of those; and four lobes —
+/// clearcoat at full strength and at factor 0, iridescence, sheen, secondary
+/// maps — alone and with free features on top. Fifteen distinct feature sets
+/// (the two clearcoat strengths are one set).
 fn feature_cases() -> Vec<FeatureCase> {
     use awsm_renderer::materials::pbr::{
         PbrMaterial, PbrMaterialClearCoat, PbrMaterialDispersion, PbrMaterialEmissiveStrength,
-        PbrMaterialIor, PbrMaterialSpecular, PbrMaterialVertexColorInfo, PbrMaterialVolume,
+        PbrMaterialIor, PbrMaterialIridescence, PbrMaterialSecondaryMaps, PbrMaterialSheen,
+        PbrMaterialSpecular, PbrMaterialTransmission, PbrMaterialVertexColorInfo,
+        PbrMaterialVolume,
     };
+    /// The extension is there and transmits nothing, so the material stays
+    /// opaque: only the feature BIT is exercised (a kernel of its own under
+    /// `EveryFeature`).
+    fn transmission(m: &mut PbrMaterial) {
+        m.transmission = Some(PbrMaterialTransmission {
+            tex: None,
+            factor: 0.0,
+        });
+    }
+    fn iridescence(m: &mut PbrMaterial) {
+        m.iridescence = Some(PbrMaterialIridescence {
+            tex: None,
+            factor: 1.0,
+            ior: 1.3,
+            thickness_tex: None,
+            thickness_min: 100.0,
+            thickness_max: 400.0,
+        });
+    }
+    fn sheen(m: &mut PbrMaterial) {
+        m.sheen = Some(PbrMaterialSheen {
+            roughness_tex: None,
+            roughness_factor: 0.5,
+            color_tex: None,
+            color_factor: [0.9, 0.3, 0.6],
+        });
+    }
+    /// No detail textures bound: the feature's code is compiled in and its
+    /// fetches skipped, so the quad must render like a bare one.
+    fn secondary_maps(m: &mut PbrMaterial) {
+        m.secondary_maps = Some(PbrMaterialSecondaryMaps {
+            base_color_strength: 1.0,
+            normal_strength: 1.0,
+            metallic_roughness_strength: 1.0,
+            occlusion_strength: 1.0,
+            emissive_strength: 1.0,
+            ..Default::default()
+        });
+    }
     fn emissive_strength(m: &mut PbrMaterial) {
         m.emissive_factor = [0.10, 0.04, 0.0];
         m.emissive_strength = Some(PbrMaterialEmissiveStrength { strength: 4.0 });
@@ -2209,69 +2448,64 @@ fn feature_cases() -> Vec<FeatureCase> {
             normal_scale: 1.0,
         });
     }
+    let case = |name, kernel, lobes_kernel, edit| FeatureCase {
+        name,
+        kernel,
+        lobes_kernel,
+        edit,
+    };
     vec![
-        FeatureCase {
-            name: "bare",
-            expensive: false,
-            edit: |_| {},
-        },
-        FeatureCase {
-            name: "emissive_strength",
-            expensive: false,
-            edit: emissive_strength,
-        },
-        FeatureCase {
-            name: "ior",
-            expensive: false,
-            edit: ior,
-        },
-        FeatureCase {
-            name: "specular",
-            expensive: false,
-            edit: specular,
-        },
-        FeatureCase {
-            name: "volume",
-            expensive: false,
-            edit: volume,
-        },
-        FeatureCase {
-            name: "dispersion",
-            expensive: false,
-            edit: dispersion,
-        },
-        FeatureCase {
-            name: "vertex_color",
-            expensive: false,
-            edit: vertex_color,
-        },
-        FeatureCase {
-            name: "all-cheap",
-            expensive: false,
-            edit: |m| {
-                emissive_strength(m);
-                ior(m);
-                specular(m);
+        case("bare", "", "", |_| {}),
+        case("emissive_strength", "", "", emissive_strength),
+        case("ior", "", "", ior),
+        case("vertex_color", "", "", vertex_color),
+        case("volume", "volume", "", volume),
+        case("dispersion", "dispersion", "", dispersion),
+        case("transmission(0)", "transmission", "", transmission),
+        case(
+            "transmission(0)+volume+dispersion",
+            "transmission+volume+dispersion",
+            "",
+            |m| {
+                transmission(m);
                 volume(m);
                 dispersion(m);
-                vertex_color(m);
             },
-        },
-        FeatureCase {
-            name: "clearcoat",
-            expensive: true,
-            edit: clearcoat,
-        },
-        FeatureCase {
-            name: "clearcoat+cheap",
-            expensive: true,
-            edit: |m| {
-                clearcoat(m);
-                emissive_strength(m);
-                specular(m);
-                vertex_color(m);
-            },
-        },
+        ),
+        case("specular", "specular", "", specular),
+        case("all-neutral", "all-neutral", "", |m| {
+            emissive_strength(m);
+            ior(m);
+            specular(m);
+            transmission(m);
+            volume(m);
+            dispersion(m);
+            vertex_color(m);
+        }),
+        case("clearcoat", "clearcoat", "clearcoat", clearcoat),
+        case("clearcoat(0)", "clearcoat", "clearcoat", |m| {
+            clearcoat(m);
+            if let Some(clearcoat) = m.clearcoat.as_mut() {
+                clearcoat.factor = 0.0;
+            }
+        }),
+        case("clearcoat+free", "clearcoat", "clearcoat", |m| {
+            clearcoat(m);
+            emissive_strength(m);
+            ior(m);
+            vertex_color(m);
+        }),
+        case("iridescence", "iridescence", "iridescence", iridescence),
+        case("sheen+free", "sheen", "sheen", |m| {
+            sheen(m);
+            ior(m);
+            vertex_color(m);
+        }),
+        case("secondary_maps+free", "secondary", "secondary", |m| {
+            secondary_maps(m);
+            emissive_strength(m);
+            ior(m);
+        }),
     ]
 }
 
@@ -2348,7 +2582,7 @@ impl FeatureScene {
     }
 }
 
-/// Builds the [`feature_cases`] scene — a 5 × 2 grid of camera-facing quads
+/// Builds the [`feature_cases`] scene — a grid, five across, of camera-facing quads
 /// with per-vertex colours, one material each, one directional light — in a
 /// fresh renderer under `specialization`, and commits it once.
 async fn build_feature_scene(
@@ -2475,26 +2709,31 @@ async fn render_feature_scene(
 /// to a few kilobytes of it, so a kernel per exact feature set costs a cold
 /// load one kernel for every combination its materials happen to use. The
 /// default policy ([`PbrSpecialization::ExpensiveFeatures`]) compiles the
-/// cheap features into every kernel instead. Over ten materials with ten
-/// different feature sets (see [`feature_cases`]):
+/// features that are free to carry unused into every kernel. Over sixteen
+/// materials with fifteen different feature sets (see [`feature_cases`]):
 ///
-/// - by default the eight that differ only in cheap features resolve to ONE
-///   bucket and the two with clearcoat to another — two kernels, not ten;
+/// - by default the four that differ only in those features resolve to ONE
+///   bucket, and every other feature (specular, transmission, volume,
+///   dispersion, each lobe) to one of its own whatever free feature rides
+///   along — eleven kernels, not fifteen;
+/// - `with_pbr_specialization(LobesOnly)` folds specular, transmission,
+///   volume and dispersion into the shared kernel too (five kernels);
 /// - `with_pbr_specialization(EveryFeature)` gives every set its own bucket
 ///   again (the opt-out works); and
-/// - the two renders agree pixel for pixel: a material shades the same
-///   through the shared kernel as through one compiled for exactly its
-///   features, whether it has a given cheap feature or not.
+/// - all three renders agree pixel for pixel: a material shades the same
+///   through a shared kernel as through one compiled for exactly its
+///   features, whether it has a given shared feature or not.
 ///
-/// Locks both directions: cheap features splitting buckets again, and a
+/// Locks both directions: free features splitting buckets again, and a
 /// shared kernel that drops or invents a feature for some material.
 ///
 /// [`PbrSpecialization::ExpensiveFeatures`]: awsm_renderer::materials::pbr::PbrSpecialization::ExpensiveFeatures
 async fn pbr_cheap_features_share_a_kernel(msaa: bool) -> Result<String> {
-    use awsm_renderer::materials::pbr::PbrSpecialization;
-    use std::collections::HashSet;
+    use awsm_renderer::materials::pbr::{PbrFeatures, PbrMaterial, PbrSpecialization};
+    use awsm_renderer::materials::MaterialAlphaMode;
+    use std::collections::{HashMap, HashSet};
 
-    /// Largest per-channel difference tolerated between the two renders. The
+    /// Largest per-channel difference tolerated between two renders. A
     /// shared kernel reads from the material what the exact one has as a
     /// compile-time constant, so a driver may fold a value differently in the
     /// last float bit; a feature gone missing is tens of levels.
@@ -2503,44 +2742,69 @@ async fn pbr_cheap_features_share_a_kernel(msaa: bool) -> Result<String> {
     let cases = feature_cases();
     let shared = render_feature_scene(msaa, PbrSpecialization::ExpensiveFeatures).await?;
     let exact = render_feature_scene(msaa, PbrSpecialization::EveryFeature).await?;
+    let lobes = render_feature_scene(msaa, PbrSpecialization::LobesOnly).await?;
 
-    // ── bucket counts. ──
+    // ── bucket counts: the materials must be grouped into kernels exactly
+    //    as each policy says. ──
     let distinct = |r: &FeatureSceneRender| r.buckets.iter().collect::<HashSet<_>>().len();
-    let cheap_buckets: HashSet<_> = cases
-        .iter()
-        .zip(&shared.buckets)
-        .filter(|(case, _)| !case.expensive)
-        .map(|(_, id)| *id)
-        .collect();
-    let expensive_buckets: HashSet<_> = cases
-        .iter()
-        .zip(&shared.buckets)
-        .filter(|(case, _)| case.expensive)
-        .map(|(_, id)| *id)
-        .collect();
-    if cheap_buckets.len() != 1 {
-        let split: Vec<String> = cases
+    let grouping = |r: &FeatureSceneRender, group: &dyn Fn(&FeatureCase) -> String| {
+        // Same group ⇒ same bucket, and different groups ⇒ different buckets.
+        let mut bucket_of: HashMap<String, u32> = HashMap::new();
+        let mut split = Vec::new();
+        for (case, id) in cases.iter().zip(&r.buckets) {
+            let bucket = *bucket_of.entry(group(case)).or_insert(id.as_u32());
+            if bucket != id.as_u32() {
+                split.push(format!(
+                    "{}→{} (its kernel is {bucket})",
+                    case.name,
+                    id.as_u32()
+                ));
+            }
+        }
+        let merged = bucket_of.len() != distinct(r);
+        (bucket_of.len(), split, merged)
+    };
+    let describe = |r: &FeatureSceneRender| {
+        cases
             .iter()
-            .zip(&shared.buckets)
-            .filter(|(case, _)| !case.expensive)
+            .zip(&r.buckets)
             .map(|(case, id)| format!("{}→{}", case.name, id.as_u32()))
-            .collect();
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let (shared_kernels, split, merged) = grouping(&shared, &|case| case.kernel.to_string());
+    if !split.is_empty() {
         return Err(anyhow!(
-            "materials that differ only in cheap features were split over {} buckets (a ~240 KB kernel each): {}",
-            cheap_buckets.len(),
+            "materials that differ only in free features were split over buckets (a ~240 KB kernel each): {}",
             split.join(", ")
         ));
     }
-    if expensive_buckets.len() != 1 || !cheap_buckets.is_disjoint(&expensive_buckets) {
+    if merged {
         return Err(anyhow!(
-            "the two clearcoat materials must share one bucket of their own; got {expensive_buckets:?} against the cheap bucket {cheap_buckets:?}"
+            "by default every feature that is not free must keep a bucket of its own ({shared_kernels} expected, {} resolved): {}",
+            distinct(&shared),
+            describe(&shared)
         ));
     }
-    if distinct(&exact) != cases.len() {
+    let feature_sets = |case: &FeatureCase| {
+        let mut pbr = PbrMaterial::new(MaterialAlphaMode::Opaque, false);
+        (case.edit)(&mut pbr);
+        PbrFeatures::from_material(&pbr).bits().to_string()
+    };
+    let (exact_kernels, split, merged) = grouping(&exact, &feature_sets);
+    if !split.is_empty() || merged {
         return Err(anyhow!(
-            "with_pbr_specialization(EveryFeature) must give each of the {} feature sets its own bucket; got {}",
-            cases.len(),
-            distinct(&exact)
+            "with_pbr_specialization(EveryFeature) must give each of the {exact_kernels} feature sets its own bucket; got {}: {}",
+            distinct(&exact),
+            describe(&exact)
+        ));
+    }
+    let (lobes_kernels, split, merged) = grouping(&lobes, &|case| case.lobes_kernel.to_string());
+    if !split.is_empty() || merged {
+        return Err(anyhow!(
+            "with_pbr_specialization(LobesOnly) must leave {lobes_kernels} buckets (specular, transmission, volume and dispersion in the shared one); got {}: {}",
+            distinct(&lobes),
+            describe(&lobes)
         ));
     }
 
@@ -2549,9 +2813,28 @@ async fn pbr_cheap_features_share_a_kernel(msaa: bool) -> Result<String> {
         let index = cases.iter().position(|c| c.name == name).unwrap_or(0);
         r.samples[index]
     };
-    let differs = |a: [u8; 4], b: [u8; 4]| (0..3).any(|i| a[i].abs_diff(b[i]) > 12);
+    // Brighter or darker by more than 12 levels, or tinted: the quads sit at
+    // different places under the light's highlight, so a hue (which the
+    // grey bare quad cannot have) is the surer sign for vertex colour.
+    let differs = |a: [u8; 4], b: [u8; 4]| {
+        let hue = |c: [u8; 4]| {
+            [
+                i16::from(c[0]) - i16::from(c[1]),
+                i16::from(c[1]) - i16::from(c[2]),
+            ]
+        };
+        (0..3).any(|i| a[i].abs_diff(b[i]) > 12)
+            || (0..2).any(|i| (hue(a)[i] - hue(b)[i]).abs() > 3)
+    };
     let bare = sample(&shared, "bare");
-    for name in ["emissive_strength", "ior", "specular", "vertex_color"] {
+    for name in [
+        "emissive_strength",
+        "ior",
+        "specular",
+        "vertex_color",
+        "iridescence",
+        "sheen+free",
+    ] {
         if !differs(sample(&shared, name), bare) {
             let all: Vec<String> = cases
                 .iter()
@@ -2566,57 +2849,60 @@ async fn pbr_cheap_features_share_a_kernel(msaa: bool) -> Result<String> {
         }
     }
 
-    // ── the two renders agree. ──
-    if shared.frame.len() != exact.frame.len() {
-        return Err(anyhow!("the two renders differ in size"));
-    }
-    let mut max_diff = 0u8;
-    let mut over = 0usize;
-    for (a, b) in shared
-        .frame
-        .chunks_exact(4)
-        .zip(exact.frame.chunks_exact(4))
-    {
-        let diff = (0..3).map(|i| a[i].abs_diff(b[i])).max().unwrap_or(0);
-        max_diff = max_diff.max(diff);
-        if diff > MAX_CHANNEL_DIFF {
-            over += 1;
+    // ── the renders agree. ──
+    let compare = |a: &FeatureSceneRender, what: &str| -> Result<(u8, usize)> {
+        if a.frame.len() != exact.frame.len() {
+            return Err(anyhow!(
+                "the {what} render differs in size from the exact one"
+            ));
         }
-    }
-    if over > 0 {
-        let worst: Vec<String> = cases
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| {
-                (0..3).any(|k| {
-                    shared.samples[*i][k].abs_diff(exact.samples[*i][k]) > MAX_CHANNEL_DIFF
+        let mut max_diff = 0u8;
+        let mut differing = 0usize;
+        let mut over = 0usize;
+        for (p, q) in a.frame.chunks_exact(4).zip(exact.frame.chunks_exact(4)) {
+            let diff = (0..3).map(|i| p[i].abs_diff(q[i])).max().unwrap_or(0);
+            max_diff = max_diff.max(diff);
+            differing += usize::from(diff > 0);
+            over += usize::from(diff > MAX_CHANNEL_DIFF);
+        }
+        if over > 0 {
+            let worst: Vec<String> = cases
+                .iter()
+                .enumerate()
+                .filter(|(i, _)| {
+                    (0..3)
+                        .any(|k| a.samples[*i][k].abs_diff(exact.samples[*i][k]) > MAX_CHANNEL_DIFF)
                 })
-            })
-            .map(|(i, case)| {
-                format!(
-                    "{}: rgba{:?} shared against rgba{:?} exact",
-                    case.name, shared.samples[i], exact.samples[i]
-                )
-            })
-            .collect();
-        return Err(anyhow!(
-            "the shared kernels render differently from one kernel per feature set: {over} pixels differ by more than {MAX_CHANNEL_DIFF}/255 (max {max_diff}); {}",
-            if worst.is_empty() {
-                "no quad centre differs".to_string()
-            } else {
-                worst.join("; ")
-            }
-        ));
-    }
+                .map(|(i, case)| {
+                    format!(
+                        "{}: rgba{:?} against rgba{:?} exact",
+                        case.name, a.samples[i], exact.samples[i]
+                    )
+                })
+                .collect();
+            return Err(anyhow!(
+                "the {what} kernels render differently from one kernel per feature set: {over} pixels differ by more than {MAX_CHANNEL_DIFF}/255 (max {max_diff}); {}",
+                if worst.is_empty() {
+                    "no quad centre differs".to_string()
+                } else {
+                    worst.join("; ")
+                }
+            ));
+        }
+        Ok((max_diff, differing))
+    };
+    let (max_diff, differing) = compare(&shared, "shared")?;
+    let (lobes_max, lobes_differing) = compare(&lobes, "LobesOnly")?;
     let shown: Vec<String> = cases
         .iter()
         .zip(&shared.samples)
         .map(|(case, [r, g, b, _])| format!("{} {r}/{g}/{b}", case.name))
         .collect();
     Ok(format!(
-        "{} feature sets: {} buckets by default ({} with EveryFeature); renders agree (max channel diff {max_diff}/255 over {} pixels); quads: {}",
+        "{} materials, {exact_kernels} feature sets: {} buckets by default, {} with LobesOnly, {} with EveryFeature; default against EveryFeature: max channel diff {max_diff}/255, {differing} of {} pixels differ; LobesOnly against EveryFeature: max {lobes_max}/255, {lobes_differing} pixels differ; quads: {}",
         cases.len(),
         distinct(&shared),
+        distinct(&lobes),
         distinct(&exact),
         shared.frame.len() / 4,
         shown.join(", ")
@@ -2715,6 +3001,135 @@ async fn pbr_cheap_feature_edit_keeps_kernels(msaa: bool) -> Result<String> {
         edited[bare],
         pipelines_after.buckets,
         pipelines_after.kernels.len()
+    ))
+}
+
+/// Check 23 — `large-canvas-bucket-is-shaded`. The opaque kernels are
+/// dispatched indirectly, one workgroup per 8x8 tile of their bucket, and a
+/// dispatch dimension cannot exceed `maxComputeWorkgroupsPerDimension`
+/// (65,535 at best). An indirect dispatch over that limit is not an error:
+/// it silently does nothing. So a bucket that covered more than 65,535 tiles
+/// — 4.2 megapixels: a 4K canvas filled by one material, or by sky — was
+/// simply not shaded. The fewer kernels a scene's materials share, the more
+/// tiles each one covers.
+///
+/// One emissive quad fills a 2880x1600 canvas (72,000 tiles, one PBR
+/// bucket). Every probe across it must show the quad, and the same colour as
+/// the same scene on the harness's usual 800x600 canvas.
+///
+/// Locks the regression where the dispatch was `(tile_count, 1, 1)`: the big
+/// canvas came out unshaded.
+async fn large_canvas_bucket_is_shaded(msaa: bool) -> Result<String> {
+    use awsm_renderer::materials::pbr::{PbrMaterial, PbrSpecialization};
+    use awsm_renderer::materials::{Material, MaterialAlphaMode};
+    use awsm_renderer::raw_mesh::RawMeshData;
+    use awsm_renderer::transforms::Transform;
+    use glam::Vec3;
+
+    const LARGE: (u32, u32) = (2880, 1600);
+    const SMALL: (u32, u32) = (crate::harness::CANVAS_WIDTH, crate::harness::CANVAS_HEIGHT);
+    const EYE: Vec3 = Vec3::new(0.0, 0.0, 7.0);
+    /// Probes at these fractions of the canvas, both axes: corners, edges,
+    /// centre.
+    const AT: [f32; 3] = [0.04, 0.5, 0.96];
+
+    async fn render(msaa: bool, size: (u32, u32)) -> Result<Vec<[u8; 4]>> {
+        let (mut renderer, canvas) =
+            create_renderer_sized(base_features(), msaa, PbrSpecialization::default(), size)
+                .await?;
+        // Unlit by anything: the colour is the material's own emission.
+        let mut pbr = PbrMaterial::new(MaterialAlphaMode::Opaque, false);
+        pbr.base_color_factor = [0.0, 0.0, 0.0, 1.0];
+        pbr.emissive_factor = [0.10, 0.45, 0.80];
+        let key = renderer.materials.insert(
+            Material::Pbr(Box::new(pbr)),
+            &renderer.textures,
+            &renderer.dynamic_materials,
+            &renderer.extras_pool,
+        );
+        let transform = renderer.transforms.insert(Transform::IDENTITY, None);
+        // Far larger than the view: every pixel is this quad.
+        const HALF: f32 = 60.0;
+        let quad = RawMeshData {
+            positions: vec![
+                [-HALF, -HALF, 0.0],
+                [HALF, -HALF, 0.0],
+                [HALF, HALF, 0.0],
+                [-HALF, HALF, 0.0],
+            ],
+            normals: Some(vec![[0.0, 0.0, 1.0]; 4]),
+            uv_sets: vec![vec![[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]]],
+            indices: vec![0, 1, 2, 0, 2, 3],
+            ..Default::default()
+        };
+        let outcome = async {
+            renderer
+                .add_raw_mesh(quad, transform, key)
+                .map_err(|e| anyhow!("add_raw_mesh: {e}"))?;
+            renderer
+                .commit_load(|_| {})
+                .await
+                .map_err(|e| anyhow!("commit_load: {e}"))?;
+            renderer.update_transforms();
+            run_frames(&mut renderer, Vec3::ZERO, 3.0, 3, |_| EYE).await?;
+            // The last frame is read back in the task that drew it.
+            crate::harness::next_frame().await;
+            crate::harness::set_camera(&mut renderer, EYE, Vec3::ZERO, 3.0)?;
+            renderer.update_transforms();
+            renderer.render(None).map_err(|e| anyhow!("render: {e}"))?;
+            let mut probes = Vec::new();
+            for fy in AT {
+                for fx in AT {
+                    probes.push(read_canvas_pixel(
+                        &canvas,
+                        (fx * size.0 as f32) as i32,
+                        (fy * size.1 as f32) as i32,
+                    )?);
+                }
+            }
+            Ok(probes)
+        }
+        .await;
+        destroy_renderer(renderer);
+        outcome
+    }
+
+    let small = render(msaa, SMALL).await?;
+    let reference = small[4];
+    if reference[0].max(reference[1]).max(reference[2]) < 40 {
+        return Err(anyhow!(
+            "the {}x{} control renders rgba{reference:?} at its centre — the scene shows nothing, so the comparison proves nothing",
+            SMALL.0,
+            SMALL.1
+        ));
+    }
+    let large = render(msaa, LARGE).await?;
+    let wrong: Vec<String> = large
+        .iter()
+        .enumerate()
+        .filter(|(_, rgba)| (0..3).any(|i| rgba[i].abs_diff(reference[i]) > 2))
+        .map(|(i, rgba)| format!("({}, {}) rgba{rgba:?}", AT[i % 3], AT[i / 3]))
+        .collect();
+    let tiles = LARGE.0.div_ceil(8) * LARGE.1.div_ceil(8);
+    if !wrong.is_empty() {
+        return Err(anyhow!(
+            "a {}x{} canvas filled by one material ({tiles} tiles in one bucket) is not shaded like the {}x{} one (rgba{reference:?}): {} of {} probes differ — {}",
+            LARGE.0,
+            LARGE.1,
+            SMALL.0,
+            SMALL.1,
+            wrong.len(),
+            large.len(),
+            wrong.join(", ")
+        ));
+    }
+    Ok(format!(
+        "{}x{} filled by one material ({tiles} tiles in one bucket): all {} probes rgba{reference:?}, as at {}x{}",
+        LARGE.0,
+        LARGE.1,
+        large.len(),
+        SMALL.0,
+        SMALL.1
     ))
 }
 

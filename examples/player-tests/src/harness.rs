@@ -4,6 +4,7 @@
 use anyhow::{anyhow, Context, Result};
 use awsm_renderer::camera::CameraParams;
 use awsm_renderer::features::RendererFeatures;
+use awsm_renderer::materials::pbr::PbrSpecialization;
 use awsm_renderer::AwsmRenderer;
 use awsm_renderer_core::renderer::{AwsmRendererWebGpuBuilder, DeviceRequestLimits};
 use glam::{Mat4, Vec3};
@@ -39,11 +40,28 @@ pub async fn create_renderer_with_msaa(
 }
 
 /// [`create_renderer_with_msaa`], with the PBR specialization policy chosen
-/// (the builder's `with_pbr_specialization`) instead of the default.
+/// (the builder's `with_pbr_specialization`) instead of the default. The
+/// canvas is 800x600 unless the page URL says `?canvas=WxH`.
 pub async fn create_renderer_with_specialization(
     features: RendererFeatures,
     msaa: bool,
     specialization: awsm_renderer::materials::pbr::PbrSpecialization,
+) -> Result<(AwsmRenderer, web_sys::HtmlCanvasElement)> {
+    let size = url_flag_value("canvas")
+        .and_then(|v| {
+            let (w, h) = v.split_once('x')?;
+            Some((w.parse::<u32>().ok()?, h.parse::<u32>().ok()?))
+        })
+        .unwrap_or((CANVAS_WIDTH, CANVAS_HEIGHT));
+    create_renderer_sized(features, msaa, specialization, size).await
+}
+
+/// [`create_renderer_with_specialization`] on a canvas of a given size.
+pub async fn create_renderer_sized(
+    features: RendererFeatures,
+    msaa: bool,
+    specialization: awsm_renderer::materials::pbr::PbrSpecialization,
+    (canvas_width, canvas_height): (u32, u32),
 ) -> Result<(AwsmRenderer, web_sys::HtmlCanvasElement)> {
     let window = web_sys::window().ok_or_else(|| anyhow!("no window"))?;
     let document = window.document().ok_or_else(|| anyhow!("no document"))?;
@@ -56,8 +74,8 @@ pub async fn create_renderer_with_specialization(
         .dyn_into()
         .map_err(|_| anyhow!("canvas cast"))?;
     canvas.set_id("render-canvas");
-    canvas.set_width(CANVAS_WIDTH);
-    canvas.set_height(CANVAS_HEIGHT);
+    canvas.set_width(canvas_width);
+    canvas.set_height(canvas_height);
     document
         .body()
         .ok_or_else(|| anyhow!("no body"))?
@@ -180,6 +198,12 @@ pub async fn run_frames(
 }
 
 /// Idle-soak mode (`?soak=<scene>`): load ONE bundle through the player path and
+/// idle-render it. `&msaa=0` turns MSAA off, `&canvas=WxH` sizes the canvas
+/// (default 800x600) and `&pbr=every|expensive|lobes` picks the PBR
+/// specialization policy — the knobs the cold-load and GPU-time measurements
+/// in `docs/time-to-first-render.md` were taken with.
+///
+/// Load ONE bundle through the player path and
 /// idle-render it forever with a STATIC camera — the player-side analogue of the
 /// editor idle soak (`tools/soak/soak.mjs`). Used to answer whether the SHARED
 /// render core (present-view / submit / occlusion-cull readbacks — `gpu_culling`
@@ -189,7 +213,15 @@ pub async fn run_frames(
 pub async fn run_soak(origin: &str, scene_name: &str, features: RendererFeatures) -> Result<()> {
     let bundle_base = format!("{origin}/{scene_name}/bundle");
     let scene = fetch_scene(&bundle_base).await?;
-    let (mut renderer, _canvas) = create_renderer(features).await?;
+    let msaa = url_flag_value("msaa").as_deref() != Some("0");
+    let specialization = match url_flag_value("pbr").as_deref() {
+        Some("every") => PbrSpecialization::EveryFeature,
+        Some("expensive") => PbrSpecialization::ExpensiveFeatures,
+        Some("lobes") => PbrSpecialization::LobesOnly,
+        _ => PbrSpecialization::default(),
+    };
+    let (mut renderer, _canvas) =
+        create_renderer_with_specialization(features, msaa, specialization).await?;
     let assets = awsm_renderer_scene_loader::assets::HttpAssets::new(bundle_base);
     awsm_renderer_scene_loader::load_scene_for_player(&mut renderer, &scene, &assets, |_| {})
         .await
