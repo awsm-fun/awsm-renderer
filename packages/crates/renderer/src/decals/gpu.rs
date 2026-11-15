@@ -170,9 +170,7 @@ impl Decals {
         // Header: count at offset 0; the rest of the header bytes
         // stay zeroed (vec4 alignment padding).
         self.staging_bytes[0..4].copy_from_slice(&count.to_le_bytes());
-        for i in 4..DECAL_HEADER_BYTES {
-            self.staging_bytes[i] = 0;
-        }
+        self.staging_bytes[4..DECAL_HEADER_BYTES].fill(0);
 
         for (slot, key) in self.order.iter().enumerate() {
             let Some(decal) = self.decals.get(*key) else {

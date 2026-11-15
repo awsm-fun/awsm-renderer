@@ -392,7 +392,7 @@ pub fn plan(
     let mut next_free = 0usize;
     let mut loaded = 0usize;
     let mut pool_exhausted = false;
-    for i in 0..scratch.missing.len() {
+    for &c in &scratch.missing {
         if loaded >= caps.max_loads {
             break;
         }
@@ -403,7 +403,6 @@ pub fn plan(
             pool_exhausted = true;
             break;
         }
-        let c = scratch.missing[i];
         do_load(
             ops,
             resident,
@@ -526,13 +525,8 @@ pub fn plan(
                 vs += 1;
                 do_load(ops, resident, slot_cluster, slot_last_used, pc, slot, frame);
             }
-            for k in vs..scratch.victim_slots.len() {
-                do_evict(
-                    ops,
-                    resident,
-                    slot_cluster,
-                    scratch.victim_slots[k] as usize,
-                );
+            for &slot in &scratch.victim_slots[vs..] {
+                do_evict(ops, resident, slot_cluster, slot as usize);
             }
             coarsened += 1;
         }
