@@ -432,10 +432,16 @@ macro_rules! ext_struct {
     };
 }
 
-ext_struct!(/// `KHR_materials_emissive_strength` — multiplies the emissive factor.
-    EmissiveStrengthExt { strength: f32 = 2.0 });
-ext_struct!(/// `KHR_materials_ior` — index of refraction (1.5 ≈ glass/plastic).
-    IorExt { ior: f32 = 1.5 });
+ext_struct!(
+    /// `KHR_materials_emissive_strength` — multiplies the emissive factor.
+    EmissiveStrengthExt {
+        strength: f32 = 2.0
+    }
+);
+ext_struct!(
+    /// `KHR_materials_ior` — index of refraction (1.5 ≈ glass/plastic).
+    IorExt { ior: f32 = 1.5 }
+);
 ext_struct!(/// `KHR_materials_specular` — specular reflection strength + tint.
     SpecularExt { factor: f32 = 1.0, color_factor: [f32; 3] = [1.0, 1.0, 1.0],
         tex: Option<TextureRef> = None, color_tex: Option<TextureRef> = None });
@@ -453,8 +459,12 @@ ext_struct!(/// `KHR_materials_clearcoat` — a clear lacquer layer.
 ext_struct!(/// `KHR_materials_sheen` — retroreflective fuzz (cloth/velvet).
     SheenExt { roughness_factor: f32 = 0.3, color_factor: [f32; 3] = [1.0, 1.0, 1.0],
         color_tex: Option<TextureRef> = None, roughness_tex: Option<TextureRef> = None });
-ext_struct!(/// `KHR_materials_dispersion` — wavelength-dependent IOR (prismatic).
-    DispersionExt { dispersion: f32 = 0.1 });
+ext_struct!(
+    /// `KHR_materials_dispersion` — wavelength-dependent IOR (prismatic).
+    DispersionExt {
+        dispersion: f32 = 0.1
+    }
+);
 ext_struct!(/// `KHR_materials_anisotropy` — directional specular (brushed metal).
     AnisotropyExt { strength: f32 = 1.0, rotation: f32 = 0.0, tex: Option<TextureRef> = None });
 ext_struct!(/// `KHR_materials_iridescence` — thin-film interference (soap bubble).
