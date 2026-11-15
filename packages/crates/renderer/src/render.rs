@@ -1851,6 +1851,8 @@ impl AwsmRenderer {
             .unwrap_or(false);
 
         self.gpu.submit_commands(&ctx.command_encoder.finish());
+        // The light-cull counts this frame recorded are now on the GPU.
+        self.render_passes.light_culling.commit_submitted();
 
         // Kick the timestamp `mapAsync` readback after submit (results land a
         // few frames later, fold into the GPU aggregator).
@@ -2543,6 +2545,17 @@ impl<'a> RenderContext<'a> {
         &'a self,
         label: Option<&'a str>,
     ) -> Result<RenderPassEncoder> {
+        self.begin_world_transparent_pass_timed(label, None)
+    }
+
+    /// [`Self::begin_world_transparent_pass`] that also attaches a GPU
+    /// timestamp pair named `timing` (when GPU timing is on) — the renderer's
+    /// own transparent passes use this so `?gputime` and the frame span see them.
+    pub(crate) fn begin_world_transparent_pass_timed(
+        &'a self,
+        label: Option<&'a str>,
+        timing: Option<&'static str>,
+    ) -> Result<RenderPassEncoder> {
         let mut color_attachment = ColorAttachment::new(
             &self.render_texture_views.transparent,
             LoadOp::Load,
@@ -2564,6 +2577,8 @@ impl<'a> RenderContext<'a> {
                             .with_depth_load_op(LoadOp::Load)
                             .with_depth_store_op(StoreOp::Store),
                     ),
+                    timestamp_writes: timing
+                        .and_then(|name| self.gpu_timestamps.and_then(|t| t.writes_for(name))),
                     ..Default::default()
                 }
                 .into(),
@@ -2578,6 +2593,16 @@ impl<'a> RenderContext<'a> {
     pub fn begin_hud_transparent_pass(
         &'a self,
         label: Option<&'a str>,
+    ) -> Result<RenderPassEncoder> {
+        self.begin_hud_transparent_pass_timed(label, None)
+    }
+
+    /// [`Self::begin_hud_transparent_pass`] with a GPU timestamp pair named
+    /// `timing` (see [`Self::begin_world_transparent_pass_timed`]).
+    pub(crate) fn begin_hud_transparent_pass_timed(
+        &'a self,
+        label: Option<&'a str>,
+        timing: Option<&'static str>,
     ) -> Result<RenderPassEncoder> {
         let mut color_attachment = ColorAttachment::new(
             &self.render_texture_views.transparent,
@@ -2613,6 +2638,8 @@ impl<'a> RenderContext<'a> {
                             .with_depth_clear_value(self.features.depth().clear_value())
                             .with_depth_store_op(StoreOp::Store),
                     ),
+                    timestamp_writes: timing
+                        .and_then(|name| self.gpu_timestamps.and_then(|t| t.writes_for(name))),
                     ..Default::default()
                 }
                 .into(),

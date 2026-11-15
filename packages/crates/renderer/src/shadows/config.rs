@@ -75,6 +75,14 @@ pub struct ShadowsConfig {
     /// `false`. Does not cover MSAA silhouette-edge samples (those read a
     /// separate compact buffer).
     pub denoise: bool,
+    /// Half-width, in pixels, of the denoise blur kernel (per axis; a
+    /// `2R+1`-tap separable blur). Clamped to
+    /// [`Self::DENOISE_RADIUS_MIN`]`..=`[`Self::DENOISE_RADIUS_MAX`]. Larger =
+    /// smoother penumbrae at more cost. Compile-time for the blur pass: after
+    /// changing it on a running renderer, call
+    /// `AwsmRenderer::ensure_config_pipelines` (the blur keeps the old radius
+    /// until then).
+    pub denoise_radius: u32,
 }
 
 impl Default for ShadowsConfig {
@@ -108,11 +116,20 @@ impl Default for ShadowsConfig {
             // speckle out of the box and is cheap (one separable pass,
             // light-count-independent). Toggleable off in the editor.
             denoise: true,
+            denoise_radius: Self::DENOISE_RADIUS_DEFAULT,
         }
     }
 }
 
 impl ShadowsConfig {
+    /// Smallest supported [`Self::denoise_radius`].
+    pub const DENOISE_RADIUS_MIN: u32 = 1;
+    /// Largest supported [`Self::denoise_radius`] (bounds the blur's
+    /// shared-memory tile).
+    pub const DENOISE_RADIUS_MAX: u32 = 8;
+    /// Default [`Self::denoise_radius`] — the original fixed 9-tap kernel.
+    pub const DENOISE_RADIUS_DEFAULT: u32 = 4;
+
     /// Hard upper safe limit for `evsm_exponent` under `RGBA16F`
     /// moment storage. The moments `exp(c · z)` are evaluated for
     /// `z ∈ [-1, 1]`, so the largest stored value is `exp(c) ≈ 5·10⁸`

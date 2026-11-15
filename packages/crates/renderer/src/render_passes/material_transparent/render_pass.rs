@@ -49,9 +49,15 @@ impl MaterialTransparentRenderPass {
         is_hud: bool,
     ) -> Result<()> {
         let render_pass = if is_hud {
-            ctx.begin_hud_transparent_pass(Some("Material Transparent Pass (HUD)"))?
+            ctx.begin_hud_transparent_pass_timed(
+                Some("Material Transparent Pass (HUD)"),
+                Some("Material Transparent (HUD)"),
+            )?
         } else {
-            ctx.begin_world_transparent_pass(Some("Material Transparent Pass"))?
+            ctx.begin_world_transparent_pass_timed(
+                Some("Material Transparent Pass"),
+                Some("Material Transparent"),
+            )?
         };
 
         let (main_bind_group, shadows_bind_group, texture_bind_group, mesh_material_bind_group) =

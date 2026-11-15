@@ -1283,7 +1283,7 @@ impl AwsmRenderer {
             )
             .await?;
         if let Some(prep) = self.render_passes.material_prep.as_mut() {
-            let mut stale = prep.pipelines.merge_resolved(&descs.slots, keys);
+            let mut stale = prep.pipelines.merge_resolved(&descs, keys);
             let compute = &self.pipelines.compute;
             stale.extend(
                 prep.pipelines

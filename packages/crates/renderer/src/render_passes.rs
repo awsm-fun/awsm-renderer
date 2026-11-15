@@ -1033,12 +1033,14 @@ impl RenderPasses {
                 &per_pass_descs.light_culling,
                 compute_keys[ranges.light_culling].to_vec(),
             )?,
+            clean_grid: std::cell::Cell::new(None),
+            pending_clean_grid: std::cell::Cell::new(None),
         };
 
         let material_prep = {
             let mut pipelines = MaterialPrepPipelines::default();
             pipelines.merge_resolved(
-                &per_pass_descs.material_prep.slots,
+                &per_pass_descs.material_prep,
                 compute_keys[ranges.material_prep].to_vec(),
             );
             // Kept as an always-`Some` `Option` so the `if let Some(prep)`

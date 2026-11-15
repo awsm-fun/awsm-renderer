@@ -33,7 +33,7 @@ overflow (`⋯`) menu has runtime toggles (see [Editor menu](#editor-menu)).
 | Tier | CPU (`?trace`) | GPU (`?gputime`) |
 |---|---|---|
 | `off` | no scopes created | no query set, no timestamp writes |
-| `frame` | outer `"Render"` scope only | (currently same coverage as sub-frame) |
+| `frame` | outer `"Render"` scope only | per-pass timestamps + the whole-frame span (`Frame`) |
 | `sub-frame` | every pass / GPU-write scope | per-pass device timestamps |
 
 ---
@@ -61,10 +61,27 @@ feature, instrumented passes attach `timestampWrites`; after submit the renderer
 `(end − begin)` nanoseconds into the **GPU aggregator**
 (`awsm_renderer::profiling::gpu_timing_stats()`, `memory_stats.gpu_span_timings`).
 
-Instrumented passes: **Geometry**, **Light Culling**, **Material Classify**,
-**Material Prep**, **Material Opaque** (unified shade), **SSR**, **Bloom**,
-**Effects**, and **Display** — render *and* compute passes. Zero-cost when off:
-no query set is created, no timestamp writes are attached.
+Instrumented passes: **Geometry**, **Shadow Generation** (summed over every
+shadow view), **Shadow EVSM Moments / Blur H / Blur V**, **Light Culling**,
+**Material Classify**, **Material Prep**, **Material Prep Edge**, **Shadow
+Denoise Blur H / V**, **Material Opaque** (unified shade) + **Final Blend**,
+**Material Transparent** (+ HUD), **Lines**, **SSR**, **Smaa**, **Volumetrics**, **Bloom**,
+**Effects**, and **Display** — render *and* compute passes. A name timed more
+than once in a frame is summed first, so every row reads "per frame". Zero-cost
+when off: no query set is created, no timestamp writes are attached.
+
+**Whole-frame GPU time** — the `"Frame"` row
+(`awsm_renderer::profiling::GPU_FRAME_SCOPE`): per frame, the latest pass end
+minus the earliest pass begin across every timed pass. Apps read it with
+`awsm_renderer::profiling::gpu_frame_timing()` (`TimingStat` carries a cumulative
+`total_ms` + `count`, so a stats panel can take exact per-window means). This is
+the number to show next to a CPU frame time: once the CPU side is cheap, it is
+GPU time that decides whether a frame makes vsync (8.3 ms at 120 Hz). It is an
+upper bound — it spans gaps between passes, including GPU work another process
+interleaves — and starts at Geometry (the virtual-geometry cluster-cut dispatch,
+when enabled, runs before it untimed). Don't sum the per-pass rows instead: on
+tile-based GPUs (Apple) render-pass timestamps overlap neighbouring work, so the
+sum can exceed the frame.
 
 > **Reading the Display number.** `Display` is the final fullscreen-triangle
 > tonemap into the **swapchain** texture. Its timestamp routinely reads a few ms

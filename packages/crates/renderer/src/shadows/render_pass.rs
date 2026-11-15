@@ -167,6 +167,9 @@ pub fn record(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
                     label: Some("Shadow Generation Pass"),
                     color_attachments: vec![],
                     depth_stencil_attachment: Some(depth_attachment),
+                    timestamp_writes: ctx
+                        .gpu_timestamps
+                        .and_then(|t| t.writes_for("Shadow Generation")),
                     ..Default::default()
                 }
                 .into(),
@@ -542,7 +545,12 @@ fn dispatch_evsm(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
 
         // ── Moment write ────────────────────────────────────────────
         let pass: ComputePassEncoder = ctx.command_encoder.begin_compute_pass(Some(
-            &ComputePassDescriptor::new(Some("Shadow EVSM Moment Write")).into(),
+            &ComputePassDescriptor::new(Some("Shadow EVSM Moment Write"))
+                .with_timestamp_writes_opt(
+                    ctx.gpu_timestamps
+                        .and_then(|t| t.writes_for_compute("Shadow EVSM Moments")),
+                )
+                .into(),
         ));
         pass.set_pipeline(moment_pipeline);
         pass.set_bind_group(0, &shadows.evsm_moment_write_bind_group(), Some(&[offset]))?;
@@ -551,7 +559,12 @@ fn dispatch_evsm(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
 
         // ── Blur H (evsm → ping-pong) ──────────────────────────────
         let pass: ComputePassEncoder = ctx.command_encoder.begin_compute_pass(Some(
-            &ComputePassDescriptor::new(Some("Shadow EVSM Blur H")).into(),
+            &ComputePassDescriptor::new(Some("Shadow EVSM Blur H"))
+                .with_timestamp_writes_opt(
+                    ctx.gpu_timestamps
+                        .and_then(|t| t.writes_for_compute("Shadow EVSM Blur H")),
+                )
+                .into(),
         ));
         pass.set_pipeline(blur_h_pipeline);
         pass.set_bind_group(0, &shadows.evsm_blur_h_bind_group(), Some(&[offset]))?;
@@ -560,7 +573,12 @@ fn dispatch_evsm(ctx: &RenderContext, shadows: &Shadows) -> Result<()> {
 
         // ── Blur V (ping-pong → evsm) ──────────────────────────────
         let pass: ComputePassEncoder = ctx.command_encoder.begin_compute_pass(Some(
-            &ComputePassDescriptor::new(Some("Shadow EVSM Blur V")).into(),
+            &ComputePassDescriptor::new(Some("Shadow EVSM Blur V"))
+                .with_timestamp_writes_opt(
+                    ctx.gpu_timestamps
+                        .and_then(|t| t.writes_for_compute("Shadow EVSM Blur V")),
+                )
+                .into(),
         ));
         pass.set_pipeline(blur_v_pipeline);
         pass.set_bind_group(0, &shadows.evsm_blur_v_bind_group(), Some(&[offset]))?;

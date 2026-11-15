@@ -426,8 +426,12 @@ impl AwsmRenderer {
         let prep_edge_resolve = new_msaa_on && crate::edge_resolve_supported(&self.gpu);
         let prep_denoise = self.prep_config.denoise;
         let prep_branch_missing = self.render_passes.material_prep.as_ref().is_some_and(|p| {
-            !p.pipelines
-                .has_branch_for(new_msaa_on, prep_edge_resolve, prep_denoise)
+            !p.pipelines.has_branch_for(
+                new_msaa_on,
+                prep_edge_resolve,
+                prep_denoise,
+                self.prep_config.clamped_denoise_radius(),
+            )
         });
         if prep_branch_missing {
             use crate::render_passes::material_prep::render_pass::MaterialPrepPipelines;
@@ -489,7 +493,7 @@ impl AwsmRenderer {
                 )
                 .await?;
             if let Some(prep) = self.render_passes.material_prep.as_mut() {
-                let displaced = prep.pipelines.merge_resolved(&prep_descs.slots, prep_keys);
+                let displaced = prep.pipelines.merge_resolved(&prep_descs, prep_keys);
                 self.pipelines.compute.release_reserved(displaced);
             }
         }
