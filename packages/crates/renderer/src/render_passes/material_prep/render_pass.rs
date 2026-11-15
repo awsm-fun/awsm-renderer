@@ -62,6 +62,10 @@ pub enum PrepPipelineSlot {
 pub struct MaterialPrepPrewarmDescriptors {
     pub pipeline_cache_keys: Vec<ComputePipelineCacheKey>,
     pub slots: Vec<PrepPipelineSlot>,
+    /// The denoise radius the blur slots (if any) were keyed with — recorded
+    /// per MSAA branch on merge, so `has_branch_for` can tell a blur pair
+    /// compiled for an older radius from a current one.
+    pub blur_radius: u32,
 }
 
 /// The prep pass's compiled pipelines, branch-keyed. Every field is an
@@ -79,6 +83,12 @@ pub struct MaterialPrepPipelines {
     blur_h_singlesampled: Option<ComputePipelineKey>,
     blur_v_multisampled: Option<ComputePipelineKey>,
     blur_v_singlesampled: Option<ComputePipelineKey>,
+    /// Radius each branch's blur pair was keyed with (`[singlesampled,
+    /// multisampled]`). A slot being filled isn't enough for
+    /// [`Self::has_branch_for`]: after a `denoise_radius` change the OTHER
+    /// branch (or a branch keyed while denoise was off) still holds the old
+    /// radius' pipelines, and a later MSAA flip must recompile them.
+    blur_radius: [Option<u32>; 2],
 }
 
 impl MaterialPrepPipelines {
@@ -106,6 +116,8 @@ impl MaterialPrepPipelines {
                 ShaderCacheKeyShadowBlur {
                     msaa_sample_count,
                     max_shadow_casters: prep_config.clamped_k(),
+                    radius: prep_config.clamped_denoise_radius(),
+                    reverse_z,
                 }
                 .into(),
             );
@@ -157,6 +169,7 @@ impl MaterialPrepPipelines {
         Ok(MaterialPrepPrewarmDescriptors {
             pipeline_cache_keys,
             slots,
+            blur_radius: ctx.prep_config.clamped_denoise_radius(),
         })
     }
 
@@ -206,11 +219,19 @@ impl MaterialPrepPipelines {
     /// ever reserved doesn't get compiled for nothing.
     pub fn merge_resolved(
         &mut self,
-        slots: &[PrepPipelineSlot],
+        descs: &MaterialPrepPrewarmDescriptors,
         keys: Vec<ComputePipelineKey>,
     ) -> Vec<ComputePipelineKey> {
+        let slots = &descs.slots;
         debug_assert_eq!(slots.len(), keys.len());
         let mut displaced = Vec::new();
+        for slot in slots {
+            if let PrepPipelineSlot::BlurH { multisampled }
+            | PrepPipelineSlot::BlurV { multisampled } = *slot
+            {
+                self.blur_radius[multisampled as usize] = Some(descs.blur_radius);
+            }
+        }
         for (slot, key) in slots.iter().zip(keys) {
             if let Some(old) = self.field_mut(*slot).replace(key) {
                 if old != key {
@@ -254,6 +275,7 @@ impl MaterialPrepPipelines {
         multisampled_geometry: bool,
         edge_resolve_enabled: bool,
         denoise: bool,
+        denoise_radius: u32,
     ) -> bool {
         let main = if multisampled_geometry {
             self.multisampled.is_some()
@@ -262,11 +284,12 @@ impl MaterialPrepPipelines {
         };
         let edge = !(multisampled_geometry && edge_resolve_enabled) || self.edge.is_some();
         let blur = !denoise
-            || if multisampled_geometry {
-                self.blur_h_multisampled.is_some() && self.blur_v_multisampled.is_some()
-            } else {
-                self.blur_h_singlesampled.is_some() && self.blur_v_singlesampled.is_some()
-            };
+            || (self.blur_radius[multisampled_geometry as usize] == Some(denoise_radius)
+                && if multisampled_geometry {
+                    self.blur_h_multisampled.is_some() && self.blur_v_multisampled.is_some()
+                } else {
+                    self.blur_h_singlesampled.is_some() && self.blur_v_singlesampled.is_some()
+                });
         main && edge && blur
     }
 }
@@ -450,7 +473,12 @@ impl MaterialPrepRenderPass {
         let edge_bind_group = self.bind_groups.get_edge_bind_group()?;
 
         let compute_pass = ctx.command_encoder.begin_compute_pass(Some(
-            &ComputePassDescriptor::new(Some("Material Prep Edge Pass")).into(),
+            &ComputePassDescriptor::new(Some("Material Prep Edge Pass"))
+                .with_timestamp_writes_opt(
+                    ctx.gpu_timestamps
+                        .and_then(|t| t.writes_for_compute("Material Prep Edge")),
+                )
+                .into(),
         ));
         compute_pass.set_pipeline(pipeline);
         compute_pass.set_bind_group(0, bind_group, None)?;
@@ -520,13 +548,19 @@ impl MaterialPrepRenderPass {
         let h_bind_group = self.bind_groups.get_blur_h_bind_group()?;
         let v_bind_group = self.bind_groups.get_blur_v_bind_group()?;
 
-        let workgroups_x = ctx.render_texture_views.width.div_ceil(8);
-        let workgroups_y = ctx.render_texture_views.height.div_ceil(8);
+        // 16×16 workgroups (shared-memory tiles — see the blur shader).
+        let workgroups_x = ctx.render_texture_views.width.div_ceil(16);
+        let workgroups_y = ctx.render_texture_views.height.div_ceil(16);
 
         // Horizontal: prep_shadow_visibility → temp.
         {
             let compute_pass = ctx.command_encoder.begin_compute_pass(Some(
-                &ComputePassDescriptor::new(Some("Shadow Denoise Blur H")).into(),
+                &ComputePassDescriptor::new(Some("Shadow Denoise Blur H"))
+                    .with_timestamp_writes_opt(
+                        ctx.gpu_timestamps
+                            .and_then(|t| t.writes_for_compute("Shadow Denoise Blur H")),
+                    )
+                    .into(),
             ));
             compute_pass.set_pipeline(h_pipeline);
             compute_pass.set_bind_group(0, h_bind_group, None)?;
@@ -536,7 +570,12 @@ impl MaterialPrepRenderPass {
         // Vertical: temp → prep_shadow_visibility (back in place).
         {
             let compute_pass = ctx.command_encoder.begin_compute_pass(Some(
-                &ComputePassDescriptor::new(Some("Shadow Denoise Blur V")).into(),
+                &ComputePassDescriptor::new(Some("Shadow Denoise Blur V"))
+                    .with_timestamp_writes_opt(
+                        ctx.gpu_timestamps
+                            .and_then(|t| t.writes_for_compute("Shadow Denoise Blur V")),
+                    )
+                    .into(),
             ));
             compute_pass.set_pipeline(v_pipeline);
             compute_pass.set_bind_group(0, v_bind_group, None)?;
@@ -654,6 +693,8 @@ async fn blur_cache_key(
             ShaderCacheKeyShadowBlur {
                 msaa_sample_count: if multisampled_geometry { Some(4) } else { None },
                 max_shadow_casters: ctx.prep_config.clamped_k(),
+                radius: ctx.prep_config.clamped_denoise_radius(),
+                reverse_z: ctx.features.reverse_z,
             },
         )
         .await?;

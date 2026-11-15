@@ -39,6 +39,10 @@ pub struct TimingStat {
     pub min_ms: f64,
     pub max_ms: f64,
     pub count: u64,
+    /// Sum of every sample folded so far. With [`Self::count`] this gives an
+    /// exact mean over any window: sample both at the window's start and end
+    /// and divide the deltas (no EMA lag).
+    pub total_ms: f64,
 }
 
 impl TimingStat {
@@ -49,6 +53,7 @@ impl TimingStat {
             min_ms: ms,
             max_ms: ms,
             count: 1,
+            total_ms: ms,
         }
     }
     fn fold(&mut self, ms: f64) {
@@ -57,6 +62,7 @@ impl TimingStat {
         self.min_ms = self.min_ms.min(ms);
         self.max_ms = self.max_ms.max(ms);
         self.count += 1;
+        self.total_ms += ms;
     }
 }
 
@@ -100,6 +106,25 @@ pub fn cpu_timing_stats() -> Vec<(&'static str, TimingStat)> {
 /// GPU pass stats, slowest first. Empty when GPU profiling has never run.
 pub fn gpu_timing_stats() -> Vec<(&'static str, TimingStat)> {
     snapshot(&GPU_TIMINGS)
+}
+
+/// Name of the whole-frame GPU entry in [`gpu_timing_stats`]: per frame, the
+/// latest end minus the earliest begin over every timed pass (see
+/// [`GpuTimestamps::kick_readback`]).
+pub const GPU_FRAME_SCOPE: &str = "Frame";
+
+/// Whole-frame GPU time — the [`GPU_FRAME_SCOPE`] entry — or `None` until GPU
+/// timing has produced a sample (tier off, or no `timestamp-query`).
+///
+/// This is the number to show next to a CPU frame time: it measures how long
+/// the GPU spends on a frame, which is what decides whether a frame makes
+/// vsync once the CPU side is cheap. It is an upper bound — it spans the gaps
+/// between passes too, including any GPU work another process interleaves.
+/// The span starts at the first TIMED pass (Geometry in a normal frame); the
+/// virtual-geometry cluster-cut dispatch, when enabled, runs before it untimed.
+pub fn gpu_frame_timing() -> Option<TimingStat> {
+    let guard = GPU_TIMINGS.lock().ok()?;
+    guard.as_ref()?.get(GPU_FRAME_SCOPE).copied()
 }
 
 /// Drop all accumulated stats (e.g. when starting a fresh measurement window).
@@ -202,7 +227,7 @@ pub fn cpu_scope(
 
 /// Max timestamp slots (2 per instrumented pass) in the query set. Passes beyond
 /// this simply aren't timed for that frame.
-const GPU_MAX_SLOTS: u32 = 64;
+const GPU_MAX_SLOTS: u32 = 256;
 const GPU_TS_BYTES: u32 = GPU_MAX_SLOTS * 8; // 64-bit nanosecond timestamps
 
 struct GpuFrameScratch {
@@ -372,6 +397,13 @@ impl GpuTimestamps {
                         let st = state.lock().unwrap();
                         st.pending.clone()
                     };
+                    // A name can be timed several times in one frame (one
+                    // shadow pass per view, say): sum those first, so each
+                    // name folds ONE per-frame sample and its stats read as
+                    // "per frame", not "per pass".
+                    let mut per_name: Vec<(&'static str, f64)> = Vec::new();
+                    let mut frame_begin = u64::MAX;
+                    let mut frame_end = 0u64;
                     for (name, base) in records {
                         let b = base as usize * 8;
                         let e = b + 8;
@@ -380,10 +412,28 @@ impl GpuTimestamps {
                         }
                         let begin = u64::from_le_bytes(buf[b..b + 8].try_into().unwrap());
                         let end = u64::from_le_bytes(buf[e..e + 8].try_into().unwrap());
-                        if end > begin {
-                            let ms = (end - begin) as f64 / 1_000_000.0;
-                            record(&GPU_TIMINGS, name, ms);
+                        // A zero is a slot the GPU never wrote (resolve
+                        // returns 0 for those) — not a real time.
+                        if begin == 0 || end <= begin {
+                            continue;
                         }
+                        frame_begin = frame_begin.min(begin);
+                        frame_end = frame_end.max(end);
+                        let ms = (end - begin) as f64 / 1_000_000.0;
+                        match per_name.iter_mut().find(|(n, _)| *n == name) {
+                            Some((_, total)) => *total += ms,
+                            None => per_name.push((name, ms)),
+                        }
+                    }
+                    for (name, ms) in per_name {
+                        record(&GPU_TIMINGS, name, ms);
+                    }
+                    if frame_end > frame_begin {
+                        record(
+                            &GPU_TIMINGS,
+                            GPU_FRAME_SCOPE,
+                            (frame_end - frame_begin) as f64 / 1_000_000.0,
+                        );
                     }
                 }
                 Ok(_) => {}

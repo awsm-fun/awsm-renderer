@@ -67,6 +67,11 @@ pub struct PrepPassConfig {
     /// "re-ensure on next commit" path the SSCS fields use; until that runs,
     /// `render_blur` warn-skips.
     pub denoise: bool,
+    /// `ShadowsConfig::denoise_radius`, mirrored for the same reason as
+    /// `denoise`: it is baked into the blur shader (kernel width + shared-memory
+    /// tile size), so it is part of the blur's cache key and a change re-keys
+    /// the pair on the next config-ensure.
+    pub denoise_radius: u32,
 }
 
 impl Default for PrepPassConfig {
@@ -79,6 +84,7 @@ impl Default for PrepPassConfig {
             sscs_enabled: false,
             sscs_step_count: 16,
             denoise: true,
+            denoise_radius: crate::shadows::ShadowsConfig::DENOISE_RADIUS_DEFAULT,
         }
     }
 }
@@ -104,5 +110,13 @@ impl PrepPassConfig {
     /// `r8unorm-storage` WebGPU feature; `Rgba8unorm` is core-guaranteed).
     pub fn shadow_visibility_layers(&self) -> u32 {
         self.clamped_k().div_ceil(4)
+    }
+
+    /// `denoise_radius` clamped into the supported range.
+    pub fn clamped_denoise_radius(&self) -> u32 {
+        self.denoise_radius.clamp(
+            crate::shadows::ShadowsConfig::DENOISE_RADIUS_MIN,
+            crate::shadows::ShadowsConfig::DENOISE_RADIUS_MAX,
+        )
     }
 }

@@ -340,7 +340,8 @@ impl LineRenderer {
         let viewport_w = ctx.render_texture_views.width as f32;
         let viewport_h = ctx.render_texture_views.height as f32;
 
-        let render_pass = ctx.begin_world_transparent_pass(Some("Line Render Pass"))?;
+        let render_pass =
+            ctx.begin_world_transparent_pass_timed(Some("Line Render Pass"), Some("Lines"))?;
         let mut current_variant: Option<LineVariantKey> = None;
 
         for entry in self.entries.values() {

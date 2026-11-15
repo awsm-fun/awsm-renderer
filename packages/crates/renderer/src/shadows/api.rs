@@ -89,6 +89,11 @@ impl AwsmRenderer {
         // commit_load's config-ensure compiles the pair on an off→on flip;
         // until then `render_blur` warn-skips (never a frame error).
         self.prep_config.denoise = config.denoise;
+        // The radius is baked into the blur shader (part of its cache key), so
+        // it rides the same config-ensure re-key as `denoise`. Each MSAA
+        // branch remembers the radius its blur pair was keyed with, so a
+        // later MSAA flip recompiles a branch keyed for an older radius.
+        self.prep_config.denoise_radius = config.denoise_radius;
         if recompile {
             self.last_ensured_bucket_layout = None;
             self.materials.mark_variants_dirty();

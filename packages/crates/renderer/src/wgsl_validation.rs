@@ -2843,3 +2843,34 @@ fn volumetrics_temporal_is_structural() {
         );
     }
 }
+
+/// The shadow-denoise blur (shared-memory tiled) validates at every supported
+/// radius, both depth conventions, both MSAA depth bindings, and the 1- and
+/// 4-layer packings. The workgroup arrays are sized from the radius, so an
+/// off-by-one in the tile math would show up here as an array-size mismatch.
+#[test]
+fn shadow_blur_shaders_validate() {
+    use crate::render_passes::material_prep::shader::cache_key::ShaderCacheKeyShadowBlur;
+    use crate::render_passes::material_prep::shader::template::ShaderTemplateShadowBlur;
+    use crate::shadows::ShadowsConfig;
+
+    for radius in ShadowsConfig::DENOISE_RADIUS_MIN..=ShadowsConfig::DENOISE_RADIUS_MAX {
+        for msaa_sample_count in [None, Some(4)] {
+            for reverse_z in [false, true] {
+                for max_shadow_casters in [4, 16] {
+                    let key = ShaderCacheKeyShadowBlur {
+                        msaa_sample_count,
+                        max_shadow_casters,
+                        radius,
+                        reverse_z,
+                    };
+                    let label = format!("shadow blur {key:?}");
+                    let src = ShaderTemplateShadowBlur::try_from(&key)
+                        .and_then(|t| t.into_source())
+                        .unwrap_or_else(|e| panic!("{label}: render failed: {e:?}"));
+                    naga_validate(&src, &label);
+                }
+            }
+        }
+    }
+}

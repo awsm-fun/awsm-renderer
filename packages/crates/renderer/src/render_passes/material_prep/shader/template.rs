@@ -154,20 +154,63 @@ pub struct ShaderTemplateShadowBlurCompute {
     /// `ceil(K/4)` — packed shadow-visibility layers to blur (matches the prep
     /// output this pass reads + writes).
     pub shadow_visibility_layers: u32,
+    /// Kernel half-width R (taps per side).
+    pub blur_radius: u32,
+    /// `R + 1` — length of the Gaussian weight table (distances `0..=R`).
+    pub blur_radius_plus_one: u32,
+    /// `2R` — neighbour taps per pixel.
+    pub tap_count: u32,
+    /// WGSL list of the `R + 1` spatial Gaussian weights.
+    pub gaussian_weights: String,
+    /// WGSL float literal of the raw depth an empty (sky) texel holds.
+    pub sky_depth: &'static str,
+    /// Texels in one shared-memory tile: `16 × (16 + 2R)`.
+    pub tile_texels: u32,
+    /// `tile_texels × layers` — packed visibility entries in the tile.
+    pub tile_vis_entries: u32,
 }
 
 impl TryFrom<&ShaderCacheKeyShadowBlur> for ShaderTemplateShadowBlur {
     type Error = AwsmShaderError;
     fn try_from(key: &ShaderCacheKeyShadowBlur) -> Result<Self> {
+        let layers = key.max_shadow_casters.div_ceil(4).max(1);
+        let radius = key.radius.clamp(
+            crate::shadows::ShadowsConfig::DENOISE_RADIUS_MIN,
+            crate::shadows::ShadowsConfig::DENOISE_RADIUS_MAX,
+        );
+        let tile_texels = 16 * (16 + 2 * radius);
         Ok(ShaderTemplateShadowBlur {
             bind_groups: ShaderTemplateShadowBlurBindGroups {
                 multisampled_geometry: key.msaa_sample_count.is_some(),
             },
             compute: ShaderTemplateShadowBlurCompute {
-                shadow_visibility_layers: key.max_shadow_casters.div_ceil(4).max(1),
+                shadow_visibility_layers: layers,
+                blur_radius: radius,
+                blur_radius_plus_one: radius + 1,
+                tap_count: 2 * radius,
+                gaussian_weights: shadow_blur_gaussian_weights(radius),
+                sky_depth: if key.reverse_z { "0.0" } else { "1.0" },
+                tile_texels,
+                tile_vis_entries: tile_texels * layers,
             },
         })
     }
+}
+
+/// The blur's spatial Gaussian for tap distances `0..=radius`, as a WGSL list:
+/// variance `R²/4`, i.e. `w(k) = exp(-2k²/R²)`. R=4 reproduces the original
+/// fixed variance-4 kernel exactly, and the outer tap weighs `e^-2` at every
+/// radius, so a different R widens or narrows the blur without turning it into
+/// a box (small R) or wasting taps on ~0 weights (large R).
+fn shadow_blur_gaussian_weights(radius: u32) -> String {
+    let r2 = (radius * radius) as f32;
+    (0..=radius)
+        .map(|k| {
+            let w = (-2.0 * (k * k) as f32 / r2).exp();
+            format!("{w:.8}")
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 impl ShaderTemplateShadowBlur {

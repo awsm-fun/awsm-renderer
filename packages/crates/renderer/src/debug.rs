@@ -17,8 +17,9 @@ pub struct AwsmRendererLogging {
     /// it (gated in Rust at the call site), so `Off` is truly free.
     pub cpu: TimingTier,
     /// GPU-side timestamp-query granularity. `Off` = no query set, no per-pass
-    /// `timestampWrites`, no resolve/readback. `Frame` = one begin/end around
-    /// the whole frame's GPU work; `SubFrame` = per-pass timestamps.
+    /// `timestampWrites`, no resolve/readback. `Frame` and `SubFrame` both
+    /// time each instrumented pass; the per-pass pairs also yield the
+    /// whole-frame span (`profiling::gpu_frame_timing`).
     pub gpu: TimingTier,
 }
 
@@ -36,9 +37,11 @@ pub enum TimingTier {
     /// wiring (`?trace=` for CPU, `?gputime=` for GPU).
     #[default]
     Off,
-    /// Just the outermost `"Render"` span / one begin+end GPU timestamp per
-    /// frame — tells you total frame (or whole-frame GPU) time for essentially
-    /// nothing.
+    /// Just the outermost `"Render"` CPU span. On the GPU side every timed pass
+    /// still gets its timestamp pair (the pairs are what the whole-frame span
+    /// is computed from — see `profiling::gpu_frame_timing`); timestamp writes
+    /// are cheap, so this is the tier an app turns on to show a live GPU frame
+    /// time.
     Frame,
     /// Every render pass, GPU write, hook, and renderer-internal
     /// stage opens its own span / gets its own GPU timestamp pair. This is what

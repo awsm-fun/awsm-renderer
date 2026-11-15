@@ -185,7 +185,12 @@ impl MaterialOpaqueRenderPass {
             // Cached + rebuilt on edge/view events via `recreate_edge`.
             let final_blend_group = self.bind_groups.get_edge_final_blend_bind_group()?;
             let compute_pass = ctx.command_encoder.begin_compute_pass(Some(
-                &ComputePassDescriptor::new(Some("Material Opaque - Unified Final Blend")).into(),
+                &ComputePassDescriptor::new(Some("Material Opaque - Unified Final Blend"))
+                    .with_timestamp_writes_opt(
+                        ctx.gpu_timestamps
+                            .and_then(|t| t.writes_for_compute("Material Opaque Final Blend")),
+                    )
+                    .into(),
             ));
             compute_pass.set_pipeline(ctx.pipelines.compute.get(pipeline_key)?);
             compute_pass.set_bind_group(0u32, final_blend_group, None)?;
