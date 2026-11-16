@@ -4,6 +4,62 @@ A standalone, copyable example of running the renderer across **real wasm
 threads** over a shared `WebAssembly.Memory`. The full end-user guide lives in
 **`docs/PLAYER-GUIDE.md` §9**.
 
+## Threading at a glance
+
+Every thread is the *same* wasm module attached to *one* shared
+`WebAssembly.Memory`. Main spawns the render worker; in the sim-driven demos
+the **render worker** then spawns the physics worker itself and hands it raw
+slot addresses once. Solid arrows are spawns, dotted arrows are
+`postMessage`, thick arrows are shared-memory reads/writes.
+
+```mermaid
+flowchart LR
+    MAIN["Main thread<br/>DOM · input capture<br/>status exposed for the test gates"]
+    RENDER["Render worker<br/>AwsmRenderer on an OffscreenCanvas<br/>owns topology: allocates and frees slots"]
+    PHYS["Physics worker<br/>integrates motion<br/>never posts on the hot path"]
+
+    subgraph MEM["One shared WebAssembly.Memory"]
+        direction TB
+        ARENA[("shared_arena slots<br/>64-byte world matrix + seqlock version each")]
+        DIRTY[("Dirty bitmap<br/>one bit per chunk")]
+    end
+
+    GPU["GPU buffers"]
+
+    MAIN -- "spawns, transfers the OffscreenCanvas" --> RENDER
+    RENDER -- "spawns, payload: slot bindings + dirty-bitmap address" --> PHYS
+    MAIN -. "input, resize, RenderCommand" .-> RENDER
+    RENDER -. "status, RenderEvent" .-> MAIN
+    RENDER -. "bind / unbind, churn demo only" .-> PHYS
+    PHYS -. "unbound ack, churn demo only" .-> RENDER
+    PHYS == "foreign_write: value + version bump" ==> ARENA
+    PHYS == "sets the chunk's dirty bit" ==> DIRTY
+    ARENA == "per-frame descent of dirty chunks" ==> RENDER
+    DIRTY == "read and cleared" ==> RENDER
+    RENDER -- "packs 64 B to 112 B, uploads" --> GPU
+```
+
+The split is **topology vs values**: only the render worker allocates,
+binds and frees slots; a foreign writer only ever stores values into slots
+it was handed. A torn value is never accepted — the reader checks the
+slot's seqlock version and retries.
+
+What each demo actually runs:
+
+| `?demo=` | Workers (spawned by) | Crosses shared memory | Crosses `postMessage` |
+|---|---|---|---|
+| `smoke` | A + B (main) | one static `AtomicU32`: A increments, B reads | each worker's observed value, for the gate |
+| `arena` | render (main) → physics (render) | a standalone `SharedArena`, hammered by physics, validated by render | bindings once; the verdict to main |
+| `render` | render (main) | nothing foreign — the arena is on, but render is its only writer | status |
+| `motion` | render (main) → physics (render) | node world matrices | bindings once; status |
+| `crowd` | render (main) → physics (render) | two arenas: per-instance matrices (stride 64) + instance attributes (stride 16) | bindings once; status |
+| `churn` | render (main) → physics (render) | world matrices of the live bodies | the bind → unbind → unbound transaction; status |
+| `lights` | render (main) → physics (render) | the light's bound transform | binding once; status |
+| `skin` | render (main) → physics (render) | skin **joint** world matrices | bindings once; status |
+| `scene` | render (main) → physics (render) | the runtime light's bound transform | binding once; status |
+| `remote` | render (main) | nothing | `RenderCommand` / `RenderEvent`; geometry as transferred `ArrayBuffer`s |
+| `input` | render (main) | nothing | `WorkerInputEvent`s main → render; status |
+
 ## Run it
 
 ```sh
