@@ -6,6 +6,22 @@ threads** over a shared `WebAssembly.Memory`. The full end-user guide lives in
 
 ## Threading at a glance
 
+### What runs where
+
+```mermaid
+flowchart TB
+    MAIN["<b>Main thread</b><br/>DOM<br/>input capture<br/>picks the demo, shows status"]
+    RENDER["<b>Render worker</b><br/>awsm-renderer (WebGPU)<br/>asset and scene loading<br/>camera"]
+    PHYS["<b>Physics worker</b> (sim-driven demos)<br/>computes motion for nodes,<br/>instances, lights and skin joints"]
+
+    MAIN --> RENDER
+    RENDER --> PHYS
+```
+
+Arrows point from a thread to the threads that work on its behalf.
+
+### In detail
+
 Every thread is the *same* wasm module attached to *one* shared
 `WebAssembly.Memory`. Main spawns the render worker; in the sim-driven demos
 the **render worker** then spawns the physics worker itself and hands it raw

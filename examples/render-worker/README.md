@@ -6,6 +6,18 @@ memory, see [`examples/multithreaded`](../multithreaded).
 
 ## Threading at a glance
 
+### What runs where
+
+```mermaid
+flowchart TB
+    MAIN["<b>Main thread</b><br/>DOM and the canvas element<br/>pointer capture"]
+    RENDER["<b>Render worker</b><br/>awsm-renderer (WebGPU)<br/>render loop"]
+
+    MAIN --> RENDER
+```
+
+### In detail
+
 One worker, and **nothing is shared**: both threads instantiate the same
 compiled `WebAssembly.Module`, but each gets its own private linear memory.
 There is no `SharedArrayBuffer`, so no COOP/COEP headers and no nightly
