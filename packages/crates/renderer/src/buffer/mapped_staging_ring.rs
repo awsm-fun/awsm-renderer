@@ -112,6 +112,11 @@ pub struct UploadStats {
     /// stall. Steady state ≈ depth × (per-frame latency); a sustained
     /// rise signals the GPU is taking longer to release slots than the
     /// CPU is consuming them.
+    ///
+    /// Opt-in like every measurement: a wait is only timed while the
+    /// renderer's CPU timing tier is on
+    /// (`profiling::cpu_timing_enabled`), and this stays where it was
+    /// otherwise.
     pub map_async_wait_ms: f64,
     /// Bytes pushed through the mapped fast path.
     pub bytes_uploaded_via_ring: u64,
@@ -161,7 +166,8 @@ struct Slot {
     /// `performance.now()` timestamp captured when `mapAsync` was
     /// kicked. Consumed by `promote_resolved` to add the
     /// `Submitted → Ready` latency into `stats.map_async_wait_ms` on
-    /// the transition. `None` outside `Pending`.
+    /// the transition. `None` outside `Pending`, and while the wait is
+    /// not being measured.
     map_async_started_ms: Option<f64>,
     /// The [`AwsmRendererWebGpu::upload_flush_epoch`] value at the moment
     /// this slot was made `Submitted` by `finalize` — i.e. which
@@ -527,6 +533,8 @@ impl MappedStagingRing {
         for slot in &mut self.slots {
             if slot.state == SlotState::Pending && slot.ready_flag.load(Ordering::Acquire) {
                 slot.state = SlotState::Ready;
+                // `Some` only while the wait is being measured (see
+                // `start_map_async`).
                 if let Some(started) = slot.map_async_started_ms.take() {
                     let now = performance_now_ms();
                     let delta = (now - started).max(0.0);
@@ -578,7 +586,10 @@ impl MappedStagingRing {
         let capacity = self.slot_capacity as u32;
         let label = self.label.clone();
         ready_flag.store(false, Ordering::Release);
-        self.slots[idx].map_async_started_ms = Some(performance_now_ms());
+        // The wait is telemetry (`UploadStats::map_async_wait_ms`): timed
+        // only while the renderer's CPU timing tier is on.
+        self.slots[idx].map_async_started_ms =
+            crate::profiling::cpu_timing_enabled().then(performance_now_ms);
         let promise = buffer.map_async_with_u32_and_u32(MapMode::Write as u32, 0, capacity);
         spawn_local(async move {
             match JsFuture::from(promise).await {
@@ -698,14 +709,12 @@ impl MappedStagingRing {
 }
 
 /// `performance.now()` in milliseconds. Routes through
-/// [`crate::web_global::performance`] so it works in both
+/// [`crate::web_global::performance_now`] so it works in both
 /// `Window` and `DedicatedWorkerGlobalScope` contexts (Phase 4.4
 /// worker-mode rendering). Returns `0.0` if `performance` isn't
 /// reachable — the metric just stays at 0 rather than panicking.
 fn performance_now_ms() -> f64 {
-    crate::web_global::performance()
-        .map(|p| p.now())
-        .unwrap_or(0.0)
+    crate::web_global::performance_now().unwrap_or(0.0)
 }
 
 impl Drop for MappedStagingRing {

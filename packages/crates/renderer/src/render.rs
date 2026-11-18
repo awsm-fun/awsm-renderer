@@ -73,6 +73,23 @@ impl AwsmRenderer {
     // or just call .update_all() right before .render() for convenience
     /// Executes a full render with optional hooks.
     pub fn render(&mut self, hooks: Option<&RenderHooks>) -> Result<()> {
+        // Tell the measurements that have no `logging` at hand whether any
+        // is wanted (profiling::cpu_timing_enabled).
+        crate::profiling::set_cpu_timing(&self.logging);
+        // The GPU timing tier was turned on after the renderer was built:
+        // this is where its query set is created.
+        if self.logging.gpu.enabled() && !self.gpu_timestamps_tried {
+            self.gpu_timestamps_tried = true;
+            self.gpu_timestamps = crate::profiling::GpuTimestamps::new(&self.gpu);
+        }
+        // Outermost frame span — fires on any non-Off tier so the
+        // shipping build still produces one `performance.measure`
+        // per frame. Everything *inside* `render()` is gated on
+        // `.sub_frame()`.
+        let _maybe_span_guard =
+            crate::profiling::cpu_scope(&self.logging, crate::profiling::CPU_FRAME_SCOPE, false);
+        let mut laps = crate::profiling::CpuLaps::start(&self.logging);
+
         // Per-frame pre-amble: drain the pipeline scheduler's resolved
         // compile futures. Transitions (Pending → Ready / Failed) are
         // applied here; bucket-entries cache invalidations + per-pass
@@ -89,6 +106,7 @@ impl AwsmRenderer {
                 applied
             );
         }
+        laps.lap("Prep: Pipeline Scheduler");
         // The status events themselves are drained by frontends via
         // drain_pipeline_status_events. The renderer-internal side
         // effects (cache rebuilds) are applied directly inside the
@@ -182,6 +200,11 @@ impl AwsmRenderer {
     /// `reconcile_material_variants` → `ensure_scene_pipelines` compile that used
     /// to run here every frame now lives ONLY in `commit_load`.
     fn render_all(&mut self, hooks: Option<&RenderHooks>) -> Result<()> {
+        // The stretches of this function that are not a pass or a hook, timed
+        // as `Prep: …` and `Submit: …` scopes (see `profiling`). Nothing is
+        // read unless the CPU tier is `SubFrame`.
+        let mut laps = crate::profiling::CpuLaps::start(&self.logging);
+
         // Propagate any spatial-index mutations that landed since
         // `update_all`'s maintenance pass (out-of-band syncs: material
         // re-bind → geometry re-resolve, load commits, editor flag
@@ -245,6 +268,7 @@ impl AwsmRenderer {
         self.kick_hud_resolve()?;
         self.poll_hud_resolve()?;
 
+        laps.lap("Prep: Compile Polling");
         if let Some(hook) = hooks.and_then(|h| h.pre_render.as_ref()) {
             {
                 let _maybe_span_guard =
@@ -253,11 +277,8 @@ impl AwsmRenderer {
             }
         }
 
-        // Outermost frame span — fires on any non-Off tier so the
-        // shipping build still produces one `performance.measure`
-        // per frame. Everything *inside* `render()` is gated on
-        // `.sub_frame()`.
-        let _maybe_span_guard = crate::profiling::cpu_scope(&self.logging, "Render", false);
+        // The hook above has a scope of its own.
+        laps.restart();
 
         self.render_textures.next_frame();
 
@@ -380,6 +401,7 @@ impl AwsmRenderer {
                 }
             }
         }
+        laps.lap("Prep: Readback Ingest");
 
         // Cheap-material LOD: re-route every mesh-with-a-cheap-variant
         // to the effective material's GPU offset based on the
@@ -409,19 +431,24 @@ impl AwsmRenderer {
         // reverted wholesale by any pool resize — the nanite-paging holes bug).
         #[cfg(feature = "lod")]
         self.update_cluster_paging();
+        laps.lap("Prep: Material Routing");
 
         self.transforms
             .write_gpu(&self.logging, &self.gpu, &mut self.bind_groups)?;
+        laps.lap("Prep: Transforms Upload");
         self.materials
             .write_gpu(&self.logging, &self.gpu, &mut self.bind_groups)?;
+        laps.lap("Prep: Materials Upload");
         self.instances
             .write_gpu(&self.logging, &self.gpu, &mut self.bind_groups)?;
+        laps.lap("Prep: Instances Upload");
         self.meshes
             .skins
             .write_gpu(&self.logging, &self.gpu, &mut self.bind_groups)?;
         self.meshes
             .morphs
             .write_gpu(&self.logging, &self.gpu, &mut self.bind_groups)?;
+        laps.lap("Prep: Skins + Morphs Upload");
         // ── Light culling per-frame setup ────────────────────────
         //
         // `ensure_viewport` may recreate `light_culling_buffers.storage_buffer`
@@ -476,6 +503,7 @@ impl AwsmRenderer {
             self.debug_wireframe,
         )?;
         self.light_culling_buffers.reset_overflow(&self.gpu)?;
+        laps.lap("Prep: Light Culling Buffers");
 
         // (Removed: the per-mesh light-slice GPU upload. All opaque
         // shading now reads the per-pixel froxel light list, so the
@@ -498,8 +526,10 @@ impl AwsmRenderer {
         )?;
         self.meshes
             .write_gpu(&self.logging, &self.gpu, &mut self.bind_groups)?;
+        laps.lap("Prep: Meshes Upload");
         self.camera
             .write_gpu(&self.logging, &self.gpu, &self.bind_groups)?;
+        laps.lap("Prep: Camera Upload");
         // Live swap-chain size — read once per frame and threaded through
         // `RenderContext.viewport_size`. The value is fixed for the
         // duration of the frame (set by the surface configuration), so
@@ -528,6 +558,7 @@ impl AwsmRenderer {
         // Extras pool — flush any dirty bytes from BufferSlot
         // updates this frame. No-op when nothing's changed.
         self.extras_pool.write_gpu(&self.gpu)?;
+        laps.lap("Prep: Frame Globals Upload");
         // §B static-shadow cache: a frame is "static" (periodic shadow re-renders
         // may be suppressed) when the camera didn't move AND no time-driven shadow
         // material is present — combined inside `take_shadow_static` with the
@@ -569,6 +600,7 @@ impl AwsmRenderer {
             &self.scene_spatial,
             shadow_static,
         )?;
+        laps.lap("Prep: Shadows Upload");
         {
             let shadows = &self.shadows;
             self.lights
@@ -576,6 +608,7 @@ impl AwsmRenderer {
                     shadows.descriptor_index_for_light(key)
                 })?;
         }
+        laps.lap("Prep: Lights Upload");
 
         let render_texture_views = self.render_textures.views(
             &self.gpu,
@@ -605,6 +638,7 @@ impl AwsmRenderer {
             self.bind_groups
                 .mark_create(BindGroupCreate::TextureViewRecreate);
         }
+        laps.lap("Prep: Render Textures");
 
         // Resize the HZB texture to match the live viewport. This
         // recreates the per-mip views, so the HZB bind groups must
@@ -900,6 +934,7 @@ impl AwsmRenderer {
                 }
             }
         }
+        laps.lap("Prep: Pass Resources");
 
         self.bind_groups.recreate(
             BindGroupRecreateContext {
@@ -957,6 +992,7 @@ impl AwsmRenderer {
         // has been fully handled. Had anything above returned early, the flag
         // stays set and the next frame handles it again.
         self.render_textures.acknowledge_views_recreated();
+        laps.lap("Prep: Bind Groups");
 
         // Discrete-LOD: pick a level per instance and flip mesh visibility to it
         // BEFORE `collect_renderables` reads the `!hidden` set, so this frame's
@@ -970,6 +1006,7 @@ impl AwsmRenderer {
         // clear-and-extend the pool's Vecs in place, while ctx holds
         // immutable references into `self`.
         self.collect_renderables()?;
+        laps.lap("Prep: Collect Renderables");
 
         // Take the reused per-frame cull-path scratch out of `self` BEFORE the
         // `renderables`/`ctx` borrows below pin `&self` — it's restored at the end
@@ -1121,6 +1158,7 @@ impl AwsmRenderer {
                 compaction_buffers.args_ready.set(false);
             }
         }
+        laps.lap("Prep: Frame Setup");
 
         if let Some(hook) = hooks.and_then(|h| h.first_pass.as_ref()) {
             {
@@ -1140,6 +1178,7 @@ impl AwsmRenderer {
         let mut cluster_cut_kick: Option<Vec<(web_sys::GpuBuffer, u32)>> = None;
         #[cfg(feature = "lod")]
         if let Some(cluster_pass) = self.render_passes.cluster_lod.as_ref() {
+            let _maybe_span_guard = crate::profiling::cpu_scope(&self.logging, "Cluster Cut", true);
             if !cluster_pass.states.is_empty() {
                 if let Some(cam) = self.camera.last_matrices.as_ref() {
                     let proj_yy = cam.projection.y_axis.y.abs();
@@ -1517,6 +1556,8 @@ impl AwsmRenderer {
         // so the indirect draw reads this frame's compacted stream — see above.)
 
         if frame_opts.gpu_occlusion {
+            let _maybe_span_guard =
+                crate::profiling::cpu_scope(&self.logging, "Occlusion Cull", true);
             if let (Some(occlusion_buffers), Some(occlusion_pass)) = (
                 self.occlusion_buffers.as_ref(),
                 self.render_passes.occlusion.as_ref(),
@@ -1808,6 +1849,9 @@ impl AwsmRenderer {
             }
         }
 
+        // The passes and hooks above have scopes of their own.
+        laps.restart();
+
         // Build the slot → MeshKey map now (while we still own
         // `self.meshes`) so the async readback task can route raw
         // `u32` slot counts back into the `MeshCoverage` table
@@ -1853,6 +1897,7 @@ impl AwsmRenderer {
         self.gpu.submit_commands(&ctx.command_encoder.finish());
         // The light-cull counts this frame recorded are now on the GPU.
         self.render_passes.light_culling.commit_submitted();
+        laps.lap("Submit: Finish + Queue Submit");
 
         // Kick the timestamp `mapAsync` readback after submit (results land a
         // few frames later, fold into the GPU aggregator).
@@ -2028,6 +2073,7 @@ impl AwsmRenderer {
                 state.inflight = false;
             });
         }
+        laps.lap("Submit: Readback Kicks");
 
         if let Some(hook) = hooks.and_then(|h| h.post_render.as_ref()) {
             {

@@ -60,6 +60,7 @@ pub struct CoverageReadbackState {
 /// Verification of the Phase B per-cluster GPU cut+compaction: reads
 /// `draw_args.index_count` back and logs the drawn cut size (a sanity check vs the
 /// tested `select_cut_per_cluster`). `inflight` single-buffers the `mapAsync`.
+/// Opt-in: only while the GPU timing tier (`AwsmRendererLogging::gpu`) is on.
 /// Re-fires on a cadence (frame 5, then every 30) — NOT one-shot — so the drawn cut
 /// is observable as the camera/scene change (Gap-B paging A2 + the A3 cut-vs-source
 /// numbers); the async handler logs only when the value changes (`last_value`,
@@ -303,8 +304,12 @@ pub struct AwsmRenderer {
     pub textures: Textures,
     pub logging: AwsmRendererLogging,
     /// GPU timestamp-query subsystem — `Some` only when the device exposes the
-    /// `timestamp-query` feature. Emits nothing while `logging.gpu` is `Off`.
+    /// `timestamp-query` feature and `logging.gpu` has been on (at build, or
+    /// at a frame since). Emits nothing while `logging.gpu` is `Off`.
     pub gpu_timestamps: Option<crate::profiling::GpuTimestamps>,
+    /// The query set has been asked for (it is `None` for good on a device
+    /// without `timestamp-query`).
+    pub(crate) gpu_timestamps_tried: bool,
     pub render_textures: RenderTextures,
     pub render_passes: RenderPasses,
     pub environment: Environment,
@@ -2382,7 +2387,7 @@ impl AwsmRendererBuilder {
         } = self;
 
         let mut phase_handler = phase_handler;
-        let build_start_ms = web_sys::js_sys::Date::now();
+        let build_start_ms = crate::profiling::boot_clock_ms();
         let mut phase_start_ms = build_start_ms;
         let mut emit_phase = |phase: RendererLoadingPhase| {
             // Log wall-clock between phases so the user can see where
@@ -2390,7 +2395,7 @@ impl AwsmRendererBuilder {
             // shows the phase NAME but not how long the previous one
             // took). Tracing target is `awsm_renderer::boot_timing`
             // so consumers can filter for it explicitly.
-            let now = web_sys::js_sys::Date::now();
+            let now = crate::profiling::boot_clock_ms();
             let dt_phase = now - phase_start_ms;
             let dt_total = now - build_start_ms;
             tracing::info!(
@@ -2411,9 +2416,9 @@ impl AwsmRendererBuilder {
         // phase log) — Init used to lump device acquisition, resource
         // generation, and descriptor staging into one number; these say
         // where a slow Init actually goes.
-        let mut sub_t = web_sys::js_sys::Date::now();
+        let mut sub_t = crate::profiling::boot_clock_ms();
         let mut submark = move |label: &str| {
-            let now = web_sys::js_sys::Date::now();
+            let now = crate::profiling::boot_clock_ms();
             tracing::info!(
                 target: "awsm_renderer::boot_timing",
                 "init sub-phase: {label} (+{:.0}ms)",
@@ -3034,10 +3039,19 @@ impl AwsmRendererBuilder {
         // for config changes via `ensure_scene_pipelines` →
         // `launch_edge_resolve_compile` (cache-keyed, so overlaps are hits).
 
-        // Built once when the device supports timestamp queries (free — emits
-        // nothing until `logging.gpu` is turned on). Constructed before `gpu` is
-        // moved into the struct below.
-        let gpu_timestamps = crate::profiling::GpuTimestamps::new(&gpu);
+        // Opt-in like every measurement: the query set is only created when
+        // the GPU timing tier is on. Here if it already is (so that a caller
+        // can tell from `gpu_timestamps` whether the device has timestamp
+        // queries); otherwise by the first frame that has it on (`render`).
+        // Constructed before `gpu` is moved into the struct below.
+        let gpu_timestamps = if logging.gpu.enabled() {
+            crate::profiling::GpuTimestamps::new(&gpu)
+        } else {
+            None
+        };
+        // Whether the measurements with no `logging` at hand may run; also
+        // refreshed at the start of every frame.
+        crate::profiling::set_cpu_timing(&logging);
 
         // Collect the blit pipelines started at the top (see there). By now
         // they have usually resolved; if not, this is the one place `build()`
@@ -3054,6 +3068,7 @@ impl AwsmRendererBuilder {
         let mut _self = AwsmRenderer {
             gpu,
             gpu_timestamps,
+            gpu_timestamps_tried: logging.gpu.enabled(),
             meshes,
             camera,
             frame_globals,

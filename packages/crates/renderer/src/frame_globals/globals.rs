@@ -245,14 +245,13 @@ impl AwsmRenderer {
     }
 }
 
-/// `Performance.now()` in milliseconds. Routes through
-/// [`crate::web_global::performance`] so both main-thread and
+/// `Performance.now()` in milliseconds: the shaders' time source, read once
+/// per frame (not a measurement). Routes through
+/// [`crate::web_global::performance_now`] so both main-thread and
 /// worker-mode renderers read the same clock. Returns `0.0` if
 /// `performance` isn't reachable.
 fn performance_now_ms() -> f64 {
-    crate::web_global::performance()
-        .map(|p| p.now())
-        .unwrap_or(0.0)
+    crate::web_global::performance_now().unwrap_or(0.0)
 }
 
 /// Frame-globals errors.

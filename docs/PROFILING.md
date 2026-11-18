@@ -34,7 +34,7 @@ overflow (`⋯`) menu has runtime toggles (see [Editor menu](#editor-menu)).
 |---|---|---|
 | `off` | no scopes created | no query set, no timestamp writes |
 | `frame` | outer `"Render"` scope only | per-pass timestamps + the whole-frame span (`Frame`) |
-| `sub-frame` | every pass / GPU-write scope | per-pass device timestamps |
+| `sub-frame` | every pass, plus the `Prep: …` and `Submit: …` scopes around them | per-pass device timestamps |
 
 ---
 
@@ -46,11 +46,25 @@ Each instrumented render stage opens a [`CpuScope`](../packages/crates/renderer/
 only when `AwsmRendererLogging::cpu` permits. On drop it folds its wall duration
 (`performance.now()` delta) into a **bounded rolling aggregator** — `last / ema /
 min / max / count` per scope name, keyed by the small fixed set of names, so it
-never grows. `?trace=frame` times just the outer `"Render"` scope (≈ whole-frame
-CPU build+submit); `?trace=sub-frame` adds every pass and GPU-write scope.
+never grows. `?trace=frame` times just the outer `"Render"` scope (the whole of
+`render()`); `?trace=sub-frame` adds every pass and the scopes around the passes.
 
 Read it with `awsm_renderer::profiling::cpu_timing_stats()`. The editor also
 exposes it in the `memory_stats` MCP query as `cpu_span_timings`.
+
+**Scope kinds.** `profiling::cpu_scope_kind(name)` says what part of the frame a
+scope times, so a panel can group the rows without knowing the names:
+
+| Kind | Names | What |
+|---|---|---|
+| `Frame` | `Render` (`CPU_FRAME_SCOPE`) | the whole of `render()` |
+| `Prep` | start with `Prep: ` (`CPU_PREP_PREFIX`) | before the first pass: `Pipeline Scheduler`, `Compile Polling`, `Readback Ingest`, `Material Routing`, the uploads (`Transforms`, `Materials`, `Instances`, `Skins + Morphs`, `Meshes`, `Camera`, `Frame Globals`, `Shadows`, `Lights` `Upload`), `Light Culling Buffers`, `Render Textures`, `Pass Resources`, `Bind Groups`, `Collect Renderables`, `Frame Setup` |
+| `Pass` | everything else | encoding one render or compute pass (acquiring the canvas texture is inside `Display RenderPass`) |
+| `Submit` | start with `Submit: ` (`CPU_SUBMIT_PREFIX`) | `Finish + Queue Submit` (encoder finish and `queue.submit`), `Readback Kicks` |
+| `Hook` | end with ` Hook` | a caller's render hook |
+
+The kinds other than `Frame` do not overlap and all lie inside `Render`, so
+`Render` less their sum is what is left untimed: the glue between scopes.
 
 ### GPU pass timing (`?gputime`)
 
@@ -219,8 +233,19 @@ timed) — add them the same way if you need that granularity.
 
 - **Source-gated.** `profiling::cpu_scope(logging, name, sub)` returns `None` when
   the tier is off — no `performance.now()`, no allocation. GPU `writes_for` is
-  only reached when `logging.gpu` is on. There is **no** always-installed tracing
-  layer; the subscriber does logging only.
+  only reached when `logging.gpu` is on, and the query set itself is only created
+  once that tier is on (at build, or by the first frame after it is turned on).
+  There is **no** always-installed tracing layer; the subscriber does logging only.
+- **Every measurement is opt-in**, not only the scopes. The few that have no
+  `AwsmRendererLogging` at hand ask `profiling::cpu_timing_enabled()` (the CPU
+  tier as of the renderer's last frame): the upload rings' `mapAsync` wait
+  (`UploadStats::map_async_wait_ms`) and the worker pool's job round trip
+  (`WorkerPoolStats::job_round_trip_ms`). The cluster-LOD cut readback runs only
+  while the GPU tier is on. The load-time `awsm_renderer::boot_timing` log lines
+  read the clock only while something listens to that target at `INFO`. What
+  remains with everything off is functional: the shaders' time uniform (one
+  `performance.now()` per frame, through a handle looked up once per realm) and
+  the readbacks the renderer acts on (coverage, edge and froxel overflow).
 - **Renderer-owned aggregators.** CPU + GPU stats are globals in
   `awsm_renderer::profiling`, fed directly by the scopes / readback. `web-shared`
   and the editor read them; nothing is coupled to `tracing`.

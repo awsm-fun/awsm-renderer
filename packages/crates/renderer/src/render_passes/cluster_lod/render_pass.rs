@@ -634,7 +634,9 @@ impl ClusterLodRenderPass {
         if resident().next().is_none() {
             return Ok(None);
         }
-        let want = {
+        // A measurement, so only while a timing tier is on (the GPU's: this
+        // is a GPU readback).
+        let want = ctx.logging.gpu.enabled() && {
             let mut st = readback.lock().unwrap();
             st.frames += 1;
             !st.inflight && (st.frames == 5 || st.frames % 30 == 0)

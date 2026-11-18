@@ -6,9 +6,36 @@
 //! [`CpuScope`] is only constructed when [`AwsmRendererLogging::cpu`] permits,
 //! and GPU timestamp writes are only emitted when [`AwsmRendererLogging::gpu`]
 //! permits. When both tiers are [`TimingTier::Off`] nothing here runs — no
-//! `performance.now()`, no query set, no allocation. Because the gate is a plain
+//! `performance.now()`, no query set, no timestamp writes, no resolve or
+//! readback, no stats fold, no allocation. (The query set is created at build
+//! if the GPU tier is already on, or else by the first frame that has it on.)
+//! Because the gate is a plain
 //! field on the renderer, it can be flipped **at runtime** (an editor menu, a
 //! player hotkey) with the same zero-cost-when-off guarantee.
+//!
+//! The same holds for the renderer's other measurements, which have no
+//! `AwsmRendererLogging` at hand and ask [`cpu_timing_enabled`] instead (the
+//! upload rings' `mapAsync` wait, the worker pool's round trip), and for the
+//! load-time `awsm_renderer::boot_timing` log lines, which read the clock only
+//! while something listens to that target.
+//!
+//! # CPU scopes
+//!
+//! The CPU scopes of a frame, by [`cpu_scope_kind`]:
+//!
+//! * [`CpuScopeKind::Frame`]: `"Render"`, the whole of `render()`.
+//! * [`CpuScopeKind::Prep`] (names start with [`CPU_PREP_PREFIX`]): what
+//!   `render()` does before the first pass: pipeline polling, readback ingest,
+//!   the per-subsystem buffer uploads, pass resources, bind groups, collecting
+//!   the renderables.
+//! * [`CpuScopeKind::Pass`]: encoding one render or compute pass.
+//! * [`CpuScopeKind::Submit`] (names start with [`CPU_SUBMIT_PREFIX`]):
+//!   finishing the encoder and `queue.submit`, then kicking the readbacks.
+//! * [`CpuScopeKind::Hook`] (names end with `" Hook"`): a caller's render hook.
+//!
+//! Every kind but `Frame` needs [`TimingTier::SubFrame`]. They do not overlap
+//! one another, and all lie inside `"Render"`, so that scope's time less their
+//! sum is what `render()` spends in the glue between them.
 //!
 //! Two rolling aggregators (CPU + GPU) hold `last/ema/min/max/count` per named
 //! scope, keyed by the small fixed set of scope names → they never grow. Read
@@ -67,6 +94,33 @@ impl TimingStat {
 }
 
 const EMA_ALPHA: f64 = 0.1;
+
+/// Whether a CPU timing tier is on, as the renderer last said: for the
+/// measurements that have no [`AwsmRendererLogging`] at hand.
+static CPU_TIMING: AtomicBool = AtomicBool::new(false);
+
+/// Called by the renderer when it is built and at the start of every frame.
+pub(crate) fn set_cpu_timing(logging: &AwsmRendererLogging) {
+    CPU_TIMING.store(logging.cpu.enabled(), Ordering::Relaxed);
+}
+
+/// Whether the renderer's [`AwsmRendererLogging::cpu`] tier was on at its last
+/// frame. `false` until a renderer says otherwise, so nothing that asks this
+/// measures by default.
+pub fn cpu_timing_enabled() -> bool {
+    CPU_TIMING.load(Ordering::Relaxed)
+}
+
+/// Wall-clock milliseconds for the load-time `awsm_renderer::boot_timing` log
+/// lines, or `0.0`, without reading the clock, while nothing listens to that
+/// target at `INFO` (the lines are not printed then either).
+pub(crate) fn boot_clock_ms() -> f64 {
+    if tracing::enabled!(target: "awsm_renderer::boot_timing", tracing::Level::INFO) {
+        web_sys::js_sys::Date::now()
+    } else {
+        0.0
+    }
+}
 
 /// Global CPU + GPU stats tables, keyed by `&'static str` scope name (a small,
 /// fixed set → the maps never grow). wasm is single-threaded → no contention.
@@ -172,9 +226,60 @@ extern "C" {
 
 /// `performance.now()` in ms (main thread or worker), or 0.0 if unavailable.
 pub fn now_ms() -> f64 {
-    crate::web_global::performance()
-        .map(|p| p.now())
-        .unwrap_or(0.0)
+    crate::web_global::performance_now().unwrap_or(0.0)
+}
+
+/// Folds one scope's duration into the CPU aggregator and, when the DevTools
+/// mirror is on, emits its `performance.measure`.
+fn record_cpu_scope(name: &'static str, start_ms: f64, end_ms: f64) {
+    record(&CPU_TIMINGS, name, end_ms - start_ms);
+    if devtools_measure_enabled() {
+        measure_range(name, start_ms, end_ms);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CPU scope names
+// ---------------------------------------------------------------------------
+
+/// Name of the whole-frame CPU scope in [`cpu_timing_stats`]: all of
+/// `render()`. The one scope the [`TimingTier::Frame`] tier produces.
+pub const CPU_FRAME_SCOPE: &str = "Render";
+/// Every [`CpuScopeKind::Prep`] scope's name starts with this.
+pub const CPU_PREP_PREFIX: &str = "Prep: ";
+/// Every [`CpuScopeKind::Submit`] scope's name starts with this.
+pub const CPU_SUBMIT_PREFIX: &str = "Submit: ";
+/// Every [`CpuScopeKind::Hook`] scope's name ends with this.
+pub const CPU_HOOK_SUFFIX: &str = " Hook";
+
+/// What part of a frame a CPU scope times. See the module docs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CpuScopeKind {
+    /// The whole of `render()`: [`CPU_FRAME_SCOPE`].
+    Frame,
+    /// Work `render()` does before the first pass.
+    Prep,
+    /// Encoding one render or compute pass.
+    Pass,
+    /// Finishing and submitting the frame, and what follows the submit.
+    Submit,
+    /// A caller's render hook.
+    Hook,
+}
+
+/// The kind of the CPU scope called `name` (a name from [`cpu_timing_stats`]).
+pub fn cpu_scope_kind(name: &str) -> CpuScopeKind {
+    if name == CPU_FRAME_SCOPE {
+        CpuScopeKind::Frame
+    } else if name.starts_with(CPU_PREP_PREFIX) {
+        CpuScopeKind::Prep
+    } else if name.starts_with(CPU_SUBMIT_PREFIX) {
+        CpuScopeKind::Submit
+    } else if name.ends_with(CPU_HOOK_SUFFIX) {
+        CpuScopeKind::Hook
+    } else {
+        CpuScopeKind::Pass
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -192,10 +297,40 @@ pub struct CpuScope {
 
 impl Drop for CpuScope {
     fn drop(&mut self) {
-        let end = now_ms();
-        record(&CPU_TIMINGS, self.name, end - self.start);
-        if devtools_measure_enabled() {
-            measure_range(self.name, self.start, end);
+        record_cpu_scope(self.name, self.start, now_ms());
+    }
+}
+
+/// Times consecutive stretches of straight-line code as CPU scopes, one clock
+/// read per boundary: [`Self::lap`] ends the stretch that began at the last
+/// boundary and names it. Like [`cpu_scope`] with `sub_frame = true`, it does
+/// nothing at all (no clock read) unless the tier is [`TimingTier::SubFrame`].
+pub(crate) struct CpuLaps {
+    /// Where the current stretch began; `None` while the tier is off.
+    since_ms: Option<f64>,
+}
+
+impl CpuLaps {
+    pub(crate) fn start(logging: &AwsmRendererLogging) -> Self {
+        Self {
+            since_ms: logging.cpu.sub_frame().then(now_ms),
+        }
+    }
+
+    /// Charges the time since the last boundary to `name`.
+    pub(crate) fn lap(&mut self, name: &'static str) {
+        if let Some(since_ms) = self.since_ms {
+            let now = now_ms();
+            record_cpu_scope(name, since_ms, now);
+            self.since_ms = Some(now);
+        }
+    }
+
+    /// Starts a stretch here without charging the time since the last
+    /// boundary to anything: after code that has scopes of its own.
+    pub(crate) fn restart(&mut self) {
+        if self.since_ms.is_some() {
+            self.since_ms = Some(now_ms());
         }
     }
 }
@@ -443,5 +578,58 @@ impl GpuTimestamps {
             }
             state.lock().unwrap().inflight = false;
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::debug::TimingTier;
+
+    // With the default logging nothing may measure. These run off the web,
+    // where there is no clock to read: a scope or lap that tried would be
+    // `Some` (and the clock read would panic outside wasm).
+    #[test]
+    fn default_logging_times_nothing() {
+        let logging = AwsmRendererLogging::default();
+        assert_eq!(logging.cpu, TimingTier::Off);
+        assert_eq!(logging.gpu, TimingTier::Off);
+        assert!(cpu_scope(&logging, CPU_FRAME_SCOPE, false).is_none());
+        assert!(cpu_scope(&logging, "Geometry RenderPass", true).is_none());
+
+        let mut laps = CpuLaps::start(&logging);
+        assert!(laps.since_ms.is_none());
+        laps.lap("Prep: Bind Groups");
+        laps.restart();
+        assert!(laps.since_ms.is_none());
+
+        assert!(!cpu_timing_enabled());
+        set_cpu_timing(&logging);
+        assert!(!cpu_timing_enabled());
+        assert_eq!(boot_clock_ms(), 0.0); // nothing listens to boot_timing here
+    }
+
+    // The frame tier is the one "Render" scope: no pass, prep or submit scope.
+    #[test]
+    fn frame_tier_has_no_sub_frame_scopes() {
+        let logging = AwsmRendererLogging {
+            cpu: TimingTier::Frame,
+            ..Default::default()
+        };
+        assert!(cpu_scope(&logging, "Geometry RenderPass", true).is_none());
+        assert!(CpuLaps::start(&logging).since_ms.is_none());
+    }
+
+    #[test]
+    fn scope_kinds_by_name() {
+        assert_eq!(cpu_scope_kind("Render"), CpuScopeKind::Frame);
+        assert_eq!(cpu_scope_kind("Prep: Bind Groups"), CpuScopeKind::Prep);
+        assert_eq!(
+            cpu_scope_kind("Submit: Finish + Queue Submit"),
+            CpuScopeKind::Submit
+        );
+        assert_eq!(cpu_scope_kind("PreRender Hook"), CpuScopeKind::Hook);
+        assert_eq!(cpu_scope_kind("Geometry RenderPass"), CpuScopeKind::Pass);
+        assert_eq!(cpu_scope_kind("Shadow Generation"), CpuScopeKind::Pass);
     }
 }

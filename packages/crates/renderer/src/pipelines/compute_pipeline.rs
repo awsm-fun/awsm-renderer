@@ -412,7 +412,7 @@ impl ComputePipelines {
         }
 
         let n = descriptors.len();
-        let t_start = web_sys::js_sys::Date::now();
+        let t_start = crate::profiling::boot_clock_ms();
 
         // Per-pipeline label + cumulative-timing wrapper (Lessons A from
         // https://github.com/dakom/awsm-renderer/pull/99). Each individual future is
@@ -449,7 +449,7 @@ impl ComputePipelines {
                 let ft = finish_times.clone();
                 let fut = async move {
                     let r = promise.await;
-                    let cum_ms = web_sys::js_sys::Date::now() - t_start;
+                    let cum_ms = crate::profiling::boot_clock_ms() - t_start;
                     let ok = r.is_ok();
                     ft.borrow_mut().push((i, cum_ms, ok));
                     let outcome = if ok { "ok" } else { "ERR" };
@@ -524,7 +524,7 @@ impl ComputePipelines {
         } = prep;
 
         let n = pending_input_indices.len();
-        let dt_ms = web_sys::js_sys::Date::now() - t_start;
+        let dt_ms = crate::profiling::boot_clock_ms() - t_start;
         tracing::info!(
             target: "awsm_renderer::boot_timing",
             "ComputePipelines::ensure_keys: {n} pipelines compiled in {dt_ms:.0}ms",

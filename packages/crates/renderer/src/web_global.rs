@@ -38,16 +38,34 @@ pub fn global() -> js_sys::Object {
     js_sys::global().unchecked_into::<js_sys::Object>()
 }
 
+// Which global this thread has, looked up once per realm.
+//
+// The lookups are `instanceof` tests, and the one for `Window` is slow where
+// it fails: in a worker the name `Window` does not exist, so the test throws
+// and the binding catches it, tens of microseconds each time in a real frame.
+// The renderer reads the clock every frame, so this must not be paid per call.
+thread_local! {
+    static WINDOW: Option<web_sys::Window> = web_sys::window();
+    static WORKER_SCOPE: Option<web_sys::DedicatedWorkerGlobalScope> = js_sys::global()
+        .dyn_into::<web_sys::DedicatedWorkerGlobalScope>()
+        .ok();
+    static PERFORMANCE: Option<web_sys::Performance> = {
+        if let Some(w) = window() {
+            w.performance()
+        } else {
+            worker_scope().and_then(|ws| ws.performance())
+        }
+    };
+}
+
 /// `Some(window)` on the main thread; `None` in a worker.
 pub fn window() -> Option<web_sys::Window> {
-    web_sys::window()
+    WINDOW.with(Clone::clone)
 }
 
 /// `Some(scope)` in a worker; `None` on the main thread.
 pub fn worker_scope() -> Option<web_sys::DedicatedWorkerGlobalScope> {
-    js_sys::global()
-        .dyn_into::<web_sys::DedicatedWorkerGlobalScope>()
-        .ok()
+    WORKER_SCOPE.with(Clone::clone)
 }
 
 /// `navigator.gpu` from whichever global is active. Returns `None`
@@ -83,13 +101,15 @@ pub fn navigator_gpu() -> Option<web_sys::Gpu> {
 /// the same `Performance` API as main-thread (`performance.now()`,
 /// `performance.measure(..)`, etc.).
 pub fn performance() -> Option<web_sys::Performance> {
-    if let Some(w) = window() {
-        return w.performance();
-    }
-    if let Some(ws) = worker_scope() {
-        return ws.performance();
-    }
-    None
+    PERFORMANCE.with(Clone::clone)
+}
+
+/// `performance.now()` in milliseconds from whichever global is active, or
+/// `None` if there is no `performance`. The handle is looked up once per
+/// realm, so this is one call into JS: use it for anything that reads the
+/// clock per frame.
+pub fn performance_now() -> Option<f64> {
+    PERFORMANCE.with(|performance| performance.as_ref().map(|p| p.now()))
 }
 
 /// Schedule a `requestAnimationFrame` callback against whichever

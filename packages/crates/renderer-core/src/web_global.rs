@@ -8,17 +8,25 @@
 use wasm_bindgen::{JsCast, JsValue};
 use web_sys::js_sys;
 
+// Which global this thread has, looked up once per realm: the `instanceof
+// Window` test throws (and is caught) in a worker, where the name does not
+// exist, which is far too slow to repeat per call.
+thread_local! {
+    static WINDOW: Option<web_sys::Window> = web_sys::window();
+    static WORKER_SCOPE: Option<web_sys::DedicatedWorkerGlobalScope> = js_sys::global()
+        .dyn_into::<web_sys::DedicatedWorkerGlobalScope>()
+        .ok();
+}
+
 /// `Some(Window)` on the main thread; `None` in a worker.
 pub fn window() -> Option<web_sys::Window> {
-    web_sys::window()
+    WINDOW.with(Clone::clone)
 }
 
 /// `Some(DedicatedWorkerGlobalScope)` in a worker; `None` on the
 /// main thread.
 pub fn worker_scope() -> Option<web_sys::DedicatedWorkerGlobalScope> {
-    js_sys::global()
-        .dyn_into::<web_sys::DedicatedWorkerGlobalScope>()
-        .ok()
+    WORKER_SCOPE.with(Clone::clone)
 }
 
 /// `navigator.gpu` from whichever global is active. Returns `None`

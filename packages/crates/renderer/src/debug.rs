@@ -17,7 +17,8 @@ pub struct AwsmRendererLogging {
     /// it (gated in Rust at the call site), so `Off` is truly free.
     pub cpu: TimingTier,
     /// GPU-side timestamp-query granularity. `Off` = no query set, no per-pass
-    /// `timestampWrites`, no resolve/readback. `Frame` and `SubFrame` both
+    /// `timestampWrites`, no resolve/readback (the query set is created the
+    /// first time this is on). `Frame` and `SubFrame` both
     /// time each instrumented pass; the per-pass pairs also yield the
     /// whole-frame span (`profiling::gpu_frame_timing`).
     pub gpu: TimingTier,
@@ -44,7 +45,9 @@ pub enum TimingTier {
     /// time.
     Frame,
     /// Every render pass, GPU write, hook, and renderer-internal
-    /// stage opens its own span / gets its own GPU timestamp pair. This is what
+    /// stage opens its own span / gets its own GPU timestamp pair, and the
+    /// rest of `render()` is timed as `Prep: …` and `Submit: …` scopes (see
+    /// `profiling::CpuScopeKind`). This is what
     /// you want when diagnosing why a frame is slow; too chatty for shipping.
     SubFrame,
 }

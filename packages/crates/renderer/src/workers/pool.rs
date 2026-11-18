@@ -183,6 +183,10 @@ pub struct WorkerPoolStats {
     /// (which was never actually incremented). Only successful results
     /// are folded in; failures + dropped channels are excluded so the
     /// number stays comparable across runs.
+    ///
+    /// Opt-in like every measurement: a job is only timed while the
+    /// renderer's CPU timing tier is on
+    /// (`profiling::cpu_timing_enabled`).
     pub job_round_trip_ms: f64,
 }
 
@@ -567,7 +571,13 @@ impl WorkerPool {
         // dispatches. The `await` below resolves once the worker's
         // `awsm-result` (or `awsm-error`) routes through `onmessage`
         // and the matching `pending` sender fires.
-        let dispatched_at_ms = perf_now_ms();
+        // Telemetry (`WorkerPoolStats::job_round_trip_ms`): timed only
+        // while the renderer's CPU timing tier is on.
+        let dispatched_at_ms = if crate::profiling::cpu_timing_enabled() {
+            perf_now_ms()
+        } else {
+            0.0
+        };
 
         match rx.await {
             // `J::from_response_message` is the trait hook for jobs
@@ -612,9 +622,7 @@ impl Drop for WorkerPool {
 /// `0.0` if `performance` isn't reachable — callers skip the
 /// telemetry write so the counter stays well-defined.
 fn perf_now_ms() -> f64 {
-    crate::web_global::performance()
-        .map(|p| p.now())
-        .unwrap_or(0.0)
+    crate::web_global::performance_now().unwrap_or(0.0)
 }
 
 /// Decode the `"id"` field of an `awsm-result` / `awsm-error`
