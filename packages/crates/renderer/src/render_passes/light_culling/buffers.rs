@@ -396,7 +396,17 @@ impl LightCullingBuffers {
             .checked_next_power_of_two()
             .unwrap_or(MAX_TILE_LIGHT_CAPACITY)
             .clamp(DEFAULT_TILE_LIGHT_CAPACITY, MAX_TILE_LIGHT_CAPACITY);
-        let tile_count = self.tiles_x().saturating_mul(self.tiles_y()).max(1);
+        // Size for the ALLOCATED (high-watermark) tile grid, not the live one.
+        // `ensure_viewport` keeps the buffers at `froxel_count` when the
+        // viewport shrinks and does not reallocate on a later grow that still
+        // fits — so a tile buffer sized for a smaller live grid would be
+        // indexed past its end after that grow (`tile_y * tiles_x + tile_x`
+        // with the new, wider `tiles_x`): every tile row beyond it read zero
+        // lights, a hard dark band across the frame until reload.
+        let allocated_tiles = self.froxel_count / self.slice_count.max(1);
+        let tile_count = allocated_tiles
+            .max(self.tiles_x().saturating_mul(self.tiles_y()))
+            .max(1);
         let entries = tile_count
             .saturating_mul(new_capacity.saturating_add(1))
             .max(1);
