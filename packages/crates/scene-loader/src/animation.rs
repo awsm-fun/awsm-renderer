@@ -240,8 +240,12 @@ fn resolve_target(
                 .uniforms
                 .iter()
                 .position(|u| u.name == *name)?;
-            let material = maps.custom_materials.get(material).copied()?;
-            Some(AnimationTarget::Uniform { material, slot })
+            // Asset-wide: drives the material's shared value (every instance
+            // that does not override the slot).
+            Some(AnimationTarget::SharedUniform {
+                shader: shader_id,
+                slot,
+            })
         }
         TrackTarget::TextureTransform { node, slot, prop } => maps
             .node_materials

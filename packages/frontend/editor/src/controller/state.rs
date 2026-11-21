@@ -1514,7 +1514,7 @@ impl EditorController {
                 Toast::info("New project");
                 Ok(None)
             }
-            EditorCommand::LoadPlayerBundle => {
+            EditorCommand::LoadPlayerBundle { camera } => {
                 // Round-trip self-test: bake the open project to an in-memory
                 // bundle, reset to empty, then reload it via the player path
                 // (`populate_awsm_scene`). Destructive + not undoable — the
@@ -1529,6 +1529,21 @@ impl EditorController {
                 // immediately) must not observe "settled" while the bake +
                 // populate are still running. RAII — drops on every exit path.
                 let _load_guard = CompileGuard::new();
+                // A preview is already up: the project it replaced is in the
+                // stash, and the open "project" is empty — baking that would
+                // preview nothing and lose the way back.
+                if crate::engine::player_preview::is_active() {
+                    return Err(crate::error::EditorError::msg(
+                        "load_player_bundle: a player preview is already showing — \
+                         exit_player_bundle first (that restores the project), then load again",
+                    ));
+                }
+                // The viewport's camera menu self-heals to "Built-in" when the
+                // active camera's node disappears — which the clear below
+                // does. Remember it and re-select it in the bundle.
+                let active_before = self.active_camera.get();
+                // 0. Keep the project aside so `ExitPlayerBundle` can restore it.
+                let stash = crate::controller::persistence::serialize_inmem(self)?;
                 // 1. Bake the CURRENT project — must read it before we clear.
                 let files = crate::controller::export::bake_player_bundle(self, None, &|_| {})
                     .await
@@ -1566,7 +1581,9 @@ impl EditorController {
                 self.anim_selection.set(None);
                 self.anim_solo_root.set(None);
                 self.playhead.set_neq(0.0);
-                self.playing.set_neq(false);
+                // A player plays its clips from the moment it loads; the
+                // preview does the same (`set_playing false` pauses it).
+                self.playing.set_neq(true);
                 crate::engine::bridge::bridge().clear_skin_joints();
                 // Remove imported-glTF template meshes from the renderer BEFORE
                 // dropping the template metadata: `clear_templates` only clears the
@@ -1618,12 +1635,47 @@ impl EditorController {
                     )
                     .await;
                     crate::engine::activity::set_load_phase(None);
-                    let loaded =
-                        res.map_err(|e| crate::error::EditorError::msg(format!("populate: {e}")))?;
-                    // Track the direct inserts so the NEXT reset removes them
-                    // (they're outside the bridge's per-node teardown).
-                    set_bundle_resources(loaded.meshes, loaded.lights, loaded.clips);
-                    LAST_BUNDLE_MUJOCO.with(|c| *c.borrow_mut() = loaded.mujoco);
+                    let mut loaded = match res {
+                        Ok(loaded) => loaded,
+                        Err(e) => {
+                            // The project is already cleared: put it back
+                            // rather than leave an empty editor behind a
+                            // failed preview.
+                            drop(r);
+                            let (toml, files) = stash;
+                            if let Err(restore) =
+                                crate::controller::persistence::apply_inmem(self, toml, files).await
+                            {
+                                tracing::error!("restore after failed bundle load: {restore}");
+                            }
+                            return Err(crate::error::EditorError::msg(format!(
+                                "populate: {e} (the project was restored)"
+                            )));
+                        }
+                    };
+                    LAST_BUNDLE_MUJOCO
+                        .with(|c| *c.borrow_mut() = std::mem::take(&mut loaded.mujoco));
+                    // The preview owns the whole load from here: it hosts it
+                    // like a player (clips, particles, scene cameras) and
+                    // frees every resource on exit or the next reset.
+                    let cameras = crate::engine::player_preview::collect_cameras(&scene.nodes);
+                    crate::engine::player_preview::begin(loaded, cameras, Some(stash));
+                }
+                if let Some(id) =
+                    active_before.filter(|id| crate::engine::player_preview::has_camera(*id))
+                {
+                    self.active_camera.set_neq(Some(id));
+                }
+                // The camera menu lists the bundle's cameras now.
+                self.scene.bump_revision();
+                if let Some(name) = camera {
+                    match crate::engine::player_preview::find_camera(&name) {
+                        Some(id) => self.active_camera.set_neq(Some(id)),
+                        None => Toast::warning(format!(
+                            "load_player_bundle: no camera named `{name}` in the bundle (cameras: {:?}) — using the free camera",
+                            crate::engine::player_preview::camera_names()
+                        )),
+                    }
                 }
                 self.project_name.set("round-trip.awsm".to_string());
                 self.dirty.set_neq(false);
@@ -1633,6 +1685,28 @@ impl EditorController {
                 self.redo.borrow_mut().clear();
                 self.refresh_history_signals();
                 Toast::info("Round-trip: reloaded via populate_awsm_scene");
+                Ok(None)
+            }
+            EditorCommand::ExitPlayerBundle => {
+                let _load_guard = CompileGuard::new();
+                if !crate::engine::player_preview::is_active() {
+                    return Err(crate::error::EditorError::msg(
+                        "exit_player_bundle: no player preview is showing",
+                    ));
+                }
+                // Frees the bundle's renderer resources (via the preview) and
+                // hands back the stashed project.
+                let stash = clear_untracked_renderer_resources().await;
+                LAST_BUNDLE_MUJOCO.with(|c| c.borrow_mut().clear());
+                self.playing.set_neq(false);
+                self.playhead.set_neq(0.0);
+                match stash {
+                    Some((toml, files)) => {
+                        crate::controller::persistence::apply_inmem(self, toml, files).await?;
+                        Toast::info("Player preview closed — project restored");
+                    }
+                    None => Toast::info("Player preview closed"),
+                }
                 Ok(None)
             }
             EditorCommand::ReloadProjectInMemory => {
@@ -1951,6 +2025,42 @@ impl EditorController {
                 // Delete every asset the live scene no longer references. The
                 // reachable set is computed conservatively (over-marking keeps an
                 // asset; it can never drop a used one) — see `reachable_assets`.
+                // Materials first: the library (built-in variants and custom
+                // WGSL) is a separate list from the asset table, so a purge
+                // that only looked at assets left every unused material record
+                // in the project for good.
+                let used_materials = reachable_materials(self);
+                let unused_materials: Vec<Arc<CM>> = self
+                    .custom_materials
+                    .lock_ref()
+                    .iter()
+                    .filter(|m| !used_materials.contains(&m.id))
+                    .cloned()
+                    .collect();
+                let mut material_restores = Vec::with_capacity(unused_materials.len());
+                for m in &unused_materials {
+                    material_restores.push(EditorCommand::RestoreMaterial {
+                        material: Box::new(crate::controller::persistence::stored_from_material(m)),
+                    });
+                }
+                if !unused_materials.is_empty() {
+                    let gone: std::collections::HashSet<AssetId> =
+                        unused_materials.iter().map(|m| m.id).collect();
+                    self.custom_materials
+                        .lock_mut()
+                        .retain(|m| !gone.contains(&m.id));
+                    if self
+                        .current_material
+                        .get()
+                        .is_some_and(|id| gone.contains(&id))
+                    {
+                        let next = self.custom_materials.lock_ref().first().map(|m| m.id);
+                        self.current_material.set(next);
+                    }
+                    for id in &gone {
+                        crate::engine::bridge::dynamic::unregister(*id).await;
+                    }
+                }
                 let reachable = reachable_assets(self);
                 let unused: Vec<AssetId> = {
                     let assets = self.scene.assets.lock().unwrap();
@@ -1961,13 +2071,14 @@ impl EditorController {
                         .filter(|id| !reachable.contains(id))
                         .collect()
                 };
-                if unused.is_empty() {
+                if unused.is_empty() && material_restores.is_empty() {
                     Toast::info("No unused assets to purge");
                     return Ok(None);
                 }
                 // Remove each, capturing its entry so the inverse `Batch` of
                 // `RestoreAsset` makes the whole purge one undo step.
-                let mut restores = Vec::with_capacity(unused.len());
+                let purged_materials = material_restores.len();
+                let mut restores = material_restores;
                 {
                     let mut assets = self.scene.assets.lock().unwrap();
                     for id in &unused {
@@ -1986,7 +2097,10 @@ impl EditorController {
                 }
                 self.scene.bump_revision();
                 self.dirty.set_neq(true);
-                Toast::info(format!("Purged {} unused asset(s)", restores.len()));
+                Toast::info(format!(
+                    "Purged {} unused asset(s) and {purged_materials} unused material(s)",
+                    restores.len() - purged_materials
+                ));
                 Ok(Some(EditorCommand::Batch(restores)))
             }
             EditorCommand::DropSkinning { node } => {
@@ -2656,6 +2770,23 @@ impl EditorController {
                 self.scene.bump_revision();
                 self.dirty.set_neq(true);
                 Ok(None)
+            }
+            EditorCommand::RestoreMaterial { material } => {
+                let id = material.id;
+                if find_material(&self.custom_materials, id).is_some() {
+                    return Ok(None);
+                }
+                crate::engine::bridge::dynamic::undelete(id);
+                let mat = crate::controller::persistence::material_from_stored(&material);
+                self.custom_materials.lock_mut().push_cloned(mat.clone());
+                // A custom WGSL material that was registered comes back
+                // registered (built-in library entries have nothing to compile).
+                if material.registered && material.builtin.is_none() {
+                    register_material(&mat).await;
+                }
+                self.scene.bump_revision();
+                self.dirty.set_neq(true);
+                Ok(Some(EditorCommand::DeleteCustomMaterial { id }))
             }
             EditorCommand::SetCurrentMaterial { id } => {
                 self.current_material.set(id);
@@ -3824,6 +3955,21 @@ impl EditorController {
                 if let Some(v) = smaa {
                     s.smaa.set_neq(v);
                 }
+                // The anti-aliasing choice is also recorded in the project
+                // (and from there the bundle), so the setting the scene was
+                // judged with is the one it opens and ships with.
+                if msaa.is_some() || smaa.is_some() {
+                    let mut pp = self.scene.post_process.get_cloned();
+                    let aa = awsm_renderer_editor_protocol::AntiAliasingConfig {
+                        msaa: s.msaa.get(),
+                        smaa: s.smaa.get(),
+                    };
+                    if pp.anti_aliasing != aa {
+                        pp.anti_aliasing = aa;
+                        self.scene.post_process.set(pp);
+                        self.dirty.set_neq(true);
+                    }
+                }
                 if let Some(v) = render_scale {
                     s.render_scale.set_neq(v.clamp(1.0, 2.0));
                 }
@@ -3952,7 +4098,11 @@ impl EditorController {
                 // Validate loudly: a stale/wrong id silently falling back to the
                 // free camera would make a headless capture LOOK framed while
                 // rendering the wrong view.
-                if let Some(id) = camera {
+                if let Some(id) = camera.filter(|id| {
+                    // In a player preview the scene tree is empty; the
+                    // bundle's own camera nodes (same ids) are valid targets.
+                    !crate::engine::player_preview::has_camera(*id)
+                }) {
                     let Some(n) = mutate::find_by_id(&self.scene, id) else {
                         return Err(crate::error::EditorError::msg(format!(
                             "set_active_camera: no node with id {id}"
@@ -7019,6 +7169,64 @@ impl EditorController {
                     entries.insert("redo_len".to_string(), json!(redo_len));
                     entries.insert("redo_bytes".to_string(), json!(redo_bytes));
                 }
+                // The texture pool's arrays against the device budget: each
+                // distinct texture size/format group is one array and one
+                // sampled-texture binding, so this is the headroom before
+                // "texture pool too many arrays".
+                // MSAA edge pixels: the share of the frame shaded per sample.
+                let (lights_total, lights_enabled) =
+                    crate::engine::context::with_renderer_mut(|r| {
+                        let total = r.lights.len();
+                        let enabled = r
+                            .lights
+                            .iter()
+                            .filter(|(k, _)| r.lights.is_enabled(*k))
+                            .count();
+                        (total, enabled)
+                    })
+                    .await;
+                // Renderer lights (a hidden light node's light is kept, switched
+                // off — `lights_enabled` counts the ones that light the scene).
+                entries.insert("lights".to_string(), json!(lights_total));
+                entries.insert("lights_enabled".to_string(), json!(lights_enabled));
+                let (edge_pixels, msaa_on, canvas_px) =
+                    crate::engine::context::with_renderer_mut(|r| {
+                        let canvas = r.gpu.canvas();
+                        (
+                            r.last_msaa_edge_pixels,
+                            r.anti_aliasing.msaa_sample_count.is_some(),
+                            canvas.width() as u64 * canvas.height() as u64,
+                        )
+                    })
+                    .await;
+                if msaa_on {
+                    if let Some(edge_pixels) = edge_pixels {
+                        entries.insert("msaa_edge_pixels".to_string(), json!(edge_pixels));
+                        entries.insert(
+                            "msaa_edge_fraction".to_string(),
+                            json!(edge_pixels as f64 / canvas_px.max(1) as f64),
+                        );
+                    }
+                }
+                let pool =
+                    crate::engine::context::with_renderer_mut(|r| r.texture_pool_summary()).await;
+                {
+                    entries.insert(
+                        "texture_pool".to_string(),
+                        json!({
+                            "array_count": pool.arrays.len(),
+                            "array_budget": pool.array_budget,
+                            "bound_slots": pool.bound_slots,
+                            "reserved_fixed_bindings": pool.reserved_fixed_bindings,
+                            "device_max_sampled_textures_per_shader_stage":
+                                pool.device_max_sampled_textures_per_shader_stage,
+                            "arrays": pool.arrays.iter().map(|a| json!({
+                                "width": a.width, "height": a.height,
+                                "format": a.format, "layers": a.layers,
+                            })).collect::<Vec<_>>(),
+                        }),
+                    );
+                }
                 QueryResult::Map(query::MapResult {
                     kind: "memory_stats".to_string(),
                     entries,
@@ -7759,16 +7967,6 @@ impl EditorController {
 type Aabb3 = ([f32; 3], [f32; 3]);
 
 thread_local! {
-    /// Renderer meshes + lights a prior `LoadPlayerBundle` populated DIRECTLY
-    /// (via `populate_awsm_scene`) — these live OUTSIDE the bridge's per-node
-    /// tracking, so the next reset must remove them explicitly or a repeated
-    /// round-trip / New-Project-after-round-trip leaves them ghosting.
-    static LAST_BUNDLE_RESOURCES: RefCell<(
-        Vec<awsm_renderer::meshes::MeshKey>,
-        Vec<awsm_renderer::lights::LightKey>,
-        Vec<awsm_renderer::animation::AnimationClipKey>,
-    )> = const { RefCell::new((Vec::new(), Vec::new(), Vec::new())) };
-
     /// The MuJoCo sim instances a `LoadPlayerBundle` populate resolved, retained
     /// so a scriptable driver can feed them pose frames. The editor itself never
     /// drives these — it is the TEST SEAM for the scene-loader pose sink, the
@@ -7812,22 +8010,18 @@ async fn fetch_cluster_mesh(url: &str) -> Result<awsm_renderer_lod_bake::Cluster
     serde_json::from_slice(&bytes).map_err(|e| format!("parse {url}: {e}"))
 }
 
-/// Record the resources a `LoadPlayerBundle` populate just created, so the next
-/// project reset removes them.
-fn set_bundle_resources(
-    meshes: Vec<awsm_renderer::meshes::MeshKey>,
-    lights: Vec<awsm_renderer::lights::LightKey>,
-    clips: Vec<awsm_renderer::animation::AnimationClipKey>,
-) {
-    LAST_BUNDLE_RESOURCES.with(|c| *c.borrow_mut() = (meshes, lights, clips));
-}
-
 /// On a project reset, remove renderer resources that live OUTSIDE the bridge's
 /// per-node tracking — otherwise they ghost. Two sources: (a) imported-glTF
 /// template meshes (skinned populate copies node teardown skips; `clear_templates`,
-/// called right after, only drops the metadata map); (b) a prior
-/// `LoadPlayerBundle` populate's direct mesh/light inserts.
-async fn clear_untracked_renderer_resources() {
+/// called right after, only drops the metadata map); (b) a player preview
+/// (`LoadPlayerBundle`): the whole loaded scene — meshes, lights, clips, lines,
+/// decals, instance rows, transforms and its custom-material registrations.
+///
+/// Returns the project the preview had stashed, if a preview was up — only
+/// `ExitPlayerBundle` restores it; every other reset is replacing the project
+/// anyway and drops it.
+async fn clear_untracked_renderer_resources() -> Option<crate::engine::player_preview::ProjectStash>
+{
     let templates: Vec<_> = crate::engine::bridge::bridge()
         .templates
         .lock()
@@ -7835,31 +8029,16 @@ async fn clear_untracked_renderer_resources() {
         .values()
         .cloned()
         .collect();
-    let (meshes, lights, clips) =
-        LAST_BUNDLE_RESOURCES.with(|c| std::mem::take(&mut *c.borrow_mut()));
-    if templates.is_empty() && meshes.is_empty() && lights.is_empty() && clips.is_empty() {
-        return;
+    if templates.is_empty() && !crate::engine::player_preview::is_active() {
+        return None;
     }
     crate::engine::context::with_renderer_mut(move |r| {
         for t in &templates {
             crate::engine::bridge::asset_template::remove_template_meshes(r, t);
         }
-        for mk in meshes {
-            r.remove_mesh(mk);
-        }
-        for lk in lights {
-            r.remove_light(lk);
-        }
-        // Drop the bundle's animation clips; the mixer referenced them by key, so
-        // reset it too (the editor's own clips/mixer re-lower on the next edit).
-        if !clips.is_empty() {
-            for ck in clips {
-                r.animations.remove_clip(ck);
-            }
-            r.animations.mixer.clear();
-        }
+        crate::engine::player_preview::end(r)
     })
-    .await;
+    .await
 }
 
 /// A coarse local-space AABB for a node kind (half-extents from primitive dims;
@@ -9753,6 +9932,65 @@ fn reachable_assets(ctrl: &EditorController) -> std::collections::HashSet<AssetI
         }
     }
     reachable
+}
+
+/// The ids of Material-library entries the project still uses: referenced by
+/// a node (ANY of its material variants, not only the selected one — a node's
+/// kind carries the whole palette), an instancer's donor, or an animation
+/// track. Conservative the same way [`reachable_assets`] is: it matches the
+/// material ids wherever they appear in the serialized node kinds and clips,
+/// so it can keep an unused material but never drop a used one.
+fn reachable_materials(ctrl: &EditorController) -> std::collections::HashSet<AssetId> {
+    use std::collections::HashSet;
+    let ids: HashSet<AssetId> = ctrl
+        .custom_materials
+        .lock_ref()
+        .iter()
+        .map(|m| m.id)
+        .collect();
+    fn collect(v: &serde_json::Value, ids: &HashSet<AssetId>, out: &mut HashSet<AssetId>) {
+        match v {
+            serde_json::Value::String(s) => {
+                if let Ok(u) = uuid::Uuid::parse_str(s) {
+                    if ids.contains(&AssetId(u)) {
+                        out.insert(AssetId(u));
+                    }
+                }
+            }
+            serde_json::Value::Array(a) => a.iter().for_each(|e| collect(e, ids, out)),
+            serde_json::Value::Object(m) => {
+                for (k, val) in m {
+                    if let Ok(u) = uuid::Uuid::parse_str(k) {
+                        if ids.contains(&AssetId(u)) {
+                            out.insert(AssetId(u));
+                        }
+                    }
+                    collect(val, ids, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    fn walk(
+        nodes: &[std::sync::Arc<crate::engine::scene::node::Node>],
+        ids: &HashSet<AssetId>,
+        out: &mut HashSet<AssetId>,
+    ) {
+        for n in nodes {
+            if let Ok(v) = serde_json::to_value(n.kind.get_cloned()) {
+                collect(&v, ids, out);
+            }
+            walk(&n.children.lock_ref(), ids, out);
+        }
+    }
+    let mut used = HashSet::new();
+    walk(&ctrl.scene.nodes.lock_ref(), &ids, &mut used);
+    for c in ctrl.custom_animations.lock_ref().iter() {
+        if let Ok(v) = serde_json::to_value(crate::controller::animation::stored_from_live(c)) {
+            collect(&v, &ids, &mut used);
+        }
+    }
+    used
 }
 
 fn content_hash(bytes: &[u8]) -> String {

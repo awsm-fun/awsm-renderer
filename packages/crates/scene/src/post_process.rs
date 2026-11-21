@@ -56,6 +56,38 @@ pub struct PostProcessConfig {
     /// term isn't even compiled into the effects shader).
     #[serde(default)]
     pub atmosphere: AtmosphereConfig,
+    /// The anti-aliasing the scene is meant to be seen with. Saved with the
+    /// project and carried in the bundle, so the look the author judged the
+    /// scene by is the one a player starts with; a host is free to override it
+    /// after load (a quality setting, a low-end device).
+    #[serde(default)]
+    pub anti_aliasing: AntiAliasingConfig,
+}
+
+/// Authored anti-aliasing choice. Nested in [`PostProcessConfig`].
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub struct AntiAliasingConfig {
+    /// 4× multisampling. On by default (the renderer's own default).
+    #[serde(default = "default_true")]
+    pub msaa: bool,
+    /// SMAA post-process anti-aliasing. Off by default; independent of MSAA.
+    #[serde(default)]
+    pub smaa: bool,
+}
+
+impl Default for AntiAliasingConfig {
+    fn default() -> Self {
+        Self {
+            msaa: true,
+            smaa: false,
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
 }
 
 fn default_bloom_threshold() -> f32 {
@@ -84,6 +116,7 @@ impl Default for PostProcessConfig {
             bloom_scatter: default_bloom_scatter(),
             ssr: SsrConfig::default(),
             atmosphere: AtmosphereConfig::default(),
+            anti_aliasing: AntiAliasingConfig::default(),
         }
     }
 }

@@ -109,7 +109,7 @@ fn vert_main(
         let _disp = custom_displace_vertex(VertexDisplaceInput(
             vertex.position, vertex.normal, vertex.tangent, _cv_uv, _cv_uv_count,
             vertex.vertex_index, 0u,
-            material_data_load(geometry_mesh_meta.material_mesh_meta_offset),
+            material_data_load(_mm.material_offset),
             frame_globals_from_raw(frame_globals_raw),
         ));
         vertex.position = _disp.position;

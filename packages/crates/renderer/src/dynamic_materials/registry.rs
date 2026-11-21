@@ -2002,6 +2002,49 @@ impl crate::AwsmRenderer {
             .set_uniform_default(shader_id, index, value)
     }
 
+    /// Set a custom material's SHARED value for uniform slot `index`: the
+    /// registration default (what new instances start from) and every live
+    /// instance of `shader_id` that does not override the slot. Instances
+    /// with a per-instance override keep their own value. This is what an
+    /// asset-wide uniform edit or an asset-wide uniform animation track
+    /// means. Returns false for an unknown shader/slot or a type mismatch.
+    pub fn set_dynamic_material_uniform_shared(
+        &mut self,
+        shader_id: MaterialShaderId,
+        index: usize,
+        value: awsm_renderer_materials::dynamic_layout::UniformValue,
+    ) -> bool {
+        if !self
+            .dynamic_materials
+            .set_uniform_default(shader_id, index, value.clone())
+        {
+            return false;
+        }
+        let keys: Vec<crate::materials::MaterialKey> = self
+            .materials
+            .iter()
+            .filter_map(|(k, m)| match m {
+                crate::materials::Material::Custom(dm)
+                    if dm.shader_id == shader_id && !dm.is_uniform_overridden(index) =>
+                {
+                    Some(k)
+                }
+                _ => None,
+            })
+            .collect();
+        for k in keys {
+            let v = value.clone();
+            self.update_material(k, move |m| {
+                if let crate::materials::Material::Custom(dm) = m {
+                    if let Some(slot) = dm.values.get_mut(index) {
+                        *slot = v.clone();
+                    }
+                }
+            });
+        }
+        true
+    }
+
     /// Iterator over all currently-registered dynamic materials.
     pub fn dynamic_materials(
         &self,

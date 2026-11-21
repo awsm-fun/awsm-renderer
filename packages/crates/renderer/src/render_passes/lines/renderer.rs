@@ -323,25 +323,51 @@ impl LineRenderer {
     /// with the current viewport size + width, then draws all registered lines
     /// against the world-space transparent target. Safe to call with zero
     /// registered lines (it returns early).
+    /// True when a frame would actually draw at least one line segment —
+    /// registered entries with segments, and compiled pipelines. A render
+    /// pass over the scene targets is not free even with zero draws (under
+    /// MSAA it loads, stores and resolves the 4x colour target), so callers
+    /// use this to skip it.
+    pub fn has_drawable(&self) -> bool {
+        if self.pipelines.variants.is_none() {
+            if !self.entries.is_empty() {
+                // Lazy-pool guard (Block B.3): a line primitive was registered
+                // before pipelines were compiled. `add_line_*` sets
+                // `pipelines_compile_requested = true`; the renderer's
+                // `wait_for_pipelines_ready` drives the actual compile. Warn
+                // once per session and skip until then.
+                warn_pipeline_not_compiled("line_pass", "all_variants");
+            }
+            return false;
+        }
+        self.entries.values().any(|e| e.segment_count > 0)
+    }
+
+    /// The line draws in a pass of their own.
     pub fn render(&self, ctx: &RenderContext) -> Result<()> {
-        if self.entries.is_empty() {
+        if !self.has_drawable() {
             return Ok(());
         }
-        // Lazy-pool guard (Block B.3): a line primitive was registered
-        // before pipelines were compiled. `add_line_*` sets
-        // `pipelines_compile_requested = true`; the renderer's
-        // `wait_for_pipelines_ready` drives the actual compile. Warn
-        // once per session and skip the pass until then.
-        if self.pipelines.variants.is_none() {
-            warn_pipeline_not_compiled("line_pass", "all_variants");
+        let render_pass =
+            ctx.begin_world_transparent_pass_timed(Some("Line Render Pass"), Some("Lines"), true)?;
+        self.draw(ctx, &render_pass)?;
+        render_pass.end();
+        Ok(())
+    }
+
+    /// Record the line draws into an already-open world transparent pass
+    /// (the renderer shares one pass between lines and transparent meshes).
+    pub fn draw(
+        &self,
+        ctx: &RenderContext,
+        render_pass: &awsm_renderer_core::command::render_pass::RenderPassEncoder,
+    ) -> Result<()> {
+        if !self.has_drawable() {
             return Ok(());
         }
         let msaa = ctx.anti_aliasing.has_msaa_checked()?;
         let viewport_w = ctx.render_texture_views.width as f32;
         let viewport_h = ctx.render_texture_views.height as f32;
-
-        let render_pass =
-            ctx.begin_world_transparent_pass_timed(Some("Line Render Pass"), Some("Lines"))?;
         let mut current_variant: Option<LineVariantKey> = None;
 
         for entry in self.entries.values() {
@@ -377,7 +403,6 @@ impl LineRenderer {
             // Web GPU instanced non-indexed draw.
             render_pass.draw_with_instance_count(4, entry.segment_count);
         }
-        render_pass.end();
         Ok(())
     }
 }

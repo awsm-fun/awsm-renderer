@@ -402,6 +402,7 @@ fn cs_opaque(
             uv_set_count,
             material_offset,
             dyn_material,
+            (material_mesh_meta.receive_shadows & material_mesh_meta.shadow_receiver_gate),
         );
         let dyn_out = custom_shade_dynamic(dyn_input);
         color = dyn_out.color;
@@ -804,6 +805,7 @@ fn shade_sample(
             sample_uv_set_count,
             sample_mat_offset,
             dyn_material,
+            (sample_mesh_meta.receive_shadows & sample_mesh_meta.shadow_receiver_gate),
         );
         let dyn_out = custom_shade_dynamic(dyn_input);
         color = dyn_out.color;
@@ -1157,6 +1159,7 @@ fn cs_shade(
                 uv_set_count,
                 material_offset,
                 dyn_material,
+                (material_mesh_meta.receive_shadows & material_mesh_meta.shadow_receiver_gate),
             );
             let dyn_out = custom_shade_dynamic(dyn_input);
             color = dyn_out.color;
@@ -1248,19 +1251,54 @@ fn cs_shade(
     var desc_spread_wsum: f32 = 0.0;
     {% endif %}
 
+    // Samples already shaded for this pixel, keyed by the geometry they
+    // carry. An edge pixel is NOT usually four different surfaces: classify
+    // also marks pixels next to a silhouette and pixels on a crease, and in
+    // those all four samples belong to one triangle — and since the raster
+    // writes per-pixel (centre/centroid) attributes, the four samples hold
+    // bit-identical visibility, barycentric and normal texels. Shading each
+    // one again produced the same colour four times. A sample whose texels
+    // match one already shaded reuses that result; only its place in the
+    // average is counted. (Shadow visibility is the one per-sample input that
+    // can differ; a reused sample takes the shadow of the sample it matches,
+    // which is what every non-edge pixel does anyway.)
+    var uniq_vis: array<vec4<u32>, 4>;
+    var uniq_bary: array<vec4<u32>, 4>;
+    var uniq_normal: array<vec4<f32>, 4>;
+    var uniq_out: array<ShadeSampleOut, 4>;
+    var uniq_count: u32 = 0u;
+
     for (var s = 0u; s < 4u; s++) {
         // Per-sample ownership: the same shader_id gate `shade_sample`
         // applies. Reading the sample material here reconstructs cs_edge's
         // compact-list sample_mask (which-samples-this-bucket-owns).
         var owns_sample = false;
-        {
-            var vis_s: vec4<u32>;
-            switch(s) {
-                case 0u: { vis_s = textureLoad(visibility_data_tex, coords, 0); }
-                case 1u: { vis_s = textureLoad(visibility_data_tex, coords, 1); }
-                case 2u: { vis_s = textureLoad(visibility_data_tex, coords, 2); }
-                case 3u, default: { vis_s = textureLoad(visibility_data_tex, coords, 3); }
+        var vis_s: vec4<u32>;
+        var bary_s: vec4<u32>;
+        var normal_s: vec4<f32>;
+        switch(s) {
+            case 0u: {
+                vis_s = textureLoad(visibility_data_tex, coords, 0);
+                bary_s = textureLoad(barycentric_tex, coords, 0);
+                normal_s = textureLoad(normal_tangent_tex, coords, 0);
             }
+            case 1u: {
+                vis_s = textureLoad(visibility_data_tex, coords, 1);
+                bary_s = textureLoad(barycentric_tex, coords, 1);
+                normal_s = textureLoad(normal_tangent_tex, coords, 1);
+            }
+            case 2u: {
+                vis_s = textureLoad(visibility_data_tex, coords, 2);
+                bary_s = textureLoad(barycentric_tex, coords, 2);
+                normal_s = textureLoad(normal_tangent_tex, coords, 2);
+            }
+            case 3u, default: {
+                vis_s = textureLoad(visibility_data_tex, coords, 3);
+                bary_s = textureLoad(barycentric_tex, coords, 3);
+                normal_s = textureLoad(normal_tangent_tex, coords, 3);
+            }
+        }
+        {
             let tri_s = join32(vis_s.x, vis_s.y);
             if (tri_s != U32_MAX) {
                 let mat_off_s = join32(vis_s.z, vis_s.w);
@@ -1274,10 +1312,26 @@ fn cs_shade(
             }
         }
         if (owns_sample) {
-            {% if prep_present %}
-            g_prep_ctx.edge_shadow_xy = prep_edge_shadow_xy(edge_pixel_id, s);
-            {% endif %}
-            let ss = shade_sample(coords, s, edge_camera, edge_screen_dims, edge_screen_dims_f32{% if inc.light_access %}, lights_info{% endif %});
+            var ss: ShadeSampleOut;
+            var reused = false;
+            for (var u = 0u; u < uniq_count; u++) {
+                if (all(uniq_vis[u] == vis_s) && all(uniq_bary[u] == bary_s) && all(uniq_normal[u] == normal_s)) {
+                    ss = uniq_out[u];
+                    reused = true;
+                    break;
+                }
+            }
+            if (!reused) {
+                {% if prep_present %}
+                g_prep_ctx.edge_shadow_xy = prep_edge_shadow_xy(edge_pixel_id, s);
+                {% endif %}
+                ss = shade_sample(coords, s, edge_camera, edge_screen_dims, edge_screen_dims_f32{% if inc.light_access %}, lights_info{% endif %});
+                uniq_vis[uniq_count] = vis_s;
+                uniq_bary[uniq_count] = bary_s;
+                uniq_normal[uniq_count] = normal_s;
+                uniq_out[uniq_count] = ss;
+                uniq_count += 1u;
+            }
             let shaded = ss.color;
             // Tonemapped-space resolve; rationale in final_blend.wgsl. Store
             // Σ t(s) per channel with t(s) = s/(1+s); final_blend averages

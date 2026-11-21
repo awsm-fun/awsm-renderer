@@ -114,6 +114,7 @@ pub fn main() {
                                 // scene's pipelines. The one compile path.
                                 if let Err(err) = r.commit_load(on_progress).await {
                                     tracing::warn!("boot commit_load: {err}");
+                                    crate::engine::context::surface_commit_error(&err);
                                 }
                             }
                             // Mirror the scene onto the renderer (materializes

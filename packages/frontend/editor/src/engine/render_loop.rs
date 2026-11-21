@@ -60,14 +60,22 @@ fn request_frame() {
             let prev = c.replace(Some(ts));
             prev.map(|p| (ts - p).max(0.0)).unwrap_or(0.0)
         });
-        tick_animation_clock(dt_ms);
         // Time the CPU cost of building + submitting the frame (perf diagnostics,
-        // surfaced via memory_stats). `ts` is the rAF DOMHighResTimeStamp; a second
-        // `performance.now()` after render gives the in-frame CPU span. `dt_ms` is
-        // the wall-clock frame period (vsync-capped ~16.6ms at 60fps); the CPU span
-        // is the actionable "how heavy is our frame" number.
+        // surfaced via memory_stats): `performance.now()` on entry and again
+        // after render. NOT measured from `ts` — that is the frame's vsync
+        // time, and the browser can run this callback well after it (most of
+        // all when the GPU is the bottleneck), so `now - ts` reported
+        // scheduling delay as CPU work: a GPU-bound MSAA frame read as 11 ms
+        // of "render CPU" when the frame's CPU span was ~1 ms. `dt_ms` is the
+        // wall-clock frame period (vsync-capped ~16.6ms at 60fps); the CPU
+        // span is the actionable "how heavy is our frame" number.
+        let start_ms = now_ms();
+        tick_animation_clock(dt_ms);
         render_one_frame(dt_ms);
-        let cpu_ms = now_ms().map(|end| (end - ts).max(0.0));
+        let cpu_ms = match (start_ms, now_ms()) {
+            (Some(start), Some(end)) => Some((end - start).max(0.0)),
+            _ => None,
+        };
         record_frame_stats(dt_ms, cpu_ms);
         // Keep the DevTools User-Timing buffer bounded when `?devtools`
         // profiling is on (no-op otherwise); this is what makes the opt-in
@@ -286,7 +294,12 @@ fn render_one_frame(dt_ms: f64) {
         // that node has gone away, we fall back to the free camera). Both paths
         // produce the same (view, params) pair `set_camera` takes — the renderer
         // supplies the depth convention and live aspect itself.
-        let scene_camera = active.and_then(|id| scene_camera_view_params(renderer, id));
+        // In a player preview the camera node lives only in the loaded
+        // bundle, so resolve it there.
+        let scene_camera = active.and_then(|id| {
+            scene_camera_view_params(renderer, id)
+                .or_else(|| super::player_preview::camera_view_params(renderer, id))
+        });
         let (view, params) = match scene_camera
             .or_else(|| context::try_with_camera_mut(|c| (c.view(), c.params())))
         {
@@ -326,11 +339,22 @@ fn render_one_frame(dt_ms: f64) {
         // advances) or when the playhead moved (scrub / step). While paused with
         // the playhead parked we deliberately SKIP the pin so a hand pose holds
         // (see `LAST_PIN`).
+        //
+        // A player preview is hosted the way a player hosts a bundle instead:
+        // `update_animations(dt)` advances every clip and the mixer, and the
+        // bundle's particle emitters are ticked. Paused, a moved playhead
+        // still pins the pose, so a driver can compare one exact time.
         {
             let playing = controller().playing.get();
             let playhead = controller().playhead.get();
             let key = playhead.to_bits();
-            if playing || LAST_PIN.with(|c| c.get()) != Some(key) {
+            if super::player_preview::is_active() {
+                if !playing && LAST_PIN.with(|c| c.get()) != Some(key) {
+                    super::bridge::animation_sync::pin_pose(renderer, playhead);
+                }
+                LAST_PIN.with(|c| c.set(Some(key)));
+                super::player_preview::tick(renderer, dt_ms, playing);
+            } else if playing || LAST_PIN.with(|c| c.get()) != Some(key) {
                 super::bridge::animation_sync::pin_pose(renderer, playhead);
                 LAST_PIN.with(|c| c.set(Some(key)));
             }

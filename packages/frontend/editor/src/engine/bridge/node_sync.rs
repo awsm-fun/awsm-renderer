@@ -239,6 +239,9 @@ async fn apply_subtree_visibility(root: NodeId) {
         None => true,
     };
     let mut mesh_ops: Vec<(MeshKey, bool)> = Vec::new();
+    // Emitters are not in `model_meshes` (their billboard lives in the
+    // particle bridge), so hiding a group used to leave them running.
+    let mut emitter_ops: Vec<(NodeId, bool)> = Vec::new();
     let mut light_on: Vec<Arc<RendererNode>> = Vec::new();
     let mut light_off: Vec<Arc<RendererNode>> = Vec::new();
     let mut stack = vec![(root, parent_eff)];
@@ -253,45 +256,85 @@ async fn apply_subtree_visibility(root: NodeId) {
         for mk in entry.model_meshes.lock().unwrap().iter() {
             mesh_ops.push((*mk, !eff));
         }
-        if matches!(entry.node.kind.get_cloned(), NodeKind::Light(_)) {
+        let kind = entry.node.kind.get_cloned();
+        if matches!(kind, NodeKind::Light(_)) {
             if eff {
                 light_on.push(entry.clone());
             } else {
                 light_off.push(entry.clone());
             }
         }
+        if matches!(kind, NodeKind::ParticleEmitter(_)) {
+            emitter_ops.push((id, !eff));
+        }
         for kid in order_snapshot(Some(id)) {
             stack.push((kid, eff));
         }
     }
-    if !mesh_ops.is_empty() {
+    if !mesh_ops.is_empty() || !emitter_ops.is_empty() {
         with_renderer_mut(move |r| {
             for (mk, hidden) in mesh_ops {
                 let _ = r.set_mesh_hidden(mk, hidden);
             }
+            for (id, hidden) in emitter_ops {
+                super::particles::set_hidden(r, id, hidden);
+            }
         })
         .await;
     }
-    let mut light_churned = false;
+    // A hidden light is switched OFF, not removed: its `LightKey` stays, so
+    // animation tracks targeting it stay bound while it is hidden (removing
+    // and re-inserting left a track on a light inside a hidden group
+    // unresolved until the group was shown).
+    let mut need_shadow_pipelines = false;
+    let mut toggles: Vec<(awsm_renderer::lights::LightKey, bool)> = Vec::new();
     for e in light_off {
-        let taken = e.light_key.lock().unwrap().take();
-        if let Some(lk) = taken {
-            with_renderer_mut(move |r| r.remove_light(lk)).await;
-            light_churned = true;
+        if let Some(lk) = *e.light_key.lock().unwrap() {
+            toggles.push((lk, false));
         }
     }
+    let mut materialize: Vec<(
+        Arc<RendererNode>,
+        awsm_renderer_editor_protocol::LightConfig,
+    )> = Vec::new();
     for e in light_on {
-        // Re-insert only if the hide arm removed it (an already-lit light
-        // keeps its key untouched).
-        if e.light_key.lock().unwrap().is_none() {
-            if let NodeKind::Light(cfg) = e.node.kind.get_cloned() {
-                apply_light(e.clone(), cfg).await;
-                light_churned = true;
+        let key = *e.light_key.lock().unwrap();
+        match key {
+            Some(lk) => {
+                toggles.push((lk, true));
+                if let NodeKind::Light(cfg) = e.node.kind.get_cloned() {
+                    need_shadow_pipelines |= light_shadow_params_from_config(cfg.shadow()).cast;
+                }
+            }
+            // Not materialized yet (first show before `apply_kind` ran).
+            None => {
+                if let NodeKind::Light(cfg) = e.node.kind.get_cloned() {
+                    materialize.push((e.clone(), cfg));
+                }
             }
         }
     }
-    if light_churned {
-        // LightKeys churned — re-lower so animation channels rebind.
+    if !toggles.is_empty() {
+        with_renderer_mut(move |r| {
+            for (lk, on) in toggles {
+                r.set_light_enabled(lk, on);
+            }
+        })
+        .await;
+    }
+    if need_shadow_pipelines {
+        let handle = renderer_handle();
+        let mut r = handle.lock().await;
+        if let Err(e) = r.ensure_shadow_pipelines_compiled().await {
+            tracing::warn!("ensure_shadow_pipelines_compiled: {e:?}");
+        }
+    }
+    let materialized = !materialize.is_empty();
+    for (e, cfg) in materialize {
+        apply_light(e, cfg).await;
+    }
+    if materialized {
+        // New LightKeys — re-lower so animation channels bind.
         super::animation_sync::schedule_relower();
     }
 }
@@ -356,6 +399,7 @@ async fn commit_bulk_load() {
         .await
     {
         tracing::warn!("bulk-load commit_load: {e}");
+        crate::engine::context::surface_commit_error(&e);
     }
 }
 
@@ -615,6 +659,14 @@ async fn remove_node(node_id: NodeId) {
         e
     };
     if let Some(entry) = entry {
+        // Cancel this entry's observers FIRST. Each observer future holds a
+        // clone of the entry and the entry holds the futures, so merely
+        // dropping the entry never stopped them: after a reparent (which
+        // builds a fresh entry for the same node) the old entry's kind
+        // observer kept firing and re-materialized meshes and lights onto a
+        // dead entry nothing would ever tear down — the "ghost meshes after
+        // reparent + material edit" and "duplicate lights" leaks.
+        entry.loaders.lock().unwrap().clear();
         // Real deletion reclaims the node's textures too (glTF leak fix);
         // a mid-reparent removal keeps them for the re-add.
         teardown(&entry, !moving).await;
@@ -650,7 +702,6 @@ async fn remove_node(node_id: NodeId) {
             // re-import-heavy sessions.
             reclaim_cluster_cache_for_removed(&entry);
         }
-        // Dropping the entry (and its loaders) cancels the observers.
     }
 }
 
@@ -1401,6 +1452,7 @@ async fn materialize_static_duplicate(
                     .await
                 {
                     tracing::warn!("commit_load (static duplicate): {e}");
+                    crate::engine::context::surface_commit_error(&e);
                 }
             }
             drop(r);
@@ -1570,6 +1622,7 @@ async fn materialize_skinned_duplicate(
                     .await
                 {
                     tracing::warn!("commit_load (skinned duplicate): {e}");
+                    crate::engine::context::surface_commit_error(&e);
                 }
             }
             drop(r);
@@ -1665,6 +1718,7 @@ async fn materialize_skinned_mesh(
                     .await
                 {
                     tracing::warn!("commit_load (skinned mesh): {e}");
+                    crate::engine::context::surface_commit_error(&e);
                 }
             }
             drop(r);
@@ -1727,6 +1781,7 @@ async fn materialize_cluster_mesh_node(
                     .await
                 {
                     tracing::warn!("commit_load (cluster mesh): {e}");
+                    crate::engine::context::surface_commit_error(&e);
                 }
             }
             drop(r);
@@ -1840,6 +1895,7 @@ async fn materialize_skinned_from_template(
                 .await
             {
                 tracing::warn!("commit_load (skinned mesh): {e}");
+                crate::engine::context::surface_commit_error(&e);
             }
         }
     }
@@ -2002,6 +2058,7 @@ async fn materialize_sprite(
                     .await
                 {
                     tracing::warn!("sprite commit_load: {e}");
+                    crate::engine::context::surface_commit_error(&e);
                 }
             }
             let _ = r.set_mesh_billboard_mode(mk, mode);
@@ -2216,6 +2273,7 @@ async fn materialize_decal(
             .await
         {
             tracing::warn!("materialize_decal commit_load: {e}");
+            crate::engine::context::surface_commit_error(&e);
         }
     }
 }
@@ -2280,6 +2338,7 @@ async fn upload_simple_mesh(
                     .await
                 {
                     tracing::warn!("upload_simple_mesh commit_load: {e}");
+                    crate::engine::context::surface_commit_error(&e);
                 }
             }
             drop(r);
@@ -2504,6 +2563,11 @@ async fn materialize_particle(
             .map(|m| m.w_axis.truncate())
             .unwrap_or(Vec3::ZERO);
         super::particles::materialize(&mut r, node_id, parent_tk, world_pos, &def).await;
+        // Honour the node's EFFECTIVE visibility at materialize time, like
+        // meshes and lights do — an emitter inside a hidden group stays off.
+        if !effective_visible(node_id) {
+            super::particles::set_hidden(&mut r, node_id, true);
+        }
     }
     // The emitter inserts a PBR material (a feature-set variant) whose pipeline
     // must compile — route through the one compile path. Skipped under the bulk-load
@@ -2518,6 +2582,7 @@ async fn materialize_particle(
         .await
     {
         tracing::warn!("particle commit_load: {e}");
+        crate::engine::context::surface_commit_error(&e);
     }
 }
 
@@ -2527,13 +2592,10 @@ async fn apply_light(entry: Arc<RendererNode>, cfg: LightConfig) {
     // (own eye AND ancestors' — a light inside a hidden group is off too) at
     // materialize time (mirrors meshes applying hidden-at-creation), so the
     // outliner eye survives re-materialization and a project saved with a
-    // hidden light loads dark. Still registered in `light_node_ids` so the
-    // viewport icon keeps marking the node. The visibility observer
-    // re-materializes on show (see `apply_subtree_visibility`).
-    if !effective_visible(entry.node_id) {
-        bridge().light_node_ids.lock().unwrap().insert(node_id);
-        return;
-    }
+    // hidden light loads dark. The light IS inserted — switched off — so it
+    // has a key for animation tracks to bind while hidden; the visibility
+    // observer switches it on (see `apply_subtree_visibility`).
+    let visible = effective_visible(entry.node_id);
     let trs = entry.node.transform.get();
     let pos = Vec3::from_array(trs.translation);
     let dir = (Quat::from_array(trs.rotation) * Vec3::NEG_Z).normalize_or_zero();
@@ -2550,13 +2612,16 @@ async fn apply_light(entry: Arc<RendererNode>, cfg: LightConfig) {
         // direction is frozen at materialize time and casts no useful shadow.
         if let Ok(k) = key {
             r.lights.bind_transform(k, parent_tk);
+            if !visible {
+                r.set_light_enabled(k, false);
+            }
         }
         key
     })
     .await;
     // Lazily compile the shadow pipelines when a casting light first lands so the
     // next frame can draw shadows (no-op once compiled / when nothing casts).
-    if casts {
+    if casts && visible {
         let handle = renderer_handle();
         let mut r = handle.lock().await;
         if let Err(e) = r.ensure_shadow_pipelines_compiled().await {
@@ -2565,7 +2630,25 @@ async fn apply_light(entry: Arc<RendererNode>, cfg: LightConfig) {
     }
     match key {
         Ok(k) => {
-            *entry.light_key.lock().unwrap() = Some(k);
+            // This entry may have been replaced while we awaited (the node was
+            // removed, or reparented into a fresh entry): a light stored on a
+            // dead entry is never torn down, and shows up as a duplicate.
+            let current = bridge()
+                .nodes
+                .lock()
+                .unwrap()
+                .get(&node_id)
+                .is_some_and(|live| Arc::ptr_eq(live, &entry));
+            if !current {
+                with_renderer_mut(move |r| r.remove_light(k)).await;
+                return;
+            }
+            // Replace, never stack: a second materialize for the same entry
+            // must not leave the first light behind.
+            let previous = entry.light_key.lock().unwrap().replace(k);
+            if let Some(old) = previous {
+                with_renderer_mut(move |r| r.remove_light(old)).await;
+            }
             bridge().light_node_ids.lock().unwrap().insert(node_id);
         }
         Err(e) => tracing::error!("insert_light failed: {e:?}"),

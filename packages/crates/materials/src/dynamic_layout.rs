@@ -229,6 +229,24 @@ impl UniformValue {
             UniformValue::Bool(_) => FieldType::Bool,
         }
     }
+
+    /// This value as a `ty` slot's value: itself when the types match, and
+    /// the same numbers re-tagged between the layout-identical pairs
+    /// `vec3` ⇄ `color3` and `vec4` ⇄ `color4` (a per-node override or a
+    /// keyframe written as a plain vector for a colour slot is the common
+    /// case). `None` for a real mismatch.
+    pub fn coerced_to(self, ty: FieldType) -> Option<Self> {
+        if self.field_type() == ty {
+            return Some(self);
+        }
+        match (self, ty) {
+            (UniformValue::Vec3(v), FieldType::Color3) => Some(UniformValue::Color3(v)),
+            (UniformValue::Color3(v), FieldType::Vec3) => Some(UniformValue::Vec3(v)),
+            (UniformValue::Vec4(v), FieldType::Color4) => Some(UniformValue::Color4(v)),
+            (UniformValue::Color4(v), FieldType::Vec4) => Some(UniformValue::Vec4(v)),
+            _ => None,
+        }
+    }
 }
 
 /// Generate the WGSL `struct <struct_name> { ... }` declaration that

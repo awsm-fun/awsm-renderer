@@ -148,8 +148,12 @@ pub enum AwsmCoreError {
     },
 
     #[cfg(feature = "texture-pool")]
-    #[error("[gpu] texture pool too many arrays: {total_arrays} (max {max_arrays})")]
-    TexturePoolTooManyArrays { total_arrays: u32, max_arrays: u32 },
+    #[error("[gpu] texture pool too many arrays: {total_arrays} distinct texture size/format groups, but this device can bind {max_arrays} (maxSampledTexturesPerShaderStage {device_limit} minus the renderer's fixed bindings). Use fewer distinct texture sizes/formats.")]
+    TexturePoolTooManyArrays {
+        total_arrays: u32,
+        max_arrays: u32,
+        device_limit: u32,
+    },
 
     #[cfg(feature = "texture-pool")]
     #[error("[gpu] texture pool too many layers: {total_layers} (max {max_layers}) in array index {array_index}")]

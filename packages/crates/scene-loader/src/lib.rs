@@ -46,7 +46,9 @@
 //! [`EmitterHandle`](particles::EmitterHandle) in [`NodeHandles::emitter`]; it does
 //! NOT simulate. The game ticks an [`awsm_renderer_particles::Simulator`] each frame and
 //! pushes the live particles via [`drive_emitter`](particles::drive_emitter) — the
-//! same "loads, doesn't drive" boundary as animation. See [`particles`].
+//! same "loads, doesn't drive" boundary as animation. [`ParticleDriver`] does both
+//! for every emitter of a loaded scene in one per-frame call; a player that ticks
+//! nothing shows no particles. See [`particles`].
 //!
 //! # Example
 //!
@@ -102,7 +104,7 @@ pub mod particles;
 pub mod texture;
 
 pub use assets::SceneAssets;
-pub use particles::{drive_emitter, EmitterHandle};
+pub use particles::{drive_emitter, EmitterHandle, ParticleDriver};
 
 /// The Basis (KTX2/BasisU) transcoder, re-exported at the loader root.
 ///
@@ -248,6 +250,13 @@ pub struct LoadedScene {
     /// node. The rows live in `renderer.instances`, outside the mesh/transform
     /// stores, so [`teardown`](Self::teardown) frees them explicitly.
     pub instanced_transforms: Vec<TransformKey>,
+    /// The shader id of every custom (dynamic WGSL) material this load
+    /// registered. [`teardown`](Self::teardown) unregisters them, which frees
+    /// their pipelines and their shader bucket (the renderer has a fixed
+    /// number of those) and lets a later load of the same scene register
+    /// fresh — a leftover registration is otherwise found by name and reused
+    /// with its OLD alpha mode, sidedness and uniform defaults.
+    pub custom_shaders: Vec<awsm_renderer_materials::MaterialShaderId>,
     /// Every MuJoCo sim instance in the loaded scene, with its geom_id→transform
     /// binding already resolved — the handles a player feeds pose frames to (see
     /// [`mujoco::apply_geom_poses`]). Empty for scenes with no sim instances,
@@ -817,8 +826,32 @@ impl LoadedScene {
     /// this (this frees the hidden *templates*, but a duplicate that outlives its
     /// template's GPU buffers is undefined).
     pub fn teardown(self, renderer: &mut AwsmRenderer) {
+        // A glb-backed mesh sits on a transform its glb decode created (a
+        // child of the node's transform), which nothing else records. Note
+        // them before the meshes go, and free them with the other transforms.
+        let mut glb_transforms: Vec<TransformKey> = self
+            .meshes
+            .iter()
+            .filter_map(|mesh| renderer.meshes.get(*mesh).ok().map(|m| m.transform_key))
+            .collect();
+        glb_transforms.sort();
+        glb_transforms.dedup();
         for mesh in self.meshes {
             renderer.remove_mesh(mesh);
+        }
+        // The materials this load built for its nodes (the selected one and
+        // every palette variant). Their meshes are gone; freeing them also
+        // reclaims pooled textures no other material still uses.
+        let mut materials: Vec<MaterialKey> = self.node_materials.values().copied().collect();
+        materials.extend(
+            self.node_material_variants
+                .values()
+                .flat_map(|variants| variants.iter().map(|v| v.key)),
+        );
+        materials.sort();
+        materials.dedup();
+        for key in materials {
+            renderer.remove_material(key);
         }
         for light in self.lights {
             renderer.remove_light(light);
@@ -841,8 +874,22 @@ impl LoadedScene {
             renderer.instances.attribute_remove(tk);
         }
         // Transforms last — meshes/lights bound to them are already gone.
+        // Children (the glb decode transforms) before the node transforms
+        // they hang under.
+        for tk in glb_transforms {
+            if renderer.transforms.get_local(tk).is_ok() {
+                renderer.transforms.remove(tk);
+            }
+        }
         for tk in self.transforms {
-            renderer.transforms.remove(tk);
+            if renderer.transforms.get_local(tk).is_ok() {
+                renderer.transforms.remove(tk);
+            }
+        }
+        // Custom materials: the meshes using them are gone, so drop the
+        // registrations this load made.
+        for shader_id in self.custom_shaders {
+            let _ = renderer.unregister_material(shader_id);
         }
     }
 }
@@ -911,15 +958,38 @@ impl PrefabInstance {
 /// `renderer.set_mesh_hidden(k, !visible)` for every [`MeshKey`] in
 /// `handles.meshes` (per-key errors are ignored).
 ///
-/// **Mesh-only:** a `Light` / `Line` / `Decal` / `Camera` node is *not* toggled by
-/// this helper (the renderer has no per-light/-line/-decal hide toggle today —
-/// honoring `visible` for those at load is done by skipping them; runtime toggling
-/// of those node kinds is a follow-on). For a mesh node (incl. sprites) it hides /
-/// shows the whole node.
+/// **Meshes, lights and emitters:** a mesh node (incl. sprites) is hidden/shown
+/// whole, a `ParticleEmitter` node's billboard is hidden/shown (and
+/// [`ParticleDriver`] pauses it while hidden, restarting it from empty on show),
+/// and a `Light` node's light is switched off/on
+/// ([`AwsmRenderer::set_light_enabled`] — the key and any animation bound to it
+/// are kept). If the light casts shadows and was hidden at load, call
+/// `renderer.ensure_shadow_pipelines_compiled().await` once after first showing
+/// it. A `Line` / `Decal` node is *not* toggled by this helper (the renderer has
+/// no per-line/-decal hide toggle; those are skipped at load when hidden).
 pub fn set_node_visible(renderer: &mut AwsmRenderer, handles: &NodeHandles, visible: bool) {
     for &k in &handles.meshes {
         let _ = renderer.set_mesh_hidden(k, !visible);
     }
+    if let Some(light) = handles.light {
+        renderer.set_light_enabled(light, visible);
+    }
+    if let Some(emitter) = &handles.emitter {
+        let _ = renderer.set_mesh_hidden(emitter.mesh, !visible);
+    }
+}
+
+/// The scene's authored anti-aliasing as renderer settings, keeping every
+/// other field of `current` (mip-mapping etc.). The loader applies this; a
+/// host can call it again to return to the authored choice after overriding.
+pub fn anti_aliasing_to_renderer(
+    pp: &awsm_renderer_scene::PostProcessConfig,
+    current: &awsm_renderer::anti_alias::AntiAliasing,
+) -> awsm_renderer::anti_alias::AntiAliasing {
+    let mut aa = current.clone();
+    aa.msaa_sample_count = pp.anti_aliasing.msaa.then_some(4);
+    aa.smaa = pp.anti_aliasing.smaa;
+    aa
 }
 
 /// Schema [`awsm_renderer_scene::PostProcessConfig`] → runtime
@@ -1028,16 +1098,38 @@ pub async fn populate_awsm_scene(
 /// rationale (the two share this body), and the crate-level docs for an example.
 ///
 /// Visibility (B5): a node authored `visible == false` (propagated through
-/// `Group`s to its descendants) has its meshes loaded hidden and its
-/// lines/decals/**lights** skipped (a hidden node no longer emits its light).
-/// Runtime toggling via [`set_node_visible`] applies to meshes only; re-showing a
-/// skipped line/decal/light at runtime needs the renderer to grow a per-kind hide
-/// toggle (a follow-on).
+/// `Group`s to its descendants) has its meshes loaded hidden, its light loaded
+/// switched off, and its lines/decals skipped. Runtime toggling via
+/// [`set_node_visible`] covers meshes and lights; re-showing a skipped line/decal
+/// at runtime needs the renderer to grow a per-kind hide toggle (a follow-on).
 pub async fn load_scene_for_player(
     renderer: &mut AwsmRenderer,
     scene: &Scene,
     assets: &impl SceneAssets,
+    on_phase: impl FnMut(LoadPhase),
+) -> Result<LoadedScene> {
+    // A load that fails part-way must not leave its custom-material
+    // registrations behind: they are keyed by material id, so the next
+    // attempt (or an editor restoring its own project) would collide with
+    // them ("duplicate name … already registered").
+    let mut registered = Vec::new();
+    match load_scene_for_player_inner(renderer, scene, assets, on_phase, &mut registered).await {
+        Ok(loaded) => Ok(loaded),
+        Err(err) => {
+            for shader_id in registered {
+                let _ = renderer.unregister_material(shader_id);
+            }
+            Err(err)
+        }
+    }
+}
+
+async fn load_scene_for_player_inner(
+    renderer: &mut AwsmRenderer,
+    scene: &Scene,
+    assets: &impl SceneAssets,
     mut on_phase: impl FnMut(LoadPhase),
+    registered: &mut Vec<awsm_renderer_materials::MaterialShaderId>,
 ) -> Result<LoadedScene> {
     // ── Asset prefetch ───────────────────────────────────────────────────────
     // Wrap the source so the bundle files we can ENUMERATE up front — mesh
@@ -1084,6 +1176,7 @@ pub async fn load_scene_for_player(
     // assigned one resolve to its shader id below. Built-in materials have no
     // folder, so they're skipped here and lower via their inline MaterialDef.
     let custom = dynamic::register_custom_materials(renderer, scene, assets).await;
+    registered.extend(custom.values().copied());
 
     // ── Phase 1: build materials ──────────────────────────────────────────────
     // The missing-material sentinel (magenta) for unassigned meshes.
@@ -1217,6 +1310,8 @@ pub async fn load_scene_for_player(
     }
     on_phase(LoadPhase::BuildingMaterials { done: total, total });
     // The custom-WGSL asset → shader-id table (Phase 0) feeds Uniform resolution.
+    let registered_custom_shaders: Vec<awsm_renderer_materials::MaterialShaderId> =
+        custom.values().copied().collect();
     maps.custom_shaders = custom;
 
     // ── Phase 2: meshes are staged below; texture finalize + pipeline compile
@@ -1226,6 +1321,7 @@ pub async fn load_scene_for_player(
     // ── Phase 3: upload meshes (geometry + skins) + lights ────────────────────
     let mut loaded = LoadedScene {
         node_material_variants,
+        custom_shaders: registered_custom_shaders,
         ..LoadedScene::default()
     };
     let mut uploaded = 0usize;
@@ -1328,6 +1424,15 @@ pub async fn load_scene_for_player(
         .await
     {
         tracing::warn!("post-processing apply failed, using renderer default: {err}");
+    }
+    // The scene's authored anti-aliasing, before the commit so the matching
+    // pipeline variants compile in the same batch. A host that wants its own
+    // setting calls `set_anti_aliasing` + `commit_load` after the load.
+    let aa = anti_aliasing_to_renderer(&scene.post_process, &renderer.anti_aliasing);
+    if aa != renderer.anti_aliasing {
+        if let Err(err) = renderer.set_anti_aliasing(aa).await {
+            tracing::warn!("anti-aliasing apply failed, keeping the renderer's: {err}");
+        }
     }
 
     // ── Phase 4: THE commit — finalize the texture pool ONCE + compile every
@@ -1795,29 +1900,33 @@ async fn materialize(
             });
         }
         NodeKind::Light(cfg) => {
-            // Skip a hidden node's light entirely — the renderer has no per-light
-            // hide toggle, so not inserting it is the cleanest way to honor
-            // `visible == false` (matching lines/decals; documented on
-            // `populate_awsm_scene`). So a hidden node no longer emits its light.
-            if effective_visible {
-                // Same derivation as the editor bridge's `apply_light`: position from
-                // the node translation, forward from rotating local -Z. Bind the
-                // light to its transform so a moved/rotated light re-derives pos/dir.
-                let pos = Vec3::from_array(node.transform.translation);
-                let dir =
-                    (Quat::from_array(node.transform.rotation) * Vec3::NEG_Z).normalize_or_zero();
-                let lt = light::light_from_config(cfg, pos, dir);
-                let shadow = light::light_shadow_params_from_config(cfg.shadow());
-                let casts = shadow.cast;
-                if let Ok(k) = renderer.insert_light(lt, Some(shadow)) {
-                    renderer.lights.bind_transform(k, tk);
-                    maps.lights.insert(node.id, k);
-                    loaded.lights.push(k);
+            // A hidden node's light is inserted SWITCHED OFF, not skipped: it
+            // lights nothing and casts no shadow, but it has a `LightKey`, so
+            // an animation track that targets it binds, the game can address
+            // it through `NodeHandles::light`, and `set_node_visible` can turn
+            // it on at runtime. (Skipping it — the old behaviour — dropped its
+            // tracks for good and left no way to show it.)
+            //
+            // Same derivation as the editor bridge's `apply_light`: position from
+            // the node translation, forward from rotating local -Z. Bind the
+            // light to its transform so a moved/rotated light re-derives pos/dir.
+            let pos = Vec3::from_array(node.transform.translation);
+            let dir = (Quat::from_array(node.transform.rotation) * Vec3::NEG_Z).normalize_or_zero();
+            let lt = light::light_from_config(cfg, pos, dir);
+            let shadow = light::light_shadow_params_from_config(cfg.shadow());
+            let casts = shadow.cast;
+            if let Ok(k) = renderer.insert_light(lt, Some(shadow)) {
+                renderer.lights.bind_transform(k, tk);
+                maps.lights.insert(node.id, k);
+                loaded.lights.push(k);
+                if !effective_visible {
+                    renderer.set_light_enabled(k, false);
                 }
-                // Compile shadow pipelines on the first caster (no-op once compiled).
-                if casts {
-                    renderer.ensure_shadow_pipelines_compiled().await?;
-                }
+            }
+            // Compile shadow pipelines on the first VISIBLE caster (no-op
+            // once compiled).
+            if casts && effective_visible {
+                renderer.ensure_shadow_pipelines_compiled().await?;
             }
         }
         NodeKind::Camera(cfg) => {
@@ -1879,10 +1988,12 @@ async fn materialize(
         // (ready to drive) and hands back an `EmitterHandle`; it does NOT simulate.
         // The game ticks an `awsm_renderer_particles::Simulator` each frame and pushes the
         // result via `drive_emitter` — the same "loads, doesn't drive" contract as
-        // animation. Skip a hidden emitter (no per-mesh hide toggle would help once
-        // the game drives it; cleanest is to not build it).
+        // animation. A hidden emitter is built too, with its billboard mesh
+        // hidden, so the game has a handle to show and drive later (effects
+        // that sit hidden until an event are the usual case); `ParticleDriver`
+        // leaves a hidden emitter alone.
         NodeKind::ParticleEmitter(def) => {
-            if effective_visible {
+            {
                 // Resolve the billboard sprite (if authored) through the same
                 // bundle texture cache the material slots use — sRGB, albedo
                 // mips (editor bridge §14 parity).
@@ -1906,6 +2017,9 @@ async fn materialize(
                         // assembly (and the morph/anim maps don't touch emitters).
                         loaded.meshes.push(handle.mesh);
                         loaded.transforms.push(handle.instance_transform);
+                        if !effective_visible {
+                            let _ = renderer.set_mesh_hidden(handle.mesh, true);
+                        }
                         maps.emitters.insert(node.id, handle);
                     }
                     Err(err) => {

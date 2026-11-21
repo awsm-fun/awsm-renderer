@@ -73,7 +73,8 @@ dedicated tool reaches it indirectly · **dispatch** = escape hatch only ·
 |---|---|---|---|
 | `new_project` | `new_project` | tool | |
 | `load_project_from_url` | `load_project_from_url` | tool | Settle-visible load. |
-| `load_player_bundle` | `load_player_bundle` | tool | Destructive round-trip self-test. |
+| `load_player_bundle` | `load_player_bundle` | tool | Player preview: bakes + reloads through the player path; clips and particles run, scene cameras selectable. |
+| `exit_player_bundle` | `exit_player_bundle` | tool | Leaves the player preview and restores the project. |
 | `reload_project_in_memory` | — | dispatch | Weaker sibling of `verify_roundtrip` (keeps the mesh cache warm); the tool-worthy variant is exposed, this one is a debug seam. Fine as dispatch-only. |
 | `verify_roundtrip` | `verify_roundtrip` | tool | Returns the census report inline. |
 | `import_model_from_url` | `import_model_from_url` | tool | Returns the import report; settle-visible. |
@@ -88,6 +89,7 @@ dedicated tool reaches it indirectly · **dispatch** = escape hatch only ·
 | `add_texture_asset` | `add_texture_asset` | tool | |
 | `delete_asset` | `delete_asset` | tool | |
 | `restore_asset` | — | dispatch | Undo-inverse of `delete_asset` (carries the captured entry). Internal; fine as dispatch-only. |
+| `restore_material` | — | dispatch | Undo-inverse of a purge removing a Material-library entry (carries the stored material). Internal; fine as dispatch-only. |
 | `set_texture_export` | `set_texture_export` | tool | Per-texture bundle-bake encoding: `webp_lossless` (pixel-identical default) \| `webp_lossy{quality}` \| `source` \| `default` (clears the override). Takes effect on the next `export_player_bundle`; the tool description warns lossy is never safe for data maps (normal / metallic-roughness / occlusion). Still NO read-back (get_snapshot's textures list omits it; persisted record = the asset entry in `project.toml`) — documented in the tool description. |
 | `set_texture_use_profile` | `set_texture_use_profile` | tool | Per-USE KTX2 profile override on one texture slot of a node's material (`etc1s` \| `uastc` \| `inherit`) — the top rung of the bake's use-level resolution (docs/plans/compression.md F2); built-in slot names or custom slot names, KHR-extension slots via `patch_kind` on the ref's `export_profile`. Slot must have a texture bound (loud reject). |
 | `set_bundle_options` | `set_bundle_options` | tool | Patch the project-persisted player-bundle export options (`mesh_compression` off\|meshopt, `mesh_quantization` off\|always\|smart, `smart_threshold_mm`, `texture_compression` off\|ktx2); omitted fields preserve. `export_player_bundle` also takes the same fields as per-call overrides that do NOT touch the persisted options. NO query read-back (persisted record = `bundle_options` in `project.toml`). |

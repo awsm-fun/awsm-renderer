@@ -364,6 +364,63 @@ pub async fn bake_player_bundle(
             }
         }
 
+        // Pass 0 — one artifact per distinct IMAGE. Every glb import mints its
+        // own texture assets, so a project that uses one image through several
+        // imports (a shared atlas embedded in each glb) holds several asset
+        // records with identical bytes. Baked one file per record, the bundle
+        // carried — and the player downloaded, decoded and kept in GPU memory —
+        // the same image several times. Uses of records with the same content
+        // hash and the same export preference are folded onto one of them (the
+        // smallest id, for a deterministic bake) before anything is encoded.
+        {
+            let mut ids: Vec<AssetId> = project.assets.entries.keys().copied().collect();
+            ids.sort_by_key(|id| id.0);
+            let mut first_with: HashMap<(String, String), AssetId> = HashMap::new();
+            let mut canonical: HashMap<AssetId, AssetId> = HashMap::new();
+            for id in ids {
+                let entry = &project.assets.entries[&id];
+                if entry.content_hash.is_empty()
+                    || !matches!(
+                        entry.source,
+                        awsm_renderer_editor_protocol::AssetSource::Texture(
+                            awsm_renderer_editor_protocol::TextureDef::Raster { .. }
+                        )
+                    )
+                {
+                    continue;
+                }
+                let key = (
+                    entry.content_hash.clone(),
+                    format!("{:?}", entry.texture_export),
+                );
+                let canon = *first_with.entry(key).or_insert(id);
+                if canon != id {
+                    canonical.insert(id, canon);
+                }
+            }
+            if !canonical.is_empty() {
+                let mut folded: HashSet<AssetId> = HashSet::new();
+                for_each_baked_texture_use(
+                    &mut scene.nodes,
+                    &builtin_materials,
+                    &custom_slot_kinds,
+                    &mut |_kind, _builtin, tref| {
+                        if let Some(canon) = canonical.get(&tref.asset) {
+                            folded.insert(tref.asset);
+                            tref.asset = *canon;
+                        }
+                    },
+                );
+                if !folded.is_empty() {
+                    tracing::info!(
+                        "bundle bake: folded {} duplicate texture asset(s) onto identical \
+                         images already in the bundle (same content hash)",
+                        folded.len()
+                    );
+                }
+            }
+        }
+
         // Pass A — resolve every use, group per asset. `Ktx2Key` = the codec
         // params a KTX2 artifact is encoded with; `asset_level` marks assets
         // with ≥1 non-KTX2 use (those keep the original id for the
@@ -477,6 +534,10 @@ pub async fn bake_player_bundle(
         }
         bake_list.sort_by_key(|(artifact, ..)| artifact.0);
 
+        // (width, height, kind) of every shipped texture, for the array-count
+        // check after the loop. `kind` separates the encodings that can never
+        // share a player texture array.
+        let mut pool_groups: HashSet<(u32, u32, String)> = HashSet::new();
         for (artifact_id, source_id, encode) in bake_list {
             // Referenced by a material ⇒ MUST ship, losslessly, or the export
             // fails. No quiet skip, no lossy fallback (see `texture_source_bytes`).
@@ -747,6 +808,25 @@ pub async fn bake_player_bundle(
             if !verbatim {
                 texture_encode_cache::put(cache_key, encoding, &bytes, two_channel, verbatim);
             }
+            if let Some((w, h)) = image_dimensions(&bytes) {
+                // A KTX2 artifact is transcoded to a block format picked per
+                // device: colour (sRGB) and data (linear) land in different
+                // formats, and a two-channel normal in a third.
+                let kind = match &encode {
+                    ArtifactEncode::Ktx2 {
+                        uastc,
+                        srgb,
+                        packed,
+                    } if matches!(encoding, awsm_renderer_scene::TextureEncoding::Ktx2) => {
+                        format!("ktx2-u{}-s{}-p{}", *uastc as u8, *srgb as u8, *packed as u8)
+                    }
+                    _ if matches!(encoding, awsm_renderer_scene::TextureEncoding::Ktx2) => {
+                        "ktx2".to_string()
+                    }
+                    _ => "rgba8".to_string(),
+                };
+                pool_groups.insert((w, h, kind));
+            }
             files.push(BundleFile::asset(
                 format!("{artifact_id}.{}", encoding.ext()),
                 bytes,
@@ -760,6 +840,35 @@ pub async fn bake_player_bundle(
                 two_channel,
                 verbatim,
             );
+        }
+
+        // Every distinct (size, format) group of textures is one texture
+        // array in the player, and one sampled-texture binding. A device binds
+        // a limited number of those (WebGPU guarantees 16 per shader stage;
+        // desktop GPUs give 48 or more; the renderer's own passes use 18), so
+        // a scene with many different texture sizes can fail to load on some
+        // devices. The player reports that clearly, but the place to hear
+        // about it is here, at export.
+        {
+            use awsm_renderer::render_passes::shared::material::bind_group::POOL_RESERVED_SAMPLED_TEXTURES;
+            // +1: the renderer's own 1×1 fallback textures.
+            let groups = pool_groups.len() + 1;
+            let common_budget = 48usize.saturating_sub(POOL_RESERVED_SAMPLED_TEXTURES);
+            if groups > common_budget {
+                let msg = format!(
+                    "Bundle textures need about {groups} texture arrays (one per distinct \
+                     size + format), more than the {common_budget} a typical desktop GPU can \
+                     bind next to the renderer's own textures — the bundle may fail to load. \
+                     Use fewer distinct texture sizes (e.g. square powers of two)."
+                );
+                tracing::warn!("{msg}");
+                awsm_renderer_web_shared::prelude::Toast::warning(msg);
+            } else if groups > common_budget * 2 / 3 {
+                tracing::info!(
+                    "bundle bake: textures need about {groups} of the ~{common_budget} texture \
+                     arrays a typical desktop GPU can bind (one per distinct size + format)"
+                );
+            }
         }
     }
 
@@ -1658,6 +1767,25 @@ fn texture_encoding_from_mime(
 /// Decode PNG/JPEG source bytes to RGBA8 (pure-Rust `image` crate — same
 /// decode the lossless-WebP path uses). `None` for KTX2 (handled upstream as
 /// passthrough) or a failed decode.
+/// Pixel dimensions of an encoded image (PNG / JPEG / WebP / KTX2) read from
+/// its header — no decode.
+fn image_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
+    // KTX2: 12-byte identifier, then vkFormat, typeSize, pixelWidth,
+    // pixelHeight as little-endian u32s.
+    const KTX2_MAGIC: [u8; 12] = [
+        0xAB, 0x4B, 0x54, 0x58, 0x20, 0x32, 0x30, 0xBB, 0x0D, 0x0A, 0x1A, 0x0A,
+    ];
+    if bytes.len() >= 28 && bytes[..12] == KTX2_MAGIC {
+        let u = |o: usize| u32::from_le_bytes([bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]]);
+        return Some((u(20), u(24)));
+    }
+    image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?
+        .into_dimensions()
+        .ok()
+}
+
 fn decode_rgba(
     source: &[u8],
     mime: awsm_renderer_glb_export::ImageMime,

@@ -352,8 +352,17 @@ impl MaterialEdgePipelines {
                 }
                 let owns_skybox = entry.shader_id == MaterialShaderId::SKYBOX;
                 // Same dynamic-shader resolution as the cs_edge loop above
-                // (skip transparent-only customs; first-party variants build
-                // with None). The SKYBOX bucket carries no dynamic shader.
+                // (first-party variants build with None). The SKYBOX bucket
+                // carries no dynamic shader.
+                //
+                // Only BLEND customs are skipped — they target the transparent
+                // contract. A MASK custom is alpha-tested OPAQUE: its cutout
+                // happens in the masked geometry raster and its surviving
+                // pixels are shaded here like any opaque custom. Under MSAA
+                // `cs_shade` is the ONLY kernel a bucket has, so skipping MASK
+                // (as this used to) left every pixel of such a material
+                // unwritten — a black surface with a correct cutout. Keep in
+                // step with `build_opaque` in `pipeline_scheduler/launch.rs`.
                 let dynamic_shader = if !owns_skybox && entry.shader_id.is_dynamic() {
                     let Some(registry) = dynamic_registry else {
                         continue;
@@ -363,6 +372,7 @@ impl MaterialEdgePipelines {
                             if !matches!(
                                 reg.alpha_mode,
                                 awsm_renderer_materials::MaterialAlphaMode::Opaque
+                                    | awsm_renderer_materials::MaterialAlphaMode::Mask { .. }
                             ) =>
                         {
                             continue

@@ -42,6 +42,39 @@ pub fn pool_binding_tier(n: usize) -> usize {
     n.next_power_of_two().max(4)
 }
 
+/// Sampled textures that share a shader stage with the pool arrays in the
+/// most crowded pass that binds the pool — the opaque material compute pass:
+/// 13 in its main group under MSAA (visibility, barycentric, depth,
+/// normal/tangent, barycentric derivatives, skybox, two IBL maps, BRDF LUT,
+/// three prep textures, the MSAA edge-shadow prep) plus the 5 shadow maps.
+/// `maxSampledTexturesPerShaderStage` covers these AND the pool arrays, so
+/// the pool may only use what is left.
+pub const POOL_RESERVED_SAMPLED_TEXTURES: usize = 18;
+
+/// Samplers that share a shader stage with the pool samplers in the most
+/// crowded pass (opaque compute: 4 in the main group + 3 for shadows, with
+/// one spare).
+pub const POOL_RESERVED_SAMPLERS: usize = 8;
+
+/// How many pool texture arrays the device can bind next to the fixed
+/// bindings of the passes that use the pool.
+pub fn pool_array_budget(max_sampled_textures_per_shader_stage: u32) -> usize {
+    (max_sampled_textures_per_shader_stage as usize).saturating_sub(POOL_RESERVED_SAMPLED_TEXTURES)
+}
+
+/// How many pool samplers the device can bind next to the fixed samplers.
+pub fn pool_sampler_budget(max_samplers_per_shader_stage: u32) -> usize {
+    (max_samplers_per_shader_stage as usize).saturating_sub(POOL_RESERVED_SAMPLERS)
+}
+
+/// The slot count actually declared for `n` real entries: the padded tier,
+/// clamped to the device `budget` so padding alone never pushes a stage over
+/// its limit (a pool of 17 arrays used to pad to 32 and fail on a 48-texture
+/// device although 30 fit). `n` beyond the budget is the caller's error.
+pub fn pool_binding_slots(n: usize, budget: usize) -> usize {
+    pool_binding_tier(n).min(budget.max(n))
+}
+
 /// Shader stage visibility for texture pool bindings.
 pub enum TexturePoolVisibility {
     Render,
@@ -75,17 +108,22 @@ impl TexturePoolDeps {
         // the leading slots and the rest bind the neutral placeholder view.
         let device_limits = ctx.gpu.device.limits();
         let real_arrays_len = ctx.textures.pool.arrays_len();
-        let texture_arrays_len = pool_binding_tier(real_arrays_len);
+        let array_budget = pool_array_budget(device_limits.max_sampled_textures_per_shader_stage());
 
         let mut entries = Vec::new();
 
-        if texture_arrays_len > device_limits.max_sampled_textures_per_shader_stage() as usize {
+        // Compare the REAL count against what the device can bind next to
+        // the passes' fixed sampled textures — not the padded tier against
+        // the raw limit.
+        if real_arrays_len > array_budget {
             return Err(AwsmCoreError::TexturePoolTooManyArrays {
-                total_arrays: texture_arrays_len as u32,
-                max_arrays: device_limits.max_sampled_textures_per_shader_stage(),
+                total_arrays: real_arrays_len as u32,
+                max_arrays: array_budget as u32,
+                device_limit: device_limits.max_sampled_textures_per_shader_stage(),
             }
             .into());
         }
+        let texture_arrays_len = pool_binding_slots(real_arrays_len, array_budget);
 
         for i in 0..texture_arrays_len {
             entries.push(BindGroupLayoutCacheKeyEntry {
@@ -120,15 +158,16 @@ impl TexturePoolDeps {
         // samplers — same tiering; real samplers first (the default sampler
         // is index 0 from boot), padded slots bind it again.
         let sampler_keys = ctx.textures.pool_sampler_set.clone();
-        let samplers_len = pool_binding_tier(sampler_keys.len());
+        let sampler_budget = pool_sampler_budget(device_limits.max_samplers_per_shader_stage());
 
-        if samplers_len > device_limits.max_samplers_per_shader_stage() as usize {
+        if sampler_keys.len() > sampler_budget {
             return Err(AwsmCoreError::TexturePoolTooManySamplers {
-                total_samplers: samplers_len as u32,
-                max_samplers: device_limits.max_samplers_per_shader_stage(),
+                total_samplers: sampler_keys.len() as u32,
+                max_samplers: sampler_budget as u32,
             }
             .into());
         }
+        let samplers_len = pool_binding_slots(sampler_keys.len(), sampler_budget);
 
         for _ in 0..samplers_len {
             entries.push(BindGroupLayoutCacheKeyEntry {

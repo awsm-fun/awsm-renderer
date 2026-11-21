@@ -157,7 +157,7 @@ fn vert_main(
             input.instance_transform_row_2,
             input.instance_transform_row_3,
         {% endif %}
-    ), camera {% if has_custom_vertex %}, _cv_uv, _cv_uv_count, instance_id, frame_globals {% endif %});
+    ), camera {% if has_custom_vertex %}, _cv_uv, _cv_uv_count, instance_id, frame_globals, _mm.material_offset {% endif %});
 
     out.clip_position = applied.clip_position;
     out.world_normal = applied.world_normal;

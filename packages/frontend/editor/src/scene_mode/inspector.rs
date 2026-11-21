@@ -1547,6 +1547,55 @@ fn camera_editor(node: &Arc<Node>, cfg: &CameraConfig) -> Dom {
             })
             .render(),
     ));
+    // Depth of field (visible when the scene's post-process DoF is on). Real
+    // camera properties, so focus does not depend on an animation clip
+    // playing; a camera track on the same parameter overrides while it plays.
+    let n = node.clone();
+    sec = sec.child(row(
+        "Aperture (f-stop)",
+        NumField::new(
+            cfg.aperture
+                .unwrap_or(awsm_renderer::camera::CameraParams::DEFAULT_APERTURE)
+                as f64,
+        )
+        .min(0.05)
+        .step(0.1)
+        .on_change(move |v| {
+            if let Some(cur) = current_camera(&n) {
+                dispatch_kind(
+                    n.id,
+                    NodeKind::Camera(CameraConfig {
+                        aperture: Some(v as f32),
+                        ..cur
+                    }),
+                );
+            }
+        })
+        .render(),
+    ));
+    let n = node.clone();
+    sec = sec.child(row(
+        "Focus distance",
+        NumField::new(
+            cfg.focus_distance
+                .unwrap_or(awsm_renderer::camera::CameraParams::DEFAULT_FOCUS_DISTANCE)
+                as f64,
+        )
+        .min(0.01)
+        .step(0.1)
+        .on_change(move |v| {
+            if let Some(cur) = current_camera(&n) {
+                dispatch_kind(
+                    n.id,
+                    NodeKind::Camera(CameraConfig {
+                        focus_distance: Some(v as f32),
+                        ..cur
+                    }),
+                );
+            }
+        })
+        .render(),
+    ));
 
     sec.render()
 }

@@ -162,7 +162,41 @@ impl AwsmRenderer {
     /// would keep running for a light that no longer exists.
     pub fn remove_light(&mut self, key: LightKey) {
         self.shadows.on_light_removed(key);
+        self.shadows.parked_params.remove(key);
         self.lights.remove(key);
+    }
+
+    /// Switch a light off or back on **without removing it**. An off light
+    /// lights nothing and casts no shadow, but keeps its [`LightKey`] — so an
+    /// animation channel bound to it stays bound, a game holding the key can
+    /// keep writing its parameters, and turning it back on is instant. This
+    /// is what hiding a light node means; removing and re-inserting the light
+    /// instead (the old way) changed its key and silently dropped every
+    /// track that targeted it.
+    pub fn set_light_enabled(&mut self, key: LightKey, enabled: bool) {
+        if self.lights.get(key).is_none() || self.lights.is_enabled(key) == enabled {
+            return;
+        }
+        if enabled {
+            if let Some(params) = self.shadows.parked_params.remove(key) {
+                self.shadows.params.insert(key, params);
+            }
+        } else {
+            // Park the authored shadow params and drop the live shadow state
+            // (cube slot, throttle history), so an off light costs no shadow
+            // pass.
+            let params = self.shadows.params.get(key).cloned();
+            self.shadows.on_light_removed(key);
+            if let Some(params) = params {
+                self.shadows.parked_params.insert(key, params);
+            }
+        }
+        self.lights.set_enabled(key, enabled);
+    }
+
+    /// False when the light is switched off (see [`Self::set_light_enabled`]).
+    pub fn light_enabled(&self, key: LightKey) -> bool {
+        self.lights.is_enabled(key)
     }
 
     /// Removes every light, dropping all per-light shadow state in

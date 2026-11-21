@@ -4,8 +4,7 @@
 // atmosphere), included by compute.wgsl ahead of this file.
 
 // Depth of Field constants
-const DOF_MAX_BLUR: f32 = 16.0;          // Maximum blur radius in pixels
-const DOF_SAMPLES: u32 = 16u;            // Number of samples for blur disk
+const DOF_MAX_BLUR: f32 = 20.0;          // Maximum blur radius in pixels
 const SENSOR_HEIGHT: f32 = 0.024;        // 24mm full-frame sensor height (in meters)
 
 // Calculate focal length from projection matrix in world units (meters)
@@ -41,15 +40,54 @@ fn calculate_coc(linear_depth: f32, camera: Camera) -> f32 {
     return clamp(coc_pixels, 0.0, DOF_MAX_BLUR);
 }
 
-// Disk sample offsets using golden angle distribution
-fn get_disk_offset(index: u32, radius: f32) -> vec2<f32> {
+// ── Sampling ────────────────────────────────────────────────────────────────
+// Two spirals per pixel, both rotated per pixel so the fixed tap pattern
+// turns into fine grain instead of repeating as ghost copies of a highlight:
+//
+//  SELF  — the pixel's own blur: taps inside ITS circle of confusion. This is
+//          what blurs anything behind the focus plane (and the inside of a
+//          near object).
+//  NEAR  — everything IN FRONT of the focus plane that is blurred ONTO this
+//          pixel: taps out to the maximum blur radius, each accepted when
+//          that sample's own circle of confusion reaches here
+//          (scatter-as-gather).
+//
+// The NEAR spiral is what a single "blur by my own CoC" gather cannot do: an
+// in-focus pixel next to a defocused foreground object has a CoC of zero and
+// so never looked at its neighbours — the foreground blur stopped dead at the
+// object's silhouette. A bright thin object close to the lens (a brass edge,
+// a row of bulbs) therefore stayed a hard line however wide the aperture,
+// instead of opening into soft discs.
+const DOF_SELF_SAMPLES: u32 = 16u;
+const DOF_NEAR_SAMPLES: u32 = 48u;
+
+// Golden-angle spiral with uniform area density over a disc of `radius`,
+// rotated by `rotation` radians.
+fn get_disk_offset(index: u32, count: u32, radius: f32, rotation: f32) -> vec2<f32> {
     let golden_angle = 2.39996323;
-    let theta = f32(index) * golden_angle;
-    let r = sqrt(f32(index + 1u) / f32(DOF_SAMPLES)) * radius;
+    let theta = f32(index) * golden_angle + rotation;
+    let r = sqrt((f32(index) + 0.5) / f32(count)) * radius;
     return vec2<f32>(cos(theta), sin(theta)) * r;
 }
 
-// Apply depth of field blur
+// Interleaved gradient noise (Jimenez): a per-pixel value in [0,1) with good
+// spatial distribution and no texture.
+fn dof_noise(coords: vec2<i32>) -> f32 {
+    let p = vec2<f32>(f32(coords.x), f32(coords.y));
+    return fract(52.9829189 * fract(dot(p, vec2<f32>(0.06711056, 0.00583715))));
+}
+
+// One depth sample for a blur tap. The centre pixel uses `load_depth` (nearest
+// of the 4 MSAA samples); the taps read sample 0 only — 64 taps × 4 loads
+// would be most of the cost of the effect for no visible gain.
+fn dof_tap_depth(coords: vec2<i32>) -> f32 {
+    // Sample index 0 on a multisampled depth target, mip 0 otherwise — the
+    // same call either way.
+    return textureLoad(depth_tex, coords, 0);
+}
+
+// Apply depth of field blur. `color` is this pixel after the effects that run
+// before DoF (haze, bloom); the blur itself gathers the composite.
 fn apply_dof(
     color: vec3<f32>,
     coords: vec2<i32>,
@@ -59,44 +97,83 @@ fn apply_dof(
     let center_depth = load_depth(coords);
     let center_linear = linearize_depth(center_depth, camera);
     let center_coc = calculate_coc(center_linear, camera);
+    let focus = camera.focus_distance;
+    let rotation = dof_noise(coords) * 6.2831853;
 
-    // No blur needed if CoC is very small
-    if (center_coc < 0.5) {
-        return color;
+    // The pre-DoF effects (haze, bloom) were added to this pixel only; the taps
+    // below read the raw composite. Carry their contribution across the blur
+    // instead of dropping it — otherwise bloom vanished wherever DoF blurred.
+    let center_composite = textureLoad(composite_tex, coords, 0).rgb;
+    let effects_delta = color - center_composite;
+
+    // ── SELF: this pixel's own blur ──
+    var self_color = center_composite;
+    if (center_coc >= 0.5) {
+        var sum = vec3<f32>(0.0);
+        var total = 0.0;
+        for (var i = 0u; i < DOF_SELF_SAMPLES; i = i + 1u) {
+            let offset = get_disk_offset(i, DOF_SELF_SAMPLES, center_coc, rotation);
+            let sample_coords = clamp(
+                coords + vec2<i32>(i32(round(offset.x)), i32(round(offset.y))),
+                vec2<i32>(0),
+                screen_dims - 1
+            );
+            let sample_color = textureLoad(composite_tex, sample_coords, 0).rgb;
+            let sample_linear = linearize_depth(dof_tap_depth(sample_coords), camera);
+            let sample_coc = calculate_coc(sample_linear, camera);
+
+            // A sample that is sharper than this pixel and NOT behind it must
+            // not smear across it (an in-focus object bleeding into a blurred
+            // background); a sample behind this pixel is what its blur reveals.
+            var weight = 1.0;
+            if (sample_linear < center_linear && sample_coc < center_coc) {
+                weight = sample_coc / max(center_coc, 0.01);
+            }
+            weight = max(weight, 0.02);
+            sum += sample_color * weight;
+            total += weight;
+        }
+        let blurred = sum / max(total, 0.01);
+        self_color = mix(center_composite, blurred, smoothstep(0.0, 2.0, center_coc));
     }
 
-    var blur_color = vec3<f32>(0.0);
-    var total_weight = 0.0;
-
-    for (var i = 0u; i < DOF_SAMPLES; i = i + 1u) {
-        let offset = get_disk_offset(i, center_coc);
+    // ── NEAR: foreground blur landing on this pixel ──
+    var near_sum = vec3<f32>(0.0);
+    var near_weight = 0.0;
+    for (var i = 0u; i < DOF_NEAR_SAMPLES; i = i + 1u) {
+        let offset = get_disk_offset(i, DOF_NEAR_SAMPLES, DOF_MAX_BLUR, rotation);
         let sample_coords = clamp(
             coords + vec2<i32>(i32(round(offset.x)), i32(round(offset.y))),
             vec2<i32>(0),
             screen_dims - 1
         );
-
-        let sample_color = textureLoad(composite_tex, sample_coords, 0).rgb;
-        let sample_depth = load_depth(sample_coords);
-        let sample_linear = linearize_depth(sample_depth, camera);
-        let sample_coc = calculate_coc(sample_linear, camera);
-
-        // Prevent background from bleeding into foreground
-        var weight = 1.0;
-        if (sample_linear > center_linear && sample_coc < center_coc) {
-            weight = sample_coc / max(center_coc, 0.01);
+        let sample_linear = linearize_depth(dof_tap_depth(sample_coords), camera);
+        // Only what is in front of the focus plane spreads forward over
+        // sharper things.
+        if (sample_linear >= focus) {
+            continue;
         }
-
+        let sample_coc = calculate_coc(sample_linear, camera);
         let dist = length(offset);
-        weight *= 1.0 - smoothstep(center_coc * 0.5, center_coc, dist);
-        weight = max(weight, 0.01);
-
-        blur_color += sample_color * weight;
-        total_weight += weight;
+        // Does that sample's disc reach this pixel? (soft 2px edge)
+        let cover = smoothstep(dist - 1.0, dist + 1.0, sample_coc);
+        if (cover <= 0.0) {
+            continue;
+        }
+        // Each tap stands for (πR²/N) pixels, each spreading its light over
+        // its own disc (π·coc²): weight = (R²/N) / coc².
+        let weight = cover * (DOF_MAX_BLUR * DOF_MAX_BLUR)
+            / (f32(DOF_NEAR_SAMPLES) * max(sample_coc * sample_coc, 1.0));
+        near_sum += textureLoad(composite_tex, sample_coords, 0).rgb * weight;
+        near_weight += weight;
     }
 
-    blur_color = blur_color / max(total_weight, 0.01);
-
-    let blend_factor = smoothstep(0.0, 2.0, center_coc);
-    return mix(color, blur_color, blend_factor);
+    var result = self_color;
+    if (near_weight > 0.0) {
+        // The foreground layer is laid over the pixel's own result with the
+        // coverage it accumulated (1 = fully inside a defocused near object).
+        let near_color = near_sum / near_weight;
+        result = mix(self_color, near_color, clamp(near_weight, 0.0, 1.0));
+    }
+    return result + effects_delta;
 }

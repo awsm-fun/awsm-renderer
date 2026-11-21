@@ -163,6 +163,11 @@ pub struct Lights {
     // any light listed here. Lights without an entry (procedural, manually
     // positioned) are left untouched.
     node_transforms: SecondaryMap<LightKey, TransformKey>,
+    // Lights that are switched OFF but kept (see `set_enabled`): the light,
+    // its key and its place in the buffer all stay, so animation channels and
+    // game code holding the key keep working; it is packed with zero
+    // intensity.
+    disabled: SecondaryMap<LightKey, ()>,
     // We do not use DynamicUniformBuffer here because we need dense sequential access in the gpu
     // not stable offsets per-key that DynamicUniformBuffer provides (with holes, etc)
     // instead, we rebuild a fresh Vec<u8> when the gpu is dirty.
@@ -271,6 +276,7 @@ impl Lights {
         Ok(Lights {
             lights: SlotMap::with_key(),
             node_transforms: SecondaryMap::new(),
+            disabled: SecondaryMap::new(),
             ibl,
             brdf_lut,
             punctual_gpu_dirty: true,
@@ -372,6 +378,7 @@ impl Lights {
     pub(crate) fn clear(&mut self) {
         self.lights.clear();
         self.node_transforms.clear();
+        self.disabled.clear();
         self.punctual_gpu_dirty = true;
         self.lighting_info_gpu_dirty = true;
     }
@@ -403,8 +410,35 @@ impl Lights {
     pub(crate) fn remove(&mut self, key: LightKey) {
         self.lights.remove(key);
         self.node_transforms.remove(key);
+        self.disabled.remove(key);
         self.punctual_gpu_dirty = true;
         self.lighting_info_gpu_dirty = true;
+    }
+
+    /// Switch a light off or back on without removing it. `pub(crate)` —
+    /// external callers go through
+    /// [`AwsmRenderer::set_light_enabled`](crate::AwsmRenderer::set_light_enabled),
+    /// which also parks/restores the light's shadow state.
+    pub(crate) fn set_enabled(&mut self, key: LightKey, enabled: bool) {
+        if !self.lights.contains_key(key) {
+            return;
+        }
+        let was_enabled = !self.disabled.contains_key(key);
+        if was_enabled == enabled {
+            return;
+        }
+        if enabled {
+            self.disabled.remove(key);
+        } else {
+            self.disabled.insert(key, ());
+        }
+        self.punctual_gpu_dirty = true;
+        self.lighting_info_gpu_dirty = true;
+    }
+
+    /// False when the light has been switched off with `set_enabled(false)`.
+    pub fn is_enabled(&self, key: LightKey) -> bool {
+        !self.disabled.contains_key(key)
     }
 
     /// Binds a light to the transform node that drives its world pose, so
@@ -561,8 +595,17 @@ impl Lights {
 
             self.punctual_scratch.clear();
             for (key, light) in self.lights.iter().take(MAX_PUNCTUAL_LIGHTS) {
-                self.punctual_scratch
-                    .extend_from_slice(&light.storage_buffer_data(shadow_index_for(key)));
+                if self.disabled.contains_key(key) {
+                    // Off: same slot, no light and no shadow lookup.
+                    self.punctual_scratch.extend_from_slice(
+                        &light
+                            .switched_off()
+                            .storage_buffer_data(crate::shadows::SHADOW_INDEX_NONE),
+                    );
+                } else {
+                    self.punctual_scratch
+                        .extend_from_slice(&light.storage_buffer_data(shadow_index_for(key)));
+                }
             }
             let punctual_light_buffer = &self.punctual_scratch;
 
@@ -705,6 +748,33 @@ pub enum Light {
 impl Light {
     /// Packed byte size for a light in the storage buffer.
     pub const BYTE_SIZE: usize = 64;
+
+    /// This light contributing nothing: zero surface and volumetric
+    /// intensity, everything else unchanged. What a disabled light packs.
+    pub fn switched_off(&self) -> Light {
+        let mut off = self.clone();
+        match &mut off {
+            Light::Directional {
+                intensity,
+                volumetric_intensity,
+                ..
+            }
+            | Light::Point {
+                intensity,
+                volumetric_intensity,
+                ..
+            }
+            | Light::Spot {
+                intensity,
+                volumetric_intensity,
+                ..
+            } => {
+                *intensity = 0.0;
+                *volumetric_intensity = 0.0;
+            }
+        }
+        off
+    }
 
     /// How strongly this light scatters in participating media, independent of
     /// how strongly it lights surfaces. `1.0` (the default) = fully present in

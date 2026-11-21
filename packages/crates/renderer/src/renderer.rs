@@ -295,6 +295,11 @@ pub struct AwsmRenderer {
     /// in that fn only fires when this tier changes — within-tier growth is
     /// absorbed by the placeholder-padded bind groups.
     pub(crate) last_pool_tier: Option<(usize, usize)>,
+    /// Edge pixels (pixels shaded per MSAA sample) in the most recent frame
+    /// whose count has been read back, `None` before the first readback or
+    /// with MSAA off. Every edge pixel is shaded up to four times, so
+    /// `edge pixels / total pixels` is what MSAA costs in the shading passes.
+    pub last_msaa_edge_pixels: Option<u32>,
     /// Renderer-wide variable-length per-material data pool. Backs
     /// `BufferSlot` declarations on registered dynamic materials.
     pub extras_pool: crate::dynamic_materials::extras_pool::ExtrasPool,
@@ -1605,6 +1610,15 @@ impl AwsmRenderer {
                 .then(|| self.materials.shader_id(mesh.material_key));
             let dynamic_shader =
                 dynamic_shader_id.and_then(|id| self.dynamic_materials.shader_info_for(id));
+            // A mesh can outlive its custom material's registration (the
+            // material was unregistered while the mesh awaits teardown).
+            // Without the registration there is no `MaterialData` struct to
+            // emit, and the shader would fail to compile ("unresolved type
+            // 'MaterialData'") — failing the whole batch, i.e. every other
+            // mesh's pipeline too. Leave that one mesh without a pipeline.
+            if dynamic_shader_id.is_some() && dynamic_shader.is_none() {
+                continue;
+            }
             let dynamic_vertex_shader =
                 dynamic_shader_id.and_then(|id| self.dynamic_materials.vertex_shader_info_for(id));
             requests.push(
@@ -3118,6 +3132,7 @@ impl AwsmRendererBuilder {
             masked_dynamic_dirty: false,
             masked_lazy: Default::default(),
             last_pool_tier: None,
+            last_msaa_edge_pixels: None,
             extras_pool: extras_pool_built,
             pipeline_layouts,
             pipelines,

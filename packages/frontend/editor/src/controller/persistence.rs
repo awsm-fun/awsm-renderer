@@ -26,7 +26,7 @@ use crate::engine::scene::node::Node;
 use crate::error::{EditorError, EditorResult};
 
 /// Snapshot a live custom material into its serializable form.
-fn stored_from_material(m: &CustomMaterial) -> StoredMaterial {
+pub(crate) fn stored_from_material(m: &CustomMaterial) -> StoredMaterial {
     let slot = |s: &Slot| StoredSlot {
         name: s.name.clone(),
         ty: s.ty.clone(),
@@ -56,7 +56,7 @@ fn stored_from_material(m: &CustomMaterial) -> StoredMaterial {
 
 /// Rebuild a live custom material from its serialized form (same id, so scene
 /// nodes' material refs resolve).
-fn material_from_stored(s: &StoredMaterial) -> Arc<CustomMaterial> {
+pub(crate) fn material_from_stored(s: &StoredMaterial) -> Arc<CustomMaterial> {
     let slot = |x: &StoredSlot| Slot {
         name: x.name.clone(),
         ty: x.ty.clone(),
@@ -199,6 +199,15 @@ pub fn material_files(ctrl: &EditorController) -> Vec<(String, String)> {
         let alpha_wgsl = m.alpha_wgsl.get_cloned();
         if !alpha_wgsl.trim().is_empty() {
             out.push((format!("{folder}/material.alpha.wgsl"), alpha_wgsl));
+        }
+        // 3rd window: the custom-vertex hook. Without this sidecar the
+        // player registered the material with no hook — the mesh loaded
+        // undisplaced (a vertex-animated flame stood still, a collapsing ring
+        // stayed whole). `material.json` records `has_vertex_wgsl` so the
+        // loader fetches the file only when it exists.
+        let vertex_wgsl = m.vertex_wgsl.get_cloned();
+        if !vertex_wgsl.trim().is_empty() {
+            out.push((format!("{folder}/material.vertex.wgsl"), vertex_wgsl));
         }
         // The full serde `MaterialDefinition` — the player parses this +
         // `material.wgsl` to rebuild the `MaterialRegistration`.
@@ -793,6 +802,14 @@ pub fn animation_files(ctrl: &EditorController) -> Vec<(String, String)> {
 pub fn apply_project(ctrl: &EditorController, project: EditorProject) {
     ctrl.scene.environment.set(project.environment);
     ctrl.scene.shadows.set(project.shadows);
+    // The project's authored anti-aliasing drives the viewport's AA toggles
+    // (a project saved before this was recorded reads as the defaults).
+    ctrl.settings
+        .msaa
+        .set_neq(project.post_process.anti_aliasing.msaa);
+    ctrl.settings
+        .smaa
+        .set_neq(project.post_process.anti_aliasing.smaa);
     ctrl.scene.post_process.set(project.post_process);
     ctrl.scene.bundle_options.set(project.bundle_options);
     // Restore the authored viewpoint. Without this every load dropped to the

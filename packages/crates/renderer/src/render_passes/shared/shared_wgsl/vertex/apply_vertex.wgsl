@@ -21,7 +21,7 @@ struct ApplyVertexOutput {
     world_position: vec3<f32>,   // Transformed world-space position
 }
 
-fn apply_vertex(vertex_orig: ApplyVertexInput, camera: Camera {% if has_custom_vertex %}, custom_uv: array<vec2<f32>, 4>, custom_uv_count: u32, custom_instance_id: u32, custom_globals: FrameGlobals {% endif %}) -> ApplyVertexOutput {
+fn apply_vertex(vertex_orig: ApplyVertexInput, camera: Camera {% if has_custom_vertex %}, custom_uv: array<vec2<f32>, 4>, custom_uv_count: u32, custom_instance_id: u32, custom_globals: FrameGlobals, custom_material_offset: u32 {% endif %}) -> ApplyVertexOutput {
     var out: ApplyVertexOutput;
 
     var vertex = vertex_orig;
@@ -42,7 +42,12 @@ fn apply_vertex(vertex_orig: ApplyVertexInput, camera: Camera {% if has_custom_v
         let _disp = custom_displace_vertex(VertexDisplaceInput(
             vertex.position, normal, tangent, custom_uv, custom_uv_count,
             vertex.vertex_index, custom_instance_id,
-            material_data_load(geometry_mesh_meta.material_mesh_meta_offset),
+            // The MATERIAL's byte offset into `materials`, supplied by the
+            // caller from its material-mesh-meta. (This used to pass
+            // `geometry_mesh_meta.material_mesh_meta_offset` — the offset of
+            // the per-mesh META record, a different buffer — so the hook read
+            // an unrelated block and every uniform came back zero.)
+            material_data_load(custom_material_offset),
             custom_globals,
         ));
         vertex.position = _disp.position;

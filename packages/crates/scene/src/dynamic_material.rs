@@ -90,6 +90,16 @@ pub struct MaterialDefinition {
     /// `MaterialRegistration`). `#[serde(default)]` for back-compat.
     #[serde(default)]
     pub fragment_inputs: Vec<String>,
+    /// The material has a custom-vertex hook: its body is the
+    /// `material.vertex.wgsl` sidecar next to `material.wgsl`. Recorded here
+    /// so a loader fetches that file only when it exists. `#[serde(default)]`
+    /// (false) for material.json files written before the hook was exported.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub has_vertex_wgsl: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// A single uniform parameter on a [`MaterialDefinition`].
@@ -720,6 +730,7 @@ mod tests {
             }],
             shader_includes: vec!["camera".into()],
             fragment_inputs: vec!["world_normal".into()],
+            has_vertex_wgsl: false,
         }
     }
 

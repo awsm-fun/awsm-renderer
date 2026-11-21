@@ -41,6 +41,18 @@ pub enum AnimationTarget {
         /// Index into the material's `DynamicMaterial::values`.
         slot: usize,
     },
+    /// A uniform slot of a custom (dynamic) material, driven for the WHOLE
+    /// material: the registration default plus every live instance that does
+    /// not override the slot (see
+    /// [`AwsmRenderer::set_dynamic_material_uniform_shared`](crate::AwsmRenderer::set_dynamic_material_uniform_shared)).
+    /// This is what an asset-wide uniform track lowers to; an instance with a
+    /// per-node override of the slot keeps its own value.
+    SharedUniform {
+        /// The registered shader whose shared uniform is driven.
+        shader: awsm_renderer_materials::MaterialShaderId,
+        /// Index into the layout's uniforms.
+        slot: usize,
+    },
     /// A built-in PBR-family material factor (base color / metallic / etc).
     BuiltinParam {
         /// The material whose built-in factor is driven.

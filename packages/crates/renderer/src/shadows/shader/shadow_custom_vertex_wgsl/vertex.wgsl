@@ -120,14 +120,14 @@ fn vert_main(
     }
     // Custom displacement — IDENTICAL to the geometry custom-vertex pass: same
     // hook, same post-morph LOCAL position/normal/tangent, same per-vertex UV
-    // array, same material_data_load offset, same instance_id, same
+    // array, same material offset, same instance_id, same
     // frame_globals. This is what keeps the shadow silhouette glued to the
     // lit geometry.
     {
         let _disp = custom_displace_vertex(VertexDisplaceInput(
             vertex.position, vertex.normal, vertex.tangent, _cv_uv, _cv_uv_count,
             vertex.vertex_index, instance_id,
-            material_data_load(geometry_mesh_meta.material_mesh_meta_offset),
+            material_data_load(_mm.material_offset),
             frame_globals_from_raw(frame_globals_raw),
         ));
         vertex.position = _disp.position;

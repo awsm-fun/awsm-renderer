@@ -28,7 +28,7 @@ use axum::body::Bytes;
 use axum::extract::ws::WebSocketUpgrade;
 use axum::extract::DefaultBodyLimit;
 use axum::http::{header, StatusCode};
-use axum::response::IntoResponse;
+use axum::response::{IntoResponse, Response};
 use axum::{extract::Path, extract::State, routing::get, routing::post, Json, Router};
 use serde_json::{json, Value};
 use tower_http::cors::{Any, CorsLayer};
@@ -288,7 +288,28 @@ async fn editor_ws(ws: WebSocketUpgrade, State(s): State<AppState>) -> impl Into
 /// Relay a raw [`Request`] (JSON body) to the editor and return its [`Response`]
 /// as JSON. A PNG request returns the `PngHandle` JSON; the bytes are at
 /// `/png/<id>`.
-async fn debug(State(s): State<AppState>, Json(req): Json<Request>) -> Json<Value> {
+async fn debug(State(s): State<AppState>, Json(body): Json<Value>) -> Response {
+    // Parsed by hand (not the `Json<Request>` extractor) so the body can be
+    // compared with what the typed request kept: serde ignores fields a type
+    // does not have, and over this seam a misspelled field used to look like
+    // success.
+    let req: Request = match serde_json::from_value(body.clone()) {
+        Ok(req) => req,
+        Err(e) => {
+            return (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                format!("Failed to deserialize the JSON body into the target type: {e}"),
+            )
+                .into_response();
+        }
+    };
+    if let Err(e) = crate::strict::check(&body, &req, "request") {
+        return (StatusCode::UNPROCESSABLE_ENTITY, e).into_response();
+    }
+    debug_relay(s, req).await.into_response()
+}
+
+async fn debug_relay(s: AppState, req: Request) -> Json<Value> {
     match s.link.debug_request(&req).await {
         Ok(resp) => Json(
             serde_json::to_value(&resp)

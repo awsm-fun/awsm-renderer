@@ -81,6 +81,9 @@ pub struct Animations {
     scratch_samples: Vec<(AnimationTarget, AnimationData)>,
     /// The write-pass target list (drawn from `rest`'s keys).
     scratch_targets: Vec<AnimationTarget>,
+    /// The targets a clip wrote on the previous update. One that drops out
+    /// gets its rest value written back once and is then left alone.
+    driven_last_frame: std::collections::HashSet<AnimationTarget>,
     /// The single-clip-fallback clip-key list.
     scratch_clip_keys: Vec<AnimationClipKey>,
     /// An additive layer's base-clip pose, sampled once per strip (so the
@@ -249,6 +252,28 @@ fn data_to_vec4(value: &AnimationData) -> Result<[f32; 4]> {
 /// Converts an [`AnimationData`] to a dynamic-material [`UniformValue`].
 /// `F32`/`F64` → `F32`, `Vec3` → `Vec3`, `Quat` → `Vec4`. Anything else is a
 /// `WrongKind` error.
+/// A uniform's current value as animation data — the rest pose of a uniform
+/// channel. `None` for kinds the mixer does not animate.
+fn uniform_value_to_data(
+    value: &awsm_renderer_materials::dynamic_layout::UniformValue,
+) -> Option<AnimationData> {
+    use awsm_renderer_materials::dynamic_layout::UniformValue;
+    match value {
+        UniformValue::F32(v) => Some(AnimationData::F32(*v)),
+        UniformValue::Vec2(v) => Some(AnimationData::Vec2(glam::Vec2::from_array(*v))),
+        UniformValue::Vec3(v) | UniformValue::Color3(v) => {
+            Some(AnimationData::Vec3(glam::Vec3::from_array(*v)))
+        }
+        // vec4/color4 are component-lerped Vec4s (not a slerped Quat), matching
+        // the vec4 keyframe kind.
+        UniformValue::Vec4(v) | UniformValue::Color4(v) => {
+            Some(AnimationData::Vec4(glam::Vec4::from_array(*v)))
+        }
+        // Other uniform kinds are not animatable via the mixer.
+        _ => None,
+    }
+}
+
 fn data_to_uniform_value(
     value: &AnimationData,
 ) -> Result<awsm_renderer_materials::dynamic_layout::UniformValue> {
@@ -440,9 +465,30 @@ impl AwsmRenderer {
         // 3. Write once per target. A target that received a contribution writes
         //    its composited accumulator; one that received NONE this frame writes
         //    its REST value back so the default is restored rather than frozen.
+        //
+        //    "None this frame" means RELEASED: it was driven last frame and is
+        //    not any more. The rest value is written back exactly once, and
+        //    its cache entry dropped, so that from then on the target belongs
+        //    to whoever else sets it (the host, the editor, a per-frame game
+        //    update). Writing rest to every cached target on every frame —
+        //    the old behaviour — pinned a target for ever once any clip had
+        //    touched it, so a value set by hand reverted on the next frame.
+        //    The next strip to drive the target re-captures its rest from the
+        //    value it has then.
         let mut targets = std::mem::take(&mut self.animations.scratch_targets);
         targets.clear();
-        targets.extend(self.animations.rest.keys().copied());
+        targets.extend(acc.keys().copied());
+        let mut released = Vec::new();
+        for target in self.animations.driven_last_frame.iter() {
+            if !acc.contains_key(target) {
+                released.push(*target);
+            }
+        }
+        targets.extend(released.iter().copied());
+        self.animations.driven_last_frame.clear();
+        self.animations
+            .driven_last_frame
+            .extend(acc.keys().copied());
         // `acc` is an owned local (mem::take'n scratch), so the composited
         // value can be written by reference — no per-target clone (a heap
         // alloc for morph `Vertex` data). The rest-restore arm writes by
@@ -454,12 +500,12 @@ impl AwsmRenderer {
         for &target in &targets {
             let result = match acc.get(&target) {
                 Some(v) => self.write_anim_target(target, v),
-                None => {
-                    let value = rest
-                        .get(&target)
-                        .expect("rest entry exists for a key drawn from rest");
-                    self.write_anim_target(target, value)
-                }
+                // Released this frame: restore rest (absent only if the host
+                // invalidated it meanwhile — then there is nothing to restore).
+                None => match rest.get(&target) {
+                    Some(value) => self.write_anim_target(target, value),
+                    None => Ok(()),
+                },
             };
             if let Err(e) = result {
                 write_result = Err(e);
@@ -467,6 +513,9 @@ impl AwsmRenderer {
             }
         }
         self.animations.rest = rest;
+        for target in &released {
+            self.animations.rest.remove(target);
+        }
         write_result?;
 
         // Return the scratch buffers (cleared — capacity retained for next frame).
@@ -497,6 +546,13 @@ impl AwsmRenderer {
     ) -> Result<()> {
         for layer in layers {
             let w = layer.weight as f32;
+            // A layer at weight 0 contributes nothing, so it must not claim
+            // its targets either: seeding the accumulator below would write
+            // the cached rest over them every frame, which made a muted
+            // layer's uniform/light/camera tracks override hand-set values.
+            if w.is_nan() || w <= 0.0 {
+                continue;
+            }
             for strip in &layer.strips {
                 if !strip.is_active(mixer_time) {
                     continue;
@@ -609,28 +665,15 @@ impl AwsmRenderer {
                 ))
             }
             AnimationTarget::Uniform { material, slot } => {
-                use awsm_renderer_materials::dynamic_layout::UniformValue;
                 let m = self.materials.get(material).ok()?;
                 let crate::materials::Material::Custom(dynamic) = m else {
                     return None;
                 };
-                match dynamic.values.get(slot)? {
-                    UniformValue::F32(v) => Some(AnimationData::F32(*v)),
-                    UniformValue::Vec2(v) => Some(AnimationData::Vec2(glam::Vec2::from_array(*v))),
-                    UniformValue::Vec3(v) | UniformValue::Color3(v) => {
-                        Some(AnimationData::Vec3(glam::Vec3::from_array(*v)))
-                    }
-                    // vec4/color4 seed as Vec4 (component-lerped), matching the
-                    // vec4 keyframe kind. (Previously seeded as Quat — a slerp on a
-                    // non-rotation tint/rect is wrong; vec4 tracks are now
-                    // first-class, so rest must be the same Vec4 kind or the mixer
-                    // blend falls through to the unchanged rest. See A1.)
-                    UniformValue::Vec4(v) | UniformValue::Color4(v) => {
-                        Some(AnimationData::Vec4(glam::Vec4::from_array(*v)))
-                    }
-                    // Other uniform kinds are not animatable via the mixer.
-                    _ => None,
-                }
+                uniform_value_to_data(dynamic.values.get(slot)?)
+            }
+            AnimationTarget::SharedUniform { shader, slot } => {
+                let reg = self.dynamic_material_registration(shader)?;
+                uniform_value_to_data(reg.uniform_defaults.get(slot)?)
             }
             AnimationTarget::BuiltinParam { material, param } => {
                 use crate::materials::Material;
@@ -915,6 +958,17 @@ impl AwsmRenderer {
                         }
                     }
                 });
+            }
+            AnimationTarget::SharedUniform { shader, slot } => {
+                let uniform_value = data_to_uniform_value(value)?;
+                // Keyframes are plain vectors; a colour slot takes the same
+                // numbers re-tagged.
+                let ty = self
+                    .dynamic_material_registration(shader)
+                    .and_then(|reg| reg.layout.uniforms.get(slot).map(|u| u.ty));
+                if let Some(v) = ty.and_then(|ty| uniform_value.coerced_to(ty)) {
+                    self.set_dynamic_material_uniform_shared(shader, slot, v);
+                }
             }
             AnimationTarget::BuiltinParam { material, param } => {
                 self.apply_builtin_material_param(material, param, value)?;

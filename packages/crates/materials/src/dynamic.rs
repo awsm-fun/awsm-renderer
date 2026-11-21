@@ -53,6 +53,12 @@ pub struct DynamicMaterial {
     /// Each value's [`UniformValue::field_type`] must match the layout
     /// entry's [`FieldType`](crate::dynamic_layout::FieldType).
     pub values: Vec<UniformValue>,
+    /// Which uniform slots this instance OVERRIDES (indexed like `values`;
+    /// a missing entry means "not overridden"). A slot that is not
+    /// overridden follows the material's shared value: an asset-wide uniform
+    /// edit or animation track writes it. An overridden slot keeps its own
+    /// value — including when that value happens to equal the shared one.
+    pub uniform_overridden: Vec<bool>,
     /// Per-instance texture bindings, one slot per
     /// [`TextureSlot`](crate::dynamic_layout::TextureSlotRuntime) in the
     /// layout. `None` means the slot is unbound — the renderer's bridge
@@ -84,6 +90,20 @@ pub enum DynamicTextureBinding {
 }
 
 impl DynamicMaterial {
+    /// Mark uniform `slot` as overridden on this instance (see
+    /// [`Self::uniform_overridden`]).
+    pub fn mark_uniform_overridden(&mut self, slot: usize) {
+        if self.uniform_overridden.len() <= slot {
+            self.uniform_overridden.resize(slot + 1, false);
+        }
+        self.uniform_overridden[slot] = true;
+    }
+
+    /// True when this instance overrides uniform `slot`.
+    pub fn is_uniform_overridden(&self, slot: usize) -> bool {
+        self.uniform_overridden.get(slot).copied().unwrap_or(false)
+    }
+
     /// Constructs a [`DynamicMaterial`] with default values pulled from
     /// the layout. `shader_id` is the id returned by
     /// `AwsmRenderer::register_material`. `alpha_mode` and
@@ -111,6 +131,7 @@ impl DynamicMaterial {
             alpha_mode,
             double_sided,
             values: defaults,
+            uniform_overridden: Vec::new(),
             textures: vec![None; layout.textures.len()],
             buffers: vec![None; layout.buffers.len()],
         }

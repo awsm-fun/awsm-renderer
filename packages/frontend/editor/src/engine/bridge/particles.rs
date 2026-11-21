@@ -34,6 +34,9 @@ struct EmitterRuntime {
     transforms_buf: Vec<Transform>,
     attrs_buf: Vec<InstanceAttr>,
     base_world_pos: Vec3,
+    /// The emitter's node (or an ancestor) is hidden: no sprites are drawn
+    /// and the simulation is paused. See [`set_hidden`].
+    hidden: bool,
 }
 
 thread_local! {
@@ -230,6 +233,7 @@ async fn build_runtime(
         transforms_buf: vec![dead.clone(); max],
         attrs_buf: vec![dead_attr; max],
         base_world_pos: parent_world_pos,
+        hidden: false,
     })
 }
 
@@ -259,12 +263,36 @@ pub fn teardown(renderer: &mut AwsmRenderer, node_id: NodeId) {
     }
 }
 
+/// Hide or show a node's emitter. An emitter is not a scene mesh the
+/// visibility walk knows about (its billboard mesh lives in this module), so
+/// hiding the node — or a group above it — has to be applied here: the
+/// billboard mesh is hidden and the simulation paused. On show it restarts
+/// from empty, so a one-shot burst plays again rather than resuming half-way.
+/// No-op for a node without an emitter runtime.
+pub fn set_hidden(renderer: &mut AwsmRenderer, node_id: NodeId, hidden: bool) {
+    RUNTIMES.with(|map| {
+        if let Some(rt) = map.borrow_mut().get_mut(&node_id) {
+            if rt.hidden == hidden {
+                return;
+            }
+            rt.hidden = hidden;
+            let _ = renderer.set_mesh_hidden(rt.mesh_key, hidden);
+            if !hidden {
+                rt.simulator.reset();
+            }
+        }
+    });
+}
+
 /// Advance every emitter one frame + push the live particles to its instanced
 /// mesh. Called from the render loop before `render`.
 pub fn tick_all(renderer: &mut AwsmRenderer) {
     let dt = renderer.frame_globals().delta_time;
     RUNTIMES.with(|map| {
         for runtime in map.borrow_mut().values_mut() {
+            if runtime.hidden {
+                continue;
+            }
             let spawn_origin = match runtime.emitter.space {
                 EmitterSpace::Local => runtime.base_world_pos,
                 EmitterSpace::World => renderer

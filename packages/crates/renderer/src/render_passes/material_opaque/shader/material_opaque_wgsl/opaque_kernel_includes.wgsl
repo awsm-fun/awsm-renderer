@@ -74,6 +74,13 @@
 // froxel_walk itself, so the `&& !inc.apply_lighting` guard avoids a double-include.
 {% include "shared_wgsl/lighting/froxel_walk.wgsl" %}
 /*************** END froxel_walk.wgsl ******************/
+/*************** START prep_shadow_read.wgsl (custom materials receive shadows) ******************/
+// The prep pass writes shadow visibility for every opaque pixel, whatever its
+// material; `prep_shadow_read` is how a kernel reads it. apply_lighting.wgsl
+// includes it for built-in shading — a custom material has no apply_lighting,
+// so it comes in here for `material_pixel_light_shadow` (below).
+{% include "shared_wgsl/lighting/prep_shadow_read.wgsl" %}
+/*************** END prep_shadow_read.wgsl ******************/
 {% endif %}
 
 {% if inc.apply_lighting %}
@@ -198,6 +205,10 @@ struct OpaqueShadingInput {
     uv_set_count: u32,              // number of UV sets present (out-of-range clamp)
     material_offset: u32,
     material: MaterialData,
+    // Non-zero when this mesh receives shadows (the node's receive flag AND the
+    // scene-wide receiver gate). `material_pixel_light_shadow` already applies
+    // it; exposed for a material that wants to branch on it.
+    receive_shadows: u32,
 };
 struct OpaqueShadingOutput {
     color: vec3<f32>,
@@ -299,6 +310,41 @@ fn material_pixel_light(input: OpaqueShadingInput, i: u32) -> Light {
     }
     let base = _material_froxel_base(input);
     return get_light(lights_storage[base + 1u + (i - n_dir)]);
+}
+
+// Shadow visibility for the i-th light of `material_pixel_light` — 1.0 = fully
+// lit, 0.0 = fully shadowed, soft in between. The SAME value built-in PBR
+// multiplies its direct light by (cascades, point/spot maps and contact shadows
+// included): it is read from the prep pass's per-pixel visibility buffer, so it
+// costs one texture load, not a shadow-map sample. Returns 1.0 for a light that
+// casts no shadow, for a mesh that does not receive shadows, and when the
+// renderer has no shadow prep pass. Recipe:
+//   for (var i = 0u; i < material_pixel_light_count(input); i = i + 1u) {
+//       let light = material_pixel_light(input, i);
+//       let s = light_sample(light, input.world_normal, input.world_position);
+//       let lit = material_pixel_light_shadow(input, i);
+//       // accumulate s.radiance * s.n_dot_l * brdf(...) * lit
+//   }
+fn material_pixel_light_shadow(input: OpaqueShadingInput, i: u32) -> f32 {
+{% if prep_present %}
+    if (input.receive_shadows == 0u) {
+        return 1.0;
+    }
+    if (material_pixel_light(input, i).shadow_index == SHADOW_INDEX_NONE) {
+        return 1.0;
+    }
+    // The buffer is indexed by "j-th SHADOWED light in the canonical walk":
+    // count the shadowed lights ahead of this one.
+    var slot: u32 = 0u;
+    for (var j = 0u; j < i; j = j + 1u) {
+        if (material_pixel_light(input, j).shadow_index != SHADOW_INDEX_NONE) {
+            slot = slot + 1u;
+        }
+    }
+    return prep_shadow_read(vec2<f32>(f32(input.coords.x), f32(input.coords.y)), slot);
+{% else %}
+    return 1.0;
+{% endif %}
 }
 {% endif %}{# inc.light_access (custom froxel-light accessors) #}
 

@@ -518,6 +518,15 @@ impl AwsmRenderer {
                 .then(|| self.materials.shader_id(mesh.material_key));
             let dynamic_shader =
                 dynamic_shader_id.and_then(|id| self.dynamic_materials.shader_info_for(id));
+            // A mesh can outlive its custom material's registration (the
+            // material was unregistered while the mesh awaits teardown).
+            // Without the registration there is no `MaterialData` struct to
+            // emit, and the shader would fail to compile ("unresolved type
+            // 'MaterialData'") — failing the whole batch, i.e. every other
+            // mesh's pipeline too. Leave that one mesh without a pipeline.
+            if dynamic_shader_id.is_some() && dynamic_shader.is_none() {
+                continue;
+            }
             let dynamic_vertex_shader =
                 dynamic_shader_id.and_then(|id| self.dynamic_materials.vertex_shader_info_for(id));
             requests.push(

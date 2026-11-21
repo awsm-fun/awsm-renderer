@@ -468,8 +468,13 @@ fn resolve_target(
                 );
                 return None;
             };
-            material_key_for_shader(r, shader_id)
-                .map(|material| AnimationTarget::Uniform { material, slot })
+            // Asset-wide: drives the material's shared value (every instance
+            // that does not override the slot), and needs no live mesh to
+            // resolve.
+            Some(AnimationTarget::SharedUniform {
+                shader: shader_id,
+                slot,
+            })
         }
         TrackTarget::Camera { node, param } => {
             // A Camera node's `camera_key` indexes the renderer cameras store
@@ -540,21 +545,6 @@ fn tex_prop(
         P::Scale => R::Scale,
         P::Rotation => R::Rotation,
     }
-}
-
-/// Find a live `MaterialKey` whose per-mesh `Material::Custom` was built from
-/// `shader_id`. Returns the first match (a material assigned to multiple meshes
-/// has one renderer key per mesh; a track drives one of them — see the
-/// resolution note). `None` until a mesh using the material is materialized.
-fn material_key_for_shader(
-    r: &awsm_renderer::AwsmRenderer,
-    shader_id: awsm_renderer_materials::MaterialShaderId,
-) -> Option<awsm_renderer::materials::MaterialKey> {
-    use awsm_renderer::materials::Material;
-    r.materials.iter().find_map(|(key, mat)| match mat {
-        Material::Custom(dm) if dm.shader_id == shader_id => Some(key),
-        _ => None,
-    })
 }
 
 fn builtin_param(p: BuiltinParamKind) -> BuiltinMaterialParam {

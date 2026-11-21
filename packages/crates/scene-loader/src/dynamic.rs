@@ -112,7 +112,35 @@ pub async fn register_custom_materials(
         } else {
             None
         };
-        let reg = registration_from_definition(&cm.id, &def, wgsl, alpha_wgsl);
+        // Optional 3rd window: the custom-vertex hook, present when the
+        // definition says so.
+        let vertex_wgsl = if def.has_vertex_wgsl {
+            match assets
+                .fetch(&format!("{folder}/material.vertex.wgsl"))
+                .await
+            {
+                Ok(b) => Some(String::from_utf8_lossy(&b).into_owned()),
+                Err(e) => {
+                    tracing::warn!(
+                        "custom material `{}` ({}): material.json declares a vertex hook but \
+                         {folder}/material.vertex.wgsl is missing ({e}) — loading without it",
+                        cm.name,
+                        cm.id
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let mut reg = registration_from_definition(&cm.id, &def, wgsl, alpha_wgsl);
+        reg.wgsl_vertex = vertex_wgsl.filter(|s| !s.trim().is_empty());
+        // The registry treats "same name, same hashes" as the same material
+        // and returns the existing registration. So the content hash must
+        // cover everything that changes the compiled result, not just the
+        // main body — else a re-load after an alpha-mode, sidedness, include
+        // or hook edit silently keeps the OLD material.
+        reg.wgsl_hash = registration_content_hash(&reg, &def);
         match renderer.register_material(reg) {
             Ok(shader_id) => {
                 out.insert(cm.id, shader_id);
@@ -183,11 +211,20 @@ pub async fn build_custom_material(
     };
 
     // Per-mesh uniform overrides (matched by name, type-checked).
+    let mut uniform_overridden = vec![false; uniforms.len()];
     for (i, (name, ty)) in uniforms.iter().enumerate() {
         if let Some(v) = inst.uniform_overrides.get(name) {
             let rv = uniform_value(v);
-            if rv.field_type() == *ty {
+            let given = rv.field_type();
+            if let Some(rv) = rv.coerced_to(*ty) {
                 values[i] = rv;
+                // Recorded so asset-wide uniform writes and tracks leave this
+                // node's value alone.
+                uniform_overridden[i] = true;
+            } else {
+                tracing::warn!(
+                    "scene-loader: per-node uniform override `{name}` has type {given:?} but the slot is {ty:?} — ignored"
+                );
             }
         }
     }
@@ -239,6 +276,7 @@ pub async fn build_custom_material(
         alpha_mode,
         double_sided,
         values,
+        uniform_overridden,
         textures,
         buffers,
     })))
@@ -333,9 +371,9 @@ fn registration_from_definition(
         // the masked visibility-raster variant so the player rebuilds the
         // cutout just like the editor.
         alpha_wgsl: alpha_wgsl.filter(|s| !s.trim().is_empty()),
-        // The player-side custom-vertex sidecar (a `material.vertex.wgsl`,
-        // parallel to `material.wgsl`) is wired once the editor export emits it
-        // (CV3). `None` until then → the material uses the shared fast pipeline.
+        // The custom-vertex hook comes from the `material.vertex.wgsl`
+        // sidecar; the caller sets it after fetching (see
+        // `register_custom_materials`). `None` → the shared fast pipeline.
         wgsl_vertex: None,
     }
 }
@@ -446,6 +484,22 @@ fn layout_hash(def: &MaterialDefinition) -> u64 {
     h.finish()
 }
 
+/// A hash over everything that changes what a registration compiles to.
+fn registration_content_hash(reg: &MaterialRegistration, def: &MaterialDefinition) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    reg.wgsl_fragment.hash(&mut h);
+    reg.alpha_wgsl.hash(&mut h);
+    reg.wgsl_vertex.hash(&mut h);
+    reg.double_sided.hash(&mut h);
+    format!("{:?}", reg.alpha_mode).hash(&mut h);
+    def.shader_includes.hash(&mut h);
+    def.fragment_inputs.hash(&mut h);
+    for u in &def.uniforms {
+        format!("{:?}", u.default).hash(&mut h);
+    }
+    h.finish()
+}
+
 fn hash_str(s: &str) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     s.hash(&mut h);
@@ -467,6 +521,7 @@ mod tests {
             buffers: vec![],
             shader_includes: vec![],
             fragment_inputs: vec![],
+            has_vertex_wgsl: false,
         }
     }
 

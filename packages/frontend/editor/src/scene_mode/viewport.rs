@@ -323,6 +323,8 @@ fn collect_scene_cameras() -> Vec<(NodeId, String)> {
     for root in controller().scene.nodes.lock_ref().iter() {
         walk(root, &mut out);
     }
+    // In a player preview the tree is empty; the cameras are the bundle's.
+    out.extend(crate::engine::player_preview::cameras());
     out
 }
 

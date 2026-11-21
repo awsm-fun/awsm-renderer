@@ -1201,8 +1201,17 @@ mod size_regression {
     // ~0.8 KB to BOTH variants vs a default-features local run, so always
     // re-measure with `--all-features` before blessing a new ceiling.
     // Measured 96.1 KB empty / 138.7 KB all.
-    const CEIL_EMPTY_MSAA4_MIPS: usize = 97_500;
-    const CEIL_ALL_MSAA4_MIPS: usize = 140_000;
+    // **MSAA sample de-duplication in `cs_shade`:** an edge pixel's samples
+    // that carry identical geometry texels (most edge pixels — neighbours of
+    // a silhouette and crease pixels are one triangle) are shaded once and
+    // reused, instead of up to four times. The loop + its small cache live in
+    // the edge kernel every bucket compiles, so both sizes move (~+3.3 KB).
+    // Custom materials also gained `receive_shadows` on `OpaqueShadingInput`
+    // and, under `light_access`, `material_pixel_light_shadow` plus the
+    // prep-shadow reader it needs (ALL only, ~+3.4 KB).
+    // Measured 99.5 KB empty / 145.4 KB all.
+    const CEIL_EMPTY_MSAA4_MIPS: usize = 101_000;
+    const CEIL_ALL_MSAA4_MIPS: usize = 147_000;
 
     #[test]
     fn custom_shader_sizes_within_ceiling() {

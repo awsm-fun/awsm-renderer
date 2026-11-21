@@ -426,3 +426,112 @@ mod tests {
         assert!(sim.is_done());
     }
 }
+
+/// Runs every particle emitter of a loaded scene: one [`Simulator`] per
+/// [`EmitterHandle`], ticked and pushed to its instanced mesh by
+/// [`Self::tick`]. The loader never simulates (it sets up, the game ticks),
+/// so a player that does not tick its emitters shows no particles at all —
+/// and nothing is logged, because nothing is wrong. This is the one-call way
+/// to do it:
+///
+/// ```no_run
+/// # use awsm_renderer_scene_loader::{LoadedScene, ParticleDriver};
+/// # use awsm_renderer::AwsmRenderer;
+/// # fn frame(renderer: &mut AwsmRenderer, loaded: &LoadedScene,
+/// #          particles: &mut ParticleDriver, dt_ms: f64) {
+/// // once, after load:  let mut particles = ParticleDriver::new(&loaded);
+/// // every frame, before `render`:
+/// particles.tick(renderer, (dt_ms / 1000.0) as f32);
+/// # }
+/// ```
+///
+/// A game that wants to fire bursts on events, or pause individual emitters,
+/// keeps its own [`Simulator`]s and calls [`drive_emitter`] directly instead.
+struct DrivenEmitter {
+    handle: EmitterHandle,
+    emitter: Emitter,
+    sim: Simulator,
+    /// Hidden on the previous tick — a hidden→shown edge restarts the sim.
+    was_hidden: bool,
+}
+
+#[derive(Default)]
+pub struct ParticleDriver {
+    emitters: Vec<DrivenEmitter>,
+}
+
+impl ParticleDriver {
+    /// One simulator per emitter node of the loaded static world.
+    pub fn new(loaded: &crate::LoadedScene) -> Self {
+        let mut handles: Vec<(&awsm_renderer_scene::NodeId, &EmitterHandle)> = loaded
+            .nodes
+            .iter()
+            .filter_map(|(id, h)| h.emitter.as_ref().map(|e| (id, e)))
+            .collect();
+        // Stable order, so each emitter keeps the same random stream across
+        // runs of the same scene.
+        handles.sort_by_key(|(id, _)| id.0);
+        Self::from_handles(handles.into_iter().map(|(_, h)| h.clone()))
+    }
+
+    /// A driver over an explicit set of emitter handles (prefab instances,
+    /// a subset of the scene).
+    pub fn from_handles(handles: impl IntoIterator<Item = EmitterHandle>) -> Self {
+        let emitters = handles
+            .into_iter()
+            .enumerate()
+            .map(|(i, handle)| {
+                let emitter = handle.to_emitter();
+                let sim = Simulator::new(0xED1700 ^ (i as u32).wrapping_mul(0x9E37_79B9));
+                DrivenEmitter {
+                    handle,
+                    emitter,
+                    sim,
+                    was_hidden: false,
+                }
+            })
+            .collect();
+        Self { emitters }
+    }
+
+    /// How many emitters this driver runs.
+    pub fn len(&self) -> usize {
+        self.emitters.len()
+    }
+
+    /// True when the scene has no emitters (ticking is then free).
+    pub fn is_empty(&self) -> bool {
+        self.emitters.is_empty()
+    }
+
+    /// Advance every emitter by `dt_seconds` and push the live particles to
+    /// the renderer. Call once per frame before `render`.
+    pub fn tick(&mut self, renderer: &mut AwsmRenderer, dt_seconds: f32) {
+        // A long stall (a backgrounded tab) must not spawn a second's worth
+        // of particles in one step.
+        let dt = dt_seconds.clamp(0.0, 0.1);
+        for e in &mut self.emitters {
+            // A hidden emitter (hidden at load, or by `set_node_visible`) is
+            // paused, and restarts from empty when shown — so a one-shot
+            // burst plays in full each time its effect is shown.
+            let hidden = renderer
+                .meshes
+                .get(e.handle.mesh)
+                .map(|m| m.hidden)
+                .unwrap_or(true);
+            if hidden {
+                e.was_hidden = true;
+                continue;
+            }
+            if e.was_hidden {
+                e.was_hidden = false;
+                e.sim.reset();
+            }
+            let origin = e.handle.spawn_origin(renderer);
+            e.sim.tick(dt, &e.emitter, origin);
+            if let Err(err) = drive_emitter(renderer, &e.handle, &e.sim) {
+                tracing::warn!("particles: drive_emitter failed: {err}");
+            }
+        }
+    }
+}

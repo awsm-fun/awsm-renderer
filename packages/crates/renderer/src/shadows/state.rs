@@ -192,6 +192,10 @@ pub struct Shadows {
     /// look up entries without going through a forwarder; nothing
     /// outside `shadows::*` should ever touch this directly.
     pub(super) params: SecondaryMap<LightKey, LightShadowParams>,
+    /// Shadow params of lights that are switched off
+    /// (`AwsmRenderer::set_light_enabled(key, false)`), kept so switching the
+    /// light back on restores its shadow exactly as authored.
+    pub(super) parked_params: SecondaryMap<LightKey, LightShadowParams>,
     /// O(1) cache of `cube_slots[idx] == Some(light_key)`. Each point
     /// light's slot is stable across frames (re-assigned only on
     /// cube-pool resize or first acquisition), so caching the index
@@ -1066,6 +1070,7 @@ impl Shadows {
             sampler_comparison,
             sampler_filterable,
             params: SecondaryMap::new(),
+            parked_params: SecondaryMap::new(),
             cube_slot_for_light: SecondaryMap::new(),
             records: SecondaryMap::new(),
             throttle: SecondaryMap::new(),
@@ -2941,6 +2946,7 @@ impl Shadows {
     /// lights set.
     pub(super) fn clear_all_lights(&mut self) {
         self.params.clear();
+        self.parked_params.clear();
         self.throttle.clear();
         self.records.clear();
         self.cube_slot_for_light.clear();

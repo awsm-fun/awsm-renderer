@@ -418,9 +418,18 @@ impl GltfMeshExt for AwsmRenderer {
                     .contains(&transform_key),
                 hud: ctx.data.hints.hud,
                 hidden: ctx.data.hints.hidden,
-                // Preserve the glTF-only single-sided thin-shell heuristic the bound
-                // material alone can't express (`should_force_single_sided_for_opaque_thin_shell`).
-                double_sided: Some(double_sided),
+                // With the glTF's own material, preserve the glTF-only
+                // single-sided thin-shell heuristic the material alone can't
+                // express (`should_force_single_sided_for_opaque_thin_shell`).
+                // With a caller-supplied material (`Single` — a player bundle's
+                // geometry-only glb, whose default material is single-sided)
+                // the glTF says nothing about sidedness: derive it from the
+                // bound material, or its double-sided flag is lost and back
+                // faces are culled.
+                double_sided: match ctx.material_source {
+                    GltfMaterialSource::Single(_) => None,
+                    _ => Some(double_sided),
+                },
             },
         )?;
 

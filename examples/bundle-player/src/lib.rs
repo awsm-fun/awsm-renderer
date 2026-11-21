@@ -121,7 +121,12 @@ async fn run() -> Result<()> {
     let cam_key = handles.camera;
     let cam_cfg = handles.camera_config.clone();
 
-    // ── Frame loop: animations → transforms → camera-from-node → render. ──
+    // The loader builds particle emitters; the host ticks them (as it does
+    // clips). Without this the scene shows no particles at all.
+    let mut particles = awsm_renderer_scene_loader::ParticleDriver::new(&loaded);
+
+    // ── Frame loop: animations → particles → transforms → camera-from-node →
+    //    render. ──
     let renderer = Rc::new(RefCell::new(renderer));
     let raf: RafSlot = Rc::new(RefCell::new(None));
     let raf_run = raf.clone();
@@ -133,6 +138,7 @@ async fn run() -> Result<()> {
         {
             let mut r = renderer.borrow_mut();
             let _ = r.update_animations(dt_ms);
+            particles.tick(&mut r, (dt_ms / 1000.0) as f32);
             // Transforms first: the camera view comes off the node's WORLD
             // matrix, which an animated/driven camera changes every frame.
             r.update_transforms();

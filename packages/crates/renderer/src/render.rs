@@ -314,6 +314,10 @@ impl AwsmRenderer {
             .pending_overflow_count
             .take();
         if let Some((edge_count, overflow_count)) = pending_edge_overflow {
+            // Kept for diagnostics: how many pixels the MSAA classify pass
+            // shaded per sample. This is the number that decides what MSAA
+            // costs in a given view.
+            self.last_msaa_edge_pixels = Some(edge_count);
             if overflow_count > 0 {
                 let current_budget = self
                     .material_edge_buffers
@@ -1703,30 +1707,70 @@ impl AwsmRenderer {
             }
         }
 
-        // Built-in line render pass — must run after the opaque->transparent
-        // blit (so depth + transparent target are populated) and before any
-        // `before_transparent_pass` hook so editor overlays can draw on top.
-        {
-            let _maybe_span_guard =
-                crate::profiling::cpu_scope(&self.logging, "Line RenderPass", true);
-            self.lines.render(&ctx)?;
-        }
-
-        if let Some(hook) = hooks.and_then(|h| h.before_transparent_pass.as_ref()) {
+        // Lines, then transparent meshes — after the opaque->transparent blit
+        // (so depth + transparent target are populated).
+        //
+        // Every render pass over the scene targets is a full round trip of
+        // those targets: under MSAA it loads the 4x colour and depth, stores
+        // them again and resolves colour to the composite. That is the bulk
+        // of what MSAA costs here, and it is paid per PASS, however little
+        // the pass draws. So:
+        //  - lines and transparent meshes share ONE pass (they used to be two)
+        //    unless a `before_transparent_pass` hook has to draw between them;
+        //  - a pass with nothing to draw is not begun — except that under
+        //    MSAA one pass must run, because its resolve is what fills the
+        //    composite;
+        //  - the last pass to touch the 4x colour does not store it back
+        //    (only its resolve is read afterwards).
+        let msaa_on = ctx.anti_aliasing.msaa_sample_count.is_some();
+        let before_hook = hooks.and_then(|h| h.before_transparent_pass.as_ref());
+        // Something still draws into the 4x colour after the world pass.
+        let color_read_later = hooks
+            .and_then(|h| h.after_transparent_pass.as_ref())
+            .is_some()
+            || !renderables.hud.is_empty();
+        let keep_color = !msaa_on || color_read_later;
+        let lines_drawable = self.lines.has_drawable();
+        if let Some(hook) = before_hook {
+            // Lines first, so the hook's overlays draw on top of them.
+            if lines_drawable {
+                let _maybe_span_guard =
+                    crate::profiling::cpu_scope(&self.logging, "Line RenderPass", true);
+                self.lines.render(&ctx)?;
+            }
             {
                 let _maybe_span_guard =
                     crate::profiling::cpu_scope(&self.logging, "BeforeTransparentPass Hook", true);
                 hook(&ctx)?;
             }
-        }
-
-        {
+            if msaa_on || !renderables.transparent.is_empty() {
+                let _maybe_span_guard = crate::profiling::cpu_scope(
+                    &self.logging,
+                    "Material Transparent RenderPass",
+                    true,
+                );
+                self.render_passes.material_transparent.render(
+                    &ctx,
+                    renderables.transparent,
+                    false,
+                    keep_color,
+                )?;
+            }
+        } else if msaa_on || lines_drawable || !renderables.transparent.is_empty() {
             let _maybe_span_guard =
                 crate::profiling::cpu_scope(&self.logging, "Material Transparent RenderPass", true);
-
-            self.render_passes
-                .material_transparent
-                .render(&ctx, renderables.transparent, false)?;
+            let render_pass = ctx.begin_world_transparent_pass_timed(
+                Some("Lines + Material Transparent Pass"),
+                Some("Material Transparent"),
+                keep_color,
+            )?;
+            self.lines.draw(&ctx, &render_pass)?;
+            self.render_passes.material_transparent.draw(
+                &ctx,
+                &render_pass,
+                renderables.transparent,
+            )?;
+            render_pass.end();
         }
 
         if let Some(hook) = hooks.and_then(|h| h.after_transparent_pass.as_ref()) {
@@ -1748,7 +1792,7 @@ impl AwsmRenderer {
 
             self.render_passes
                 .material_transparent
-                .render(&ctx, renderables.hud, true)?;
+                .render(&ctx, renderables.hud, true, true)?;
         }
 
         // if None, it's handled by MSAA resolve in transparent pass
@@ -2196,6 +2240,15 @@ impl AwsmRenderer {
                 .then(|| self.materials.shader_id(mesh.material_key));
             let dynamic_shader =
                 dynamic_shader_id.and_then(|id| self.dynamic_materials.shader_info_for(id));
+            // A mesh can outlive its custom material's registration (the
+            // material was unregistered while the mesh awaits teardown).
+            // Without the registration there is no `MaterialData` struct to
+            // emit, and the shader would fail to compile ("unresolved type
+            // 'MaterialData'") — failing the whole batch, i.e. every other
+            // mesh's pipeline too. Leave that one mesh without a pipeline.
+            if dynamic_shader_id.is_some() && dynamic_shader.is_none() {
+                continue;
+            }
             let dynamic_vertex_shader =
                 dynamic_shader_id.and_then(|id| self.dynamic_materials.vertex_shader_info_for(id));
             requests.push(TransparentMeshPipelineRequest {
@@ -2591,24 +2644,37 @@ impl<'a> RenderContext<'a> {
         &'a self,
         label: Option<&'a str>,
     ) -> Result<RenderPassEncoder> {
-        self.begin_world_transparent_pass_timed(label, None)
+        self.begin_world_transparent_pass_timed(label, None, true)
     }
 
     /// [`Self::begin_world_transparent_pass`] that also attaches a GPU
     /// timestamp pair named `timing` (when GPU timing is on) — the renderer's
     /// own transparent passes use this so `?gputime` and the frame span see them.
+    ///
+    /// `keep_color`: store the colour attachment for a later pass to load.
+    /// Under MSAA the attachment is the 4x target and every pass resolves it
+    /// to the composite; when nothing draws into it afterwards this frame,
+    /// pass `false` and the 4x samples are discarded after the resolve
+    /// instead of written back — a full-screen 4x store saved. Ignored
+    /// without MSAA (there the attachment IS the image a later blit reads).
     pub(crate) fn begin_world_transparent_pass_timed(
         &'a self,
         label: Option<&'a str>,
         timing: Option<&'static str>,
+        keep_color: bool,
     ) -> Result<RenderPassEncoder> {
+        let msaa_on = self.anti_aliasing.msaa_sample_count.is_some();
         let mut color_attachment = ColorAttachment::new(
             &self.render_texture_views.transparent,
             LoadOp::Load,
-            StoreOp::Store,
+            if msaa_on && !keep_color {
+                StoreOp::Discard
+            } else {
+                StoreOp::Store
+            },
         );
 
-        if self.anti_aliasing.msaa_sample_count.is_some() {
+        if msaa_on {
             color_attachment =
                 color_attachment.with_resolve_target(&self.render_texture_views.composite);
         }

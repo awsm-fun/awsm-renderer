@@ -35,6 +35,10 @@ pub struct TexturePool<ID> {
     arrays: IndexMap<TexturePoolArrayKey, TexturePoolArray<ID>>,
     id_to_array_key: HashMap<ID, TexturePoolArrayKey>,
     free_layers: HashMap<TexturePoolArrayKey, Vec<usize>>,
+    /// The array LIST changed without any array's pixels changing (an empty
+    /// trailing array was released), so dependents must rebuild their bind
+    /// groups on the next GPU write even though no array is dirty.
+    layout_dirty: bool,
 }
 
 /// Single texture array in the pool.
@@ -129,6 +133,7 @@ impl<ID: Eq + Hash + Clone> TexturePool<ID> {
             arrays: IndexMap::new(),
             id_to_array_key: HashMap::new(),
             free_layers: HashMap::new(),
+            layout_dirty: false,
         }
     }
 
@@ -195,12 +200,34 @@ impl<ID: Eq + Hash + Clone> TexturePool<ID> {
             .entry(array_key)
             .or_default()
             .push(layer_index);
+        self.release_empty_trailing_arrays();
         Some(TexturePoolEntryInfo {
             id,
             array_index,
             layer_index,
             color,
         })
+    }
+
+    /// Drop arrays at the END of the list whose every layer has been
+    /// removed. An array is one sampled-texture binding, and a device can
+    /// bind only so many — without this a texture of a new size that was
+    /// added and then removed (a rejected import, an experiment) held its
+    /// binding for the rest of the session, and a pool that once overflowed
+    /// the device budget could never get back under it. Only trailing arrays
+    /// can go: materials address arrays by index, so removing one from the
+    /// middle would renumber the ones after it.
+    fn release_empty_trailing_arrays(&mut self) {
+        while let Some((key, array)) = self.arrays.last() {
+            let free = self.free_layers.get(key).map(|v| v.len()).unwrap_or(0);
+            if free < array.images.len() {
+                break;
+            }
+            let key = *key;
+            self.arrays.pop();
+            self.free_layers.remove(&key);
+            self.layout_dirty = true;
+        }
     }
 
     /// Returns a texture array by index.
@@ -245,7 +272,7 @@ impl<ID: Eq + Hash + Clone> TexturePool<ID> {
             array.write_gpu(gpu).await?;
         }
 
-        Ok(any_dirty)
+        Ok(any_dirty | std::mem::take(&mut self.layout_dirty))
     }
 
     /// Compile, TOGETHER, every sRGB-conversion and mipmap pipeline the dirty

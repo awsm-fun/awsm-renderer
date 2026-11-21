@@ -41,12 +41,14 @@ impl MaterialTransparentRenderPass {
         Ok(())
     }
 
-    /// Executes the transparent material pass.
+    /// Executes the transparent material pass in a render pass of its own.
+    /// `keep_color` — see [`RenderContext::begin_world_transparent_pass_timed`].
     pub fn render(
         &self,
         ctx: &RenderContext,
         renderables: &[Renderable],
         is_hud: bool,
+        keep_color: bool,
     ) -> Result<()> {
         let render_pass = if is_hud {
             ctx.begin_hud_transparent_pass_timed(
@@ -57,9 +59,25 @@ impl MaterialTransparentRenderPass {
             ctx.begin_world_transparent_pass_timed(
                 Some("Material Transparent Pass"),
                 Some("Material Transparent"),
+                keep_color,
             )?
         };
+        self.draw(ctx, &render_pass, renderables)?;
+        render_pass.end();
+        Ok(())
+    }
 
+    /// Record the transparent draws into an already-open pass (the renderer
+    /// shares one world pass between lines and transparent meshes).
+    pub fn draw(
+        &self,
+        ctx: &RenderContext,
+        render_pass: &awsm_renderer_core::command::render_pass::RenderPassEncoder,
+        renderables: &[Renderable],
+    ) -> Result<()> {
+        if renderables.is_empty() {
+            return Ok(());
+        }
         let (main_bind_group, shadows_bind_group, texture_bind_group, mesh_material_bind_group) =
             self.bind_groups.get_bind_groups()?;
 
@@ -80,13 +98,11 @@ impl MaterialTransparentRenderPass {
 
                 renderable.push_material_transparent_pass_commands(
                     ctx,
-                    &render_pass,
+                    render_pass,
                     mesh_material_bind_group,
                 )?;
             }
         }
-
-        render_pass.end();
 
         Ok(())
     }

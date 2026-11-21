@@ -209,7 +209,11 @@ returning a low alpha does **not** remove the fragment (the pixel was
 already claimed at raster time). Cut-out fragments are removed EARLIER,
 in the masked visibility raster, via the alpha-only WGSL window
 (`set_custom_material_alpha_wgsl` — see "Alpha mode" below); by the time
-your fragment runs, every pixel it is asked to shade is a keeper. Skybox
+your fragment runs, every pixel it is asked to shade is a keeper. (Under MSAA
+a cut-out's edge pixel is kept when ANY of its samples passes the alpha test,
+and is shaded at the pixel centre — so the fragment can run where the centre
+itself would have failed. Keep the shaded colour sensible a little outside
+the cutout, e.g. do not multiply it by the same falloff the alpha uses.) Skybox
 / uncovered pixels (`triangle_index == U32_MAX`) are not your concern — a
 dedicated skybox pipeline (`skybox_primary.wgsl`) writes them in a
 separate pass.
@@ -388,12 +392,32 @@ let cell = extras_load_vec4_f32(base);
 
 ### `shared_wgsl/shadow/bind_groups.wgsl`
 
-Shadow-sampling helpers are bound on the opaque pass. The kernel
-already weaves them into PBR / Unlit / Toon's lighting calls; custom
-materials wanting shadow reception should call `apply_lighting(...)` or
-`apply_lighting_per_froxel(...)` from `lighting/apply_lighting.wgsl` and
-forward the `receive_shadows` mask from `input.material_offset`'s mesh
-meta.
+Shadow maps are bound on the opaque pass, and a prep pass turns them into a
+per-pixel **shadow-visibility buffer** for every opaque pixel, whatever its
+material. Built-in PBR / Toon read that buffer inside `apply_lighting*` —
+which is welded to the built-in material types and is **not** available to a
+custom material. A custom material receives shadows through the light walk
+instead:
+
+```wgsl
+// includes: ["light_access"]   fragment_inputs: ["normals", "lights"]
+var col = vec3<f32>(0.0);
+for (var i = 0u; i < material_pixel_light_count(input); i = i + 1u) {
+    let light = material_pixel_light(input, i);
+    let s = light_sample(light, input.world_normal, input.world_position);
+    let lit = material_pixel_light_shadow(input, i);   // 1 = lit … 0 = shadowed
+    col += my_brdf(...) * s.radiance * s.n_dot_l * lit;
+}
+```
+
+`material_pixel_light_shadow(input, i)` returns the visibility of the i-th
+light of that same walk — the value built-in PBR multiplies its direct light
+by (cascades, spot/point maps and contact shadows included). It is one
+texture load, not a shadow-map sample. It returns `1.0` for a light that casts
+no shadow and for a mesh whose node has `receive` shadows off;
+`input.receive_shadows` (non-zero = receives) is there if you want to branch
+on it yourself. Without the call a custom material casts shadows but shows
+none on itself.
 
 ---
 

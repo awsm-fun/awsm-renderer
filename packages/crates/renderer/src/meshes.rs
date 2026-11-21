@@ -211,9 +211,20 @@ impl AwsmRenderer {
         mesh_key: MeshKey,
         new_material_key: crate::materials::MaterialKey,
     ) -> crate::error::Result<()> {
+        // Culling is decided per mesh, so the mesh's sidedness follows the
+        // material it now renders with (a swap to a double-sided material
+        // used to keep culling back faces).
+        let new_double_sided = self
+            .materials
+            .get(new_material_key)
+            .map(crate::materials::Material::double_sided)
+            .ok();
         let mesh = self.meshes.get_mut(mesh_key)?;
         let old_material_key = mesh.material_key;
         mesh.material_key = new_material_key;
+        if let Some(double_sided) = new_double_sided {
+            mesh.double_sided = double_sided;
+        }
         self.meshes
             .refresh_meta_for_mesh_public(mesh_key, &self.materials, &self.transforms)?;
         // The spatial index mirrors the material's blend classification
@@ -458,6 +469,12 @@ impl AwsmRenderer {
             .then(|| self.materials.shader_id(mesh.material_key));
         let dynamic_shader =
             dynamic_shader_id.and_then(|id| self.dynamic_materials.shader_info_for(id));
+        // See the matching guard in `finalize_gpu_textures`: a mesh whose
+        // custom material is no longer registered gets no pipeline rather
+        // than a shader that cannot compile.
+        if dynamic_shader_id.is_some() && dynamic_shader.is_none() {
+            return Ok(());
+        }
         let dynamic_vertex_shader =
             dynamic_shader_id.and_then(|id| self.dynamic_materials.vertex_shader_info_for(id));
         self.render_passes

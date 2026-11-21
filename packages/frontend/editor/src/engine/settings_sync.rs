@@ -109,6 +109,7 @@ pub fn start() {
                         // deleted render preamble. Live (no begin_load).
                         if let Err(e) = r.commit_load(|_| {}).await {
                             tracing::warn!("commit_load after set_anti_aliasing: {e}");
+                            crate::engine::context::surface_commit_error(&e);
                         }
                     }
                 }
@@ -182,6 +183,7 @@ pub fn start() {
                         // reconcile through the one compile path.
                         if let Err(e) = r.commit_load(|_| {}).await {
                             tracing::warn!("commit_load after smaa toggle: {e}");
+                            crate::engine::context::surface_commit_error(&e);
                         }
                     }
                 }
@@ -234,6 +236,7 @@ pub fn start() {
                 r.set_shadows_config(cfg);
                 if let Err(e) = r.commit_load(|_| {}).await {
                     tracing::warn!("commit_load after shadows change: {e}");
+                    crate::engine::context::surface_commit_error(&e);
                 }
             })
             .await;

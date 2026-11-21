@@ -141,10 +141,29 @@ The renderer does not own a loop — you drive it. Each frame, in order:
 
 ```rust
 renderer.update_animations(dt_ms)?;       // advance animation clips (ms delta)
+particles.tick(&mut renderer, dt_seconds); // advance particle emitters (see below)
 renderer.set_camera(view, camera_params)?; // your camera (see §4)
 renderer.update_transforms();              // flush the transform graph
 renderer.render(None)?;                     // draw (Some(&RenderHooks) to customize)
 ```
+
+**Both tick calls are the host's job.** The loader loads clips and builds
+particle emitters; it never advances time. A host that skips
+`update_animations` shows a frozen scene, and one that skips the particle tick
+shows **no particles at all** — with nothing in the log, because nothing is
+wrong. For particles, build one driver after the load and tick it every frame:
+
+```rust
+let mut particles = awsm_renderer_scene_loader::ParticleDriver::new(&loaded);
+// each frame:
+particles.tick(&mut renderer, (dt_ms / 1000.0) as f32);
+```
+
+`ParticleDriver` runs every emitter of the loaded scene continuously. A game
+that fires bursts on events or pauses individual emitters keeps its own
+`awsm_renderer_particles::Simulator` per `NodeHandles::emitter` and calls
+`drive_emitter` instead. An emitter on a node that is hidden at load is not
+built.
 
 Drive it from `requestAnimationFrame`. With `gloo-render`, **keep the returned
 `AnimationFrame` handle alive** or the loop stops after one frame:
@@ -322,9 +341,12 @@ carry no external asset bytes.
 
 ## 6. Animation
 
-glTF clips (and our format's stored clips) **auto-play** once loaded. Drive them
+glTF clips (and our format's stored clips) **auto-play** once loaded — there is
+no per-clip or per-layer "play" flag in a bundle, and nothing to start. Drive them
 by calling `update_animations(dt_ms)` with the per-frame millisecond delta in
-your loop (§3). That's all skinned/morph/TRS animation needs — the reference
+your loop (§3). Every mixer layer contributes at its saved weight; a layer at
+weight 0 writes nothing, so a game can ship demo layers muted and raise
+`renderer.animations.mixer.layers[i].weight` to bring one in. That's all skinned/morph/TRS animation needs — the reference
 harness's Fox skins and animates with nothing more than this call.
 
 ---

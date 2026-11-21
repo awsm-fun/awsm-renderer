@@ -198,6 +198,14 @@ pub struct TransformWhereParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct LoadPlayerBundleParams {
+    /// Name (or id) of a Camera node in the scene to view the bundle through.
+    /// Omit to keep the currently active camera (or the free camera).
+    #[serde(default)]
+    pub camera: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ExportBundleParams {
     /// Bundle name (publish dir / manifest label).
     pub name: String,
@@ -2831,7 +2839,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Aim a node at a world-space target: computes the roll-free rotation that points the node's local -Z (the forward axis of lights and cameras) at `target`, converts it into the node's parent space, and applies it — translation and scale are untouched. Params: { node, target: [x,y,z], up?: [x,y,z] }. Replaces hand-computing quaternions for spot/camera aiming."
+        description = "Aim a node at a world-space target: computes the roll-free rotation that points the node's local -Z (the forward axis of lights and cameras) at `target`, converts it into the node's parent space, and applies it — translation and scale are untouched. Params: { node, target: [x,y,z], up?: [x,y,z] }. Replaces hand-computing quaternions for spot/camera aiming. Within 5° of straight along `up` (a top-down or straight-up aim) the roll is taken from the node's current orientation, so it is stable under small moves; to choose the roll of a plan camera explicitly pass an `up` that is not along the aim, e.g. up=[0,0,-1] for 'north is up' when looking straight down."
     )]
     async fn node_look_at(
         &self,
@@ -2853,14 +2861,33 @@ impl EditorMcp {
         }
         let dir = dir.normalize();
 
-        // Roll-free frame: -Z = dir; X ⊥ up-hint; fall back when the aim
-        // direction is (anti)parallel to the hint.
-        let mut up = Vec3::from_array(p.up.unwrap_or([0.0, 1.0, 0.0]));
-        if up.cross(dir).length_squared() < 1e-8 {
-            up = if dir.y.abs() > 0.99 { Vec3::Z } else { Vec3::Y };
-        }
+        // Roll-free frame: -Z = dir; X ⊥ up-hint.
+        //
+        // Near (anti)parallel to the hint the heading is decided by the tiny
+        // sideways part of the aim, so a camera a hair one side of straight
+        // down rolls 180° from one a hair the other side — and the old
+        // exact-parallel fallback (+Z) pointed the opposite way to its own
+        // near-parallel neighbours. Inside a 5° cone the roll therefore comes
+        // from the node's CURRENT orientation (its right axis, made
+        // perpendicular to the aim): re-aiming a top-down camera keeps its
+        // roll, and from the default orientation straight down lands on
+        // up = -Z, the limit of tilting down while facing -Z.
+        let up = Vec3::from_array(p.up.unwrap_or([0.0, 1.0, 0.0])).normalize_or_zero();
         let z = -dir;
-        let x = up.cross(z).normalize();
+        let near_parallel = up == Vec3::ZERO || up.dot(dir).abs() > 0.9962;
+        let x = if near_parallel {
+            let current_right = world_mat.x_axis.truncate().normalize_or_zero();
+            let projected = current_right - z * current_right.dot(z);
+            if projected.length_squared() > 1e-6 {
+                projected.normalize()
+            } else {
+                // The node's right axis is itself along the aim: any
+                // perpendicular will do, picked deterministically.
+                z.any_orthonormal_vector()
+            }
+        } else {
+            up.cross(z).normalize()
+        };
         let y = z.cross(x);
         let world_rot = Quat::from_mat3(&Mat3::from_cols(x, y, z));
 
@@ -3046,10 +3073,21 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Round-trip self-test: bake the CURRENT project to an in-memory player bundle (scene.toml + assets/), reset to empty, then reload it through populate_awsm_scene (the runtime/player path). DESTRUCTIVE: the viewport ends up showing the reload and the scene tree is left empty (reload your project to keep editing). Workflow: screenshot_scene (authored) → load_player_bundle → wait_render_settled → screenshot_scene (runtime reload), and compare — the load is SETTLE-VISIBLE (that single wait_render_settled observes the fully-reloaded scene; no polling). Geometry/built-in-materials/lights load today; textures, custom-WGSL, glb-mesh materials, cameras + clips are follow-ons."
+        description = "Player preview: bake the CURRENT project to an in-memory player bundle (scene.toml + assets/) and load it back through populate_awsm_scene — the runtime/player path — so the viewport shows what a shipped player would. While it is up the editor hosts the bundle like a player: clips PLAY (set_playing false pauses, set_playhead scrubs to an exact time), particle emitters are ticked, and the viewport can look through the bundle's own cameras — pass `camera` (a Camera node name or id), or call set_active_camera with the camera node's id (ids are the same in the bundle); a camera that was active before the load stays active. The scene tree is EMPTY during the preview (the scene lives only in the renderer), so do not edit or save; call exit_player_bundle to restore the project exactly as it was. Workflow: set_active_camera → screenshot_scene (authored) → load_player_bundle → wait_render_settled → screenshot_scene (player) → exit_player_bundle. The load is SETTLE-VISIBLE (one wait_render_settled observes the fully-loaded bundle). For a pixel-exact comparison of a moving scene, set_playing false + set_playhead on both sides, and set_frame_time to pin shader time."
     )]
-    async fn load_player_bundle(&self) -> Result<CallToolResult, McpError> {
-        self.dispatch(EditorCommand::LoadPlayerBundle).await
+    async fn load_player_bundle(
+        &self,
+        Parameters(p): Parameters<LoadPlayerBundleParams>,
+    ) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::LoadPlayerBundle { camera: p.camera })
+            .await
+    }
+
+    #[tool(
+        description = "Leave the player preview started by load_player_bundle: frees everything the bundle load created and restores the project exactly as it was before the preview (scene tree, assets, materials, clips; undo history is reset). SETTLE-VISIBLE: one wait_render_settled observes the restored scene. Errors if no preview is showing."
+    )]
+    async fn exit_player_bundle(&self) -> Result<CallToolResult, McpError> {
+        self.dispatch(EditorCommand::ExitPlayerBundle).await
     }
 
     #[tool(
@@ -3977,7 +4015,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Set the ShaderIncludes (generic helper modules) a custom material's WGSL needs (`keys`). Legal (Tier-A generic): math, camera, color_space, textures, vertex_color, light_access, shadows, skybox, extras, ibl. `ibl` exposes sample_ibl(albedo, normal, surface_to_camera, roughness, metallic) (+ sample_ibl_diffuse/_specular) — the SAME environment ambient + reflection first-party PBR gets, so a custom material matches the scene IBL instead of hand-faking a sky gradient (fixes black custom materials in IBL-only scenes; pair with normals + view_dir fragment_inputs). The PBR-internal modules (apply_lighting, brdf, material_color_calc) are NOT available to custom materials — they're welded to the built-in PbrMaterial types and are ignored on the custom path; write your own shading (you can build on light_access + ibl). Unknown keys are dropped. Per-key descriptions: get_material_contract (or the awsm://docs/material-contract-opaque resource)."
+        description = "Set the ShaderIncludes (generic helper modules) a custom material's WGSL needs (`keys`). Legal (Tier-A generic): math, camera, color_space, textures, vertex_color, light_access, shadows, skybox, extras, ibl. `ibl` exposes sample_ibl(albedo, normal, surface_to_camera, roughness, metallic) (+ sample_ibl_diffuse/_specular) — the SAME environment ambient + reflection first-party PBR gets, so a custom material matches the scene IBL instead of hand-faking a sky gradient (fixes black custom materials in IBL-only scenes; pair with normals + view_dir fragment_inputs). The PBR-internal modules (apply_lighting, brdf, material_color_calc) are NOT available to custom materials — they're welded to the built-in PbrMaterial types and are ignored on the custom path; write your own shading (you can build on light_access + ibl). To RECEIVE cast shadows, walk the lights with material_pixel_light_count/material_pixel_light (include light_access, fragment_inputs lights) and multiply each light by material_pixel_light_shadow(input, i) — the same per-pixel visibility built-in PBR uses (1 = lit, 0 = shadowed). Unknown keys are dropped. Per-key descriptions: get_material_contract (or the awsm://docs/material-contract-opaque resource)."
     )]
     async fn set_material_includes(
         &self,
@@ -5481,7 +5519,7 @@ impl EditorMcp {
     // ── generic escape hatch ────────────────────────────────────────────────
 
     #[tool(
-        description = "Dispatch a raw EditorCommand (escape hatch for any command without a dedicated tool: keyframes, tracks, mixer, environment…). `command` is internally tagged by \"cmd\". WARNING: unknown/misspelled fields in a command payload are SILENTLY IGNORED (serde skips them — a wrong field name becomes a partial or no-op edit that still returns ok), so check the exact shape with list_commands{cmd} first and ALWAYS verify the result via a query (get_node_details / get_post_process / run_query) after mutating."
+        description = "Dispatch a raw EditorCommand (escape hatch for any command without a dedicated tool: keyframes, tracks, mixer, environment…). `command` is internally tagged by \"cmd\". A field the command does not have (a misspelling, a field from another command) is REJECTED with its path — nothing is applied — so check the exact shape with list_commands{cmd}; a field spelled right but given a value that changes nothing still returns ok, so verify the result via a query (get_node_details / get_post_process / run_query) after mutating."
     )]
     async fn dispatch_command(
         &self,
@@ -5864,7 +5902,8 @@ impl ServerHandler for EditorMcp {
              transforms; two-bone IK; playback transport.\n\
              • Verification: screenshot_scene/material/texture, canvas_stats, get_mesh_stats/\
              cross_section/uv_layout/vertex_data, get_console_logs, verify_roundtrip, \
-             load_player_bundle self-test.\n\
+             load_player_bundle player preview (plays clips + particles, scene cameras; \
+             exit_player_bundle restores the project).\n\
              Discover the full raw vocabulary with list_commands; per-node config shapes with \
              get_kind_schema.\n\n\
              For custom WGSL materials read get_material_contract first and \
@@ -6274,7 +6313,7 @@ impl<T: schemars::JsonSchema> schemars::JsonSchema for Flexible<T> {
 /// an untyped (schema-less) object argument as a JSON *string* rather than a
 /// nested object; accept both by re-parsing a string first. (For typed args
 /// prefer [`Flexible<T>`], which also publishes the schema.)
-fn json_arg<T: serde::de::DeserializeOwned>(
+fn json_arg<T: serde::de::DeserializeOwned + serde::Serialize>(
     v: serde_json::Value,
     what: &str,
 ) -> Result<T, McpError> {
@@ -6290,8 +6329,12 @@ fn json_arg<T: serde::de::DeserializeOwned>(
             .map_err(|e| McpError::invalid_params(format!("bad {what}: {e}"), None))?,
         other => other,
     };
-    serde_json::from_value(v)
-        .map_err(|e| McpError::invalid_params(format!("bad {what}: {e}"), None))
+    let parsed: T = serde_json::from_value(v.clone())
+        .map_err(|e| McpError::invalid_params(format!("bad {what}: {e}"), None))?;
+    // serde drops fields the type does not have; a misspelled one must be an
+    // error here, not a silent partial edit.
+    crate::strict::check(&v, &parsed, what).map_err(|e| McpError::invalid_params(e, None))?;
+    Ok(parsed)
 }
 
 /// Parse a snake_case string into a scene-schema enum via serde (e.g. param /

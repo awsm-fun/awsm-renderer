@@ -365,7 +365,28 @@ pub enum EditorCommand {
     /// player/runtime path. Destructive (replaces the open project with the
     /// reloaded bundle); not undoable. Lets an agent screenshot-compare the
     /// editor's authored render against the runtime reload over MCP.
-    LoadPlayerBundle,
+    ///
+    /// While the bundle is up the editor hosts it as a player would: clips
+    /// play (`update_animations` every frame; `set_playing` pauses,
+    /// `set_playhead` scrubs), particle emitters are ticked, and the viewport
+    /// can look through the bundle's own cameras (`set_active_camera` with the
+    /// camera node's id — node ids are the same in the bundle — or `camera`
+    /// here). The project is kept aside and comes back with
+    /// [`EditorCommand::ExitPlayerBundle`].
+    LoadPlayerBundle {
+        /// Name (or id) of a Camera node to view the bundle through. Omitted:
+        /// the camera that was active before the load stays active, else the
+        /// free camera.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        camera: Option<String>,
+    },
+
+    /// Leave the player preview started by
+    /// [`EditorCommand::LoadPlayerBundle`]: free everything the bundle load
+    /// created and restore the project exactly as it was before the preview
+    /// (scene tree, assets, materials, clips, undo history reset). A no-op
+    /// error when no preview is up. Not undoable.
+    ExitPlayerBundle,
 
     /// Round-trip self-test on the EDITOR path: serialize the CURRENT project to
     /// an in-memory representation (`project.toml` + captured-mesh `.mesh.bin`),
@@ -558,9 +579,19 @@ pub enum EditorCommand {
 
     /// Delete every asset NOT reachable from the live scene (no node material /
     /// mesh / texture / buffer binding, environment KTX, or animation target
-    /// references it, directly or transitively). One atomic step: the inverse is a
-    /// `Batch` of `RestoreAsset` so a single undo brings them all back.
+    /// references it, directly or transitively) — and every Material-library
+    /// entry (built-in or custom WGSL) that no node variant and no animation
+    /// track refers to. One atomic step: the inverse is a `Batch` of
+    /// `RestoreAsset` / `RestoreMaterial` so a single undo brings them all back.
     PurgeUnusedAssets,
+
+    /// Re-insert a captured Material-library entry at its original id (the
+    /// inverse of a purge removing it). Boxed — the entry carries the full
+    /// WGSL + slot layout.
+    RestoreMaterial {
+        #[cfg_attr(feature = "schemars", schemars(with = "serde_json::Value"))]
+        material: Box<crate::project::StoredMaterial>,
+    },
 
     /// Select an asset in the Content Browser (routes the right rail to the Asset
     /// Inspector). **Transient** — `None` clears back to the node inspector.
@@ -1762,7 +1793,8 @@ impl EditorCommand {
             EditorCommand::SetVertexSelection { .. } => "Select vertices",
             EditorCommand::Batch(_) => "Batch edit",
             EditorCommand::NewProject => "New project",
-            EditorCommand::LoadPlayerBundle => "Load player bundle",
+            EditorCommand::LoadPlayerBundle { .. } => "Load player bundle",
+            EditorCommand::ExitPlayerBundle => "Exit player bundle",
             EditorCommand::ReloadProjectInMemory => "Reload project (round-trip)",
             EditorCommand::VerifyRoundtrip => "Verify save/load round-trip",
             EditorCommand::Insert { .. } | EditorCommand::InsertTree { .. } => "Insert node",
@@ -1801,6 +1833,7 @@ impl EditorCommand {
             EditorCommand::AddCustomMaterial { .. } => "New material",
             EditorCommand::AddBuiltinMaterial { .. } => "New material",
             EditorCommand::DeleteCustomMaterial { .. } => "Delete material",
+            EditorCommand::RestoreMaterial { .. } => "Restore material",
             EditorCommand::SetCurrentMaterial { .. } => "Select material",
             EditorCommand::RegisterMaterial { .. } => "Register material",
             EditorCommand::SetCustomMaterialWgsl { .. } => "Edit shader",

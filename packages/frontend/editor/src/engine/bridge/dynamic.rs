@@ -68,6 +68,14 @@ thread_local! {
         RefCell::new(std::collections::HashSet::new());
 }
 
+/// Lift the delete tombstone for `mat_id` — the material is back (an undo of
+/// its removal), so it must be allowed to register again.
+pub fn undelete(mat_id: AssetId) {
+    DELETED.with(|d| {
+        d.borrow_mut().remove(&mat_id);
+    });
+}
+
 /// Whether `mat_id` has been deleted (see [`DELETED`]). The debounced
 /// auto-register call site checks this to skip a register that lost the race
 /// with a delete.
@@ -133,6 +141,7 @@ pub async fn register(mat: &CustomMaterial) -> Result<MaterialShaderId, String> 
         .await
     {
         tracing::warn!("commit_load after register: {e}");
+        crate::engine::context::surface_commit_error(&e);
     }
     REGISTRY.with(|reg| reg.borrow_mut().insert(mat_id, shader_id));
     LAST_HASH.with(|h| h.borrow_mut().insert(mat_id, hashes));
@@ -148,9 +157,21 @@ pub async fn register(mat: &CustomMaterial) -> Result<MaterialShaderId, String> 
 /// round-trip teardown clears earlier).
 pub async fn unregister_all() {
     let ids: Vec<AssetId> = REGISTRY.with(|r| r.borrow().keys().copied().collect());
-    for id in ids {
-        unregister(id).await;
+    for id in &ids {
+        unregister(*id).await;
     }
+    // `unregister` tombstones the id (it is the DELETE path, and the tombstone
+    // stops a debounced register from resurrecting a deleted material). These
+    // materials were not deleted — the project is being swapped out and may
+    // come straight back (exit from a player preview, reloading the same
+    // project) — so lift the tombstones, or none of them could ever register
+    // again in this session.
+    DELETED.with(|d| {
+        let mut d = d.borrow_mut();
+        for id in &ids {
+            d.remove(id);
+        }
+    });
 }
 
 /// Drop a custom material's renderer registration when it's DELETED. Without
@@ -227,10 +248,18 @@ fn build_custom(renderer: &mut AwsmRenderer, inst: &MaterialInstance) -> Option<
             for (i, (name, ty)) in uniforms.iter().enumerate() {
                 if let Some(v) = inst.uniform_overrides.get(name) {
                     let rv = scene_to_renderer(v);
-                    if rv.field_type() == *ty {
+                    let given = rv.field_type();
+                    if let Some(rv) = rv.coerced_to(*ty) {
                         if let Some(slot) = dm.values.get_mut(i) {
                             *slot = rv;
                         }
+                        // Recorded so asset-wide edits and uniform tracks
+                        // leave this node's value alone.
+                        dm.mark_uniform_overridden(i);
+                    } else {
+                        tracing::warn!(
+                            "custom material: per-node override `{name}` has type {given:?} but the slot is {ty:?} — ignored"
+                        );
                     }
                 }
             }
@@ -352,32 +381,9 @@ pub fn set_uniform_live(r: &mut AwsmRenderer, asset: AssetId, name: &str, value_
         return;
     };
     let value = parse_uniform_value(ty, value_str);
-    // ALSO overwrite the registration's authored default: fresh materials
-    // (`build_custom_for_shader`) seed from `uniform_defaults`, so without
-    // this a mesh (re)materialized after the edit reverts to the
-    // register-time snapshot (the "assign after uniform edit → stale zero
-    // values" hole).
-    r.set_dynamic_material_uniform_default(shader_id, idx, value.clone());
-    // Collect first (immutable borrow) so the per-key `update_material` (mutable)
-    // doesn't overlap the iterator.
-    let keys: Vec<awsm_renderer::materials::MaterialKey> = r
-        .materials
-        .iter()
-        .filter_map(|(k, m)| match m {
-            Material::Custom(dm) if dm.shader_id == shader_id => Some(k),
-            _ => None,
-        })
-        .collect();
-    for k in keys {
-        let v = value.clone();
-        r.update_material(k, move |m| {
-            if let Material::Custom(dm) = m {
-                if let Some(slot) = dm.values.get_mut(idx) {
-                    *slot = v.clone();
-                }
-            }
-        });
-    }
+    // Every instance that does not override this slot follows the shared
+    // value; instances with a per-node override keep theirs.
+    r.set_dynamic_material_uniform_shared(shader_id, idx, value);
 }
 
 /// Convert the serializable schema `UniformValue` (stored on a
@@ -446,6 +452,7 @@ pub fn build_custom_for_shader(
         alpha_mode: reg.alpha_mode,
         double_sided: reg.double_sided,
         values,
+        uniform_overridden: Vec::new(),
         textures: vec![None; reg.layout.textures.len()],
         buffers: vec![None; reg.layout.buffers.len()],
     })))
@@ -654,6 +661,7 @@ pub fn material_definition(
             .collect(),
         shader_includes: mat.shader_includes.get_cloned(),
         fragment_inputs: mat.fragment_inputs.get_cloned(),
+        has_vertex_wgsl: !mat.vertex_wgsl.get_cloned().trim().is_empty(),
     }
 }
 

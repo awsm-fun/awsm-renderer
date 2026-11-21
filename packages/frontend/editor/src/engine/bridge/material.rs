@@ -245,9 +245,23 @@ pub(crate) async fn import_texture_url(
     // pipeline shaders (they bake in `texture_pool_arrays_len`), so route
     // through the one compile path — `commit_load` finalizes the pool AND
     // recompiles against it (the render preamble no longer does).
-    r.commit_load(crate::engine::activity::commit_phase_handler())
+    if let Err(e) = r
+        .commit_load(crate::engine::activity::commit_phase_handler())
         .await
-        .map_err(|e| format!("commit_load: {e}"))?;
+    {
+        // The import is being rejected, so take the texture back out: left in
+        // the pool it would keep the pool over the device's array budget and
+        // make every later commit fail the same way.
+        r.textures.remove(key);
+        if let Err(again) = r
+            .commit_load(crate::engine::activity::commit_phase_handler())
+            .await
+        {
+            tracing::warn!("commit_load after rolling back a rejected texture: {again}");
+        }
+        crate::engine::context::surface_commit_error(&e);
+        return Err(format!("commit_load: {e}"));
+    }
     register_texture_key_semantics(id, &color, key);
     Ok((bytes, mime))
 }

@@ -9,6 +9,7 @@
 mod http;
 mod link;
 mod mcp;
+mod strict;
 mod ws;
 
 use std::net::SocketAddr;

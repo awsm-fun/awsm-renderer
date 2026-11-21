@@ -1,8 +1,7 @@
 //! Pure `CameraConfig` → renderer `CameraParams` conversion — shared by the
 //! editor bridge and `populate_awsm_scene`, the same single-source pattern as
-//! materials/lights. Depth-of-field (`aperture`/`focus_distance`) isn't authored
-//! on the node config yet, so it defaults to the values `scene_camera_matrices`
-//! has always used.
+//! materials/lights. Depth-of-field (`aperture`/`focus_distance`) comes from the
+//! node config when authored there, else the renderer defaults.
 
 use awsm_renderer::camera::{CameraParams, CameraProjectionParams};
 use awsm_renderer_scene::{CameraConfig, CameraProjection};
@@ -21,7 +20,13 @@ pub fn camera_params_from_config(cfg: &CameraConfig) -> CameraParams {
         projection,
         near: cfg.near,
         far: cfg.far,
-        aperture: 5.6,
-        focus_distance: 10.0,
+        aperture: cfg
+            .aperture
+            .filter(|a| a.is_finite() && *a > 0.0)
+            .unwrap_or(CameraParams::DEFAULT_APERTURE),
+        focus_distance: cfg
+            .focus_distance
+            .filter(|d| d.is_finite() && *d > 0.0)
+            .unwrap_or(CameraParams::DEFAULT_FOCUS_DISTANCE),
     }
 }

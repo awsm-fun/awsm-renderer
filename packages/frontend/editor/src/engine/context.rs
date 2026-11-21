@@ -457,3 +457,34 @@ impl Drop for AppContextDropTracker {
         tracing::error!("AppContext dropped!");
     }
 }
+
+thread_local! {
+    static LAST_SURFACED_COMMIT_ERROR: std::cell::RefCell<String> =
+        const { std::cell::RefCell::new(String::new()) };
+}
+
+/// Show the user a `commit_load` failure they can act on. Most commit errors
+/// are transient and only logged, but a full texture pool is not: every later
+/// commit fails the same way, new textures never appear, and the only signal
+/// used to be a line in the browser console. Shown once per distinct message.
+pub fn surface_commit_error(err: &impl std::fmt::Display) {
+    let msg = err.to_string();
+    if !msg.contains("texture pool too many") {
+        return;
+    }
+    let fresh = LAST_SURFACED_COMMIT_ERROR.with(|last| {
+        let mut last = last.borrow_mut();
+        if *last == msg {
+            false
+        } else {
+            *last = msg.clone();
+            true
+        }
+    });
+    if fresh {
+        awsm_renderer_web_shared::prelude::Toast::error(format!(
+            "{msg} The newest textures are not shown until some are removed (delete the \
+             texture or resize it to a size already in use, then reload the project)."
+        ));
+    }
+}

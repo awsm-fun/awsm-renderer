@@ -55,6 +55,17 @@ pub struct CameraConfig {
     /// each frame from a target / curve.
     #[serde(default = "CameraBehavior::default_static")]
     pub behavior: CameraBehavior,
+    /// Depth-of-field aperture as an f-stop: smaller = shallower focus, more
+    /// blur. `None` = the renderer default (f/5.6). Only visible when the
+    /// scene's post-process has depth of field on. A `camera` animation
+    /// track on `aperture` overrides this while it plays.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aperture: Option<f32>,
+    /// Distance from the camera to the plane in perfect focus, in metres.
+    /// `None` = the renderer default (10 m). A `camera` animation track on
+    /// `focus_distance` overrides this while it plays.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focus_distance: Option<f32>,
 }
 
 /// Per-frame camera-transform driver.
@@ -111,6 +122,8 @@ impl CameraConfig {
             near: 0.1,
             far: 200.0,
             behavior: CameraBehavior::Static,
+            aperture: None,
+            focus_distance: None,
         }
     }
 
@@ -120,6 +133,8 @@ impl CameraConfig {
             near: 0.1,
             far: 200.0,
             behavior: CameraBehavior::Static,
+            aperture: None,
+            focus_distance: None,
         }
     }
 }

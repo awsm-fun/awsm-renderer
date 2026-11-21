@@ -130,7 +130,67 @@ impl AwsmRenderer {
         Ok(png)
     }
 
+    /// The texture pool's arrays next to the device budget for them — the
+    /// answer to "how close is this scene to the texture-array limit?".
+    /// Every distinct (width, height, format, compressed mip count) group is
+    /// one array, and each array is one sampled-texture binding.
+    pub fn texture_pool_summary(&self) -> TexturePoolSummary {
+        use crate::render_passes::shared::material::bind_group::{
+            pool_array_budget, pool_binding_slots, POOL_RESERVED_SAMPLED_TEXTURES,
+        };
+        let device_limit = self
+            .gpu
+            .device
+            .limits()
+            .max_sampled_textures_per_shader_stage();
+        let budget = pool_array_budget(device_limit);
+        let mut arrays = Vec::new();
+        let len = self.textures.pool.arrays_len();
+        for i in 0..len {
+            if let Some(a) = self.textures.pool.array_by_index(i) {
+                arrays.push(TexturePoolArraySummary {
+                    width: a.width,
+                    height: a.height,
+                    format: format!("{:?}", a.format),
+                    layers: a.images.len(),
+                });
+            }
+        }
+        TexturePoolSummary {
+            arrays,
+            array_budget: budget,
+            bound_slots: pool_binding_slots(len, budget),
+            reserved_fixed_bindings: POOL_RESERVED_SAMPLED_TEXTURES,
+            device_max_sampled_textures_per_shader_stage: device_limit,
+        }
+    }
+
     pub(crate) async fn finalize_gpu_textures(&mut self) -> std::result::Result<(), AwsmError> {
+        // Refuse a pool the device cannot bind BEFORE any GPU state is
+        // rebuilt: failing here keeps the previous bind groups and pipelines
+        // valid (the scene keeps rendering, minus the new textures) and gives
+        // the caller one clear error, where failing later left a half-rebuilt
+        // layout and a black frame.
+        {
+            use crate::render_passes::shared::material::bind_group::pool_array_budget;
+            let device_limit = self
+                .gpu
+                .device
+                .limits()
+                .max_sampled_textures_per_shader_stage();
+            let budget = pool_array_budget(device_limit);
+            let total = self.textures.pool.arrays_len();
+            if total > budget {
+                return Err(
+                    awsm_renderer_core::error::AwsmCoreError::TexturePoolTooManyArrays {
+                        total_arrays: total as u32,
+                        max_arrays: budget as u32,
+                        device_limit,
+                    }
+                    .into(),
+                );
+            }
+        }
         // Take the sampler-pool dirty bit *before* the pool write —
         // both bits feed the same rebuild gate below. Without this OR,
         // `ensure_sampler_in_pool` (cache-hit texture bound to a
@@ -318,6 +378,15 @@ impl AwsmRenderer {
                 .then(|| self.materials.shader_id(mesh.material_key));
             let dynamic_shader =
                 dynamic_shader_id.and_then(|id| self.dynamic_materials.shader_info_for(id));
+            // A mesh can outlive its custom material's registration (the
+            // material was unregistered while the mesh awaits teardown).
+            // Without the registration there is no `MaterialData` struct to
+            // emit, and the shader would fail to compile ("unresolved type
+            // 'MaterialData'") — failing the whole batch, i.e. every other
+            // mesh's pipeline too. Leave that one mesh without a pipeline.
+            if dynamic_shader_id.is_some() && dynamic_shader.is_none() {
+                continue;
+            }
             let dynamic_vertex_shader =
                 dynamic_shader_id.and_then(|id| self.dynamic_materials.vertex_shader_info_for(id));
             transparent_requests.push(TransparentMeshPipelineRequest {
@@ -947,14 +1016,22 @@ impl AwsmRenderer {
         // only needed when the tier of (arrays, samplers) actually crosses a
         // boundary since the last finalize. Within a tier, growth is absorbed
         // by the placeholder-padded bind groups rebuilt above.
-        let tier_now = (
-            crate::render_passes::shared::material::bind_group::pool_binding_tier(
-                self.textures.pool.arrays_len(),
-            ),
-            crate::render_passes::shared::material::bind_group::pool_binding_tier(
-                self.textures.pool_sampler_set.len(),
-            ),
-        );
+        let tier_now = {
+            use crate::render_passes::shared::material::bind_group::{
+                pool_array_budget, pool_binding_slots, pool_sampler_budget,
+            };
+            let limits = self.gpu.device.limits();
+            (
+                pool_binding_slots(
+                    self.textures.pool.arrays_len(),
+                    pool_array_budget(limits.max_sampled_textures_per_shader_stage()),
+                ),
+                pool_binding_slots(
+                    self.textures.pool_sampler_set.len(),
+                    pool_sampler_budget(limits.max_samplers_per_shader_stage()),
+                ),
+            )
+        };
         if self.last_pool_tier != Some(tier_now) {
             self.last_ensured_bucket_layout = None;
             self.materials.mark_variants_dirty();
@@ -1228,6 +1305,29 @@ impl TextureTransform {
 
         bytes
     }
+}
+
+/// One texture-pool array, for [`AwsmRenderer::texture_pool_summary`].
+#[derive(Clone, Debug)]
+pub struct TexturePoolArraySummary {
+    pub width: u32,
+    pub height: u32,
+    pub format: String,
+    pub layers: usize,
+}
+
+/// The texture pool's arrays and the device budget they count against.
+#[derive(Clone, Debug)]
+pub struct TexturePoolSummary {
+    pub arrays: Vec<TexturePoolArraySummary>,
+    /// How many arrays this device can bind (its sampled-texture limit minus
+    /// the renderer's fixed bindings).
+    pub array_budget: usize,
+    /// Binding slots currently declared (arrays padded to a tier, clamped to
+    /// the budget).
+    pub bound_slots: usize,
+    pub reserved_fixed_bindings: usize,
+    pub device_max_sampled_textures_per_shader_stage: u32,
 }
 
 impl Textures {
