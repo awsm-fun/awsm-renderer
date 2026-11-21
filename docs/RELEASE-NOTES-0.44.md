@@ -1,5 +1,18 @@
 # Release notes — 0.44
 
+## 0.44.1
+
+- **Lights lost below a line after a canvas resize.** The light-culling
+  tile-lights buffer was sized for the live tile grid while the froxel
+  buffers keep their largest size; after shrink → more punctual lights →
+  grow, the shaders indexed past its end and every tile row beyond it got no
+  punctual lights (a hard dark band across the frame, until reload). It is now
+  sized for the allocated grid. Present since 0.43.
+- **Editor player preview: pause shows the playhead.** Pausing kept the time
+  the clips had reached instead of the playhead position.
+
+## 0.44.0
+
 0.44 is a round of fixes found by building one large scene (≈380 meshes, 190k
 triangles, 14 particle emitters, custom WGSL materials, a clip mixer) in the
 editor and shipping it as a player bundle. Most of what follows made the

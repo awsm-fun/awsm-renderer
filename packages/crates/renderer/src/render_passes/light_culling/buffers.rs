@@ -403,10 +403,12 @@ impl LightCullingBuffers {
         // indexed past its end after that grow (`tile_y * tiles_x + tile_x`
         // with the new, wider `tiles_x`): every tile row beyond it read zero
         // lights, a hard dark band across the frame until reload.
-        let allocated_tiles = self.froxel_count / self.slice_count.max(1);
-        let tile_count = allocated_tiles
-            .max(self.tiles_x().saturating_mul(self.tiles_y()))
-            .max(1);
+        let tile_count = tile_lights_tile_count(
+            self.froxel_count,
+            self.slice_count,
+            self.tiles_x(),
+            self.tiles_y(),
+        );
         let entries = tile_count
             .saturating_mul(new_capacity.saturating_add(1))
             .max(1);
@@ -497,5 +499,48 @@ impl LightCullingBuffers {
             None,
             None,
         )
+    }
+}
+
+/// Tiles the tile-lights buffer must cover: the allocated (high-watermark)
+/// froxel grid's tile count, or the live grid's if that is larger. See
+/// [`LightCullingBuffers::ensure_tile_light_capacity`].
+fn tile_lights_tile_count(froxel_count: u32, slice_count: u32, tiles_x: u32, tiles_y: u32) -> u32 {
+    (froxel_count / slice_count.max(1))
+        .max(tiles_x.saturating_mul(tiles_y))
+        .max(1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tiles(px: u32) -> u32 {
+        px.div_ceil(TILE_PIXEL_SIZE)
+    }
+
+    /// Regression: 1172x655 allocated, shrunk to 672x668, tile buffer regrown
+    /// for more lights, then grown back to 1172x655 without a froxel
+    /// reallocation. The tile buffer must still cover every tile the shaders
+    /// index at the wide grid (`tile_y * tiles_x + tile_x`).
+    #[test]
+    fn tile_lights_cover_allocated_grid_after_shrink() {
+        let slices = DEFAULT_SLICE_COUNT;
+        let (wide_x, wide_y) = (tiles(1172), tiles(655));
+        let froxel_count = wide_x * wide_y * slices;
+        let (narrow_x, narrow_y) = (tiles(672), tiles(668));
+        assert!(narrow_x * narrow_y < wide_x * wide_y);
+
+        // Regrown while the viewport is narrow...
+        let count = tile_lights_tile_count(froxel_count, slices, narrow_x, narrow_y);
+        // ...must still hold the last tile of the wide grid.
+        let last_wide_tile = (wide_y - 1) * wide_x + (wide_x - 1);
+        assert!(count > last_wide_tile, "{count} <= {last_wide_tile}");
+    }
+
+    #[test]
+    fn tile_lights_cover_live_grid() {
+        assert_eq!(tile_lights_tile_count(0, 0, 0, 0), 1);
+        assert_eq!(tile_lights_tile_count(10 * 24, 24, 5, 4), 20);
     }
 }
