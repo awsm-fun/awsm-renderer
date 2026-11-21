@@ -18,6 +18,12 @@ pub fn start() {
 }
 
 thread_local! {
+    /// Player preview: whether the clips were playing on the previous frame
+    /// (see the pause edge in `render_one_frame`).
+    static PREVIEW_WAS_PLAYING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+thread_local! {
     /// The previous rAF timestamp (ms), for computing the per-frame delta the
     /// animation transport advances by while playing.
     static LAST_TS: std::cell::Cell<Option<f64>> = const { std::cell::Cell::new(None) };
@@ -349,7 +355,12 @@ fn render_one_frame(dt_ms: f64) {
             let playhead = controller().playhead.get();
             let key = playhead.to_bits();
             if super::player_preview::is_active() {
-                if !playing && LAST_PIN.with(|c| c.get()) != Some(key) {
+                // While playing, `update_animations` advances the clips but not
+                // the controller playhead, so on pause the playhead can still
+                // read the value it was last pinned at: pin on the
+                // playing -> paused edge too, not only when the playhead moves.
+                let just_paused = PREVIEW_WAS_PLAYING.with(|c| c.replace(playing)) && !playing;
+                if !playing && (just_paused || LAST_PIN.with(|c| c.get()) != Some(key)) {
                     super::bridge::animation_sync::pin_pose(renderer, playhead);
                 }
                 LAST_PIN.with(|c| c.set(Some(key)));
