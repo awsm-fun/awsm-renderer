@@ -106,10 +106,12 @@ impl From<VertexState<'_>> for web_sys::GpuVertexState {
         }
 
         if !state.buffer_layouts.is_empty() {
-            let buffers: Vec<js_sys::JsOption<web_sys::GpuVertexBufferLayout>> = state
+            let buffers: Vec<js_sys::JsNullable<web_sys::GpuVertexBufferLayout>> = state
                 .buffer_layouts
                 .into_iter()
-                .map(|buffer| js_sys::JsOption::wrap(web_sys::GpuVertexBufferLayout::from(buffer)))
+                .map(|buffer| {
+                    js_sys::JsNullable::wrap(web_sys::GpuVertexBufferLayout::from(buffer))
+                })
                 .collect();
             state_js.set_buffers(&buffers);
         }

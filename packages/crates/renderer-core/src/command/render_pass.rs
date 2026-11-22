@@ -248,13 +248,15 @@ pub struct RenderTimestampWrites<'a> {
 
 impl<'a, 'b> From<RenderPassDescriptor<'a, 'b>> for web_sys::GpuRenderPassDescriptor {
     fn from(pass: RenderPassDescriptor) -> web_sys::GpuRenderPassDescriptor {
-        let color_attachments: Vec<js_sys::JsOption<web_sys::GpuRenderPassColorAttachment>> = pass
-            .color_attachments
-            .into_iter()
-            .map(|attachment| {
-                js_sys::JsOption::wrap(web_sys::GpuRenderPassColorAttachment::from(attachment))
-            })
-            .collect();
+        let color_attachments: Vec<js_sys::JsNullable<web_sys::GpuRenderPassColorAttachment>> =
+            pass.color_attachments
+                .into_iter()
+                .map(|attachment| {
+                    js_sys::JsNullable::wrap(web_sys::GpuRenderPassColorAttachment::from(
+                        attachment,
+                    ))
+                })
+                .collect();
 
         let pass_js = web_sys::GpuRenderPassDescriptor::new(&color_attachments);
 

@@ -1,5 +1,14 @@
 # Release notes — 0.44
 
+## 0.44.2
+
+- **Builds against current web-sys again.** web-sys 0.3.104 changed four
+  unstable WebGPU signatures from `JsOption` to `JsNullable`. 0.44.1 and earlier
+  accept that version through their caret requirements but do not compile with
+  it, so a new project without a lock file failed to build. The minimums are now
+  wasm-bindgen 0.2.130 and web-sys / js-sys 0.3.107, and consumers no longer
+  need `=` pins. A wasm-bindgen CLI must match your `Cargo.lock`.
+
 ## 0.44.1
 
 - **Lights lost below a line after a canvas resize.** The light-culling

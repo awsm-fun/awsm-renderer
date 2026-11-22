@@ -215,10 +215,10 @@ impl<'a> FragmentState<'a> {
 
 impl From<FragmentState<'_>> for web_sys::GpuFragmentState {
     fn from(state: FragmentState) -> web_sys::GpuFragmentState {
-        let targets: Vec<js_sys::JsOption<web_sys::GpuColorTargetState>> = state
+        let targets: Vec<js_sys::JsNullable<web_sys::GpuColorTargetState>> = state
             .targets
             .into_iter()
-            .map(|target| js_sys::JsOption::wrap(web_sys::GpuColorTargetState::from(target)))
+            .map(|target| js_sys::JsNullable::wrap(web_sys::GpuColorTargetState::from(target)))
             .collect();
 
         let state_js = web_sys::GpuFragmentState::new(state.module, &targets);

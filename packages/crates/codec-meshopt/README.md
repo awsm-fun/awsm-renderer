@@ -20,8 +20,8 @@ Emscripten.
 ## Running the tests on wasm
 
 Tests are dual-attribute (`#[test]` native / `#[wasm_bindgen_test]` on wasm).
-The runner version must match the workspace `wasm-bindgen` (see the pinned
-version comment in the root `Cargo.toml`) — grab the matching release tarball
+The runner version must match the `wasm-bindgen` version in the workspace
+`Cargo.lock` — grab the matching release tarball
 (`wasm-bindgen-<ver>-aarch64-apple-darwin.tar.gz`) or
 `cargo install wasm-bindgen-cli --version <ver>`:
 

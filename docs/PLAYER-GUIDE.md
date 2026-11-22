@@ -26,9 +26,11 @@ A player typically pulls four crates:
 | `awsm-renderer-scene` | our scene/bundle types (`Scene`, nodes, assets) + `scene_from_toml` |
 | `awsm-renderer-scene-loader` | load a `Scene` into the renderer (`populate_awsm_scene`) |
 
-If you depend on them by path (developing against a checkout), pin the **shared**
-types you touch directly — `glam` and `wasm-bindgen` — to the *same* versions the
-renderer workspace uses, or the types won't line up across the crate boundary:
+Keep the **shared** types you touch directly — `glam` and `wasm-bindgen` —
+semver-compatible with the renderer workspace, or the types won't line up across
+the crate boundary. Ordinary (caret) requirements are enough: no `=` pins. Commit
+`Cargo.lock`; a `wasm-bindgen` CLI must be the exact version recorded there
+(trunk fetches that one by itself).
 
 ```toml
 [dependencies]
@@ -37,9 +39,9 @@ awsm-renderer-gltf  = { path = "../renderer/packages/crates/renderer-gltf" }
 awsm-renderer-scene          = { path = "../renderer/packages/crates/scene" }
 awsm-renderer-scene-loader   = { path = "../renderer/packages/crates/scene-loader" }
 
-wasm-bindgen         = "0.2.118"   # match the workspace
-wasm-bindgen-futures = "0.4.68"
-js-sys               = "0.3.95"
+wasm-bindgen         = "0.2.130"
+wasm-bindgen-futures = "0.4.80"
+js-sys               = "0.3.107"
 glam                 = "0.32.1"    # match the workspace
 anyhow               = "1"
 tracing              = "0.1"
@@ -47,7 +49,7 @@ gloo-render          = "0.2.0"     # requestAnimationFrame wrapper
 gloo-net             = { version = "0.6.0", features = ["http"] }  # fetch assets
 
 [dependencies.web-sys]
-version  = "0.3.95"
+version  = "0.3.107"
 features = ["Window", "Document", "Element", "HtmlElement",
             "HtmlCanvasElement", "Navigator", "Gpu", "console"]
 ```
@@ -425,8 +427,11 @@ Notes:
   the load if your UI mirrors it.
 - **`assets` for `populate_awsm_scene` is pre-fetched bytes**, not a fetcher —
   load every referenced asset path into the map before calling.
-- **Pin `glam` and `wasm-bindgen`** to the workspace versions, or types won't
-  unify across the crate boundary.
+- **Keep `glam` on the workspace's 0.x line**, or types won't unify across the
+  crate boundary. `wasm-bindgen` needs no pin, only a CLI matching `Cargo.lock`.
+- **WebGPU in web-sys is unstable API** and can change in a patch release. If a
+  `cargo update` breaks `awsm-renderer-core` inside web-sys types, that is what
+  happened: restore the lock and report it, so the renderer can be ported.
 - **Set both `.cargo/config.toml` cfgs** (`web_sys_unstable_apis`,
   `getrandom_backend="wasm_js"`) or the build won't compile/link.
 
