@@ -58,6 +58,9 @@ vars:
   # Cloudflare Pages deploy targets. Custom domains (scene.awsm.fun,
   # model-tests.awsm.fun) are attached to these projects in the Cloudflare
   # dashboard; the deploy tasks only push builds to the projects.
+  # These are project names, not crate names: renaming a crate must not touch
+  # them (a wrong name silently creates a new project that no domain points at).
+  # They match the "name" in cloudflare/*/wrangler.jsonc.
   CLOUDFLARE_PAGES_PROJECT_EDITOR: "awsm-scene-editor"
-  CLOUDFLARE_PAGES_PROJECT_MODEL_TESTS: "awsm-renderer-model-tests"
+  CLOUDFLARE_PAGES_PROJECT_MODEL_TESTS: "awsm-model-tests"
   CLOUDFLARE_PAGES_BRANCH: "main"
