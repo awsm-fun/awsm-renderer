@@ -1,0 +1,6 @@
+# The harness's own image math (reference accumulation, metrics) runs per
+# pixel per frame; optimise it fully even in dev builds. Only this crate: the
+# renderer keeps the workspace dev profile, so the pixels it produces are the
+# same ones every other dev frontend renders.
+[profile.dev.package.awsm-renderer-taa-tests-example]
+opt-level = 3

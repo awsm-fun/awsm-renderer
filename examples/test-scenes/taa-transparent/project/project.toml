@@ -1,0 +1,1104 @@
+name = "untitled.awsm"
+custom_materials = []
+custom_animations = []
+editor_animations = []
+
+[environment]
+skybox = "built_in_default"
+specular = "built_in_default"
+irradiance = "built_in_default"
+
+[environment.probe]
+enabled = false
+center = [
+    0.0,
+    0.0,
+    0.0,
+]
+half_extents = [
+    10.0,
+    10.0,
+    10.0,
+]
+
+[environment.stream]
+skybox = []
+specular = []
+irradiance = []
+
+[environment.rotation]
+skybox = [
+    0.0,
+    0.0,
+    0.0,
+]
+specular = [
+    0.0,
+    0.0,
+    0.0,
+]
+irradiance = [
+    0.0,
+    0.0,
+    0.0,
+]
+
+[shadows]
+sscs_enabled = false
+sscs_step_count = 16
+sscs_step_world = 0.03999999910593033
+sscs_thickness = 0.05000000074505806
+sscs_directional_darkening = 0.3499999940395355
+sscs_punctual_darkening = 0.8999999761581421
+atlas_size = 4096
+evsm_atlas_size = 2048
+evsm_exponent = 10.0
+evsm_blur_radius = 6
+max_point_shadows = 8
+point_shadow_resolution = 1024
+debug_cascade_colors = false
+
+[post_process]
+tonemapping = "khronos_neutral_pbr"
+bloom = false
+dof = false
+exposure = 0.0
+bloom_threshold = 1.0
+bloom_knee = 0.5
+bloom_intensity = 1.0
+bloom_scatter = 1.0
+
+[post_process.ssr]
+enabled = false
+intensity = 1.0
+max_distance = 100.0
+thickness = 1.0
+max_steps = 96
+spread_cutoff = 0.6000000238418579
+edge_fade = 0.03999999910593033
+resolution_scale = 0.5
+temporal = false
+temporal_weight = 0.8999999761581421
+bvh_reflections = false
+
+[post_process.atmosphere]
+mode = "off"
+color = [
+    0.5,
+    0.6000000238418579,
+    0.699999988079071,
+]
+density = 0.019999999552965164
+base_height = 0.0
+height_falloff = 0.0
+scattering_anisotropy = 0.30000001192092896
+volumetric_distance = 80.0
+volumetric_temporal = false
+
+[post_process.anti_aliasing]
+msaa = true
+smaa = false
+
+[assets.00000000-0000-4000-8000-000000000001]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+
+[assets.00000000-0000-4000-8000-000000000001.source.mesh]
+label = "Plane"
+editable = true
+
+[assets.00000000-0000-4000-8000-000000000001.source.mesh.source.primitive.plane]
+width = 14.0
+depth = 14.0
+segments_x = 1
+segments_z = 1
+
+[assets.00000000-0000-4000-8000-000000000001.source.mesh.stack]
+modifiers = []
+
+[assets.00000000-0000-4000-8000-000000000001.source.mesh.stack.base.primitive.plane]
+width = 14.0
+depth = 14.0
+segments_x = 1
+segments_z = 1
+
+[assets.00000000-0000-4000-8000-000000000001.source.mesh.overrides.positions]
+
+[assets.00000000-0000-4000-8000-000000000001.source.mesh.overrides.colors]
+
+[assets.00000000-0000-4000-8000-000000000001.source.mesh.overrides.normals]
+
+[assets.00000000-0000-4000-8000-000000000001.source.mesh.overrides.uvs]
+
+[assets.00000000-0000-4000-8000-000000000002]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+
+[assets.00000000-0000-4000-8000-000000000002.source.mesh]
+label = "Box"
+editable = true
+
+[assets.00000000-0000-4000-8000-000000000002.source.mesh.source.primitive.box]
+dims = [
+    4.0,
+    3.0,
+    0.10000000149011612,
+]
+
+[assets.00000000-0000-4000-8000-000000000002.source.mesh.stack]
+modifiers = []
+
+[assets.00000000-0000-4000-8000-000000000002.source.mesh.stack.base.primitive.box]
+dims = [
+    4.0,
+    3.0,
+    0.10000000149011612,
+]
+
+[assets.00000000-0000-4000-8000-000000000002.source.mesh.overrides.positions]
+
+[assets.00000000-0000-4000-8000-000000000002.source.mesh.overrides.colors]
+
+[assets.00000000-0000-4000-8000-000000000002.source.mesh.overrides.normals]
+
+[assets.00000000-0000-4000-8000-000000000002.source.mesh.overrides.uvs]
+
+[assets.00000000-0000-4000-8000-0000000009f0]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+
+[assets.00000000-0000-4000-8000-0000000009f0.source.texture.procedural.checker]
+width = 512
+height = 512
+cells_x = 8
+cells_y = 8
+color_a = [
+    0.8100000023841858,
+    0.8299999833106995,
+    0.8500000238418579,
+    1.0,
+]
+color_b = [
+    0.1599999964237213,
+    0.18000000715255737,
+    0.20000000298023224,
+    1.0,
+]
+
+[assets.00000000-0000-4000-8000-000000000004]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+
+[assets.00000000-0000-4000-8000-000000000004.source.mesh]
+label = "Sphere"
+editable = true
+
+[assets.00000000-0000-4000-8000-000000000004.source.mesh.source.primitive.sphere]
+radius = 0.6000000238418579
+segments_long = 48
+segments_lat = 32
+
+[assets.00000000-0000-4000-8000-000000000004.source.mesh.stack]
+modifiers = []
+
+[assets.00000000-0000-4000-8000-000000000004.source.mesh.stack.base.primitive.sphere]
+radius = 0.6000000238418579
+segments_long = 48
+segments_lat = 32
+
+[assets.00000000-0000-4000-8000-000000000004.source.mesh.overrides.positions]
+
+[assets.00000000-0000-4000-8000-000000000004.source.mesh.overrides.colors]
+
+[assets.00000000-0000-4000-8000-000000000004.source.mesh.overrides.normals]
+
+[assets.00000000-0000-4000-8000-000000000004.source.mesh.overrides.uvs]
+
+[assets.00000000-0000-4000-8000-0000000009f1]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+
+[assets.00000000-0000-4000-8000-0000000009f1.source.texture.procedural.noise]
+width = 512
+height = 512
+seed = 1337
+scale = 4.0
+
+[assets.00000000-0000-4000-8000-000000000003]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+
+[assets.00000000-0000-4000-8000-000000000003.source.mesh]
+label = "Plane"
+editable = true
+
+[assets.00000000-0000-4000-8000-000000000003.source.mesh.source.primitive.plane]
+width = 5.0
+depth = 2.5
+segments_x = 1
+segments_z = 1
+
+[assets.00000000-0000-4000-8000-000000000003.source.mesh.stack]
+modifiers = []
+
+[assets.00000000-0000-4000-8000-000000000003.source.mesh.stack.base.primitive.plane]
+width = 5.0
+depth = 2.5
+segments_x = 1
+segments_z = 1
+
+[assets.00000000-0000-4000-8000-000000000003.source.mesh.overrides.positions]
+
+[assets.00000000-0000-4000-8000-000000000003.source.mesh.overrides.colors]
+
+[assets.00000000-0000-4000-8000-000000000003.source.mesh.overrides.normals]
+
+[assets.00000000-0000-4000-8000-000000000003.source.mesh.overrides.uvs]
+
+[[editor_materials]]
+id = "00000000-0000-4000-8000-000000000900"
+name = "PBR Material 1"
+wgsl = """
+// Opaque material. Inputs arrive as fields on `input` (declare them in Pass
+// Dependencies): input.world_normal, input.surface_to_camera (normalized),
+// input.world_position, input.coords. Time: frame_globals_from_raw(frame_globals_raw).
+// `color` is linear HDR (tonemap is a later pass); it is UNLIT — to light it,
+// declare `light_access` and walk lights yourself (get_lights_info / get_light /
+// light_sample). Must end in `return OpaqueShadingOutput(color, ao)`.
+let n = normalize(input.world_normal);
+let v = input.surface_to_camera;          // already normalized (surface -> camera)
+let fresnel = pow(1.0 - max(dot(n, v), 0.0), 3.0);
+let base = vec3<f32>(0.1, 0.12, 0.2);
+let color = base + vec3<f32>(0.6, 0.7, 1.0) * fresnel;
+return OpaqueShadingOutput(color, 1.0);"""
+alpha_wgsl = ""
+vertex_wgsl = ""
+alpha = "opaque"
+cutoff = 0.5
+double_sided = false
+color = "#8aa0b8"
+uniforms = []
+textures = []
+buffers = []
+registered = true
+shader_includes = []
+fragment_inputs = [
+    "normals",
+    "view_dir",
+]
+
+[editor_materials.builtin]
+label = ""
+base_color = [
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.699999988079071
+emissive = [
+    0.0,
+    0.0,
+    0.0,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[editor_materials.builtin.extensions]
+
+[[editor_materials]]
+id = "00000000-0000-4000-8000-000000000901"
+name = "PBR Material 2"
+wgsl = """
+// Opaque material. Inputs arrive as fields on `input` (declare them in Pass
+// Dependencies): input.world_normal, input.surface_to_camera (normalized),
+// input.world_position, input.coords. Time: frame_globals_from_raw(frame_globals_raw).
+// `color` is linear HDR (tonemap is a later pass); it is UNLIT — to light it,
+// declare `light_access` and walk lights yourself (get_lights_info / get_light /
+// light_sample). Must end in `return OpaqueShadingOutput(color, ao)`.
+let n = normalize(input.world_normal);
+let v = input.surface_to_camera;          // already normalized (surface -> camera)
+let fresnel = pow(1.0 - max(dot(n, v), 0.0), 3.0);
+let base = vec3<f32>(0.1, 0.12, 0.2);
+let color = base + vec3<f32>(0.6, 0.7, 1.0) * fresnel;
+return OpaqueShadingOutput(color, 1.0);"""
+alpha_wgsl = ""
+vertex_wgsl = ""
+alpha = "opaque"
+cutoff = 0.5
+double_sided = false
+color = "#8aa0b8"
+uniforms = []
+textures = []
+buffers = []
+registered = true
+shader_includes = []
+fragment_inputs = [
+    "normals",
+    "view_dir",
+]
+
+[editor_materials.builtin]
+label = "glass"
+base_color = [
+    0.8999999761581421,
+    0.8999999761581421,
+    0.949999988079071,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.05000000074505806
+emissive = [
+    0.0,
+    0.0,
+    0.0,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[editor_materials.builtin.extensions.ior]
+ior = 1.5
+
+[editor_materials.builtin.extensions.transmission]
+factor = 1.0
+
+[anim_mixer]
+layers = []
+
+[bundle_options]
+mesh_compression = "meshopt"
+mesh_quantization = "smart"
+smart_threshold_mm = 0.10000000149011612
+texture_compression = "ktx2"
+
+[[nodes]]
+id = "15c779a8-1ef3-4921-befd-dd3bab02d8ed"
+name = "Directional Light"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    0.0,
+    0.0,
+    0.0,
+]
+rotation = [
+    -0.4226182699203491,
+    0.0,
+    0.0,
+    0.9063077569007874,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.light.directional]
+color = [
+    1.0,
+    1.0,
+    1.0,
+]
+intensity = 4.0
+volumetric_intensity = 1.0
+
+[nodes.kind.light.directional.shadow]
+cast = true
+depth_bias = 0.0010000000474974513
+normal_bias = 0.0
+resolution = 2048
+hardness = "soft"
+pcss_penumbra_scale = 1.0
+kernel_slack = 0.0
+shadow_samples = 16
+max_distance = 0.0
+cascade_count = 4
+cascade_split_lambda = 0.5
+evsm_cutoff = "last_cascade"
+far_cascade_update_rate = "every4_frames"
+cube_face_update_rate = "every_frame"
+
+[[nodes]]
+id = "00000000-0000-4000-8000-000000000001"
+name = "floor"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    0.0,
+    0.0,
+    0.0,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-000000000001"
+selected_variant = "00000000-0000-4000-8000-000000001001"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-000000001001"
+name = "main"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000900"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = ""
+base_color = [
+    0.44999998807907104,
+    0.44999998807907104,
+    0.47999998927116394,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.8999999761581421
+emissive = [
+    0.0,
+    0.0,
+    0.0,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions]
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = true
+receive = true
+
+[nodes.kind.mesh.lod]
+kind = "none"
+
+[[nodes]]
+id = "00000000-0000-4000-8000-000000000002"
+name = "backdrop"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    -1.0,
+    1.5,
+    -2.5,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-000000000002"
+selected_variant = "00000000-0000-4000-8000-000000001002"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-000000001002"
+name = "main"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000900"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = ""
+base_color = [
+    1.0,
+    0.949999988079071,
+    0.8500000238418579,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.699999988079071
+emissive = [
+    0.0,
+    0.0,
+    0.0,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.base_color_texture]
+asset = "00000000-0000-4000-8000-0000000009f0"
+
+[nodes.kind.mesh.material_variants.instance.inline.base_color_texture.transform]
+offset = [
+    0.0,
+    0.0,
+]
+rotation = 0.0
+scale = [
+    4.0,
+    3.0,
+]
+
+[nodes.kind.mesh.material_variants.instance.inline.base_color_texture.sampler]
+wrap_u = "repeat"
+wrap_v = "repeat"
+mag_filter = "linear"
+min_filter = "linear"
+mipmap_filter = "linear"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions]
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = true
+receive = true
+
+[nodes.kind.mesh.lod]
+kind = "none"
+
+[[nodes]]
+id = "00000000-0000-4000-8000-000000000003"
+name = "water"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    0.0,
+    0.019999999552965164,
+    1.2000000476837158,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-000000000003"
+selected_variant = "00000000-0000-4000-8000-000000001003"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-000000001003"
+name = "main"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000900"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = ""
+base_color = [
+    0.30000001192092896,
+    0.550000011920929,
+    0.8999999761581421,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.20000000298023224
+emissive = [
+    0.0,
+    0.0,
+    0.0,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.base_color_texture]
+asset = "00000000-0000-4000-8000-0000000009f1"
+flow = [
+    0.25,
+    0.07999999821186066,
+]
+
+[nodes.kind.mesh.material_variants.instance.inline.base_color_texture.transform]
+offset = [
+    0.0,
+    0.0,
+]
+rotation = 0.0
+scale = [
+    2.0,
+    1.0,
+]
+
+[nodes.kind.mesh.material_variants.instance.inline.base_color_texture.sampler]
+wrap_u = "repeat"
+wrap_v = "repeat"
+mag_filter = "linear"
+min_filter = "linear"
+mipmap_filter = "linear"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions]
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = true
+receive = true
+
+[nodes.kind.mesh.lod]
+kind = "none"
+
+[[nodes]]
+id = "00000000-0000-4000-8000-000000000004"
+name = "glass"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    0.8999999761581421,
+    0.8999999761581421,
+    -0.6000000238418579,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-000000000004"
+selected_variant = "00000000-0000-4000-8000-000000001004"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-000000001004"
+name = "main"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000901"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = "glass"
+base_color = [
+    0.8999999761581421,
+    0.8999999761581421,
+    0.949999988079071,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.05000000074505806
+emissive = [
+    0.0,
+    0.0,
+    0.0,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions.ior]
+ior = 1.5
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions.transmission]
+factor = 1.0
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = true
+receive = true
+
+[nodes.kind.mesh.lod]
+kind = "none"
+
+[[nodes]]
+id = "00000000-0000-4000-8000-000000000005"
+name = "fountain"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    -1.2000000476837158,
+    0.20000000298023224,
+    -0.4000000059604645,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.particle_emitter]
+spawn_rate = 120.0
+burst_count = 0
+max_alive = 512
+one_shot = false
+space = "local"
+initial_speed = [
+    2.5,
+    3.5,
+]
+lifetime = [
+    0.800000011920929,
+    1.600000023841858,
+]
+size = [
+    0.05999999865889549,
+    0.11999999731779099,
+]
+blend = true
+
+[nodes.kind.particle_emitter.shape.cone]
+angle_radians = 0.4000000059604645
+direction = [
+    0.0,
+    1.0,
+    0.0,
+]
+
+[[nodes.kind.particle_emitter.forces]]
+
+[nodes.kind.particle_emitter.forces.gravity]
+acceleration = [
+    0.0,
+    -4.0,
+    0.0,
+]
+
+[nodes.kind.particle_emitter.color_over_life.linear]
+start = [
+    1.0,
+    0.6000000238418579,
+    0.15000000596046448,
+    1.0,
+]
+end = [
+    1.0,
+    0.10000000149011612,
+    0.05000000074505806,
+    0.0,
+]
+
+[nodes.kind.particle_emitter.size_over_life.linear]
+start = 1.0
+end = 0.4000000059604645
+
+[[nodes]]
+id = "00000000-0000-4000-8000-000000000006"
+name = "zigzag"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    0.0,
+    0.0,
+    0.0,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.line]
+width_px = 3.0
+depth_test_always = false
+
+[[nodes.kind.line.points]]
+pos = [
+    -2.200000047683716,
+    1.5499999523162842,
+    -1.399999976158142,
+]
+color = [
+    0.10000000149011612,
+    1.0,
+    0.4000000059604645,
+    1.0,
+]
+
+[[nodes.kind.line.points]]
+pos = [
+    -1.850000023841858,
+    2.25,
+    -1.399999976158142,
+]
+color = [
+    0.10000000149011612,
+    1.0,
+    0.4000000059604645,
+    1.0,
+]
+
+[[nodes.kind.line.points]]
+pos = [
+    -1.5,
+    1.5499999523162842,
+    -1.399999976158142,
+]
+color = [
+    0.10000000149011612,
+    1.0,
+    0.4000000059604645,
+    1.0,
+]
+
+[[nodes.kind.line.points]]
+pos = [
+    -1.149999976158142,
+    2.25,
+    -1.399999976158142,
+]
+color = [
+    0.10000000149011612,
+    1.0,
+    0.4000000059604645,
+    1.0,
+]
+
+[[nodes.kind.line.points]]
+pos = [
+    -0.800000011920929,
+    1.5499999523162842,
+    -1.399999976158142,
+]
+color = [
+    0.10000000149011612,
+    1.0,
+    0.4000000059604645,
+    1.0,
+]
+
+[[nodes.kind.line.points]]
+pos = [
+    -0.44999998807907104,
+    2.25,
+    -1.399999976158142,
+]
+color = [
+    0.10000000149011612,
+    1.0,
+    0.4000000059604645,
+    1.0,
+]
+
+[[nodes.kind.line.points]]
+pos = [
+    -0.10000000149011612,
+    1.5499999523162842,
+    -1.399999976158142,
+]
+color = [
+    0.10000000149011612,
+    1.0,
+    0.4000000059604645,
+    1.0,
+]
+
+[[nodes.kind.line.points]]
+pos = [
+    0.25,
+    2.25,
+    -1.399999976158142,
+]
+color = [
+    0.10000000149011612,
+    1.0,
+    0.4000000059604645,
+    1.0,
+]
+
+[[nodes.kind.line.points]]
+pos = [
+    0.6000000238418579,
+    1.5499999523162842,
+    -1.399999976158142,
+]
+color = [
+    0.10000000149011612,
+    1.0,
+    0.4000000059604645,
+    1.0,
+]
+
+[[nodes.kind.line.points]]
+pos = [
+    0.949999988079071,
+    2.25,
+    -1.399999976158142,
+]
+color = [
+    0.10000000149011612,
+    1.0,
+    0.4000000059604645,
+    1.0,
+]
+
+[[nodes.kind.line.points]]
+pos = [
+    1.2999999523162842,
+    1.5499999523162842,
+    -1.399999976158142,
+]
+color = [
+    0.10000000149011612,
+    1.0,
+    0.4000000059604645,
+    1.0,
+]
+
+[[nodes.kind.line.points]]
+pos = [
+    1.649999976158142,
+    2.25,
+    -1.399999976158142,
+]
+color = [
+    0.10000000149011612,
+    1.0,
+    0.4000000059604645,
+    1.0,
+]
+
+[[nodes.kind.line.points]]
+pos = [
+    2.0,
+    1.5499999523162842,
+    -1.399999976158142,
+]
+color = [
+    0.10000000149011612,
+    1.0,
+    0.4000000059604645,
+    1.0,
+]
+
+[[nodes]]
+id = "00000000-0000-4000-8000-000000000500"
+name = "camera"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    0.0,
+    2.590019941329956,
+    6.850499153137207,
+]
+rotation = [
+    -0.0998334139585495,
+    0.0,
+    0.0,
+    0.9950041770935059,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.camera]
+near = 0.10000000149011612
+far = 100.0
+behavior = "static"
+
+[nodes.kind.camera.projection.perspective]
+fov_y_rad = 0.7853981852531433

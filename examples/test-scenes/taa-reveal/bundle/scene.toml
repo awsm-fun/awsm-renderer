@@ -1,0 +1,506 @@
+name = "untitled.awsm"
+custom_materials = []
+animations = []
+
+[environment]
+skybox = "built_in_default"
+specular = "built_in_default"
+irradiance = "built_in_default"
+
+[environment.probe]
+enabled = false
+center = [
+    0.0,
+    0.0,
+    0.0,
+]
+half_extents = [
+    10.0,
+    10.0,
+    10.0,
+]
+
+[environment.stream]
+skybox = []
+specular = []
+irradiance = []
+
+[environment.rotation]
+skybox = [
+    0.0,
+    0.0,
+    0.0,
+]
+specular = [
+    0.0,
+    0.0,
+    0.0,
+]
+irradiance = [
+    0.0,
+    0.0,
+    0.0,
+]
+
+[shadows]
+sscs_enabled = false
+sscs_step_count = 16
+sscs_step_world = 0.03999999910593033
+sscs_thickness = 0.05000000074505806
+sscs_directional_darkening = 0.3499999940395355
+sscs_punctual_darkening = 0.8999999761581421
+atlas_size = 4096
+evsm_atlas_size = 2048
+evsm_exponent = 10.0
+evsm_blur_radius = 6
+max_point_shadows = 8
+point_shadow_resolution = 1024
+debug_cascade_colors = false
+
+[post_process]
+tonemapping = "khronos_neutral_pbr"
+bloom = false
+dof = false
+exposure = 0.0
+bloom_threshold = 1.0
+bloom_knee = 0.5
+bloom_intensity = 1.0
+bloom_scatter = 1.0
+
+[post_process.ssr]
+enabled = false
+intensity = 1.0
+max_distance = 100.0
+thickness = 1.0
+max_steps = 96
+spread_cutoff = 0.6000000238418579
+edge_fade = 0.03999999910593033
+resolution_scale = 0.5
+temporal = false
+temporal_weight = 0.8999999761581421
+bvh_reflections = false
+
+[post_process.atmosphere]
+mode = "off"
+color = [
+    0.5,
+    0.6000000238418579,
+    0.699999988079071,
+]
+density = 0.019999999552965164
+base_height = 0.0
+height_falloff = 0.0
+scattering_anisotropy = 0.30000001192092896
+volumetric_distance = 80.0
+volumetric_temporal = false
+
+[post_process.anti_aliasing]
+msaa = true
+smaa = false
+
+[assets.00000000-0000-4000-8000-000000000003]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.00000000-0000-4000-8000-000000000003.source.mesh.primitive.box]
+dims = [
+    3.0,
+    2.5,
+    0.20000000298023224,
+]
+
+[assets.00000000-0000-4000-8000-0000000000f0]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+texture_encoding = "ktx2"
+lod = "none"
+
+[assets.00000000-0000-4000-8000-0000000000f0.source.texture.procedural.checker]
+width = 512
+height = 512
+cells_x = 8
+cells_y = 8
+color_a = [
+    0.8100000023841858,
+    0.8299999833106995,
+    0.8500000238418579,
+    1.0,
+]
+color_b = [
+    0.1599999964237213,
+    0.18000000715255737,
+    0.20000000298023224,
+    1.0,
+]
+
+[assets.00000000-0000-4000-8000-000000000001]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.00000000-0000-4000-8000-000000000001.source.mesh.primitive.plane]
+width = 20.0
+depth = 20.0
+segments_x = 1
+segments_z = 1
+
+[assets.00000000-0000-4000-8000-000000000002]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "none"
+
+[assets.00000000-0000-4000-8000-000000000002.source.mesh.primitive.box]
+dims = [
+    9.0,
+    4.0,
+    0.10000000149011612,
+]
+
+[mixer]
+layers = []
+
+[[nodes]]
+id = "244a5356-f11b-4f29-ab13-d94204910b25"
+name = "Directional Light"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    0.0,
+    0.0,
+    0.0,
+]
+rotation = [
+    -0.4226182699203491,
+    0.0,
+    0.0,
+    0.9063077569007874,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.light.directional]
+color = [
+    1.0,
+    1.0,
+    1.0,
+]
+intensity = 4.0
+volumetric_intensity = 1.0
+
+[nodes.kind.light.directional.shadow]
+cast = true
+depth_bias = 0.0010000000474974513
+normal_bias = 0.0
+resolution = 2048
+hardness = "soft"
+pcss_penumbra_scale = 1.0
+kernel_slack = 0.0
+shadow_samples = 16
+max_distance = 0.0
+cascade_count = 4
+cascade_split_lambda = 0.5
+evsm_cutoff = "last_cascade"
+far_cascade_update_rate = "every4_frames"
+cube_face_update_rate = "every_frame"
+
+[[nodes]]
+id = "00000000-0000-4000-8000-000000000001"
+name = "floor"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    0.0,
+    0.0,
+    0.0,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-000000000001"
+selected_variant = "00000000-0000-4000-8000-000000001001"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-000000001001"
+name = "main"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000060"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = ""
+base_color = [
+    0.44999998807907104,
+    0.44999998807907104,
+    0.47999998927116394,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.8999999761581421
+emissive = [
+    0.0,
+    0.0,
+    0.0,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions]
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = true
+receive = true
+
+[nodes.kind.mesh.lod]
+kind = "none"
+
+[[nodes]]
+id = "00000000-0000-4000-8000-000000000002"
+name = "backdrop"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    0.0,
+    2.0,
+    -1.5,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-000000000002"
+selected_variant = "00000000-0000-4000-8000-000000001002"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-000000001002"
+name = "main"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000060"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = ""
+base_color = [
+    1.0,
+    0.949999988079071,
+    0.8500000238418579,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.699999988079071
+emissive = [
+    0.0,
+    0.0,
+    0.0,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.base_color_texture]
+asset = "00000000-0000-4000-8000-0000000000f0"
+
+[nodes.kind.mesh.material_variants.instance.inline.base_color_texture.transform]
+offset = [
+    0.0,
+    0.0,
+]
+rotation = 0.0
+scale = [
+    9.0,
+    2.0,
+]
+
+[nodes.kind.mesh.material_variants.instance.inline.base_color_texture.sampler]
+wrap_u = "repeat"
+wrap_v = "repeat"
+mag_filter = "linear"
+min_filter = "linear"
+mipmap_filter = "linear"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions]
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = true
+receive = true
+
+[nodes.kind.mesh.lod]
+kind = "none"
+
+[[nodes]]
+id = "00000000-0000-4000-8000-000000000003"
+name = "wall"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    -1.2000000476837158,
+    1.25,
+    0.0,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.mesh]
+mesh = "00000000-0000-4000-8000-000000000003"
+selected_variant = "00000000-0000-4000-8000-000000001003"
+
+[[nodes.kind.mesh.material_variants]]
+id = "00000000-0000-4000-8000-000000001003"
+name = "main"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "00000000-0000-4000-8000-000000000060"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = ""
+base_color = [
+    0.25,
+    0.03999999910593033,
+    0.029999999329447746,
+    1.0,
+]
+metallic = 0.0
+roughness = 0.6000000238418579
+emissive = [
+    0.0,
+    0.0,
+    0.0,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions]
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = true
+receive = true
+
+[nodes.kind.mesh.lod]
+kind = "none"
+
+[[nodes]]
+id = "00000000-0000-4000-8000-000000000010"
+name = "camera"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    0.0,
+    2.4955050945281982,
+    7.910168647766113,
+]
+rotation = [
+    -0.07492970675230026,
+    0.0,
+    0.0,
+    0.9971888065338135,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.camera]
+near = 0.10000000149011612
+far = 100.0
+behavior = "static"
+
+[nodes.kind.camera.projection.perspective]
+fov_y_rad = 0.7853981852531433
+
+[pack]
+packs = [4985]
+
+[pack.files]
+"assets/00000000-0000-4000-8000-0000000000f0.ktx2" = [
+    0,
+    0,
+    4985,
+]

@@ -24,6 +24,7 @@ members = [
     "examples/multithreaded",
     "examples/player-tests",
     "examples/bundle-player",
+    "examples/taa-tests",
     "packages/debugging",
     "packages/mcp",
     "packages/tools/lod-bake-cli",

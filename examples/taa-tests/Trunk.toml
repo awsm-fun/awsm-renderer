@@ -1,0 +1,4 @@
+# Trunk config for the TAA test harness. Same shape as examples/player-tests:
+# single-threaded main-thread embedding, no COOP/COEP (the bundle fetches from
+# :9084 and the capture store on :9095 are plain CORS).
+[serve]

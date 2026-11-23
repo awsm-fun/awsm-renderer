@@ -1,0 +1,59 @@
+[package]
+name = "awsm-renderer-taa-tests-example"
+publish = false # test harness, not released to crates.io
+description = "TAA test harness (docs/plans/taa-upscaling/05-verification.md): deterministic fixed-timestep playback of test-scene bundles through the player loader, bit-exact swap-chain capture, the jittered ground-truth reference, the image metrics, and the TAA-off pixel baseline. Prints one machine-readable TAA-TEST line per check."
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[package.metadata.docs.rs]
+default-target = "wasm32-unknown-unknown"
+rustc-args = ["--cfg=web_sys_unstable_apis"]
+rustdoc-args = ["--cfg=web_sys_unstable_apis"]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = ["taa-hooks", "taa-phase1", "taa-phase2"]
+# The renderer's TAA test hooks (`awsm_renderer::taa`: jitter override,
+# history reset, debug views). Off = builds against the 0.45 release, which is
+# how the TAA-off baseline is recorded (see README).
+taa-hooks = []
+# Phase-1 readbacks (`debug_read_velocity` / `debug_read_depth`): the 05 §4.1
+# vector gate (`?mode=vectors`) and the AA-toggle check.
+taa-phase1 = ["taa-hooks"]
+# Phase-2 hooks: `set_taa_debug_repeat` (resolve cost by repetition, 05 §5).
+taa-phase2 = ["taa-phase1"]
+# The scene schema's `anti_aliasing.taa` (the loader applies the authored AA):
+# needed on trees after that schema change, else loading a bundle switches
+# TAA off (sessions then refuse to open: see `check_aa`). Not in the phase
+# commits 353d35e7 / 5c325654.
+taa-schema = ["taa-hooks"]
+# The motion-dependent history cap / motion-edge tuning fields of TaaTuning
+# (`max_history_moving*`, `motion_edge_*`) for `?tune=` and `?mode=tune-sweep`.
+taa-tuning-v2 = ["taa-phase2"]
+# `set_taa_debug_view_raw` (doc-hidden raw resolve views 10-13) for
+# `?mode=disocclusion` / `disocclusion-static`.
+taa-debug-raw = ["taa-phase2"]
+
+[dependencies]
+awsm-renderer = { workspace = true }
+awsm-renderer-codec-basis = { workspace = true }
+# texture-export: the swap-chain readback (`copy_texture_for_readback`).
+awsm-renderer-core = { workspace = true, features = ["texture-export"] }
+awsm-renderer-scene = { workspace = true }
+awsm-renderer-scene-loader = { workspace = true, features = ["http"] }
+glam = { workspace = true }
+image = { workspace = true }
+web-sys = { workspace = true }
+js-sys = { workspace = true }
+wasm-bindgen = { workspace = true }
+wasm-bindgen-futures = { workspace = true }
+gloo-net = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-web = "0.1.3"
+tracing-subscriber = { workspace = true }

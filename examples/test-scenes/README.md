@@ -90,6 +90,31 @@ ship `author.js` + `verify.md` and are checked by following the recipe in
 | `aa-edges` | MSAA / SMAA view toggles on a crisp diagonal silhouette | `msaa` and `smaa` both visibly smoother than `no-aa` on the same framed edges |
 | `env-bc6h-spheres` | BC6H environment cubemaps (skybox/specular/irradiance), skybox ray reconstruction, the `--ibl-ld` roughness ladder; doubles as the MSAA silhouette probe | skybox tracks camera direction; metals blur monotonically with roughness; 0 flickering px static-camera, and ~55% RMS error reduction vs a supersampled reference along silhouettes |
 
+### TAA scenes (`taa-*`, docs/plans/taa-upscaling/05-verification.md §1)
+
+Played by the TAA harness ([`examples/taa-tests`](../taa-tests/README.md)), not
+judged by eye: each scene's motion is a fixed-timestep script in the harness
+(`src/scenario.rs`, keyed by scene name, driving nodes **by name**), and every
+check is a number. Each has `author.js` + `project/` + `bundle/` + `verify.md`
+(no goldens). Renaming or resizing a scripted node breaks its script.
+
+| Scene | Content | Scripted motion (60 Hz frames) | Catches |
+|---|---|---|---|
+| `taa-motion` | checker cube `cube` (1 m) over a high-contrast checker floor, still `camera` | still 0–29; +x 1.8 m/s + 90°/s yaw 30–149; stopped 150–209; −x 4.8 m/s 210–269 | object vectors, dilation, trails (G1, G3) |
+| `taa-orbit` | static textured shapes around `pivot` | orbit 30°/s 30–149; strafe 1 px/frame 150–239; stop | camera vectors, jitter, blur (G2, G4) |
+| `taa-skin` | Fox `Walk` clip + morph cube (weights set by the script) | clips / script throughout | prev joints / morphs (G1) |
+| `taa-reveal` | wall `wall` (3 × 2.5 × 0.2 m) in front of a checker backdrop | slides away 30–89, back 120–179 | disocclusion (G6) |
+| `taa-thin` | wire fence, masked leaf cards, fine checker to grazing, clearcoat `spinner` | static 0–119; spin 120–209; pan 0.5 px/frame 210–299 | flicker, rejection, mip bias (G5, §7) |
+| `taa-transparent` | particles, glass, UV-flow water, fat line over `backdrop` | backdrop 2 m right and back 30–209 | reactive mask (G8) |
+| `taa-hud` | world shapes + `hud-panel` / `hud-marker` (flagged HUD at runtime) | camera orbit 30–149, HUD attached | HUD excluded |
+| `taa-cut` | three cameras `cam-a/b/c`, `teleporter` box | cuts at 120, 240; teleports every 60 | resets (G9, G10) |
+| `taa-vertex-hook` | `wave` plane displaced only by a time-driven `wgsl_vertex` hook | time only | vertex-hook vectors; AA toggles |
+| `taa-cluster` | DamagedHelmet with LOD kind `cluster` (baked `.clusters.bin`) | dolly 1.2× → 12× radius | cluster-cut vectors |
+
+Player-path caveats found while authoring (pre-existing, see the TAA report):
+skinned rigs are placed by the skinned-mesh node's transform (the skeleton-root
+group's transform is ignored), and morph clips do not drive morph weights.
+
 ## The optimization axes (plan 006)
 
 The sweep this suite exists to measure. Every axis lands with before/after
