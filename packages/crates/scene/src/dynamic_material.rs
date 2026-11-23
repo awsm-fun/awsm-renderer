@@ -96,6 +96,12 @@ pub struct MaterialDefinition {
     /// (false) for material.json files written before the hook was exported.
     #[serde(default, skip_serializing_if = "is_false")]
     pub has_vertex_wgsl: bool,
+    /// How TAA treats this material's colour over time. `None` (the default)
+    /// = auto: `Reactive` when its WGSL reads the frame clock
+    /// (`frame_globals`), else `Stable` (resolved by the renderer). No effect
+    /// without TAA.
+    #[serde(default)]
+    pub temporal: Option<crate::material::MaterialTemporal>,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -731,6 +737,7 @@ mod tests {
             shader_includes: vec!["camera".into()],
             fragment_inputs: vec!["world_normal".into()],
             has_vertex_wgsl: false,
+            temporal: None,
         }
     }
 

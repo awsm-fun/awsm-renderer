@@ -16,9 +16,9 @@ use crate::prelude::*;
 use awsm_renderer_editor_protocol::{
     AssetSource, BillboardMode, CubeFaceUpdateRate, CurveDef, DecalConfig, DiscreteLod, EvsmCutoff,
     FarCascadeUpdateRate, LightShadowConfig, LightShadowHardness, LineDef, LodKind,
-    MaterialAlphaMode, MaterialDef, MaterialShading, MeshLodConfig, MeshShadowConfig,
-    ParticleEmitterDef, PrimitiveShape, ProceduralTextureDef, SpriteAlphaMode, SpriteDef,
-    TextureDef, TextureExport,
+    MaterialAlphaMode, MaterialDef, MaterialShading, MaterialTemporal, MeshLodConfig,
+    MeshShadowConfig, ParticleEmitterDef, PrimitiveShape, ProceduralTextureDef, SpriteAlphaMode,
+    SpriteDef, TextureDef, TextureExport,
 };
 
 /// The right rail shows the **Asset Inspector** when an asset is selected in the
@@ -2168,6 +2168,50 @@ fn material_editor(node: &Arc<Node>, mat: &MaterialDef, _has_custom: bool) -> Do
         }).await;
     }));
     sec = sec.child(row("Emissive", swatch(emi, 22.0)));
+
+    // TAA: how the resolve treats this material's colour over time (plan 03
+    // §5.2). Auto = reactive when a texture slot flows or the shading is a
+    // flipbook. No effect without TAA.
+    let temporal = Mutable::new(
+        match mat.temporal {
+            None => "auto",
+            Some(MaterialTemporal::Stable) => "stable",
+            Some(MaterialTemporal::Reactive) => "reactive",
+        }
+        .to_string(),
+    );
+    spawn_local(clone!(temporal, node => async move {
+        let mut first = true;
+        temporal.signal_cloned().for_each(move |v| {
+            let fire = !first;
+            first = false;
+            clone!(node => async move {
+                if !fire { return; }
+                let picked = match v.as_str() {
+                    "stable" => Some(MaterialTemporal::Stable),
+                    "reactive" => Some(MaterialTemporal::Reactive),
+                    _ => None,
+                };
+                if let Some(cur) = current_primitive_material(&node) {
+                    set_inline_material(&node, MaterialDef { temporal: picked, ..cur });
+                }
+            })
+        }).await;
+    }));
+    sec = sec.child(row(
+        "TAA temporal",
+        select(
+            temporal,
+            vec![
+                ("auto".to_string(), "Auto".to_string()),
+                ("stable".to_string(), "Stable".to_string()),
+                (
+                    "reactive".to_string(),
+                    "Reactive (changes over time)".to_string(),
+                ),
+            ],
+        ),
+    ));
 
     // The full uniform long-tail — everything that does NOT recompile is per-mesh
     // overridable: Toon knobs, mask cutoff, and every enabled KHR extension's

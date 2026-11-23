@@ -43,6 +43,9 @@ pub struct GeometryMaskedBindGroup {
     pub texture_pool_samplers_len: u32,
     pub texture_pool_sampler_keys: IndexSet<SamplerKey>,
     _bind_group: Option<web_sys::GpuBindGroup>,
+    /// TAA with a HUD: the same group over the unjittered camera twin, for
+    /// masked meshes in the HUD geometry pass.
+    _hud_bind_group: Option<web_sys::GpuBindGroup>,
 }
 
 impl GeometryMaskedBindGroup {
@@ -56,6 +59,7 @@ impl GeometryMaskedBindGroup {
             texture_pool_samplers_len: pool.samplers_len,
             texture_pool_sampler_keys: pool.sampler_keys,
             _bind_group: None,
+            _hud_bind_group: None,
         })
     }
 
@@ -74,6 +78,7 @@ impl GeometryMaskedBindGroup {
             texture_pool_samplers_len: pool.samplers_len,
             texture_pool_sampler_keys: pool.sampler_keys,
             _bind_group: None,
+            _hud_bind_group: None,
         })
     }
 
@@ -162,6 +167,23 @@ impl GeometryMaskedBindGroup {
             ));
         }
 
+        // TAA with a HUD: the same entries over the unjittered camera twin.
+        self._hud_bind_group = match ctx.camera.hud_gpu_buffer.as_ref() {
+            Some(hud_camera) => {
+                let mut hud_entries = entries.clone();
+                hud_entries[0] = BindGroupEntry::new(
+                    0,
+                    BindGroupResource::Buffer(BufferBinding::new(hud_camera)),
+                );
+                let descriptor = BindGroupDescriptor::new(
+                    ctx.bind_group_layouts.get(self.bind_group_layout_key)?,
+                    Some("Geometry Masked - Group 0 (HUD)"),
+                    hud_entries,
+                );
+                Some(ctx.gpu.create_bind_group(&descriptor.into()))
+            }
+            None => None,
+        };
         let descriptor = BindGroupDescriptor::new(
             ctx.bind_group_layouts.get(self.bind_group_layout_key)?,
             Some("Geometry Masked - Group 0"),
@@ -169,6 +191,18 @@ impl GeometryMaskedBindGroup {
         );
         self._bind_group = Some(ctx.gpu.create_bind_group(&descriptor.into()));
         Ok(())
+    }
+
+    /// The masked group 0 for a pass: the unjittered HUD twin for the HUD
+    /// pass when it exists (TAA with a HUD), else the main one.
+    pub fn get_bind_group_for(
+        &self,
+        hud: bool,
+    ) -> std::result::Result<&web_sys::GpuBindGroup, AwsmBindGroupError> {
+        match self._hud_bind_group.as_ref() {
+            Some(group) if hud => Ok(group),
+            _ => self.get_bind_group(),
+        }
     }
 
     /// Returns the active masked group-0 bind group.

@@ -4,7 +4,7 @@
 use askama::Template;
 
 use crate::{
-    render_passes::taa::shader::cache_key::ShaderCacheKeyTaa,
+    render_passes::taa::shader::cache_key::{ShaderCacheKeyTaa, ShaderCacheKeyTaaReactiveSeed},
     shaders::{AwsmShaderError, Result},
 };
 
@@ -36,5 +36,35 @@ impl ShaderTemplateTaa {
 
     pub fn debug_label(&self) -> Option<&str> {
         Some("TAA Resolve")
+    }
+}
+
+/// The TAA reactive seed (fullscreen draw in the world transparent pass).
+#[derive(Template, Debug, Default)]
+#[template(path = "taa_wgsl/reactive_seed.wgsl", whitespace = "minimize")]
+pub struct ShaderTemplateTaaReactiveSeed {
+    /// See [`ShaderCacheKeyTaaReactiveSeed::ssr`].
+    pub ssr: bool,
+}
+
+impl TryFrom<&ShaderCacheKeyTaaReactiveSeed> for ShaderTemplateTaaReactiveSeed {
+    type Error = AwsmShaderError;
+
+    fn try_from(value: &ShaderCacheKeyTaaReactiveSeed) -> Result<Self> {
+        Ok(Self { ssr: value.ssr })
+    }
+}
+
+impl ShaderTemplateTaaReactiveSeed {
+    pub fn into_source(self) -> Result<String> {
+        self.render().map_err(AwsmShaderError::from)
+    }
+
+    pub fn debug_label(&self) -> Option<&str> {
+        Some(if self.ssr {
+            "TAA Reactive Seed (SSR)"
+        } else {
+            "TAA Reactive Seed"
+        })
     }
 }

@@ -38,7 +38,16 @@ struct VertexOutput {
     {% for i in 0..uv_sets %}
         @location({{ out_uv_set_start + i }}) uv_{{ i }}: vec2<f32>,
     {% endfor %}
+}{% if hud_post %}
+
+// TAA HUD after the resolve: the camera with the unjittered projection (the
+// HUD is drawn into the resolved image and never accumulated).
+fn camera_hud_post(raw: CameraRaw) -> Camera {
+    var camera = camera_from_raw(raw);
+    camera.view_proj = camera.view_proj_unjittered;
+    return camera;
 }
+{% endif +%}
 
 @vertex
 fn vert_main(
@@ -47,7 +56,7 @@ fn vert_main(
 ) -> VertexOutput {
     var out: VertexOutput;
 
-    let camera = camera_from_raw(camera_raw);
+    let camera = {% if hud_post %}camera_hud_post(camera_raw){% else %}camera_from_raw(camera_raw){% endif %};
     let frame_globals = frame_globals_from_raw(frame_globals_raw);
 
     // Per-fragment instance_id derived from geometry_mesh_meta.instance_attr_base

@@ -216,6 +216,15 @@ pub struct Settings {
     /// and can visibly redistribute 1-2px emissive lines), independent of MSAA
     /// so both can be compared.
     pub smaa: Mutable<bool>,
+    /// The TAA settings TAA runs with when it is selected. The persisted copy
+    /// is `scene.post_process.anti_aliasing.taa` (present only while TAA is
+    /// the mode); this one survives switching to another mode and back within
+    /// a session. Written only by `SetAntiAliasing` / project load.
+    pub taa_knobs: Mutable<awsm_renderer_editor_protocol::TaaSettings>,
+    /// TAA debug view (`SetAntiAliasing::taa_debug_view`). Transient view
+    /// state: never persisted, never undone. Drives
+    /// `AwsmRenderer::set_taa_debug_view` via `settings_sync`.
+    pub taa_debug_view: Mutable<awsm_renderer_editor_protocol::TaaDebugViewName>,
     /// Supersampling render scale (1.0 = off … 2.0). Transient like
     /// [`Self::msaa`]/[`Self::smaa`] — a runtime quality option, not scene
     /// data. Drives `AwsmRenderer::set_render_scale` via `settings_sync`.
@@ -261,6 +270,8 @@ impl Default for Settings {
             auto_key: Mutable::new(true),
             msaa: Mutable::new(true),
             smaa: Mutable::new(false),
+            taa_knobs: Mutable::new(awsm_renderer_editor_protocol::TaaSettings::default()),
+            taa_debug_view: Mutable::new(awsm_renderer_editor_protocol::TaaDebugViewName::None),
             render_scale: Mutable::new(1.0),
             anisotropy: Mutable::new(true),
             heatmap: Mutable::new(false),
@@ -3925,6 +3936,23 @@ impl EditorController {
                 anisotropy,
             } => {
                 let s = &self.settings;
+                // Supersampling and TAA are exclusive (the renderer rejects
+                // the combination). Checked before anything changes.
+                let taa_stays_on = self
+                    .scene
+                    .post_process
+                    .get_cloned()
+                    .anti_aliasing
+                    .taa
+                    .is_some()
+                    && msaa != Some(true)
+                    && smaa != Some(true);
+                if taa_stays_on && render_scale.is_some_and(|v| v > 1.0) {
+                    return Err(crate::error::EditorError::msg(
+                        "supersampling (render_scale > 1) cannot be combined with TAA; \
+                         select another anti-aliasing mode first (set_anti_aliasing)",
+                    ));
+                }
                 if let Some(v) = grid {
                     s.grid.set_neq(v);
                 }
@@ -3963,6 +3991,13 @@ impl EditorController {
                     let aa = awsm_renderer_editor_protocol::AntiAliasingConfig {
                         msaa: s.msaa.get(),
                         smaa: s.smaa.get(),
+                        // MSAA / SMAA and TAA are exclusive modes: turning
+                        // either on leaves TAA.
+                        taa: if s.msaa.get() || s.smaa.get() {
+                            None
+                        } else {
+                            pp.anti_aliasing.taa
+                        },
                     };
                     if pp.anti_aliasing != aa {
                         pp.anti_aliasing = aa;
@@ -3978,6 +4013,89 @@ impl EditorController {
                 }
                 // Transient view state — no undo entry (same class as camera).
                 Ok(None)
+            }
+            EditorCommand::SetAntiAliasing {
+                mode,
+                taa_preset,
+                taa_render_scale,
+                taa_sharpen,
+                taa_tuning,
+                taa_debug_view,
+            } => {
+                use awsm_renderer_editor_protocol::{AntiAliasingMode, TaaPresetName};
+                let s = &self.settings;
+                let mut pp = self.scene.post_process.get_cloned();
+                let prev_aa = pp.anti_aliasing;
+                let prev_mode = AntiAliasingMode::of(&prev_aa);
+                let prev_knobs = s.taa_knobs.get();
+                let new_mode = mode.unwrap_or(prev_mode);
+                if new_mode == AntiAliasingMode::Taa && prev_mode != AntiAliasingMode::Taa {
+                    if let Some(reason) = crate::engine::settings_sync::taa_unavailable_reason() {
+                        return Err(crate::error::EditorError::msg(format!(
+                            "TAA is unavailable on this device: {reason}"
+                        )));
+                    }
+                    // Supersampling and TAA are exclusive: selecting TAA
+                    // turns supersampling off (the Viewport picker shows 1x
+                    // and disables 1.5x / 2x while TAA is the mode).
+                    s.render_scale.set_neq(1.0);
+                }
+                let mut knobs = prev_knobs;
+                if let Some(preset) = taa_preset {
+                    use awsm_renderer::taa::TaaPreset;
+                    let preset = match preset {
+                        TaaPresetName::Native => TaaPreset::Native,
+                        TaaPresetName::Quality => TaaPreset::Quality,
+                        TaaPresetName::Balanced => TaaPreset::Balanced,
+                        TaaPresetName::Performance => TaaPreset::Performance,
+                    };
+                    knobs.render_scale = preset.render_scale();
+                    knobs.sharpen = preset.sharpen();
+                }
+                if let Some(v) = taa_render_scale.filter(|v| v.is_finite()) {
+                    knobs.render_scale =
+                        v.clamp(awsm_renderer::taa::TaaConfig::MIN_RENDER_SCALE, 1.0);
+                }
+                if let Some(v) = taa_sharpen.filter(|v| v.is_finite()) {
+                    knobs.sharpen = v.clamp(0.0, 1.0);
+                }
+                if let Some(patch) = taa_tuning {
+                    patch.apply(&mut knobs.tuning);
+                }
+                s.taa_knobs.set_neq(knobs);
+                if let Some(view) = taa_debug_view {
+                    s.taa_debug_view.set_neq(view);
+                }
+                let (msaa, smaa) = new_mode.msaa_smaa();
+                let aa = awsm_renderer_editor_protocol::AntiAliasingConfig {
+                    msaa,
+                    smaa,
+                    taa: (new_mode == AntiAliasingMode::Taa).then_some(knobs),
+                };
+                // The Settings drawer's MSAA / SMAA view state follows the mode.
+                s.msaa.set_neq(msaa);
+                s.smaa.set_neq(smaa);
+                if aa != prev_aa {
+                    pp.anti_aliasing = aa;
+                    self.scene.post_process.set(pp);
+                    self.scene.bump_revision();
+                    self.dirty.set_neq(true);
+                }
+                if aa == prev_aa && knobs == prev_knobs {
+                    // Only the transient debug view (or nothing) changed.
+                    return Ok(None);
+                }
+                // Inverse: the prior mode and the prior TAA settings.
+                Ok(Some(EditorCommand::SetAntiAliasing {
+                    mode: Some(prev_mode),
+                    taa_preset: None,
+                    taa_render_scale: Some(prev_knobs.render_scale),
+                    taa_sharpen: Some(prev_knobs.sharpen),
+                    taa_tuning: Some(awsm_renderer_editor_protocol::TaaTuningPatch::replace(
+                        &prev_knobs.tuning,
+                    )),
+                    taa_debug_view: None,
+                }))
             }
             EditorCommand::SnapCameraToAxis { axis } => {
                 use std::f32::consts::PI;
@@ -6915,6 +7033,11 @@ impl EditorController {
                         "mcp_notifications": crate::remote::show_notifications().get(),
                         "msaa": self.settings.msaa.get(),
                         "smaa": self.settings.smaa.get(),
+                        "anti_aliasing": awsm_renderer_editor_protocol::AntiAliasingMode::of(
+                            &self.scene.post_process.get_cloned().anti_aliasing,
+                        )
+                        .as_str(),
+                        "taa_debug_view": self.settings.taa_debug_view.get().as_str(),
                         "render_scale": self.settings.render_scale.get(),
                         "anisotropy": self.settings.anisotropy.get(),
                     })

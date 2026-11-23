@@ -14,6 +14,7 @@
 
 pub mod bind_group;
 pub mod pipeline;
+pub mod reactive_seed;
 pub mod render_pass;
 pub mod shader;
 pub mod texture;

@@ -2844,7 +2844,7 @@ impl AwsmRendererBuilder {
         // (`AwsmRenderer::ensure_picker_compiled`). Cold-boot compiles
         // 0 picker pipelines even when `features.picking == true`.
         all_shader_keys.push(shaders::ShaderCacheKey::from(
-            render_passes::lines::ShaderCacheKeyLine,
+            render_passes::lines::ShaderCacheKeyLine::default(),
         ));
         all_shader_keys.extend(
             render_passes::effects::pipeline::EffectsPipelines::shader_cache_keys_for(
@@ -3589,6 +3589,8 @@ impl AwsmRenderer {
                     texture_pool_arrays_len: 1,
                     texture_pool_samplers_len: 1,
                     msaa_sample_count: None,
+                    reactive: false,
+                    hud_post: false,
                     mipmaps: false,
                     // Depth convention (003) — match the live feature set.
                     reverse_z: self.features.reverse_z,

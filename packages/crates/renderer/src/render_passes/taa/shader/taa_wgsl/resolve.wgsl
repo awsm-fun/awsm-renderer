@@ -48,6 +48,13 @@ struct TaaParams {
     // 1 when the reactive mask was written this frame; 0 = treat it as zero
     // (nothing reactive was drawn, so the mask was not even cleared).
     reactive_valid: f32,
+    // History cap for a pixel moving at `max_history_moving_speed` or faster.
+    max_history_moving: f32,
+    max_history_moving_speed: f32,
+    // Minimum current weight on a motion boundary, reached at
+    // `motion_edge_speed` output px / frame of relative motion in the 3x3.
+    motion_edge_alpha: f32,
+    motion_edge_speed: f32,
 };
 
 @group(0) @binding(0) var<uniform> camera_raw: CameraRaw;
@@ -70,6 +77,14 @@ struct TaaParams {
 {% if reactive %}
 // Reactive mask, render size: 0 = trust history, 1 = ignore it (G8).
 @group(0) @binding(10) var reactive_tex: texture_2d<f32>;
+{% endif %}
+
+{% if reactive %}
+// The mask value of an opaque-path HUD pixel. HUD meshes shaded by the opaque
+// pass are rasterised with the UNJITTERED camera under TAA and must not be
+// accumulated (03 §5.4): the resolve passes them through, so they come out
+// exactly as without TAA. (Forward HUD meshes are drawn after the resolve.)
+const HUD_REACTIVE: f32 = 0.999;
 {% endif %}
 
 // ---- Working space (G11) --------------------------------------------------
@@ -208,33 +223,60 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var m2 = vec3<f32>(0.0);
     var nearest_depth = textureLoad(depth_tex, p0, 0);
     var nearest_p = p0;
+    var farthest_depth = nearest_depth;
+    var farthest_p = p0;
     var reactive = 0.0;
+    // Samples that count: all 9, minus opaque-path HUD pixels in the
+    // reactive variant (the HUD is not part of the world's neighbourhood).
+    var kept = 0.0;
     {% for dy in 0..3 %}
     {% for dx in 0..3 %}
     {
         let p = clamp(p0 + vec2<i32>({{ dx }} - 1, {{ dy }} - 1), vec2<i32>(0), p_max);
+        {% if reactive %}
+        // A mask value of exactly 1 marks a HUD pixel (see HUD_REACTIVE). It
+        // must not reach its neighbours in any way: not through the reactive
+        // max (an aliased halo), not through the reconstruction or the clip
+        // box (a HUD-coloured fringe that the history would then keep).
+        let r = textureLoad(reactive_tex, p, 0).r;
+        let keep = select(1.0, 0.0, params.reactive_valid > 0.5 && r >= HUD_REACTIVE);
+        reactive = max(reactive, r * keep);
+        {% else %}
+        let keep = 1.0;
+        {% endif %}
         let t = tonemap(sanitize(textureLoad(color_tex, p, 0).rgb));
         // This sample really sits at p + 0.5 - j (G2: the jitter is removed
         // here, where the current frame is sampled, never in the vector).
         let d = vec2<f32>(p) + 0.5 - jitter - r_pos;
-        let w = exp(-params.kernel_sharpness * dot(d, d));
+        let w = exp(-params.kernel_sharpness * dot(d, d)) * keep;
         current += t * w;
         weight_sum += w;
         confidence = max(confidence, w);
         let y = rgb_to_ycocg(t);
-        m1 += y;
-        m2 += y * y;
+        m1 += y * keep;
+        m2 += y * y * keep;
+        kept += keep;
         let z = textureLoad(depth_tex, p, 0);
         if (nearer(z, nearest_depth)) {
             nearest_depth = z;
             nearest_p = p;
         }
-        {% if reactive %}
-        reactive = max(reactive, textureLoad(reactive_tex, p, 0).r);
-        {% endif %}
+        if (nearer(farthest_depth, z)) {
+            farthest_depth = z;
+            farthest_p = p;
+        }
     }
     {% endfor %}
     {% endfor %}
+    // No sample kept: every pixel of the 3x3 is HUD, and the pass-through
+    // below replaces the result. Keep the arithmetic finite until then.
+    if (weight_sum <= 0.0) {
+        current = tonemap(sanitize(textureLoad(color_tex, p0, 0).rgb));
+        weight_sum = 1.0;
+        m1 = rgb_to_ycocg(current);
+        m2 = m1 * m1;
+        kept = 1.0;
+    }
     current = current / weight_sum;
 
     // ---- 4.3 Motion vector of the nearest pixel (G1, G3) ----------------
@@ -246,6 +288,22 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         v = taa_sky_velocity(uv_q, cam);
     }
     let speed_px = length(v * O);
+
+    // Motion boundary: the nearest and the farthest surface of the 3x3 move
+    // differently, i.e. this is the silhouette of something moving against
+    // what is behind it. Such a pixel's coverage changes from frame to frame,
+    // and its history holds the average coverage of the last frames (the
+    // clip cannot help: both surfaces' colours are inside the box). A static
+    // silhouette has no relative motion and keeps its full history.
+    var v_far = textureLoad(velocity_tex, farthest_p, 0).xy;
+    if (is_sky(farthest_depth)) {
+        v_far = taa_sky_velocity(uv_q, cam);
+    }
+    let edge_motion = clamp(
+        length((v - v_far) * O) / max(params.motion_edge_speed, 1.0e-4),
+        0.0,
+        1.0,
+    );
 
     // ---- 4.5 History fetch (G4) ------------------------------------------
     let uv_hist = uv_q - v;
@@ -298,8 +356,8 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // tonemapped colour, so one HDR outlier cannot open it. The history is
     // clipped along the line to the mean (not clamped per channel, which
     // lands on a box corner: a colour that may occur nowhere nearby).
-    let mean = m1 / 9.0;
-    let sigma = sqrt(max(m2 / 9.0 - mean * mean, vec3<f32>(0.0)));
+    let mean = m1 / kept;
+    let sigma = sqrt(max(m2 / kept - mean * mean, vec3<f32>(0.0)));
     let gamma = mix(
         params.gamma_still,
         params.gamma_moving,
@@ -319,8 +377,17 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     // ---- 4.8 Blend weight (G7) -------------------------------------------
     let has_history = params.reset < 0.5 && on_screen && !disoccluded;
-    let n = min(n_prev, params.max_history);
+    // The cap shortens with speed: history resampled every frame softens a
+    // little each time, and a long memory would carry that softness for a
+    // quarter of a second after the motion stops.
+    let history_cap = mix(
+        params.max_history,
+        min(params.max_history, params.max_history_moving),
+        clamp(speed_px / max(params.max_history_moving_speed, 1.0e-4), 0.0, 1.0),
+    );
+    let n = min(n_prev, history_cap);
     var alpha = 1.0 / (n + 1.0);
+    alpha = max(alpha, params.motion_edge_alpha * edge_motion);
     alpha = max(alpha, params.motion_alpha * clamp(speed_px / max(params.motion_alpha_speed, 1.0e-4), 0.0, 1.0));
     alpha = max(alpha, reactive * params.reactive_valid);
     alpha = max(alpha, clip_amount * 0.5);
@@ -332,10 +399,40 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         alpha = 1.0;
     }
     var result = mix(history_clipped, current, alpha);
-    var n_next = min(n + 1.0, params.max_history) * (1.0 - clip_amount);
+    var n_next = min(n + 1.0, history_cap) * (1.0 - clip_amount);
     if (!has_history) {
         n_next = 1.0;
     }
+
+    {% if reactive %}
+    // HUD pass-through. HUD pixels were rasterised unjittered, so their
+    // samples sit at pixel centres: bilinear between the four nearest (exactly
+    // the pixel itself at native resolution), no history, no reconstruction.
+    let hud_pos = r_pos - 0.5;
+    let hud_p = vec2<i32>(floor(hud_pos));
+    let hud_f = hud_pos - vec2<f32>(hud_p);
+    let h00 = clamp(hud_p, vec2<i32>(0), p_max);
+    let h11 = clamp(hud_p + vec2<i32>(1, 1), vec2<i32>(0), p_max);
+    let h10 = vec2<i32>(h11.x, h00.y);
+    let h01 = vec2<i32>(h00.x, h11.y);
+    let hud_nearest = select(h00, h11, hud_f >= vec2<f32>(0.5));
+    let is_hud = params.reactive_valid > 0.5
+        && textureLoad(reactive_tex, hud_nearest, 0).r >= HUD_REACTIVE;
+    if (is_hud) {
+        let top = mix(
+            tonemap(sanitize(textureLoad(color_tex, h00, 0).rgb)),
+            tonemap(sanitize(textureLoad(color_tex, h10, 0).rgb)),
+            hud_f.x,
+        );
+        let bottom = mix(
+            tonemap(sanitize(textureLoad(color_tex, h01, 0).rgb)),
+            tonemap(sanitize(textureLoad(color_tex, h11, 0).rgb)),
+            hud_f.x,
+        );
+        result = mix(top, bottom, hud_f.y);
+        n_next = 1.0;
+    }
+    {% endif %}
 
     // NaN / Inf guard: one bad value in the history would spread through the
     // clip box forever.
@@ -381,6 +478,17 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
             out_color = untonemap(history_clipped);
         } else if (view == 9u) {
             out_color = untonemap(current);
+        } else if (view == 10u) {
+            // Previous depth against where this surface was: 0.5 = the same
+            // surface, darker = something nearer was there (disocclusion),
+            // brighter = something farther.
+            out_color = vec3<f32>(clamp(0.5 * d_prev / max(d_expected, 1.0e-6), 0.0, 1.0));
+        } else if (view == 11u) {
+            out_color = vec3<f32>(n_prev / max(params.max_history, 1.0));
+        } else if (view == 12u) {
+            out_color = vec3<f32>(alpha);
+        } else if (view == 13u) {
+            out_color = vec3<f32>(edge_motion);
         }
     }
     textureStore(out_tex, q, vec4<f32>(out_color, 1.0));

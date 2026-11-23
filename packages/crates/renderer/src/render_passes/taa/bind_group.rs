@@ -91,13 +91,18 @@ impl TaaBindGroups {
         textures: &TaaTextures,
         params_buffer: &web_sys::GpuBuffer,
     ) -> Result<()> {
-        if self.reactive {
-            // No reactive mask exists before plan phase 3; the pass only
-            // builds the non-reactive variant until then. Phase 3: bind
-            // `views.reactive` at binding 10 (the layout already has it).
-            return Err(AwsmBindGroupError::NotFound("TAA reactive mask".to_string()).into());
-        }
         let views = ctx.render_texture_views;
+        // Allocated with the velocity target whenever TAA is on.
+        let reactive = if self.reactive {
+            Some(
+                views
+                    .reactive
+                    .as_ref()
+                    .ok_or_else(|| AwsmBindGroupError::NotFound("TAA reactive".to_string()))?,
+            )
+        } else {
+            None
+        };
         // The geometry pass allocates `velocity` whenever TAA is on, so a
         // missing view is a lifecycle bug, not a state to paper over.
         let velocity = views
@@ -107,7 +112,7 @@ impl TaaBindGroups {
         let layout = ctx.bind_group_layouts.get(self.layout_key)?;
         for (curr, group) in self.groups.iter_mut().enumerate() {
             let prev = 1 - curr;
-            let entries = vec![
+            let mut entries = vec![
                 BindGroupEntry::new(
                     0,
                     BindGroupResource::Buffer(BufferBinding::new(&ctx.camera.gpu_buffer)),
@@ -143,6 +148,12 @@ impl TaaBindGroups {
                     BindGroupResource::TextureView(Cow::Borrowed(&textures.out_view)),
                 ),
             ];
+            if let Some(reactive) = reactive {
+                entries.push(BindGroupEntry::new(
+                    10,
+                    BindGroupResource::TextureView(Cow::Borrowed(reactive)),
+                ));
+            }
             let descriptor = BindGroupDescriptor::new(layout, Some("TAA Resolve"), entries);
             *group = Some(ctx.gpu.create_bind_group(&descriptor.into()));
         }

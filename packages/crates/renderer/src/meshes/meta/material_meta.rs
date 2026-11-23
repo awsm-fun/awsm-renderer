@@ -286,13 +286,15 @@ impl<'a> MaterialMeshMeta<'a> {
         // Formerly `_reserved1`.
         let alpha_cutoff = materials.alpha_cutoff(material_key).unwrap_or(0.0);
         push_u32(alpha_cutoff.to_bits());
-        // Reserved trailing u32s (indices 22-23). Formerly held the per-mesh
-        // light slice (`offset`/`count`) for the old per-mesh lighting path,
-        // removed when shading unified on the per-pixel froxel light list; kept
-        // as inert tail padding (each entry is 256-byte aligned, so removing
-        // them reclaims nothing) and to keep the populated region at a vec4
-        // multiple so `padding_4: array<vec4<u32>, _>` stays vec4-aligned.
-        push_u32(0);
+        // Index 22: the material is temporally reactive (TAA, plan 03 §5.2;
+        // `Materials::is_temporal_reactive`). Read only by the TAA reactive
+        // seed (`taa_wgsl/reactive_seed.wgsl`, as a raw word); the shared
+        // WGSL struct still calls it `_reserved2` so no other shader changes.
+        push_u32(u32::from(materials.is_temporal_reactive(material_key)));
+        // Reserved trailing u32 (index 23). Formerly half of the per-mesh
+        // light slice of the old per-mesh lighting path; kept as inert tail
+        // padding so the populated region stays a vec4 multiple and
+        // `padding_4: array<vec4<u32>, _>` stays vec4-aligned.
         push_u32(0);
 
         Ok(result)

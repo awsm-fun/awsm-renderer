@@ -21,6 +21,8 @@ struct RenderedCamera {
     position: Vec3,
     /// World-space view direction.
     forward: Vec3,
+    /// Whether the projection was orthographic (`projection[3][3] == 1`).
+    orthographic: bool,
 }
 
 /// GPU camera buffer and cached state.
@@ -39,6 +41,19 @@ pub struct CameraBuffer {
     jumped: bool,
     /// Whether `raw_data` currently holds a jittered projection.
     raw_is_jittered: bool,
+    /// TAA reactive factors packed into `dof_params.zw`: `(k_transparent,
+    /// k_material)` (03 §5). `[0, 0]` without TAA, so the uniform stays what
+    /// it always was.
+    reactive_factors: [f32; 2],
+    /// TAA with a HUD (03 §5.4): the same uniform with the UNJITTERED
+    /// projection, bound by the HUD geometry pass so the HUD rasterises
+    /// without jitter (the resolve passes HUD pixels through). `None` unless
+    /// requested ([`Self::sync_hud_buffer`]); nothing changes for the main
+    /// buffer.
+    pub hud_gpu_buffer: Option<web_sys::GpuBuffer>,
+    hud_raw: Option<Box<[u8; Self::BYTE_SIZE]>>,
+    hud_dirty: bool,
+    hud_uploader: Option<crate::buffer::mapped_uploader::MappedUploader>,
     gpu_dirty: bool,
     /// One-shot latch for the depth-convention mismatch error — a static
     /// misconfiguration, so it must not spam once per frame.
@@ -57,7 +72,8 @@ impl CameraBuffer {
     //  position (vec4, w=unused) 16 bytes
     //  frustum corner rays (4 * vec4) 64 bytes
     //  viewport (vec4) 16 bytes
-    //  dof_params (vec4: focus_distance, aperture, unused, unused) 16 bytes
+    //  dof_params (vec4: focus_distance, aperture, TAA k_transparent,
+    //              TAA k_material; zw zero without TAA) 16 bytes
     //  prev_view_projection (mat4)  64 bytes  (M3 SSR temporal reprojection)
     //  view_projection_unjittered (mat4) 64 bytes  (TAA motion vectors)
     //  jitter (vec4: xy = this frame, zw = previous frame; render pixels) 16 bytes
@@ -109,6 +125,11 @@ impl CameraBuffer {
             rendered: None,
             jumped: false,
             raw_is_jittered: false,
+            reactive_factors: [0.0; 2],
+            hud_gpu_buffer: None,
+            hud_raw: None,
+            hud_dirty: false,
+            hud_uploader: None,
             warned_convention: false,
             gpu_buffer,
             uploader: crate::buffer::mapped_uploader::MappedUploader::new("Camera"),
@@ -219,6 +240,13 @@ impl CameraBuffer {
     ///
     /// `render_width` / `render_height` are the render size `R`: the jitter
     /// is in render pixels.
+    ///
+    /// `reactive_factors`: TAA's `(k_transparent, k_material)`, packed into
+    /// `dof_params.zw` (`None` = TAA off = zeros).
+    ///
+    /// `hud`: also pack the unjittered HUD twin (TAA with a HUD; see
+    /// [`Self::hud_gpu_buffer`]).
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn prepare_frame(
         &mut self,
         jitter: Option<Vec2>,
@@ -226,12 +254,17 @@ impl CameraBuffer {
         render_width: f32,
         render_height: f32,
         convention: crate::depth_convention::DepthConvention,
+        reactive_factors: Option<[f32; 2]>,
+        hud: bool,
     ) {
+        let reactive_factors = reactive_factors.unwrap_or([0.0; 2]);
+        let factors_changed = reactive_factors != self.reactive_factors;
+        self.reactive_factors = reactive_factors;
         let Some(matrices) = self.last_matrices.clone() else {
             return;
         };
         let view_projection = matrices.view_projection();
-        if temporal || jitter.is_some() || self.raw_is_jittered {
+        if temporal || jitter.is_some() || self.raw_is_jittered || factors_changed {
             // Previous = the last frame that was RENDERED. Not the last
             // camera that was set: an app that sets the camera twice in one
             // frame, or only when it changes, must still get the true
@@ -244,6 +277,21 @@ impl CameraBuffer {
                     matrices.position_world,
                 ),
             };
+            if hud && self.hud_gpu_buffer.is_some() {
+                // The HUD twin: identical but for the jitter (none).
+                self.pack(
+                    &matrices,
+                    None,
+                    render_width,
+                    render_height,
+                    convention,
+                    prev_view_projection,
+                    prev_jitter,
+                    prev_position,
+                );
+                self.hud_raw = Some(Box::new(self.raw_data));
+                self.hud_dirty = true;
+            }
             self.pack(
                 &matrices,
                 jitter,
@@ -262,6 +310,7 @@ impl CameraBuffer {
             jitter_px: jitter.unwrap_or(Vec2::ZERO),
             position: matrices.position_world,
             forward,
+            orthographic: is_orthographic(&matrices.projection),
         });
     }
 
@@ -284,13 +333,18 @@ impl CameraBuffer {
     /// floored by their radius). `None`: only the rotation test applies.
     pub(crate) fn detect_jump(&mut self, view_distance: Option<f32>) -> bool {
         self.jumped = match (&self.last_matrices, self.rendered) {
-            (Some(now), Some(prev)) => camera_jumped(
-                prev.position,
-                prev.forward,
-                now.position_world,
-                -now.view.row(2).truncate().normalize_or_zero(),
-                view_distance,
-            ),
+            // A perspective <-> orthographic flip is a cut whatever the
+            // camera's pose: nothing reprojects across it.
+            (Some(now), Some(prev)) => {
+                prev.orthographic != is_orthographic(&now.projection)
+                    || camera_jumped(
+                        prev.position,
+                        prev.forward,
+                        now.position_world,
+                        -now.view.row(2).truncate().normalize_or_zero(),
+                        view_distance,
+                    )
+            }
             _ => false,
         };
         self.jumped
@@ -381,15 +435,16 @@ impl CameraBuffer {
             &[0.0, 0.0, screen_width, screen_height],
         );
 
-        // DoF parameters: focus_distance, aperture, and 2 unused floats
+        // DoF parameters: focus_distance, aperture; zw = TAA reactive
+        // factors (k_transparent, k_material), zeros without TAA.
         write_f32_slice(
             &mut self.raw_data,
             &mut offset,
             &[
                 camera_matrices.focus_distance,
                 camera_matrices.aperture,
-                0.0,
-                0.0,
+                self.reactive_factors[0],
+                self.reactive_factors[1],
             ],
         );
 
@@ -427,6 +482,40 @@ impl CameraBuffer {
         self.gpu_dirty = true;
     }
 
+    /// Creates (`want`) or drops the HUD twin buffer. Returns `true` when it
+    /// was created or dropped: the geometry camera / masked bind groups must
+    /// then be rebuilt (`BindGroupCreate::CameraHud`).
+    pub(crate) fn sync_hud_buffer(&mut self, gpu: &AwsmRendererWebGpu, want: bool) -> Result<bool> {
+        match (want, self.hud_gpu_buffer.is_some()) {
+            (true, false) => {
+                self.hud_gpu_buffer = Some(
+                    gpu.create_buffer(
+                        &BufferDescriptor::new(
+                            Some("Camera (HUD, unjittered)"),
+                            Self::BYTE_SIZE,
+                            BufferUsage::new().with_uniform().with_copy_dst(),
+                        )
+                        .into(),
+                    )?,
+                );
+                self.hud_uploader = Some(crate::buffer::mapped_uploader::MappedUploader::new(
+                    "Camera (HUD)",
+                ));
+                Ok(true)
+            }
+            (false, true) => {
+                if let Some(buffer) = self.hud_gpu_buffer.take() {
+                    buffer.destroy();
+                }
+                self.hud_raw = None;
+                self.hud_dirty = false;
+                self.hud_uploader = None;
+                Ok(true)
+            }
+            _ => Ok(false),
+        }
+    }
+
     /// Returns true if the camera was moved since the last update.
     pub fn moved(&self) -> bool {
         self.camera_moved
@@ -457,9 +546,31 @@ impl CameraBuffer {
 
             self.gpu_dirty = false;
         }
+        if self.hud_dirty {
+            if let (Some(buffer), Some(raw), Some(uploader)) = (
+                self.hud_gpu_buffer.as_ref(),
+                self.hud_raw.as_ref(),
+                self.hud_uploader.as_mut(),
+            ) {
+                uploader.write_dirty_ranges(
+                    gpu,
+                    buffer,
+                    Self::BYTE_SIZE,
+                    raw.as_slice(),
+                    &[(0, Self::BYTE_SIZE)],
+                )?;
+            }
+            self.hud_dirty = false;
+        }
 
         Ok(())
     }
+}
+
+/// Whether a projection matrix is orthographic: its last row is (0, 0, 0, 1),
+/// where a perspective projection has (0, 0, ∓1, 0).
+fn is_orthographic(projection: &Mat4) -> bool {
+    projection.w_axis.w.abs() > 0.5
 }
 
 /// The camera-jump test behind [`CameraBuffer::jumped`]: turned by more than

@@ -641,6 +641,8 @@ mod stale_dynamic_set_tests {
             texture_pool_arrays_len: 1,
             texture_pool_samplers_len: 1,
             msaa_sample_count: Some(4),
+            reactive: false,
+            hud_post: false,
             mipmaps: true,
             reverse_z: false,
             base,

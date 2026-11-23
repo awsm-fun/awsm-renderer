@@ -21,7 +21,9 @@ use crate::{
     shaders::Shaders,
 };
 
-use super::pipelines::{LinePipelines, LinePipelinesDescriptors, LineVariantKey};
+use super::pipelines::{
+    LinePipelines, LinePipelinesDescriptors, LineVariantKey, REACTIVE_VARIANT_KEYS, VARIANT_KEYS,
+};
 use super::shader::cache_key::ShaderCacheKeyLine;
 use super::types::{GpuLineSegment, LineEntry, LineKey, LINE_UNIFORM_BYTES};
 
@@ -33,6 +35,8 @@ use super::types::{GpuLineSegment, LineEntry, LineKey, LINE_UNIFORM_BYTES};
 /// issue / poll / install split mirrors the material scheduler's
 /// `inflight_compile` pump.
 struct LineInflightCompile {
+    /// The TAA variants ([`REACTIVE_VARIANT_KEYS`]) rather than the base 4.
+    reactive: bool,
     prep: RenderPipelinesPrep,
     #[allow(clippy::type_complexity)]
     joined: Pin<
@@ -150,6 +154,9 @@ impl LineRenderer {
     /// `ensure_keys`. Called from `AwsmRenderer::ensure_line_pipelines_compiled`,
     /// which is itself driven by `wait_for_pipelines_ready` and the
     /// MSAA-toggle path in `set_anti_aliasing`.
+    ///
+    /// `reactive` (TAA on): also compile the 2 TAA variants.
+    #[allow(clippy::too_many_arguments)]
     pub async fn ensure_pipelines_compiled(
         &mut self,
         gpu: &AwsmRendererWebGpu,
@@ -159,7 +166,27 @@ impl LineRenderer {
         shaders: &mut Shaders,
         formats: &RenderTextureFormats,
         depth_compare_strict: CompareFunction,
+        reactive: bool,
     ) -> Result<()> {
+        if reactive && self.pipelines.reactive_variants.is_none() {
+            let shader_key = shaders
+                .get_key(gpu, ShaderCacheKeyLine { reactive: true })
+                .await?;
+            let cache_keys = self.pipelines.build_cache_keys_sync(
+                gpu,
+                bind_group_layouts,
+                pipeline_layouts,
+                shader_key,
+                formats,
+                depth_compare_strict,
+                &REACTIVE_VARIANT_KEYS,
+            )?;
+            let resolved = pipelines
+                .render
+                .ensure_keys(gpu, shaders, pipeline_layouts, cache_keys)
+                .await?;
+            self.pipelines.install_reactive(resolved);
+        }
         if self.pipelines.variants.is_some() {
             self.pipelines_compile_requested = false;
             return Ok(());
@@ -208,27 +235,51 @@ impl LineRenderer {
     /// pipeline compiles. This removes the previous footgun where a
     /// consumer had to manually call `wait_for_pipelines_ready` after
     /// registering a line for it to ever draw.
+    ///
+    /// `reactive` (TAA on): once the base variants exist, the 2 TAA variants
+    /// are kicked the same way (their shader is issued here: it is not part
+    /// of the boot pool, which must stay TAA-free).
+    #[allow(clippy::too_many_arguments)]
     pub fn kick_compile(
         &mut self,
         gpu: &AwsmRendererWebGpu,
-        shaders: &Shaders,
+        shaders: &mut Shaders,
         bind_group_layouts: &mut BindGroupLayouts,
         pipeline_layouts: &mut PipelineLayouts,
         formats: &RenderTextureFormats,
         depth_compare_strict: CompareFunction,
+        reactive: bool,
     ) -> Result<()> {
-        if !self.pipelines_compile_requested
-            || self.pipelines.variants.is_some()
-            || self.inflight.is_some()
-        {
+        if self.inflight.is_some() {
             return Ok(());
         }
-        // The line shader is pre-warmed at boot (`RenderPasses::new`), so
-        // this sync cache peek hits. If it somehow misses (a line
-        // registered before boot shaders finished), bail and retry next
-        // frame — never block or compile a shader on the render path.
-        let Some(shader_key) = shaders.get_cached_key(ShaderCacheKeyLine) else {
+        let base_wanted = self.pipelines_compile_requested && self.pipelines.variants.is_none();
+        let reactive_wanted = !base_wanted
+            && reactive
+            && self.pipelines.reactive_variants.is_none()
+            && !self.entries.is_empty();
+        if !base_wanted && !reactive_wanted {
             return Ok(());
+        }
+        let (shader_key, variant_keys) = if base_wanted {
+            // The line shader is pre-warmed at boot (`RenderPasses::new`), so
+            // this sync cache peek hits. If it somehow misses (a line
+            // registered before boot shaders finished), bail and retry next
+            // frame — never block or compile a shader on the render path.
+            let Some(shader_key) = shaders.get_cached_key(ShaderCacheKeyLine::default()) else {
+                return Ok(());
+            };
+            (shader_key, &VARIANT_KEYS[..])
+        } else {
+            let shader_key = shaders
+                .ensure_keys_sync_skip_validate(
+                    gpu,
+                    [crate::shaders::ShaderCacheKey::from(ShaderCacheKeyLine {
+                        reactive: true,
+                    })],
+                )?
+                .remove(0);
+            (shader_key, &REACTIVE_VARIANT_KEYS[..])
         };
         let cache_keys = self.pipelines.build_cache_keys_sync(
             gpu,
@@ -237,12 +288,14 @@ impl LineRenderer {
             shader_key,
             formats,
             depth_compare_strict,
+            variant_keys,
         )?;
         let mut prepped =
             RenderPipelines::ensure_keys_prepare(gpu, shaders, pipeline_layouts, cache_keys)?;
         let promises = std::mem::take(&mut prepped.promises);
         let joined = Box::pin(futures::future::join_all(promises));
         self.inflight = Some(LineInflightCompile {
+            reactive: reactive_wanted,
             prep: prepped.prep,
             joined,
         });
@@ -269,8 +322,12 @@ impl LineRenderer {
             .take()
             .expect("inflight present (just polled Some)");
         let keys = render_pipelines.ensure_keys_install(inflight.prep, results)?;
-        self.pipelines.install_resolved(keys);
-        self.pipelines_compile_requested = false;
+        if inflight.reactive {
+            self.pipelines.install_reactive(keys);
+        } else {
+            self.pipelines.install_resolved(keys);
+            self.pipelines_compile_requested = false;
+        }
         Ok(())
     }
 
@@ -353,6 +410,7 @@ impl LineRenderer {
             Some("Lines"),
             true,
             false,
+            true,
         )?;
         self.draw(ctx, &render_pass)?;
         render_pass.end();
@@ -370,6 +428,9 @@ impl LineRenderer {
             return Ok(());
         }
         let msaa = ctx.anti_aliasing.has_msaa_checked()?;
+        // Under TAA the world transparent pass carries the reactive mask, so
+        // only the TAA variants are compatible with it.
+        let reactive = ctx.render_texture_views.reactive.is_some();
         let viewport_w = ctx.render_texture_views.render_size.0 as f32;
         let viewport_h = ctx.render_texture_views.render_size.1 as f32;
         let mut current_variant: Option<LineVariantKey> = None;
@@ -393,6 +454,7 @@ impl LineRenderer {
             let variant = LineVariantKey {
                 depth_test_always: entry.depth_test_always,
                 msaa,
+                reactive,
             };
             if current_variant != Some(variant) {
                 let Some(pipeline_key) = self.pipelines.get(variant) else {

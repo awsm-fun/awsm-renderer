@@ -38,7 +38,12 @@ struct LineUniform {
 
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
-    @location(0) color: vec4<f32>,
+    @location(0) color: vec4<f32>,{% if reactive %}
+    // TAA: k_transparent (camera dof_params.z, which this struct mirror sees
+    // as `_padding_end[1]`), passed down because the camera is bound to the
+    // vertex stage only.
+    @location(1) @interpolate(flat) k_transparent: f32,
+{% endif +%}
 };
 
 // `vertex_index` 0..4 picks the four corners of a triangle-strip quad
@@ -94,11 +99,28 @@ fn vert_main(
 
     var out: VertexOutput;
     out.clip_position = clip_pos;
-    out.color = color;
+    out.color = color;{% if reactive %}
+    out.k_transparent = camera_raw._padding_end[1].z;
+{% endif +%}
     return out;
 }
 
+{% if reactive %}
+// TAA: colour + reactive mask (`alpha * k_transparent`, 03 §5.1; MAX
+// blended).
+struct FragmentOutput {
+    @location(0) color: vec4<f32>,
+    @location(1) reactive: f32,
+};
+
+@fragment
+fn frag_main(in: VertexOutput) -> FragmentOutput {
+    // Below 1.0: exactly 1.0 means "HUD pixel, pass through" to the resolve.
+    return FragmentOutput(in.color, min(in.color.a * in.k_transparent, 0.99));
+}
+{%- else %}
 @fragment
 fn frag_main(in: VertexOutput) -> @location(0) vec4<f32> {
     return in.color;
 }
+{%- endif %}

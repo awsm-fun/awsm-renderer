@@ -662,6 +662,9 @@ pub fn material_definition(
         shader_includes: mat.shader_includes.get_cloned(),
         fragment_inputs: mat.fragment_inputs.get_cloned(),
         has_vertex_wgsl: !mat.vertex_wgsl.get_cloned().trim().is_empty(),
+        // TAA temporal: auto (the editor does not author it for custom
+        // materials yet).
+        temporal: None,
     }
 }
 

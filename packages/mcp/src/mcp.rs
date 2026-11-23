@@ -1567,6 +1567,83 @@ pub struct PostProcessParams {
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct AntiAliasingParams {
+    /// 'none' | 'msaa' | 'smaa' | 'msaa_smaa' | 'taa'. STRUCTURAL —
+    /// recompiles; call wait_render_settled after. Omit to leave unchanged.
+    #[serde(default)]
+    pub mode: Option<String>,
+    /// TAA preset: 'native' (1.0) | 'quality' (0.67) | 'balanced' (0.58) |
+    /// 'performance' (0.5). Sets taa_render_scale + taa_sharpen.
+    #[serde(default)]
+    pub taa_preset: Option<String>,
+    /// TAA render scale (render size / output size), 0.5..=1.0.
+    #[serde(default)]
+    pub taa_render_scale: Option<f32>,
+    /// TAA sharpening strength after the resolve, 0..=1 (0 = off).
+    #[serde(default)]
+    pub taa_sharpen: Option<f32>,
+    /// TAA debug view (transient): 'none' | 'velocity' | 'reprojection_error' |
+    /// 'history_length' | 'rejection' | 'reactive' | 'confidence' |
+    /// 'freeze_jitter' | 'history_only' | 'current_only'.
+    #[serde(default)]
+    pub taa_debug_view: Option<String>,
+    // The tuning knobs below default to the renderer's shipped tuning (one
+    // source: awsm_renderer::taa::TaaTuning::default); read the current values
+    // back with get_post_process.
+    /// Variance-clip box half-width (std devs) when still.
+    #[serde(default)]
+    pub taa_gamma_still: Option<f32>,
+    /// Variance-clip box half-width when moving.
+    #[serde(default)]
+    pub taa_gamma_moving: Option<f32>,
+    /// Speed (px/frame) at which the box reaches taa_gamma_moving.
+    #[serde(default)]
+    pub taa_gamma_moving_speed: Option<f32>,
+    /// Relative depth slack of the disocclusion test.
+    #[serde(default)]
+    pub taa_disocclusion_threshold: Option<f32>,
+    /// History-length cap at native resolution.
+    #[serde(default)]
+    pub taa_max_history_native: Option<f32>,
+    /// History-length cap when upscaling.
+    #[serde(default)]
+    pub taa_max_history_upscaling: Option<f32>,
+    /// Minimum current-frame weight at taa_motion_alpha_speed.
+    #[serde(default)]
+    pub taa_motion_alpha: Option<f32>,
+    /// Speed (px/frame) at which taa_motion_alpha is reached.
+    #[serde(default)]
+    pub taa_motion_alpha_speed: Option<f32>,
+    /// Reactive value per unit of transparent alpha.
+    #[serde(default)]
+    pub taa_reactive_transparent: Option<f32>,
+    /// Reactive value of materials flagged temporal: reactive.
+    #[serde(default)]
+    pub taa_reactive_material: Option<f32>,
+    /// Extra reactivity from SSR reflectivity.
+    #[serde(default)]
+    pub taa_reactive_ssr: Option<f32>,
+    /// Added to log2(render_scale) for the texture LOD bias.
+    #[serde(default)]
+    pub taa_mip_bias_extra: Option<f32>,
+    /// History-length cap for a pixel moving at taa_max_history_moving_speed or
+    /// faster (a short memory keeps resampling blur from building up).
+    #[serde(default)]
+    pub taa_max_history_moving: Option<f32>,
+    /// Speed (px/frame) at which the cap has dropped to taa_max_history_moving.
+    #[serde(default)]
+    pub taa_max_history_moving_speed: Option<f32>,
+    /// Minimum current-frame weight on a motion boundary (a 3x3 holding
+    /// surfaces that move differently, e.g. a moving silhouette).
+    #[serde(default)]
+    pub taa_motion_edge_alpha: Option<f32>,
+    /// Relative speed (px/frame) between the nearest and farthest surface of
+    /// the 3x3 at which taa_motion_edge_alpha is reached.
+    #[serde(default)]
+    pub taa_motion_edge_speed: Option<f32>,
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct ViewOptionsParams {
     /// Ground grid visibility. Omit to leave unchanged.
     #[serde(default)]
@@ -2114,7 +2191,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Replace a built-in library material's VARIANT definition wholesale (idempotent full MaterialDef as a JSON object, undoable; assigned meshes re-materialize). Key fields: shading (unit variants are PLAIN STRINGS: \"pbr\" | \"unlit\"; struct variants are single-key objects: {\"toon\":{...}} | {\"flip_book\":{\"cols\":2,\"rows\":2,\"frame_count\":4,\"fps\":2.0,\"time_offset\":0.0,\"mode\":\"loop\",\"flip_y\":false}}), alpha_mode (\"opaque\" | {\"mask\":{\"cutoff\":0.5}} | \"blend\"), double_sided, base_color (rgba), base_color_texture ({\"asset\":\"<texture-asset-id>\"} — for a FlipBook this is the ATLAS), extensions (e.g. {\"clearcoat\":{\"factor\":1.0,\"roughness_factor\":0.0}}), label. Read the current def from get_snapshot first and send it back modified. A Mask-mode FlipBook = an ANIMATED CUTOUT (alpha-tested opaque, hole-shaped shadows)."
+        description = "Replace a built-in library material's VARIANT definition wholesale (idempotent full MaterialDef as a JSON object, undoable; assigned meshes re-materialize). Key fields: shading (unit variants are PLAIN STRINGS: \"pbr\" | \"unlit\"; struct variants are single-key objects: {\"toon\":{...}} | {\"flip_book\":{\"cols\":2,\"rows\":2,\"frame_count\":4,\"fps\":2.0,\"time_offset\":0.0,\"mode\":\"loop\",\"flip_y\":false}}), alpha_mode (\"opaque\" | {\"mask\":{\"cutoff\":0.5}} | \"blend\"), double_sided, base_color (rgba), base_color_texture ({\"asset\":\"<texture-asset-id>\"} — for a FlipBook this is the ATLAS), extensions (e.g. {\"clearcoat\":{\"factor\":1.0,\"roughness_factor\":0.0}}), label, temporal (TAA: null = auto — reactive when a texture flows or it is a flipbook | \"stable\" | \"reactive\" for colour that changes on a still surface, e.g. animated emissive). Read the current def from get_snapshot first and send it back modified. A Mask-mode FlipBook = an ANIMATED CUTOUT (alpha-tested opaque, hole-shaped shadows)."
     )]
     async fn update_builtin_material(
         &self,
@@ -4981,7 +5058,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Set editor viewport view options (partial update — only the fields you pass change; transient view state, never persisted): grid, gizmos, light_gizmos, camera_gizmos (wireframe frustum per camera node), skeleton_viz, follow_agent, activity_overlay, mcp_notifications, msaa, smaa (all bool; msaa is STRUCTURAL — wait_render_settled after flipping), render_scale (float 1.0–2.0 supersampling; targets rebuild next frame — wait_render_settled after), and anisotropy (bool, default on — runtime sampler swap). FOR CLEAN VERIFICATION SCREENSHOTS: set {grid:false, gizmos:false, light_gizmos:false, skeleton_viz:false} before screenshot_scene so viewport chrome does not contaminate the pixels, and restore afterwards. follow_agent / activity_overlay / mcp_notifications default OFF and are human-courtesy toggles — leave them off during automated work. Read the current values back with get_view_options."
+        description = "Set editor viewport view options (partial update — only the fields you pass change; transient view state, never persisted): grid, gizmos, light_gizmos, camera_gizmos (wireframe frustum per camera node), skeleton_viz, follow_agent, activity_overlay, mcp_notifications, msaa, smaa (all bool; msaa is STRUCTURAL — wait_render_settled after flipping; turning either on leaves TAA — prefer set_anti_aliasing for the AA mode), render_scale (float 1.0–2.0 supersampling; targets rebuild next frame — wait_render_settled after; rejected while TAA is on), and anisotropy (bool, default on — runtime sampler swap). FOR CLEAN VERIFICATION SCREENSHOTS: set {grid:false, gizmos:false, light_gizmos:false, skeleton_viz:false} before screenshot_scene so viewport chrome does not contaminate the pixels, and restore afterwards. follow_agent / activity_overlay / mcp_notifications default OFF and are human-courtesy toggles — leave them off during automated work. Read the current values back with get_view_options."
     )]
     async fn set_view_options(
         &self,
@@ -5005,8 +5082,93 @@ impl EditorMcp {
     }
 
     #[tool(
+        description = "Set the anti-aliasing. mode: 'none' | 'msaa' (4x) | 'smaa' | 'msaa_smaa' (the pre-TAA combination) | 'taa' (temporal AA: smooths geometric edges AND shading/specular aliasing; can upscale below taa_render_scale 1). The modes are EXCLUSIVE; changing the mode is STRUCTURAL (pipelines recompile — wait_render_settled after). TAA settings: taa_preset ('native' 1.0 | 'quality' 0.67 | 'balanced' 0.58 | 'performance' 0.5; sets taa_render_scale + taa_sharpen), taa_render_scale (0.5..=1.0), taa_sharpen (0..=1), and the advanced tuning knobs taa_gamma_still / taa_gamma_moving / taa_gamma_moving_speed / taa_disocclusion_threshold / taa_max_history_native / taa_max_history_upscaling / taa_motion_alpha / taa_motion_alpha_speed / taa_reactive_transparent / taa_reactive_material / taa_reactive_ssr / taa_mip_bias_extra / taa_max_history_moving / taa_max_history_moving_speed / taa_motion_edge_alpha / taa_motion_edge_speed (defaults: the renderer's shipped tuning, readable via get_post_process) — all LIVE (no recompile, no history reset); TAA settings sent while another mode is active are kept for when TAA is selected. taa_debug_view (transient, never saved): 'none' | 'velocity' | 'reprojection_error' | 'history_length' | 'rejection' | 'reactive' | 'confidence' | 'freeze_jitter' | 'history_only' | 'current_only'. Persisted on scene.post_process.anti_aliasing (project + player bundle); read back with get_post_process (anti_aliasing block) and get_view_options (anti_aliasing mode, taa_debug_view). Errors: TAA on a device without its motion-vector path. Selecting TAA turns supersampling (set_view_options render_scale) back to 1.0 — the two are exclusive. Every field optional (patch semantics)."
+    )]
+    async fn set_anti_aliasing(
+        &self,
+        Parameters(p): Parameters<AntiAliasingParams>,
+    ) -> Result<CallToolResult, McpError> {
+        use awsm_renderer_editor_protocol::{
+            AntiAliasingMode, TaaDebugViewName, TaaPresetName, TaaTuningPatch,
+        };
+        let bad = |what: &str, v: &str, expected: &str| {
+            Err(McpError::invalid_params(
+                format!("unknown {what} '{v}' — expected {expected}"),
+                None,
+            ))
+        };
+        let mode = match p.mode.as_deref() {
+            None => None,
+            Some("none") => Some(AntiAliasingMode::None),
+            Some("msaa") => Some(AntiAliasingMode::Msaa),
+            Some("smaa") => Some(AntiAliasingMode::Smaa),
+            Some("msaa_smaa") => Some(AntiAliasingMode::MsaaSmaa),
+            Some("taa") => Some(AntiAliasingMode::Taa),
+            Some(other) => {
+                return bad(
+                    "mode",
+                    other,
+                    "'none', 'msaa', 'smaa', 'msaa_smaa' or 'taa'",
+                )
+            }
+        };
+        let taa_preset = match p.taa_preset.as_deref() {
+            None => None,
+            Some("native") => Some(TaaPresetName::Native),
+            Some("quality") => Some(TaaPresetName::Quality),
+            Some("balanced") => Some(TaaPresetName::Balanced),
+            Some("performance") => Some(TaaPresetName::Performance),
+            Some(other) => {
+                return bad(
+                    "taa_preset",
+                    other,
+                    "'native', 'quality', 'balanced' or 'performance'",
+                )
+            }
+        };
+        let taa_debug_view = match p.taa_debug_view.as_deref() {
+            None => None,
+            Some(v) => match TaaDebugViewName::ALL.into_iter().find(|n| n.as_str() == v) {
+                Some(n) => Some(n),
+                None => {
+                    let names: Vec<&str> =
+                        TaaDebugViewName::ALL.iter().map(|n| n.as_str()).collect();
+                    return bad("taa_debug_view", v, &format!("one of {names:?}"));
+                }
+            },
+        };
+        let tuning = TaaTuningPatch {
+            gamma_still: p.taa_gamma_still,
+            gamma_moving: p.taa_gamma_moving,
+            gamma_moving_speed: p.taa_gamma_moving_speed,
+            disocclusion_threshold: p.taa_disocclusion_threshold,
+            max_history_native: p.taa_max_history_native,
+            max_history_upscaling: p.taa_max_history_upscaling,
+            motion_alpha: p.taa_motion_alpha,
+            motion_alpha_speed: p.taa_motion_alpha_speed,
+            reactive_transparent: p.taa_reactive_transparent,
+            reactive_material: p.taa_reactive_material,
+            reactive_ssr: p.taa_reactive_ssr,
+            mip_bias_extra: p.taa_mip_bias_extra,
+            max_history_moving: p.taa_max_history_moving,
+            max_history_moving_speed: p.taa_max_history_moving_speed,
+            motion_edge_alpha: p.taa_motion_edge_alpha,
+            motion_edge_speed: p.taa_motion_edge_speed,
+        };
+        self.dispatch(EditorCommand::SetAntiAliasing {
+            mode,
+            taa_preset,
+            taa_render_scale: p.taa_render_scale,
+            taa_sharpen: p.taa_sharpen,
+            taa_tuning: (tuning != TaaTuningPatch::default()).then_some(tuning),
+            taa_debug_view,
+        })
+        .await
+    }
+
+    #[tool(
         annotations(read_only_hint = true),
-        description = "Current editor viewport view options as JSON (grid, gizmos, light_gizmos, camera_gizmos, skeleton_viz, follow_agent, activity_overlay, mcp_notifications, msaa, smaa, anisotropy booleans + render_scale float) — the read half of set_view_options. Pure read."
+        description = "Current editor viewport view options as JSON (grid, gizmos, light_gizmos, camera_gizmos, skeleton_viz, follow_agent, activity_overlay, mcp_notifications, msaa, smaa, anisotropy booleans + render_scale float, plus anti_aliasing (the AA mode: 'none' | 'msaa' | 'smaa' | 'msaa_smaa' | 'taa') and taa_debug_view) — the read half of set_view_options (and of set_anti_aliasing's transient debug view). Pure read."
     )]
     async fn get_view_options(&self) -> Result<CallToolResult, McpError> {
         self.query(EditorQuery::ViewOptions).await
@@ -6652,6 +6814,23 @@ fn fmt_diag_errors(errors: &[CompileError]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `set_anti_aliasing` exposes a flat `taa_<name>` param for EVERY field of
+    /// the tuning patch, so a knob added to the protocol cannot be missing
+    /// from the MCP tool.
+    #[test]
+    fn set_anti_aliasing_has_a_param_for_every_tuning_field() {
+        let schema = serde_json::to_value(schemars::schema_for!(AntiAliasingParams)).unwrap();
+        let props = schema["properties"].as_object().expect("properties");
+        let patch =
+            serde_json::to_value(awsm_renderer_editor_protocol::TaaTuningPatch::default()).unwrap();
+        for field in patch.as_object().unwrap().keys() {
+            assert!(
+                props.contains_key(&format!("taa_{field}")),
+                "set_anti_aliasing lacks taa_{field}"
+            );
+        }
+    }
 
     /// Regression: `json_arg` must deserialize an `EditorCommand` carrying an
     /// integer-keyed map (`VertexOverrides.uvs: HashMap<u32,…>`) whose JSON keys

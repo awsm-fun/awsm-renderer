@@ -191,6 +191,8 @@ impl MaterialTransparentPipelines {
                 texture_pool_arrays_len,
                 texture_pool_samplers_len,
                 msaa_sample_count: anti_aliasing.msaa_sample_count,
+                reactive: writes_reactive(anti_aliasing, req.mesh),
+                hud_post: hud_post(anti_aliasing, req.mesh),
                 mipmaps: anti_aliasing.mipmap,
                 reverse_z,
                 base: req.base,
@@ -228,19 +230,6 @@ impl MaterialTransparentPipelines {
     where
         I: IntoIterator<Item = &'a TransparentMeshPipelineRequest<'a>>,
     {
-        let color_targets = &[
-            ColorTargetState::new(render_texture_formats.color).with_blend(BlendState::new(
-                BlendComponent::new()
-                    .with_src_factor(BlendFactor::One)
-                    .with_dst_factor(BlendFactor::OneMinusSrcAlpha)
-                    .with_operation(BlendOperation::Add),
-                BlendComponent::new()
-                    .with_src_factor(BlendFactor::One)
-                    .with_dst_factor(BlendFactor::OneMinusSrcAlpha)
-                    .with_operation(BlendOperation::Add),
-            )),
-        ];
-
         let texture_pool_arrays_len = material_bind_groups.texture_pool_arrays_len;
         let texture_pool_samplers_len = material_bind_groups.texture_pool_samplers_len;
 
@@ -252,6 +241,8 @@ impl MaterialTransparentPipelines {
                 texture_pool_arrays_len,
                 texture_pool_samplers_len,
                 msaa_sample_count: anti_aliasing.msaa_sample_count,
+                reactive: writes_reactive(anti_aliasing, req.mesh),
+                hud_post: hud_post(anti_aliasing, req.mesh),
                 mipmaps: anti_aliasing.mipmap,
                 reverse_z,
                 base: req.base,
@@ -263,6 +254,7 @@ impl MaterialTransparentPipelines {
                 instancing_transforms: req.mesh.instanced,
                 froxel_slice_count: crate::render_passes::light_culling::DEFAULT_SLICE_COUNT,
             };
+            let reactive = shader_cache_key.reactive;
             let shader_key = shaders.get_key(gpu, shader_cache_key).await?;
             let vbo_layouts = vertex_buffer_layouts(req.mesh, mesh_buffer_info);
             let cull_mode = if req.mesh.double_sided {
@@ -275,7 +267,7 @@ impl MaterialTransparentPipelines {
                 self.pipeline_layout_key,
                 shader_key,
                 vbo_layouts,
-                color_targets,
+                &color_targets(render_texture_formats, reactive),
                 anti_aliasing.msaa_sample_count,
                 cull_mode,
                 req.writes_depth,
@@ -347,6 +339,8 @@ impl MaterialTransparentPipelines {
                 texture_pool_arrays_len,
                 texture_pool_samplers_len,
                 msaa_sample_count: anti_aliasing.msaa_sample_count,
+                reactive: writes_reactive(anti_aliasing, req.mesh),
+                hud_post: hud_post(anti_aliasing, req.mesh),
                 mipmaps: anti_aliasing.mipmap,
                 reverse_z,
                 base: req.base,
@@ -372,18 +366,6 @@ impl MaterialTransparentPipelines {
             .await?;
 
         // Build per-mesh pipeline cache keys (shaders now warm).
-        let color_targets = &[
-            ColorTargetState::new(render_texture_formats.color).with_blend(BlendState::new(
-                BlendComponent::new()
-                    .with_src_factor(BlendFactor::One)
-                    .with_dst_factor(BlendFactor::OneMinusSrcAlpha)
-                    .with_operation(BlendOperation::Add),
-                BlendComponent::new()
-                    .with_src_factor(BlendFactor::One)
-                    .with_dst_factor(BlendFactor::OneMinusSrcAlpha)
-                    .with_operation(BlendOperation::Add),
-            )),
-        ];
         let mut pipeline_cache_keys: Vec<RenderPipelineCacheKey> =
             Vec::with_capacity(requests.len());
         for (req, shader_cache_key) in requests.iter().zip(shader_cache_keys.iter()) {
@@ -400,7 +382,7 @@ impl MaterialTransparentPipelines {
                 self.pipeline_layout_key,
                 shader_key,
                 vbo_layouts,
-                color_targets,
+                &color_targets(render_texture_formats, shader_cache_key.reactive),
                 anti_aliasing.msaa_sample_count,
                 cull_mode,
                 req.writes_depth,
@@ -449,6 +431,50 @@ impl MaterialTransparentPipelines {
     pub fn clear_dynamic_pipelines(&mut self) {
         self.render_pipeline_keys.clear();
     }
+}
+
+/// Whether `mesh`'s transparent pipeline writes the TAA reactive mask
+/// (`@location(1)`): under TAA, for every world mesh. HUD meshes do not draw
+/// into the world pass (they have no reactive attachment).
+pub fn writes_reactive(anti_aliasing: &AntiAliasing, mesh: &Mesh) -> bool {
+    anti_aliasing.taa.is_some() && !mesh.hud
+}
+
+/// Whether `mesh` is drawn after the TAA resolve (a HUD mesh under TAA),
+/// with the unjittered camera.
+pub fn hud_post(anti_aliasing: &AntiAliasing, mesh: &Mesh) -> bool {
+    anti_aliasing.taa.is_some() && mesh.hud
+}
+
+/// The transparent pass's colour targets: premultiplied-alpha colour, plus
+/// under TAA the reactive mask blended with MAX (03 §5.1: the strongest
+/// distrust of any layer wins, independent of draw order).
+fn color_targets(formats: &RenderTextureFormats, reactive: bool) -> Vec<ColorTargetState> {
+    let mut targets = vec![
+        ColorTargetState::new(formats.color).with_blend(BlendState::new(
+            BlendComponent::new()
+                .with_src_factor(BlendFactor::One)
+                .with_dst_factor(BlendFactor::OneMinusSrcAlpha)
+                .with_operation(BlendOperation::Add),
+            BlendComponent::new()
+                .with_src_factor(BlendFactor::One)
+                .with_dst_factor(BlendFactor::OneMinusSrcAlpha)
+                .with_operation(BlendOperation::Add),
+        )),
+    ];
+    if reactive {
+        targets.push(reactive_target(formats));
+    }
+    targets
+}
+
+/// The MAX-blended reactive mask target (shared with the line pass).
+pub(crate) fn reactive_target(formats: &RenderTextureFormats) -> ColorTargetState {
+    let max = BlendComponent::new()
+        .with_src_factor(BlendFactor::One)
+        .with_dst_factor(BlendFactor::One)
+        .with_operation(BlendOperation::Max);
+    ColorTargetState::new(formats.reactive).with_blend(BlendState::new(max.clone(), max))
 }
 
 /// Build (do not create) a transparent-pipeline cache key. The

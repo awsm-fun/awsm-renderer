@@ -140,6 +140,7 @@ dedicated tool reaches it indirectly · **dispatch** = escape hatch only ·
 | `set_shadows_sscs` | — | dispatch | LEGACY: kept so old MCP binaries / recorded histories still apply; `set_sscs` now dispatches `set_shadows`. Fine as dispatch-only. |
 | `set_post_process` | `set_post_process` | tool | Flat `ssr_*` + `atmosphere_*` fields; read via `get_post_process`. |
 | `set_view_options` | `set_view_options` | tool | Read via `get_view_options`. |
+| `set_anti_aliasing` | `set_anti_aliasing` | tool | AA mode (none / msaa / smaa / msaa_smaa / taa) + TAA preset, sharpen, flat `taa_*` tuning knobs, transient `taa_debug_view`. Read via `get_post_process` (`anti_aliasing`) and `get_view_options`. |
 
 ### View / camera / time (transient)
 

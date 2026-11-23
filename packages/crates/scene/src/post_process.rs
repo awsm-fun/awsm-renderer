@@ -65,6 +65,12 @@ pub struct PostProcessConfig {
 }
 
 /// Authored anti-aliasing choice. Nested in [`PostProcessConfig`].
+///
+/// Three modes: MSAA (optionally with SMAA on top, as before TAA existed),
+/// SMAA alone, or TAA. `taa: Some(..)` selects TAA and takes precedence: the
+/// loader then ignores `msaa` / `smaa` (the renderer rejects TAA combined
+/// with either), and the editor saves them `false` alongside it. A file
+/// without a `taa` field loads exactly as before.
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
@@ -75,6 +81,12 @@ pub struct AntiAliasingConfig {
     /// SMAA post-process anti-aliasing. Off by default; independent of MSAA.
     #[serde(default)]
     pub smaa: bool,
+    /// Temporal anti-aliasing (and temporal upscaling below render scale 1).
+    /// `None` (absent from the file) = not TAA. (No `skip_serializing_if`:
+    /// the editor's bitcode project format cannot skip fields; TOML omits a
+    /// `None` on its own, so scene files stay unchanged.)
+    #[serde(default)]
+    pub taa: Option<TaaSettings>,
 }
 
 impl Default for AntiAliasingConfig {
@@ -82,6 +94,102 @@ impl Default for AntiAliasingConfig {
         Self {
             msaa: true,
             smaa: false,
+            taa: None,
+        }
+    }
+}
+
+/// Authored TAA settings. Mirrors `awsm_renderer::taa::TaaConfig` (the schema
+/// stays renderer-independent); every field defaults to the renderer's
+/// shipped value, so a file may carry only what it changes.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case", default)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub struct TaaSettings {
+    /// Render size / output size, 0.5..=1.0. 1.0 = TAA at native resolution;
+    /// below it the scene renders smaller and TAA reconstructs the output
+    /// (presets: Quality 0.67, Balanced 0.58, Performance 0.5).
+    pub render_scale: f32,
+    /// Sharpening strength after the resolve (0 = off).
+    pub sharpen: f32,
+    /// Resolve tuning. Default = the shipped tuning.
+    pub tuning: TaaTuningSettings,
+}
+
+impl Default for TaaSettings {
+    fn default() -> Self {
+        Self {
+            render_scale: 1.0,
+            sharpen: 0.0,
+            tuning: TaaTuningSettings::default(),
+        }
+    }
+}
+
+/// TAA resolve tuning. Mirrors `awsm_renderer::taa::TaaTuning` field for
+/// field (same defaults; a scene-loader test pins the two together). Every
+/// value is a live uniform: changing one never recompiles or resets history.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case", default)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub struct TaaTuningSettings {
+    /// Variance-clip half-width (standard deviations) when still.
+    pub gamma_still: f32,
+    /// Variance-clip half-width when moving.
+    pub gamma_moving: f32,
+    /// Speed (output px / frame) at which the clip box reaches `gamma_moving`.
+    pub gamma_moving_speed: f32,
+    /// Relative depth slack of the disocclusion test.
+    pub disocclusion_threshold: f32,
+    /// History-length cap at native resolution.
+    pub max_history_native: f32,
+    /// History-length cap when upscaling.
+    pub max_history_upscaling: f32,
+    /// Minimum current-frame weight at `motion_alpha_speed` px / frame.
+    pub motion_alpha: f32,
+    /// Speed (output px / frame) at which `motion_alpha` is reached.
+    pub motion_alpha_speed: f32,
+    /// Reactive value written by transparents per unit of alpha.
+    pub reactive_transparent: f32,
+    /// Reactive value for materials flagged `temporal: reactive`.
+    pub reactive_material: f32,
+    /// Extra reactivity from SSR reflectivity.
+    pub reactive_ssr: f32,
+    /// Added to `log2(render_scale)` for the texture LOD bias.
+    pub mip_bias_extra: f32,
+    /// History-length cap for a pixel moving at `max_history_moving_speed`
+    /// or faster (a short memory keeps resampling blur from building up).
+    pub max_history_moving: f32,
+    /// Speed (output px / frame) at which the cap has dropped from the still
+    /// value to `max_history_moving`.
+    pub max_history_moving_speed: f32,
+    /// Minimum current-frame weight on a motion boundary (a 3×3 holding
+    /// surfaces that move differently, e.g. a moving silhouette).
+    pub motion_edge_alpha: f32,
+    /// Relative speed (output px / frame) between the nearest and farthest
+    /// surface of the 3×3 at which `motion_edge_alpha` is reached.
+    pub motion_edge_speed: f32,
+}
+
+impl Default for TaaTuningSettings {
+    fn default() -> Self {
+        Self {
+            gamma_still: 1.25,
+            gamma_moving: 0.75,
+            gamma_moving_speed: 2.0,
+            disocclusion_threshold: 0.05,
+            max_history_native: 16.0,
+            max_history_upscaling: 24.0,
+            motion_alpha: 0.2,
+            motion_alpha_speed: 8.0,
+            reactive_transparent: 0.8,
+            reactive_material: 0.6,
+            reactive_ssr: 0.0,
+            mip_bias_extra: 0.0,
+            max_history_moving: 4.0,
+            max_history_moving_speed: 1.0,
+            motion_edge_alpha: 0.6,
+            motion_edge_speed: 2.0,
         }
     }
 }
@@ -419,5 +527,76 @@ exposure = 1.5
         let round_tripped: PostProcessConfig =
             toml::from_str(&toml::to_string(&authored).unwrap()).unwrap();
         assert_eq!(round_tripped.atmosphere, authored.atmosphere);
+    }
+
+    /// Scenes authored before TAA keep their AA exactly: no `taa` field
+    /// parses as `None`, and a non-TAA config writes no `taa` key, so their
+    /// files do not change on re-save.
+    #[test]
+    fn pre_taa_anti_aliasing_is_unchanged() {
+        let parsed: PostProcessConfig = toml::from_str(
+            r#"
+[anti_aliasing]
+msaa = false
+smaa = true
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            parsed.anti_aliasing,
+            AntiAliasingConfig {
+                msaa: false,
+                smaa: true,
+                taa: None
+            }
+        );
+        let absent: PostProcessConfig = toml::from_str("bloom = true").unwrap();
+        assert_eq!(absent.anti_aliasing, AntiAliasingConfig::default());
+        let written = toml::to_string(&PostProcessConfig::default()).unwrap();
+        assert!(!written.contains("taa"), "{written}");
+    }
+
+    /// A TAA block may carry only what it changes; the rest takes the shipped
+    /// defaults, and an authored one round-trips field for field.
+    #[test]
+    fn taa_settings_default_partially_and_roundtrip() {
+        let parsed: PostProcessConfig = toml::from_str(
+            r#"
+[anti_aliasing]
+msaa = false
+[anti_aliasing.taa]
+render_scale = 0.67
+[anti_aliasing.taa.tuning]
+gamma_moving = 0.6
+"#,
+        )
+        .unwrap();
+        let taa = parsed.anti_aliasing.taa.expect("taa block");
+        assert_eq!(taa.render_scale, 0.67);
+        assert_eq!(taa.sharpen, 0.0);
+        assert_eq!(taa.tuning.gamma_moving, 0.6);
+        assert_eq!(
+            taa.tuning.gamma_still,
+            TaaTuningSettings::default().gamma_still
+        );
+
+        let authored = PostProcessConfig {
+            anti_aliasing: AntiAliasingConfig {
+                msaa: false,
+                smaa: false,
+                taa: Some(TaaSettings {
+                    render_scale: 0.58,
+                    sharpen: 0.25,
+                    tuning: TaaTuningSettings {
+                        max_history_native: 12.0,
+                        ..TaaTuningSettings::default()
+                    },
+                }),
+            },
+            ..PostProcessConfig::default()
+        };
+        let round_tripped: PostProcessConfig =
+            toml::from_str(&toml::to_string(&authored).unwrap()).unwrap();
+        assert_eq!(round_tripped.anti_aliasing, authored.anti_aliasing);
     }
 }

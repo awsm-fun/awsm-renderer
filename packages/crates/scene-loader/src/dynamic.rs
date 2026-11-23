@@ -143,6 +143,21 @@ pub async fn register_custom_materials(
         reg.wgsl_hash = registration_content_hash(&reg, &def);
         match renderer.register_material(reg) {
             Ok(shader_id) => {
+                // TAA: the authored temporal default for its instances
+                // (`None` = auto, by whether the WGSL reads the clock).
+                if let Some(t) = def.temporal {
+                    let t = match t {
+                        awsm_renderer_scene::MaterialTemporal::Stable => {
+                            awsm_renderer::materials::MaterialTemporal::Stable
+                        }
+                        awsm_renderer_scene::MaterialTemporal::Reactive => {
+                            awsm_renderer::materials::MaterialTemporal::Reactive
+                        }
+                    };
+                    if let Err(e) = renderer.set_custom_material_temporal(shader_id, t) {
+                        tracing::warn!("custom material `{}`: temporal ({e})", cm.name);
+                    }
+                }
                 out.insert(cm.id, shader_id);
             }
             Err(e) => {
@@ -522,6 +537,7 @@ mod tests {
             shader_includes: vec![],
             fragment_inputs: vec![],
             has_vertex_wgsl: false,
+            temporal: None,
         }
     }
 

@@ -33,6 +33,15 @@ pub struct ShaderCacheKeyMaterialTransparent {
     pub texture_pool_arrays_len: u32,
     pub texture_pool_samplers_len: u32,
     pub msaa_sample_count: Option<u32>,
+    /// TAA: also write the reactive mask (`@location(1)`, r8unorm, MAX
+    /// blended): `alpha * k_transparent` (03 §5.1). `false` renders exactly
+    /// the pre-TAA shader.
+    pub reactive: bool,
+    /// TAA: a HUD mesh drawn after the resolve, into `taa_out` at post size.
+    /// The vertex stage projects with the UNJITTERED view-projection (the
+    /// output is never accumulated, so jitter would only shake its edges).
+    /// `false` renders exactly the pre-TAA shader.
+    pub hud_post: bool,
     pub mipmaps: bool,
     /// Depth convention (003).
     pub reverse_z: bool,

@@ -190,7 +190,12 @@ impl GeometryRenderPass {
             .into(),
         )?;
 
-        render_pass.set_bind_group(0, self.bind_groups.camera.get_bind_group()?, None)?;
+        // TAA with a HUD: the HUD pass rasterises with the unjittered camera
+        // twin (03 §5.4; the resolve passes HUD pixels through, so they must
+        // be jitter-free). The opaque pass then shades those pixels with the
+        // jittered inverse; half a render pixel of lighting error is not
+        // visible. Without TAA (or a HUD) this is the main camera group.
+        render_pass.set_bind_group(0, self.bind_groups.camera.get_bind_group_for(is_hud)?, None)?;
 
         // The TAA variant's group 1 adds the shared previous-frame buffer.
         render_pass.set_bind_group(
@@ -256,7 +261,7 @@ impl GeometryRenderPass {
             .iter()
             .any(|r| r.geometry_masked_render_pipeline_key().is_some());
         if any_masked {
-            if let Ok(masked_group0) = self.masked_bind_group.get_bind_group() {
+            if let Ok(masked_group0) = self.masked_bind_group.get_bind_group_for(is_hud) {
                 render_pass.set_bind_group(0, masked_group0, None)?;
                 let mut last_masked_key = None;
                 for renderable in renderables {
@@ -289,7 +294,7 @@ impl GeometryRenderPass {
             .iter()
             .any(|r| r.geometry_custom_vertex_render_pipeline_key().is_some());
         if any_custom_vertex {
-            if let Ok(masked_group0) = self.masked_bind_group.get_bind_group() {
+            if let Ok(masked_group0) = self.masked_bind_group.get_bind_group_for(is_hud) {
                 render_pass.set_bind_group(0, masked_group0, None)?;
                 let uv0_zero_buffer = self.custom_vertex_pipelines.uv0_zero_buffer();
                 let mut last_cv_key = None;
@@ -325,7 +330,7 @@ impl GeometryRenderPass {
                 .is_some()
         });
         if any_combined {
-            if let Ok(masked_group0) = self.masked_bind_group.get_bind_group() {
+            if let Ok(masked_group0) = self.masked_bind_group.get_bind_group_for(is_hud) {
                 render_pass.set_bind_group(0, masked_group0, None)?;
                 let uv0_zero_buffer = self.masked_custom_vertex_pipelines.uv0_zero_buffer();
                 let mut last_key = None;

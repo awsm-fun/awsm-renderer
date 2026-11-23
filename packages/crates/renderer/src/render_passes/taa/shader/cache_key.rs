@@ -23,3 +23,18 @@ impl From<ShaderCacheKeyTaa> for ShaderCacheKey {
         ShaderCacheKey::RenderPass(ShaderCacheKeyRenderPass::Taa(key))
     }
 }
+
+/// Cache key for the reactive seed (`taa_wgsl/reactive_seed.wgsl`), built
+/// only under TAA.
+#[derive(Hash, Debug, Clone, PartialEq, Eq, Default)]
+pub struct ShaderCacheKeyTaaReactiveSeed {
+    /// Also bind the SSR reflection descriptor and add `reflectivity *
+    /// k_ssr` (03 §5.3). Used only while SSR runs with `reactive_ssr > 0`.
+    pub ssr: bool,
+}
+
+impl From<ShaderCacheKeyTaaReactiveSeed> for ShaderCacheKey {
+    fn from(key: ShaderCacheKeyTaaReactiveSeed) -> Self {
+        ShaderCacheKey::RenderPass(ShaderCacheKeyRenderPass::TaaReactiveSeed(key))
+    }
+}

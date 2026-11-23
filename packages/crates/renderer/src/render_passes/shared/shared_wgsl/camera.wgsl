@@ -18,7 +18,7 @@ struct CameraRaw {
     // Used for unprojecting screen pixels to world space with better precision than per-pixel unprojection
     frustum_rays: array<vec4<f32>, 4>,
     viewport: vec4<f32>, // in pixels, x,y,width,height
-    dof_params: vec4<f32>, // x=focus_distance, y=aperture (f-stop), zw=unused
+    dof_params: vec4<f32>, // x=focus_distance, y=aperture (f-stop), zw=TAA reactive factors (0 without TAA)
     // M3 SSR temporal reprojection: PRIOR frame's unjittered view-projection.
     // END-APPENDED so every existing field offset is preserved (see camera.rs
     // BYTE_SIZE). Ignored by shaders that don't opt into temporal reprojection.

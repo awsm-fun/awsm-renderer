@@ -73,6 +73,9 @@ pub struct GeometryBindGroupCamera {
     pub bind_group_layout_key: BindGroupLayoutKey,
     // this is set via `recreate` mechanism
     _bind_group: Option<web_sys::GpuBindGroup>,
+    /// TAA with a HUD: the same group over the unjittered camera twin
+    /// (`CameraBuffer::hud_gpu_buffer`), bound by the HUD geometry pass.
+    _hud_bind_group: Option<web_sys::GpuBindGroup>,
 }
 
 impl GeometryBindGroupCamera {
@@ -111,6 +114,7 @@ impl GeometryBindGroupCamera {
         Ok(Self {
             bind_group_layout_key,
             _bind_group: None,
+            _hud_bind_group: None,
         })
     }
 
@@ -134,6 +138,29 @@ impl GeometryBindGroupCamera {
         let bind_group = ctx.gpu.create_bind_group(&descriptor.into());
         self._bind_group = Some(bind_group);
 
+        self._hud_bind_group = match ctx.camera.hud_gpu_buffer.as_ref() {
+            Some(hud_camera) => {
+                let descriptor = BindGroupDescriptor::new(
+                    ctx.bind_group_layouts.get(self.bind_group_layout_key)?,
+                    Some("Geometry Camera (HUD)"),
+                    vec![
+                        BindGroupEntry::new(
+                            0,
+                            BindGroupResource::Buffer(BufferBinding::new(hud_camera)),
+                        ),
+                        BindGroupEntry::new(
+                            1,
+                            BindGroupResource::Buffer(BufferBinding::new(
+                                &ctx.frame_globals.gpu_buffer,
+                            )),
+                        ),
+                    ],
+                );
+                Some(ctx.gpu.create_bind_group(&descriptor.into()))
+            }
+            None => None,
+        };
+
         Ok(())
     }
 
@@ -144,6 +171,18 @@ impl GeometryBindGroupCamera {
         self._bind_group
             .as_ref()
             .ok_or_else(|| AwsmBindGroupError::NotFound("Geometry camera".to_string()))
+    }
+
+    /// The camera group for a pass: the unjittered HUD twin for the HUD pass
+    /// when it exists (TAA with a HUD), else the main one.
+    pub fn get_bind_group_for(
+        &self,
+        hud: bool,
+    ) -> std::result::Result<&web_sys::GpuBindGroup, AwsmBindGroupError> {
+        match self._hud_bind_group.as_ref() {
+            Some(group) if hud => Ok(group),
+            _ => self.get_bind_group(),
+        }
     }
 }
 

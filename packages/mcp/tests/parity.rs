@@ -149,6 +149,7 @@ const EXPECTED_COMMANDS: &[&str] = &[
     "set_anim_fps",
     "set_anim_selection",
     "set_anim_view",
+    "set_anti_aliasing",
     "set_asset_selection",
     "set_builtin_alpha_mode",
     "set_builtin_param",

@@ -33,12 +33,13 @@ use crate::{
     AwsmRenderer,
 };
 
-/// Whether the pass binds the reactive mask (`TaaRenderPass::new`). The mask
-/// arrives in plan phase 3; until then only the `reactive: false` variant is
-/// built. Phase 3 passes `true` (and binds `views.reactive` at binding 10).
-pub(crate) const REACTIVE_MASK: bool = false;
+/// Whether the pass binds the reactive mask (`TaaRenderPass::new`): the
+/// render textures allocate `views.reactive` whenever TAA is on (plan phase
+/// 3), bound at binding 10. `false` remains a valid variant (tests, and a
+/// future device path without the mask).
+pub(crate) const REACTIVE_MASK: bool = true;
 
-/// `TaaParams`: 64-byte uniform (16 x f32), the live tuning of the resolve.
+/// `TaaParams`: 80-byte uniform (20 x f32), the live tuning of the resolve.
 /// Layout must match `struct TaaParams` in `taa_wgsl/resolve.wgsl`.
 ///
 /// Interior-mutable so the reactive flag can be set after
@@ -78,6 +79,10 @@ pub struct TaaParamsValues {
     /// Whether the reactive mask was written this frame (plan phase 3). The
     /// shader multiplies the mask by it; 0 until the mask exists.
     pub reactive_valid: bool,
+    pub max_history_moving: f32,
+    pub max_history_moving_speed: f32,
+    pub motion_edge_alpha: f32,
+    pub motion_edge_speed: f32,
 }
 
 impl TaaParamsValues {
@@ -113,13 +118,17 @@ impl TaaParamsValues {
             debug_view,
             kernel_sharpness: crate::taa::RECONSTRUCTION_SHARPNESS,
             reactive_valid: false,
+            max_history_moving: tuning.max_history_moving,
+            max_history_moving_speed: tuning.max_history_moving_speed,
+            motion_edge_alpha: tuning.motion_edge_alpha,
+            motion_edge_speed: tuning.motion_edge_speed,
         }
     }
 
     /// The uniform bytes (native endian, like every other uniform here).
     pub fn pack(&self) -> [u8; TaaParams::BYTE_SIZE] {
         let flag = |b: bool| if b { 1.0f32 } else { 0.0 };
-        let floats: [f32; 16] = [
+        let floats: [f32; 20] = [
             self.render_size.0 as f32,
             self.render_size.1 as f32,
             self.post_size.0 as f32,
@@ -136,6 +145,10 @@ impl TaaParamsValues {
             self.debug_view as f32,
             self.kernel_sharpness,
             flag(self.reactive_valid),
+            self.max_history_moving,
+            self.max_history_moving_speed,
+            self.motion_edge_alpha,
+            self.motion_edge_speed,
         ];
         let mut out = [0u8; TaaParams::BYTE_SIZE];
         for (i, f) in floats.iter().enumerate() {
@@ -146,7 +159,7 @@ impl TaaParamsValues {
 }
 
 impl TaaParams {
-    pub const BYTE_SIZE: usize = 64;
+    pub const BYTE_SIZE: usize = 80;
 
     pub fn new(gpu: &AwsmRendererWebGpu) -> Result<Self> {
         let gpu_buffer = gpu.create_buffer(
@@ -168,7 +181,7 @@ impl TaaParams {
 
     /// Upload `values` if they differ from what the buffer holds. A still,
     /// steady frame uploads nothing; a reset frame and the frame after it
-    /// upload 64 bytes each (the `reset` flag goes 1 then back to 0).
+    /// upload 80 bytes each (the `reset` flag goes 1 then back to 0).
     pub fn write(&self, gpu: &AwsmRendererWebGpu, values: &TaaParamsValues) -> Result<()> {
         self.values.set(Some(*values));
         let packed = values.pack();
@@ -279,6 +292,9 @@ pub struct TaaRenderPass {
     pub pipelines: TaaPipelines,
     pub params: TaaParams,
     pub textures: TaaTextures,
+    /// The reactive seed draw (temporal-reactive materials), with the
+    /// reactive variant only.
+    pub reactive_seed: Option<super::reactive_seed::TaaReactiveSeed>,
     /// Resolve dispatches per frame (`AwsmRenderer::set_taa_debug_repeat`).
     /// 1 normally; N > 1 only to measure the pass's cost.
     repeat: u32,
@@ -292,6 +308,11 @@ impl TaaRenderPass {
         let bind_groups = TaaBindGroups::new(ctx, reactive)?;
         let pipelines = TaaPipelines::new(ctx, &bind_groups, reactive).await?;
         let params = TaaParams::new(ctx.gpu)?;
+        let reactive_seed = if reactive {
+            Some(super::reactive_seed::TaaReactiveSeed::new(ctx).await?)
+        } else {
+            None
+        };
         // Sizes are not known here (as for SMAA); the textures start 1x1 and
         // the first frame's `prepare_taa_frame` sizes them. The history
         // starts fresh, so the first submitted resolve resets.
@@ -301,6 +322,7 @@ impl TaaRenderPass {
             pipelines,
             params,
             textures,
+            reactive_seed,
             repeat: 1,
             bookkeeping: ResolveBookkeeping::new(),
         })
@@ -326,6 +348,9 @@ impl TaaRenderPass {
 
     /// Release the GPU textures (TAA turned off).
     pub fn destroy(self) {
+        if let Some(seed) = self.reactive_seed {
+            seed.destroy();
+        }
         self.textures.destroy();
     }
 
@@ -442,6 +467,9 @@ impl AwsmRenderer {
                     self.pipelines
                         .compute
                         .release_reserved(pass.pipelines.keys());
+                    if let Some(seed) = pass.reactive_seed.as_ref() {
+                        self.pipelines.render.release_reserved(seed.pipelines());
+                    }
                     pass.destroy();
                 }
             }
@@ -489,7 +517,7 @@ impl AwsmRenderer {
             config,
             views.render_size,
             views.post_size,
-            self.taa.debug_view.shader_id(),
+            self.taa.debug_shader_id(),
             reset,
         );
         values.reactive_valid = pass.params.reactive_valid();
@@ -560,14 +588,18 @@ mod tests {
     #[test]
     fn params_pack_matches_the_wgsl_struct() {
         // Field order of `struct TaaParams` in taa_wgsl/resolve.wgsl, one
-        // f32 each: 16 x 4 = 64 bytes, no implicit padding (vec2 at offsets
+        // f32 each: 20 x 4 = 80 bytes, no implicit padding (vec2 at offsets
         // 0 and 8 are 8-aligned).
         let config = TaaConfig::native();
         let v = TaaParamsValues::new(&config, (1920, 1435), (1920, 1435), 3, true);
         let bytes = v.pack();
         let f = |i: usize| f32::from_ne_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap());
         let t = &config.tuning;
-        assert_eq!(bytes.len(), 64);
+        assert_eq!(bytes.len(), 80);
+        assert_eq!(f(16), t.max_history_moving);
+        assert_eq!(f(17), t.max_history_moving_speed);
+        assert_eq!(f(18), t.motion_edge_alpha);
+        assert_eq!(f(19), t.motion_edge_speed);
         assert_eq!((f(0), f(1)), (1920.0, 1435.0), "render_size");
         assert_eq!((f(2), f(3)), (1920.0, 1435.0), "post_size");
         assert_eq!(f(4), t.gamma_still);
@@ -581,7 +613,7 @@ mod tests {
         assert_eq!(f(12), 1.0, "reset");
         assert_eq!(f(13), 3.0, "debug_view");
         assert_eq!(f(14), crate::taa::RECONSTRUCTION_SHARPNESS);
-        assert_eq!(f(15), 0.0, "reactive_valid (no mask before phase 3)");
+        assert_eq!(f(15), 0.0, "reactive_valid starts unset (set per frame)");
 
         let up = TaaConfig::preset(crate::taa::TaaPreset::Quality);
         let v = TaaParamsValues::new(&up, (1286, 961), (1920, 1435), 0, false);
@@ -632,6 +664,10 @@ mod tests {
                 "debug_view",
                 "kernel_sharpness",
                 "reactive_valid",
+                "max_history_moving",
+                "max_history_moving_speed",
+                "motion_edge_alpha",
+                "motion_edge_speed",
             ]
         );
     }

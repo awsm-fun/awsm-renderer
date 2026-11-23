@@ -94,17 +94,17 @@ masked, custom_vertex, pipeline + cache keys), `render_textures.rs`,
 
 ## Phase 2: TAA at native resolution
 
-- [ ] `AntiAliasing::taa`, validation, pipeline recompiles on switch.
-- [ ] `render_passes/taa/`: history ping-pong (`rgba16float` × 2, post size),
+- [x] `AntiAliasing::taa`, validation, pipeline recompiles on switch.
+- [x] `render_passes/taa/`: history ping-pong (`rgba16float` × 2, post size),
       `prev_depth`, bind groups by parity (copy the SSR temporal structure),
       the resolve shader exactly as 03 §4, every tuning value a uniform.
-- [ ] Placement after SSR (03 §6); bloom / effects / display read `taa_out`.
-- [ ] Mip bias plumbing (03 §7) wired with `s = 1`. At native resolution
+- [x] Placement after SSR (03 §6); bloom / effects / display read `taa_out`.
+- [x] Mip bias plumbing (03 §7) wired with `s = 1`. At native resolution
       `log2(s) = 0`; only `extra` applies.
-- [ ] Resets (03 §8), including the camera-jump guard.
-- [ ] Debug views: history length, rejection reason, clip amount, freeze
+- [x] Resets (03 §8), including the camera-jump guard.
+- [x] Debug views: history length, rejection reason, clip amount, freeze
       jitter, history only.
-- [ ] `wgsl_validation`: the resolve validates; it contains the variance
+- [x] `wgsl_validation`: the resolve validates; it contains the variance
       clip (pinned, like SSR's clamp); it has no `switch` with `return`
       inside, and no per-invocation array indexed by a loop counter.
 
@@ -113,13 +113,13 @@ resolution; frame-time numbers recorded (05 §5).
 
 ## Phase 3: reactive pixels and the HUD
 
-- [ ] `reactive: r8unorm` (render size); transparent pass writes it with
+- [x] `reactive: r8unorm` (render size); transparent pass writes it with
       max-blend; lines too.
-- [ ] Material `temporal` flag (`stable` / `reactive`) in material data and
+- [x] Material `temporal` flag (`stable` / `reactive`) in material data and
       the scene schema; opaque shading writes it; UV-flow materials default
       to `reactive`.
-- [ ] HUD drawn after TAA at post size with the unjittered camera.
-- [ ] `k_ssr` tuned on the mirror scene (default stays 0 unless it is needed).
+- [x] HUD drawn after TAA at post size with the unjittered camera.
+- [x] `k_ssr` tuned on the mirror scene (default stays 0 unless it is needed).
 
 Gate: 05 §4 transparent / particle / UV-flow / HUD tests pass.
 
@@ -211,6 +211,58 @@ Phase 1:
   272 px teleport. Every non-teleport frame is within the ±0.02 px bound.
 - The material-transparent and shadow shader variants are untouched; the 16
   TAA-off geometry-family shader sources are byte-identical to 0.45.
+
+Phase 2:
+
+- The history has its own parity, flipped only after a frame whose resolve
+  was submitted, and resets are consumed the same way. A failed frame, or a
+  frame without a resolve, neither flips the history nor eats a reset.
+- Resets are decided before the frame's jitter is chosen (camera jump, a
+  perspective / orthographic flip, a post-size change), so the jitter cycle
+  restarts on the reset frame itself.
+- The camera-jump guard measures translation against the distance to the
+  scene bounds (floored by their radius), not the focus distance. Inside a
+  world larger than that distance only the 30° rotation test can fire, so
+  apps call `reset_temporal_history` on the cuts they know about.
+- A change inside `TaaConfig` (tuning, sharpen, render scale) takes a light
+  path in `set_anti_aliasing`: no pipeline or texture rebuild, no reset.
+- The previous depth is copied right after the resolve (its only reader),
+  not at the very end of the frame.
+- Two blend rules were added to 03 §4.8 after the first gate run. The history
+  cap shortens with speed (`max_history_moving` at `max_history_moving_speed`):
+  history resampled every frame under motion softens, and with a 16-frame
+  memory 60% of that softness was still there 8 frames after stopping (the
+  `taa-orbit` stop test read 1.40 against < 1). And a motion boundary (the
+  nearest and farthest surface of the 3×3 moving differently) raises the
+  current weight (`motion_edge_alpha`): a moving silhouette's coverage
+  changes every frame and the clip cannot reject the blend it leaves.
+- Volumetrics and SSR offset their own jitter index by 7 under TAA so they do
+  not run in step with the camera jitter (03 §1.4). Unchanged with TAA off.
+- The disocclusion distances are both linearised with this frame's
+  projection. Exact unless the projection itself changes between frames.
+
+Phase 3:
+
+- Opaque reactive values are written by a "seed" draw (a full-screen triangle
+  at the start of the world transparent pass, TAA only, drawn only when a
+  reactive material or a HUD exists), not by opaque shading: `r8unorm` is not
+  a storage format, so a compute pass cannot write the mask.
+- The `temporal` flag is `Auto | Stable | Reactive`. Auto is reactive for
+  flipbooks, UV flow, and custom materials whose WGSL reads `frame_globals`.
+  It rides in a reserved word of the mesh's material meta, packed in every
+  mode (4 bytes in an upload that happens anyway).
+- The two reactive factors travel in the camera uniform's `dof_params.zw`
+  (zero with TAA off).
+- HUD: meshes with a transparent pipeline are drawn after the resolve into
+  `taa_out` with the unjittered view-projection (`hud_post` pipelines and a
+  post-size HUD depth). HUD meshes shaded by the opaque pass cannot move
+  there without an opaque pass at post size, so under TAA their geometry is
+  rasterised with an unjittered twin of the camera uniform, the seed marks
+  their pixels with exactly 1.0, and the resolve passes those pixels through
+  (no history, no reconstruction, no spread to neighbours). Every other
+  reactive write is capped at 0.99.
+- Content drawn through the public transparent-pass hook writes no reactive
+  value (documented on the method).
 
 ## Things to keep out of v1
 

@@ -161,6 +161,22 @@ pub struct TaaTuning {
     /// The speed (output px / frame) at which the clip box has narrowed
     /// from `gamma_still` to `gamma_moving`.
     pub gamma_moving_speed: f32,
+    /// History-length cap for a pixel moving at `max_history_moving_speed`
+    /// or faster. History resampled every frame under motion softens a
+    /// little each time; a short memory keeps that from building up, and
+    /// lets the image sharpen again within a few frames of stopping.
+    pub max_history_moving: f32,
+    /// The speed (output px / frame) at which the cap has dropped from the
+    /// still value to `max_history_moving`.
+    pub max_history_moving_speed: f32,
+    /// Minimum current-frame weight on a motion boundary: a pixel whose 3×3
+    /// holds surfaces moving differently (a moving silhouette). The coverage
+    /// of such a pixel changes every frame, so its history is the average
+    /// coverage of the last frames, not this frame's.
+    pub motion_edge_alpha: f32,
+    /// The relative speed (output px / frame) between the nearest and the
+    /// farthest surface of the 3×3 at which `motion_edge_alpha` is reached.
+    pub motion_edge_speed: f32,
 }
 
 impl Default for TaaTuning {
@@ -178,6 +194,10 @@ impl Default for TaaTuning {
             reactive_ssr: 0.0,
             mip_bias_extra: 0.0,
             gamma_moving_speed: 2.0,
+            max_history_moving: 4.0,
+            max_history_moving_speed: 1.0,
+            motion_edge_alpha: 0.6,
+            motion_edge_speed: 2.0,
         }
     }
 }
@@ -269,6 +289,9 @@ pub struct TaaRuntime {
     pub(crate) reset_pending: bool,
     pub(crate) debug_view: TaaDebugView,
     pub(crate) jitter_override: Option<JitterOverride>,
+    /// Diagnostic views beyond [`TaaDebugView`] (ids 10+ in the resolve
+    /// shader), for the test harness. Overrides `debug_view` when set.
+    pub(crate) debug_view_raw: Option<u32>,
     /// Resolve dispatches per frame (`AwsmRenderer::set_taa_debug_repeat`,
     /// cost measurement). 0 (the default) and 1 both mean one dispatch.
     pub(crate) debug_repeat: u32,
@@ -333,7 +356,26 @@ pub fn reconstruction_weight(d2: f32) -> f32 {
 /// The exponent of [`reconstruction_weight`].
 pub const RECONSTRUCTION_SHARPNESS: f32 = 2.29;
 
+impl TaaRuntime {
+    /// The resolve shader's `debug_view` value.
+    pub(crate) fn debug_shader_id(&self) -> u32 {
+        self.debug_view_raw
+            .unwrap_or_else(|| self.debug_view.shader_id())
+    }
+}
+
 impl AwsmRenderer {
+    /// Harness diagnostics: selects a resolve debug view by its raw shader
+    /// id. Ids 10 and up are internal views with no [`TaaDebugView`] name:
+    /// 10 = previous depth / expected previous depth (0.5 = equal, darker =
+    /// something nearer was there), 11 = history length before this frame's
+    /// update, 12 = current-frame weight (alpha), 13 = motion-boundary
+    /// factor. `None` returns to [`Self::set_taa_debug_view`]'s view.
+    #[doc(hidden)]
+    pub fn set_taa_debug_view_raw(&mut self, id: Option<u32>) {
+        self.taa.debug_view_raw = id;
+    }
+
     /// Forget all temporal history (TAA, and the jitter cycle restarts).
     /// Apps must call it on camera cuts and teleports. The renderer calls it
     /// itself when the AA mode or the output size changes and on scene load /

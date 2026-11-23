@@ -27,7 +27,7 @@ use crate::render_passes::{
     },
     smaa::shader::cache_key::ShaderCacheKeySmaa,
     ssr::shader::cache_key::ShaderCacheKeySsr,
-    taa::shader::cache_key::ShaderCacheKeyTaa,
+    taa::shader::cache_key::{ShaderCacheKeyTaa, ShaderCacheKeyTaaReactiveSeed},
     volumetrics::shader::cache_key::ShaderCacheKeyVolumetrics,
 };
 
@@ -82,6 +82,9 @@ pub enum ShaderCacheKeyRenderPass {
     Ssr(ShaderCacheKeySsr),
     /// TAA resolve (+ temporal upscaling). Permutes on reverse_z × reactive.
     Taa(ShaderCacheKeyTaa),
+    /// TAA reactive seed: flags `temporal: reactive` opaque pixels in the
+    /// reactive mask. One variant, TAA only.
+    TaaReactiveSeed(ShaderCacheKeyTaaReactiveSeed),
     /// Froxel volumetric scattering (inject / integrate).
     Volumetrics(ShaderCacheKeyVolumetrics),
 }

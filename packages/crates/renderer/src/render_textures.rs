@@ -92,6 +92,10 @@ pub struct RenderTextureFormats {
     /// read by the SSR pass. Rgba8unorm is enough — these are 0..1 factors.
     pub reflection_descriptor: TextureFormat,
 
+    /// TAA reactive mask (how much to distrust the history per pixel, 03
+    /// §5): the transparent pass's second target under TAA. R8unorm.
+    pub reactive: TextureFormat,
+
     // output from display pass is whatever current gpu texture format is
 
     // For depth testing and transparency
@@ -113,6 +117,7 @@ impl RenderTextureFormats {
             barycentric_derivatives: TextureFormat::Rgba16float,
             color: TextureFormat::Rgba16float, // HDR format for bloom/tonemapping
             reflection_descriptor: TextureFormat::Rgba8unorm, // SSR reflectivity + spread factors
+            reactive: TextureFormat::R8unorm,  // TAA reactive mask (0..1)
             depth: TextureFormat::Depth32float, // More precision for thin/close surfaces
         }
     }
@@ -409,6 +414,10 @@ pub struct RenderTextureViews {
     /// TAA motion vectors (`rg16float`, render size, UV units `uv_now -
     /// uv_prev`): the geometry pass's fifth target. `None` unless TAA is on.
     pub velocity: Option<web_sys::GpuTextureView>,
+    /// TAA reactive mask (`r8unorm`, render size; 0 = trust the history, 1 =
+    /// ignore it): the world transparent pass's second target, MAX blended.
+    /// `None` unless TAA is on.
+    pub reactive: Option<web_sys::GpuTextureView>,
 
     // Output from opaque pass
     pub opaque: web_sys::GpuTextureView,
@@ -492,6 +501,10 @@ pub struct RenderTextureViews {
     /// their call sites (T1.10), so they never sample `hud_depth`
     /// before it materializes.
     pub hud_depth: Option<web_sys::GpuTextureView>,
+    /// TAA: the depth of the HUD's lit pass, which runs after the resolve
+    /// into `taa_out` at post size. `Some` only under TAA once a HUD
+    /// renderable exists.
+    pub hud_depth_post: Option<web_sys::GpuTextureView>,
     /// `true` when `RenderTexturesInner` was destroyed and rebuilt
     /// during this `views()` call — by viewport resize, AA flip,
     /// T2.5 opaque-mip-chain growth, or T2.6 HUD-depth
@@ -527,6 +540,7 @@ impl RenderTextureViews {
             normal_tangent: inner.normal_tangent_view.clone(),
             barycentric_derivatives: inner.barycentric_derivatives_view.clone(),
             velocity: inner.velocity_view.clone(),
+            reactive: inner.reactive_view.clone(),
             opaque: inner.opaque_storage_view.clone(),
             opaque_storage: inner.opaque_storage_view.clone(),
             opaque_full: inner.opaque_full_view.clone(),
@@ -555,6 +569,7 @@ impl RenderTextureViews {
                 .unwrap_or(&inner.depth_view)
                 .clone(),
             hud_depth: inner.hud_depth_view.clone(),
+            hud_depth_post: inner.hud_depth_post_view.clone(),
             // ^ `Option::clone()` — `None` until T2.6's sticky flag
             // flips on the first HUD renderable insertion.
             effects: inner.effects_view.clone(),
@@ -584,19 +599,19 @@ impl RenderTextureViews {
 ///
 /// - **Render size** (the scene; TAA's input): `visibility_data`,
 ///   `barycentric`, `normal_tangent`, `barycentric_derivatives`, `velocity`
-///   (TAA only), `depth`,
+///   and `reactive` (TAA only), `depth`,
 ///   `ssr_depth`, `hud_depth`, `opaque` (+ mips, `opaque_clearer`),
 ///   `transparent`, `decal_color`, `prep_*`, `edge_id`, `composite`,
 ///   `reflection_descriptor`, and the SSR targets (`ssr`, `ssr_resolved`,
 ///   `ssr_final`, `ssr_history`, `ssr_bvh`; half of render size when SSR runs
 ///   half-res). Outside this struct: the HZB and the volumetrics froxel grid
 ///   (aligned with light culling) follow render size too.
-/// - **Post size** (after the TAA resolve): `effects`, `bloom`. Outside this
-///   struct: the bloom pyramid and the SMAA edges/weights (SMAA is rejected
-///   together with TAA, so for SMAA the two sizes are always equal; it is
-///   post-side because its weights are consumed by the effects pass blend).
-///   TAA's history / output targets will be post size as well, and the HUD
-///   depth moves to post size when the HUD is drawn after TAA (plan phase 3).
+/// - **Post size** (after the TAA resolve): `effects`, `bloom`,
+///   `hud_depth_post` (TAA only: the HUD's lit pass runs after the resolve).
+///   Outside this struct: the bloom pyramid, the SMAA edges/weights (SMAA is
+///   rejected together with TAA, so for SMAA the two sizes are always equal;
+///   it is post-side because its weights are consumed by the effects pass
+///   blend) and TAA's history / output targets.
 #[allow(dead_code)]
 pub struct RenderTexturesInner {
     pub visibility_data: web_sys::GpuTexture,
@@ -618,6 +633,10 @@ pub struct RenderTexturesInner {
     /// TAA).
     pub velocity: Option<web_sys::GpuTexture>,
     pub velocity_view: Option<web_sys::GpuTextureView>,
+
+    /// TAA reactive mask. `None` unless `anti_aliasing.taa` is set.
+    pub reactive: Option<web_sys::GpuTexture>,
+    pub reactive_view: Option<web_sys::GpuTextureView>,
 
     pub opaque: web_sys::GpuTexture,
     pub opaque_clearer: TextureClearer,
@@ -684,6 +703,10 @@ pub struct RenderTexturesInner {
     /// viewport resize / AA flip / mip-chain growth.
     pub hud_depth: Option<web_sys::GpuTexture>,
     pub hud_depth_view: Option<web_sys::GpuTextureView>,
+    /// TAA only: the post-size depth of the HUD's lit pass (after the
+    /// resolve). See [`RenderTextureViews::hud_depth_post`].
+    pub hud_depth_post: Option<web_sys::GpuTexture>,
+    pub hud_depth_post_view: Option<web_sys::GpuTextureView>,
 
     pub composite: web_sys::GpuTexture,
     pub composite_view: web_sys::GpuTextureView,
@@ -879,6 +902,35 @@ impl RenderTexturesInner {
             None => None,
         };
 
+        // TAA reactive mask: the world transparent pass's second target
+        // (render size, single-sampled), read by the resolve. COPY_SRC for
+        // the harness readback. Zero cost when TAA is off: not allocated.
+        let reactive = if anti_aliasing.taa.is_some() {
+            Some(
+                gpu.create_texture(
+                    &TextureDescriptor::new(
+                        render_texture_formats.reactive,
+                        Extent3d::new(render_w, Some(render_h), Some(1)),
+                        TextureUsage::new()
+                            .with_render_attachment()
+                            .with_texture_binding()
+                            .with_copy_src(),
+                    )
+                    .with_label("TAA Reactive")
+                    .into(),
+                )
+                .map_err(AwsmRenderTextureError::CreateTexture)?,
+            )
+        } else {
+            None
+        };
+        let reactive_view = match reactive.as_ref() {
+            Some(tex) => Some(tex.create_view().map_err(|e| {
+                AwsmRenderTextureError::CreateTextureView(format!("reactive: {e:?}"))
+            })?),
+            None => None,
+        };
+
         // NEVER multisampled, used as a storage texture. Allocate a full
         // mip chain so the transparent pass can do hardware-filtered
         // background sampling for rough/refractive materials. Mip 0 is
@@ -1029,6 +1081,24 @@ impl RenderTexturesInner {
             Some(
                 gpu.create_texture(
                     &maybe_multisample_texture(render_texture_formats.depth, "Hud Depth").into(),
+                )
+                .map_err(AwsmRenderTextureError::CreateTexture)?,
+            )
+        } else {
+            None
+        };
+        // TAA: the HUD's lit pass runs after the resolve, at post size,
+        // single-sampled (TAA excludes MSAA). Only with a HUD.
+        let hud_depth_post = if needs_hud_depth && anti_aliasing.taa.is_some() {
+            Some(
+                gpu.create_texture(
+                    &TextureDescriptor::new(
+                        render_texture_formats.depth,
+                        Extent3d::new(post_w, Some(post_h), Some(1)),
+                        TextureUsage::new().with_render_attachment(),
+                    )
+                    .with_label("Hud Depth (post)")
+                    .into(),
                 )
                 .map_err(AwsmRenderTextureError::CreateTexture)?,
             )
@@ -1468,6 +1538,12 @@ impl RenderTexturesInner {
             })?),
             None => None,
         };
+        let hud_depth_post_view = match hud_depth_post.as_ref() {
+            Some(tex) => Some(tex.create_view().map_err(|e| {
+                AwsmRenderTextureError::CreateTextureView(format!("hud_depth_post: {e:?}"))
+            })?),
+            None => None,
+        };
 
         let composite_view = composite
             .create_view()
@@ -1552,6 +1628,9 @@ impl RenderTexturesInner {
             velocity,
             velocity_view,
 
+            reactive,
+            reactive_view,
+
             opaque,
             opaque_storage_view,
             opaque_full_view,
@@ -1591,6 +1670,8 @@ impl RenderTexturesInner {
 
             hud_depth,
             hud_depth_view,
+            hud_depth_post,
+            hud_depth_post_view,
 
             composite,
             composite_view,
@@ -1639,6 +1720,9 @@ impl RenderTexturesInner {
         if let Some(tex) = self.velocity {
             tex.destroy();
         }
+        if let Some(tex) = self.reactive {
+            tex.destroy();
+        }
         self.opaque.destroy();
         self.transparent.destroy();
         if let Some(tex) = self.decal_color {
@@ -1664,6 +1748,9 @@ impl RenderTexturesInner {
             tex.destroy();
         }
         if let Some(tex) = self.hud_depth {
+            tex.destroy();
+        }
+        if let Some(tex) = self.hud_depth_post {
             tex.destroy();
         }
         self.composite.destroy();
@@ -1720,6 +1807,7 @@ pub enum AwsmRenderTextureError {
 enum DebugReadTarget {
     Velocity,
     Depth,
+    Reactive,
 }
 
 /// `(width, height, values)` of a TAA debug readback: render size, rows top
@@ -1757,6 +1845,16 @@ impl crate::AwsmRenderer {
         self.debug_read(DebugReadTarget::Depth)
     }
 
+    /// TAA test hook: the reactive mask of the LAST rendered frame (one
+    /// 0..1 value per render pixel; exactly 1.0 = an opaque-path HUD pixel),
+    /// same shape as [`Self::debug_read_velocity`]. Requires TAA on.
+    pub fn debug_read_reactive(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::error::Result<DebugReadback>>>>
+    {
+        self.debug_read(DebugReadTarget::Reactive)
+    }
+
     fn debug_read(
         &self,
         target: DebugReadTarget,
@@ -1784,11 +1882,19 @@ impl crate::AwsmRenderer {
                     .as_ref()
                     .ok_or_else(|| unavailable("velocity"))?,
                 DebugReadTarget::Depth => &inner.depth,
+                DebugReadTarget::Reactive => inner
+                    .reactive
+                    .as_ref()
+                    .ok_or_else(|| unavailable("reactive"))?,
             };
-            // Both targets are render size.
+            // All targets are render size.
             let (render_w, render_h) = inner.render_size;
-            // rg16float and depth32float are both 4 bytes per pixel.
-            let bytes_per_row = (render_w * 4).div_ceil(256) * 256;
+            // rg16float and depth32float are 4 bytes per pixel, r8unorm 1.
+            let texel_bytes = match target {
+                DebugReadTarget::Reactive => 1,
+                _ => 4,
+            };
+            let bytes_per_row = (render_w * texel_bytes).div_ceil(256) * 256;
             let buffer = self.gpu.create_buffer(
                 &BufferDescriptor::new(
                     Some("TAA Debug Readback"),
@@ -1812,12 +1918,16 @@ impl crate::AwsmRenderer {
 
         Box::pin(async move {
             let (buffer, width, height, bytes_per_row) = submitted?;
+            let texel_bytes = match target {
+                DebugReadTarget::Reactive => 1,
+                _ => 4,
+            };
             let bytes = awsm_renderer_core::buffers::extract_buffer_vec(&buffer, None).await?;
             buffer.destroy();
             let mut out = Vec::with_capacity((width * height * 2) as usize);
             for row in 0..height as usize {
                 let start = row * bytes_per_row as usize;
-                let row_bytes = &bytes[start..start + width as usize * 4];
+                let row_bytes = &bytes[start..start + width as usize * texel_bytes];
                 match target {
                     DebugReadTarget::Velocity => {
                         for half in row_bytes.chunks_exact(2) {
@@ -1828,6 +1938,9 @@ impl crate::AwsmRenderer {
                         for word in row_bytes.chunks_exact(4) {
                             out.push(f32::from_le_bytes([word[0], word[1], word[2], word[3]]));
                         }
+                    }
+                    DebugReadTarget::Reactive => {
+                        out.extend(row_bytes.iter().map(|&b| b as f32 / 255.0));
                     }
                 }
             }

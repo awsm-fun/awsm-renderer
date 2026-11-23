@@ -810,6 +810,11 @@ pub fn apply_project(ctrl: &EditorController, project: EditorProject) {
     ctrl.settings
         .smaa
         .set_neq(project.post_process.anti_aliasing.smaa);
+    // A TAA project restores its TAA settings; another mode keeps the
+    // session's (they apply if TAA is selected later).
+    if let Some(taa) = project.post_process.anti_aliasing.taa {
+        ctrl.settings.taa_knobs.set_neq(taa);
+    }
     ctrl.scene.post_process.set(project.post_process);
     ctrl.scene.bundle_options.set(project.bundle_options);
     // Restore the authored viewpoint. Without this every load dropped to the

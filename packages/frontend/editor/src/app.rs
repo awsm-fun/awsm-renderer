@@ -673,24 +673,63 @@ fn export_player_bundle(options: awsm_renderer_editor_protocol::BundleOptions) {
 }
 
 /// Segmented 1x / 1.5x / 2x picker for the supersampling render scale,
-/// bound directly to the `Mutable<f32>` (external writes — e.g. the MCP
-/// `set_view_options` — reflect back via the signal).
+/// reflecting the `Mutable<f32>` (external writes — e.g. the MCP
+/// `set_view_options` — show via the signal) and changing it through
+/// `SetViewOptions`. Supersampling and TAA are exclusive: while TAA is the
+/// anti-aliasing mode the 1.5x / 2x segments are disabled (with a tooltip
+/// saying why), so the picker never shows a scale the renderer refused.
 fn render_scale_select(value: Mutable<f32>) -> Dom {
+    let taa_on = || {
+        controller()
+            .scene
+            .post_process
+            .signal_ref(|pp| pp.anti_aliasing.taa.is_some())
+            .dedupe()
+    };
     let seg = |label: &'static str, v: f32, value: Mutable<f32>| {
+        // Only the supersampling segments conflict with TAA.
+        let blocked = move || taa_on().map(move |taa| taa && v > 1.0);
         html!("button", {
             .class("t")
             .class("focusring")
             .style("padding", "2px 8px")
             .style("border-radius", "6px")
-            .style("cursor", "pointer")
             .style("border-style", "solid")
             .style("border-width", "1px")
             .style("font-size", "11px")
+            .style_signal("cursor", blocked().map(|b| if b { "not-allowed" } else { "pointer" }))
+            .style_signal("opacity", blocked().map(|b| if b { "0.4" } else { "1" }))
+            .prop_signal("disabled", blocked())
+            .attr_signal("title", blocked().map(|b| {
+                b.then_some("Supersampling cannot be combined with TAA (Anti-aliasing mode).")
+            }))
             .style_signal("border-color", value.signal().map(move |cur| if (cur - v).abs() < 0.01 { "transparent" } else { "var(--line)" }))
             .style_signal("background", value.signal().map(move |cur| if (cur - v).abs() < 0.01 { "var(--accent)" } else { "var(--bg-3)" }))
             .style_signal("color", value.signal().map(move |cur| if (cur - v).abs() < 0.01 { "oklch(0.18 0.02 255)" } else { "var(--text-2)" }))
             .text(label)
-            .event(clone!(value => move |_: events::Click| value.set_neq(v)))
+            .event(move |_: events::Click| {
+                spawn_local(async move {
+                    if let Err(e) = controller()
+                        .dispatch(EditorCommand::SetViewOptions {
+                            grid: None,
+                            gizmos: None,
+                            light_gizmos: None,
+                            camera_gizmos: None,
+                            skeleton_viz: None,
+                            follow_agent: None,
+                            activity_overlay: None,
+                            mcp_notifications: None,
+                            msaa: None,
+                            smaa: None,
+                            render_scale: Some(v),
+                            anisotropy: None,
+                        })
+                        .await
+                    {
+                        Toast::error(format!("Supersampling: {e}"));
+                    }
+                });
+            })
         })
     };
     html!("div", {
@@ -715,8 +754,6 @@ fn settings_drawer() -> Dom {
                 .child(row("Light gizmos", toggle(s.light_gizmos.clone())))
                 .child(row("Camera gizmos", toggle(s.camera_gizmos.clone())))
                 .child(row("Skeleton overlay", toggle(s.skeleton_viz.clone())))
-                .child(row("MSAA", toggle(s.msaa.clone())))
-                .child(row("SMAA", toggle(s.smaa.clone())))
                 .child(row("Supersampling", render_scale_select(s.render_scale.clone())))
                 .child(row("Anisotropic filtering", toggle(s.anisotropy.clone())))
                 .child(row("Shadow denoise", toggle(s.shadow_denoise.clone())))
@@ -737,6 +774,7 @@ fn settings_drawer() -> Dom {
         )
         .child(shadows_section())
         .child(post_processing_section())
+        .child(anti_aliasing_section())
         .child(
             DrawerSection::new("Camera")
                 .child(html!("div", {
@@ -1442,6 +1480,397 @@ fn post_processing_section() -> Dom {
         ))
         .child(row("Haze temporal", toggle(haze_temporal)))
         .render()
+}
+
+/// The anti-aliasing mode, TAA's preset / sharpening / tuning and its debug
+/// views. Every change dispatches `SetAntiAliasing` (persisted on
+/// `scene.post_process.anti_aliasing`, except the debug view). A mode change
+/// recompiles; TAA settings are live (no recompile, no history reset).
+fn anti_aliasing_section() -> Dom {
+    use awsm_renderer_editor_protocol::{
+        AntiAliasingMode, TaaDebugViewName, TaaPresetName, TaaTuningPatch,
+    };
+    let pp = controller().scene.post_process.get_cloned();
+    let knobs = controller().settings.taa_knobs.get();
+    let t = knobs.tuning;
+    let unavailable = crate::engine::settings_sync::taa_unavailable_reason();
+
+    // Mode: ONE control, not independent toggles — MSAA, SMAA and TAA are
+    // exclusive modes (MSAA + SMAA is the one pre-TAA combination, kept so
+    // every existing scene's choice shows as itself). Structural, so it rides
+    // a Mutable like the haze mode. Unlike the other selects it also FOLLOWS
+    // the project (an MCP or undo change shows here), and a rejected change
+    // snaps back to the mode in force, so it never shows one the renderer
+    // does not run.
+    let current_mode = || {
+        AntiAliasingMode::of(&controller().scene.post_process.get_cloned().anti_aliasing)
+            .as_str()
+            .to_string()
+    };
+    let mode = Mutable::new(AntiAliasingMode::of(&pp.anti_aliasing).as_str().to_string());
+    spawn_local(clone!(mode => async move {
+        controller()
+            .scene
+            .post_process
+            .signal_ref(|pp| AntiAliasingMode::of(&pp.anti_aliasing))
+            .dedupe()
+            .for_each(move |m| {
+                mode.set_neq(m.as_str().to_string());
+                async {}
+            })
+            .await;
+    }));
+    spawn_local(clone!(mode => async move {
+        let mut first = true;
+        mode.signal_cloned().for_each(clone!(mode => move |v| {
+            let fire = !first;
+            first = false;
+            let mode = mode.clone();
+            async move {
+                let m = match v.as_str() {
+                    "msaa" => AntiAliasingMode::Msaa,
+                    "smaa" => AntiAliasingMode::Smaa,
+                    "msaa_smaa" => AntiAliasingMode::MsaaSmaa,
+                    "taa" => AntiAliasingMode::Taa,
+                    _ => AntiAliasingMode::None,
+                };
+                if fire && v != current_mode() {
+                    if let Err(e) = controller()
+                        .dispatch(EditorCommand::SetAntiAliasing {
+                            mode: Some(m),
+                            taa_preset: None,
+                            taa_render_scale: None,
+                            taa_sharpen: None,
+                            taa_tuning: None,
+                            taa_debug_view: None,
+                        })
+                        .await
+                    {
+                        Toast::error(format!("Anti-aliasing: {e}"));
+                        mode.set_neq(current_mode());
+                    }
+                }
+            }
+        })).await;
+    }));
+    let mut mode_options = vec![
+        ("none".to_string(), "None".to_string()),
+        ("msaa".to_string(), "MSAA 4x".to_string()),
+        ("smaa".to_string(), "SMAA".to_string()),
+        ("msaa_smaa".to_string(), "MSAA 4x + SMAA".to_string()),
+    ];
+    if unavailable.is_none() {
+        mode_options.push(("taa".to_string(), "TAA".to_string()));
+    }
+
+    // Preset: sets render scale + sharpening. A config that matches none shows
+    // as "Custom" (selecting it changes nothing).
+    let preset_of = |scale: f32| {
+        [
+            ("native", 1.0f32),
+            ("quality", 0.67),
+            ("balanced", 0.58),
+            ("performance", 0.5),
+        ]
+        .into_iter()
+        .find(|(_, s)| (s - scale).abs() < 1e-3)
+        .map(|(n, _)| n)
+        .unwrap_or("custom")
+    };
+    let preset = Mutable::new(preset_of(knobs.render_scale).to_string());
+    spawn_local(clone!(preset => async move {
+        let mut first = true;
+        preset.signal_cloned().for_each(move |v| {
+            let fire = !first;
+            first = false;
+            async move {
+                let p = match v.as_str() {
+                    "native" => Some(TaaPresetName::Native),
+                    "quality" => Some(TaaPresetName::Quality),
+                    "balanced" => Some(TaaPresetName::Balanced),
+                    "performance" => Some(TaaPresetName::Performance),
+                    _ => None,
+                };
+                if fire && p.is_some() {
+                    dispatch_aa(None, p, None, None, None, None);
+                }
+            }
+        }).await;
+    }));
+
+    let debug_view = Mutable::new(
+        controller()
+            .settings
+            .taa_debug_view
+            .get()
+            .as_str()
+            .to_string(),
+    );
+    spawn_local(clone!(debug_view => async move {
+        let mut first = true;
+        debug_view.signal_cloned().for_each(move |v| {
+            let fire = !first;
+            first = false;
+            async move {
+                if fire {
+                    if let Some(view) =
+                        TaaDebugViewName::ALL.into_iter().find(|n| n.as_str() == v)
+                    {
+                        dispatch_aa(None, None, None, None, None, Some(view));
+                    }
+                }
+            }
+        }).await;
+    }));
+
+    // One NumField row per tuning knob (live uniforms).
+    let knob = |label: &'static str, value: f32, step: f64, patch: fn(f32) -> TaaTuningPatch| {
+        row(
+            label,
+            NumField::new(value as f64)
+                .step(step)
+                .on_change(move |v| {
+                    dispatch_aa(None, None, None, None, Some(patch(v as f32)), None)
+                })
+                .render(),
+        )
+    };
+
+    let mut section = DrawerSection::new("Anti-aliasing")
+        .right(settings_help_button(
+            "Anti-aliasing",
+            vec![
+                (
+                    "Mode",
+                    "MSAA 4x smooths geometric edges; SMAA is a post-process edge filter; \
+                     TAA (temporal) accumulates jittered frames, smoothing edges AND shading / \
+                     specular aliasing, and can upscale (render scale < 1). The modes are \
+                     exclusive. Changing the mode recompiles pipelines. Saved into the project \
+                     + player bundle.",
+                ),
+                (
+                    "TAA preset",
+                    "Render scale (render size / output size) and sharpening: Native 1.0, \
+                     Quality 0.67, Balanced 0.58, Performance 0.5. Below 1 the scene renders \
+                     smaller and TAA reconstructs the full resolution (temporal upscaling).",
+                ),
+                (
+                    "TAA tuning",
+                    "Advanced resolve knobs (all live: no recompile, no history reset). \
+                     Clip γ still / moving: variance-clip box width in standard deviations \
+                     (tighter = less ghosting, more flicker). Disocclusion: relative depth \
+                     slack before revealed background drops its history. Max history: frames \
+                     accumulated at native / when upscaling. Motion alpha: minimum current \
+                     weight at the given speed (px/frame).",
+                ),
+                (
+                    "TAA debug view",
+                    "Velocity, history length, rejection (R off-screen, G disocclusion, B \
+                     clip), history-only / current-only, freeze-jitter and more. Viewport only \
+                     — never saved.",
+                ),
+            ],
+        ))
+        .child(row("Mode", select(mode, mode_options)));
+    if let Some(reason) = unavailable {
+        section = section.child(row(
+            "TAA",
+            html!("span", {
+                .class("t")
+                .style("font-size", "11px")
+                .style("color", "var(--text-2)")
+                .text(&format!("unavailable on this device: {reason}"))
+            }),
+        ));
+    }
+    section
+        .child(row(
+            "TAA preset",
+            select(
+                preset,
+                vec![
+                    ("native".to_string(), "Native (1.0)".to_string()),
+                    ("quality".to_string(), "Quality (0.67)".to_string()),
+                    ("balanced".to_string(), "Balanced (0.58)".to_string()),
+                    ("performance".to_string(), "Performance (0.5)".to_string()),
+                    ("custom".to_string(), "Custom".to_string()),
+                ],
+            ),
+        ))
+        .child(row(
+            "TAA sharpen",
+            NumField::new(knobs.sharpen as f64)
+                .min(0.0)
+                .max(1.0)
+                .step(0.05)
+                .on_change(|v| dispatch_aa(None, None, None, Some(v as f32), None, None))
+                .render(),
+        ))
+        .child(row(
+            "TAA debug view",
+            select(
+                debug_view,
+                TaaDebugViewName::ALL
+                    .into_iter()
+                    .map(|v| (v.as_str().to_string(), v.as_str().replace('_', " ")))
+                    .collect(),
+            ),
+        ))
+        // ── Advanced: every TaaTuning knob ──
+        .child(knob("TAA clip γ still", t.gamma_still, 0.05, |v| {
+            TaaTuningPatch {
+                gamma_still: Some(v),
+                ..Default::default()
+            }
+        }))
+        .child(knob("TAA clip γ moving", t.gamma_moving, 0.05, |v| {
+            TaaTuningPatch {
+                gamma_moving: Some(v),
+                ..Default::default()
+            }
+        }))
+        .child(knob(
+            "TAA γ moving speed",
+            t.gamma_moving_speed,
+            0.25,
+            |v| TaaTuningPatch {
+                gamma_moving_speed: Some(v),
+                ..Default::default()
+            },
+        ))
+        .child(knob(
+            "TAA disocclusion",
+            t.disocclusion_threshold,
+            0.01,
+            |v| TaaTuningPatch {
+                disocclusion_threshold: Some(v),
+                ..Default::default()
+            },
+        ))
+        .child(knob("TAA max history", t.max_history_native, 1.0, |v| {
+            TaaTuningPatch {
+                max_history_native: Some(v),
+                ..Default::default()
+            }
+        }))
+        .child(knob(
+            "TAA max history (upscaling)",
+            t.max_history_upscaling,
+            1.0,
+            |v| TaaTuningPatch {
+                max_history_upscaling: Some(v),
+                ..Default::default()
+            },
+        ))
+        .child(knob("TAA motion alpha", t.motion_alpha, 0.05, |v| {
+            TaaTuningPatch {
+                motion_alpha: Some(v),
+                ..Default::default()
+            }
+        }))
+        .child(knob(
+            "TAA motion alpha speed",
+            t.motion_alpha_speed,
+            0.5,
+            |v| TaaTuningPatch {
+                motion_alpha_speed: Some(v),
+                ..Default::default()
+            },
+        ))
+        .child(knob(
+            "TAA reactive (transparent)",
+            t.reactive_transparent,
+            0.05,
+            |v| TaaTuningPatch {
+                reactive_transparent: Some(v),
+                ..Default::default()
+            },
+        ))
+        .child(knob(
+            "TAA reactive (material)",
+            t.reactive_material,
+            0.05,
+            |v| TaaTuningPatch {
+                reactive_material: Some(v),
+                ..Default::default()
+            },
+        ))
+        .child(knob("TAA reactive (SSR)", t.reactive_ssr, 0.05, |v| {
+            TaaTuningPatch {
+                reactive_ssr: Some(v),
+                ..Default::default()
+            }
+        }))
+        .child(knob("TAA mip bias", t.mip_bias_extra, 0.1, |v| {
+            TaaTuningPatch {
+                mip_bias_extra: Some(v),
+                ..Default::default()
+            }
+        }))
+        .child(knob(
+            "TAA max history (moving)",
+            t.max_history_moving,
+            1.0,
+            |v| TaaTuningPatch {
+                max_history_moving: Some(v),
+                ..Default::default()
+            },
+        ))
+        .child(knob(
+            "TAA max history moving speed",
+            t.max_history_moving_speed,
+            0.25,
+            |v| TaaTuningPatch {
+                max_history_moving_speed: Some(v),
+                ..Default::default()
+            },
+        ))
+        .child(knob(
+            "TAA motion edge alpha",
+            t.motion_edge_alpha,
+            0.05,
+            |v| TaaTuningPatch {
+                motion_edge_alpha: Some(v),
+                ..Default::default()
+            },
+        ))
+        .child(knob(
+            "TAA motion edge speed",
+            t.motion_edge_speed,
+            0.25,
+            |v| TaaTuningPatch {
+                motion_edge_speed: Some(v),
+                ..Default::default()
+            },
+        ))
+        .render()
+}
+
+/// Dispatch an anti-aliasing patch (`SetAntiAliasing`) — only the `Some`
+/// fields change. Fire-and-forget; the `settings_sync` observer applies it.
+fn dispatch_aa(
+    mode: Option<awsm_renderer_editor_protocol::AntiAliasingMode>,
+    taa_preset: Option<awsm_renderer_editor_protocol::TaaPresetName>,
+    taa_render_scale: Option<f32>,
+    taa_sharpen: Option<f32>,
+    taa_tuning: Option<awsm_renderer_editor_protocol::TaaTuningPatch>,
+    taa_debug_view: Option<awsm_renderer_editor_protocol::TaaDebugViewName>,
+) {
+    spawn_local(async move {
+        if let Err(e) = controller()
+            .dispatch(EditorCommand::SetAntiAliasing {
+                mode,
+                taa_preset,
+                taa_render_scale,
+                taa_sharpen,
+                taa_tuning,
+                taa_debug_view,
+            })
+            .await
+        {
+            Toast::error(format!("Anti-aliasing: {e}"));
+        }
+    });
 }
 
 /// Dispatch a post-processing patch — only the `Some` fields change.

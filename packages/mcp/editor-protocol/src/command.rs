@@ -875,6 +875,37 @@ pub enum EditorCommand {
         anisotropy: Option<bool>,
     },
 
+    /// Set the anti-aliasing: the mode, and TAA's settings. `mode`,
+    /// `taa_preset`, `taa_render_scale`, `taa_sharpen` and `taa_tuning` are
+    /// persisted on `scene.post_process.anti_aliasing` (project + player
+    /// bundle); `taa_debug_view` is transient view state. Every field is
+    /// optional (patch semantics). Changing the MODE is structural (pipelines
+    /// recompile; `wait_render_settled` after). TAA settings changed while TAA
+    /// is on are live: no recompile, no history reset. TAA settings sent while
+    /// another mode is active are kept and apply when TAA is selected. TAA is
+    /// rejected on a device without its motion-vector path; selecting it turns
+    /// supersampling (`render_scale` > 1 in `SetViewOptions`) off. Inverse:
+    /// the prior mode and TAA settings.
+    SetAntiAliasing {
+        #[serde(default)]
+        mode: Option<crate::AntiAliasingMode>,
+        /// Sets `taa_render_scale` + `taa_sharpen` to the preset's values
+        /// (applied before the two explicit fields below).
+        #[serde(default)]
+        taa_preset: Option<crate::TaaPresetName>,
+        /// Render size / output size, clamped to 0.5..=1.0.
+        #[serde(default)]
+        taa_render_scale: Option<f32>,
+        /// Sharpening strength after the resolve (0 = off), clamped to 0..=1.
+        #[serde(default)]
+        taa_sharpen: Option<f32>,
+        #[serde(default)]
+        taa_tuning: Option<crate::TaaTuningPatch>,
+        /// TAA debug view (transient, never persisted or undone).
+        #[serde(default)]
+        taa_debug_view: Option<crate::TaaDebugViewName>,
+    },
+
     /// Snap the viewport camera to a world axis (the nav-cube directions).
     /// **Transient** — camera/view state, not recorded in the undo log.
     SnapCameraToAxis { axis: CameraAxis },
@@ -1886,6 +1917,7 @@ impl EditorCommand {
             EditorCommand::SetShadowsSscs { .. } => "Set SSCS",
             EditorCommand::SetPostProcess { .. } => "Set post-processing",
             EditorCommand::SetViewOptions { .. } => "Set view options",
+            EditorCommand::SetAntiAliasing { .. } => "Set anti-aliasing",
             EditorCommand::SnapCameraToAxis { .. } => "Snap camera",
             EditorCommand::ResetCamera => "Reset view",
             EditorCommand::SetCameraOrbit { .. } => "Orbit camera",

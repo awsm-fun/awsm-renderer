@@ -12,13 +12,17 @@ use crate::{
 /// creation, not in the WGSL itself.
 #[derive(Template, Debug, Default)]
 #[template(path = "line_wgsl/line.wgsl", whitespace = "minimize")]
-pub struct ShaderTemplateLine;
+pub struct ShaderTemplateLine {
+    pub reactive: bool,
+}
 
 impl TryFrom<&ShaderCacheKeyLine> for ShaderTemplateLine {
     type Error = AwsmShaderError;
 
-    fn try_from(_value: &ShaderCacheKeyLine) -> Result<Self> {
-        Ok(Self)
+    fn try_from(value: &ShaderCacheKeyLine) -> Result<Self> {
+        Ok(Self {
+            reactive: value.reactive,
+        })
     }
 }
 
@@ -30,6 +34,6 @@ impl ShaderTemplateLine {
     /// Debug label kept in release builds (negligible cost — see
     /// `ShaderTemplate::into_descriptor`).
     pub fn debug_label(&self) -> Option<&str> {
-        Some("Line")
+        Some(if self.reactive { "Line (TAA)" } else { "Line" })
     }
 }

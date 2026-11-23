@@ -17,7 +17,11 @@ struct FragmentInput {
 
 struct FragmentOutput {
     // Rgba16float
-    @location(0) color: vec4<f32>,
+    @location(0) color: vec4<f32>,{% if reactive %}
+    // TAA reactive mask (R8unorm, MAX blended): how much to distrust the
+    // history here (03 §5.1).
+    @location(1) reactive: f32,
+{% endif +%}
 }
 
 // Sample transmission background from the opaque render with screen-space refraction
@@ -297,7 +301,11 @@ fn fs_main(input: FragmentInput) -> FragmentOutput {
             dyn_material,
         );
         let dyn_out = custom_shade_transparent_dynamic(dyn_input);
-        out.color = dyn_out.color;
+        out.color = dyn_out.color;{% if reactive %}
+        // TAA: alpha * k_transparent (camera dof_params.z under TAA), below
+        // 1.0 (exactly 1.0 means "HUD pixel, pass through" to the resolve).
+        out.reactive = min(dyn_out.color.a * camera_raw.dof_params.z, 0.99);
+{% endif +%}
         return out;
     {% else %}
         // PBR material path (default)
@@ -374,7 +382,11 @@ fn fs_main(input: FragmentInput) -> FragmentOutput {
 
     // Output final color with alpha
     let premult_rgb = color * base_alpha;
-    out.color = vec4<f32>(premult_rgb, base_alpha);
+    out.color = vec4<f32>(premult_rgb, base_alpha);{% if reactive %}
+    // TAA: alpha * k_transparent (camera dof_params.z under TAA), below 1.0
+    // (exactly 1.0 means "HUD pixel, pass through" to the resolve).
+    out.reactive = min(base_alpha * camera_raw.dof_params.z, 0.99);
+{% endif +%}
 
     return out;
 }

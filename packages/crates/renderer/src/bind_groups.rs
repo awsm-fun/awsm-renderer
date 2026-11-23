@@ -122,6 +122,10 @@ pub struct BindGroupRecreateContext<'a> {
 #[derive(Hash, Debug, Clone, PartialEq, Eq, EnumIter)]
 pub enum BindGroupCreate {
     CameraInitOnly,
+    /// TAA: the unjittered HUD camera twin was created or dropped
+    /// (`CameraBuffer::hud_gpu_buffer`). The geometry camera group and the
+    /// masked group 0 carry a HUD variant. Never fires without TAA.
+    CameraHud,
     LightsResize,
     LightsInfoCreate,
     BrdfLutTextures,
@@ -327,6 +331,10 @@ impl BindGroups {
 
         for create in self.create_list.drain() {
             match create {
+                BindGroupCreate::CameraHud => {
+                    functions_to_call.insert(FunctionToCall::GeometryCamera);
+                    functions_to_call.insert(FunctionToCall::GeometryMasked);
+                }
                 BindGroupCreate::CameraInitOnly => {
                     functions_to_call.insert(FunctionToCall::GeometryCamera);
                     functions_to_call.insert(FunctionToCall::GeometryMasked);
@@ -483,6 +491,9 @@ impl BindGroups {
                     functions_to_call.insert(FunctionToCall::TransparentMain);
                 }
                 BindGroupCreate::MaterialMeshMetaResize => {
+                    // The TAA reactive seed reads the material meta (no-op
+                    // while TAA is off).
+                    functions_to_call.insert(FunctionToCall::Taa);
                     functions_to_call.insert(FunctionToCall::OpaqueMain);
                     functions_to_call.insert(FunctionToCall::GeometryMasked);
                     functions_to_call.insert(FunctionToCall::ShadowMasked);
@@ -945,9 +956,13 @@ impl BindGroups {
                             bind_groups,
                             params,
                             textures,
+                            reactive_seed,
                             ..
                         } = taa;
                         bind_groups.recreate(&ctx, textures, &params.gpu_buffer)?;
+                        if let Some(seed) = reactive_seed.as_mut() {
+                            seed.recreate(&ctx)?;
+                        }
                     }
                 }
                 FunctionToCall::Effects => {

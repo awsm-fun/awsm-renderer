@@ -1188,6 +1188,8 @@ fn transparent_first_party_key(
         texture_pool_arrays_len: 1,
         texture_pool_samplers_len: 1,
         msaa_sample_count: msaa,
+        reactive: false,
+        hud_post: false,
         mipmaps: true,
         reverse_z: false,
         base,
@@ -1250,6 +1252,137 @@ fn custom_transparent_shaders_validate() {
             naga_validate(&src, &label);
         }
     }
+}
+
+#[test]
+fn taa_reactive_transparent_and_line_shaders_validate() {
+    // TAA's transparent variant (reactive mask at @location(1)) for every
+    // shading family + a custom material, single-sampled (TAA excludes MSAA).
+    let dyn_id = MaterialShaderId::from_dynamic_raw(MaterialShaderId::DYNAMIC_START);
+    for (base, name) in [
+        (ShadingBase::Pbr, "pbr"),
+        (ShadingBase::Unlit, "unlit"),
+        (ShadingBase::Toon, "toon"),
+        (ShadingBase::Flipbook, "flipbook"),
+        (ShadingBase::Custom, "custom"),
+    ] {
+        for reactive in [false, true] {
+            let mut key = transparent_first_party_key(base, None);
+            key.reactive = reactive;
+            if base == ShadingBase::Custom {
+                key.dispatch_hash = 1;
+                key.dynamic_shader_id = Some(dyn_id);
+                key.dynamic_shader = Some(DynamicShaderInfo {
+                    shader_includes: awsm_renderer_materials::ShaderIncludes::all(),
+                    struct_decl: "struct MaterialData { _pad: u32, };".to_string(),
+                    loader_decl: "fn material_data_load(byte_offset: u32) -> MaterialData { return MaterialData(0u); }".to_string(),
+                    wgsl_fragment: "return TransparentShadingOutput(vec4<f32>(input.world_normal * 0.5 + 0.5, 0.5));".to_string(),
+                });
+            }
+            let label = format!("transparent/{name} reactive={reactive}");
+            let src = ShaderTemplateMaterialTransparent::try_from(&key)
+                .unwrap()
+                .into_source()
+                .unwrap();
+            naga_validate(&src, &label);
+            let writes = src.matches("out.reactive =").count();
+            if reactive {
+                assert!(
+                    src.contains("@location(1) reactive: f32") && writes >= 1,
+                    "{label}: must declare and write the reactive mask"
+                );
+                // One write per fragment exit: the custom-material early
+                // return, and the shared tail.
+                let exits = if base == ShadingBase::Custom { 2 } else { 1 };
+                assert_eq!(
+                    writes, exits,
+                    "{label}: one reactive write per fragment exit"
+                );
+            } else {
+                assert!(
+                    !src.contains("@location(1) reactive")
+                        && !src.contains("out.reactive")
+                        && !src.contains("dof_params.z"),
+                    "{label}: TAA-off shader must not touch the reactive mask"
+                );
+            }
+        }
+    }
+    // TAA HUD after the resolve: the unjittered projection, no reactive mask.
+    for (base, name) in [(ShadingBase::Pbr, "pbr"), (ShadingBase::Unlit, "unlit")] {
+        for hud_post in [false, true] {
+            let mut key = transparent_first_party_key(base, None);
+            key.hud_post = hud_post;
+            let label = format!("transparent/{name} hud_post={hud_post}");
+            let src = ShaderTemplateMaterialTransparent::try_from(&key)
+                .unwrap()
+                .into_source()
+                .unwrap();
+            naga_validate(&src, &label);
+            assert_eq!(
+                src.contains("camera.view_proj = camera.view_proj_unjittered;"),
+                hud_post,
+                "{label}"
+            );
+        }
+    }
+    use crate::render_passes::lines::{shader::template::ShaderTemplateLine, ShaderCacheKeyLine};
+    for reactive in [false, true] {
+        let src = ShaderTemplateLine::try_from(&ShaderCacheKeyLine { reactive })
+            .unwrap()
+            .into_source()
+            .unwrap();
+        naga_validate(&src, &format!("line reactive={reactive}"));
+        assert_eq!(src.contains("@location(1) reactive: f32"), reactive);
+        assert_eq!(src.contains("k_transparent"), reactive);
+    }
+}
+
+#[test]
+fn taa_reactive_seed_validates_and_reads_the_right_meta_words() {
+    use crate::render_passes::taa::shader::{
+        cache_key::ShaderCacheKeyTaaReactiveSeed, template::ShaderTemplateTaaReactiveSeed,
+    };
+    let ssr_src =
+        ShaderTemplateTaaReactiveSeed::try_from(&ShaderCacheKeyTaaReactiveSeed { ssr: true })
+            .unwrap()
+            .into_source()
+            .unwrap();
+    naga_validate(&ssr_src, "taa reactive seed (ssr)");
+    assert!(ssr_src.contains("reflection_descriptor_tex"));
+    let src = ShaderTemplateTaaReactiveSeed::try_from(&ShaderCacheKeyTaaReactiveSeed::default())
+        .unwrap()
+        .into_source()
+        .unwrap();
+    naga_validate(&src, "taa reactive seed");
+    assert!(
+        !src.contains("reflection_descriptor_tex"),
+        "the plain seed must not bind the SSR descriptor"
+    );
+    // The seed reads the material meta as raw words; pin the indices to the
+    // shared struct's field order (`is_hud` = 16, the packer's temporal flag
+    // in the slot the struct calls `_reserved2` = 22).
+    let meta = include_str!("render_passes/shared/shared_wgsl/material_mesh_meta.wgsl");
+    let body = meta
+        .split("struct MaterialMeshMeta {")
+        .nth(1)
+        .and_then(|rest| rest.split('}').next())
+        .expect("MaterialMeshMeta struct");
+    let fields: Vec<&str> = body
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.starts_with("//") && l.contains(':'))
+        .map(|l| l.split(':').next().unwrap().trim())
+        .collect();
+    let index = |name: &str| fields.iter().position(|f| *f == name).unwrap();
+    assert_eq!(index("is_hud"), 16);
+    assert_eq!(index("_reserved2"), 22);
+    assert!(src.contains("const META_IS_HUD: u32 = 16u;"));
+    assert!(src.contains("const META_TEMPORAL_REACTIVE: u32 = 22u;"));
+    assert!(
+        !src.contains("switch"),
+        "Apple GPU rule: no switch in the seed"
+    );
 }
 
 #[test]
@@ -3256,8 +3389,8 @@ fn taa_resolve_shader_validates() {
             // history CLIPPED along the line to the mean (not clamped per
             // channel), and the clipped history is what gets blended.
             for line in [
-                "let mean = m1 / 9.0;",
-                "let sigma = sqrt(max(m2 / 9.0 - mean * mean, vec3<f32>(0.0)));",
+                "let mean = m1 / kept;",
+                "let sigma = sqrt(max(m2 / kept - mean * mean, vec3<f32>(0.0)));",
                 "let box_extent = max(gamma * sigma, vec3<f32>(1.5e-3));",
                 "let clip_scale = max(max(over.x, max(over.y, over.z)), 1.0);",
                 "let history_clipped = max(ycocg_to_rgb(mean + to_history / clip_scale), vec3<f32>(0.0));",

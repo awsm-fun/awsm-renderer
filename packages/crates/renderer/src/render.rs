@@ -224,11 +224,12 @@ impl AwsmRenderer {
         // projects that never use lines pay nothing.
         self.lines.kick_compile(
             &self.gpu,
-            &self.shaders,
+            &mut self.shaders,
             &mut self.bind_group_layouts,
             &mut self.pipeline_layouts,
             &self.render_textures.formats,
             self.features.depth().compare_strict(),
+            self.anti_aliasing.taa.is_some(),
         )?;
         self.lines.poll_compile(&mut self.pipelines.render)?;
 
@@ -592,12 +593,28 @@ impl AwsmRenderer {
                 // The jitter phase advances once per rendered frame.
                 self.taa.frame_index = self.taa.frame_index.wrapping_add(1);
             }
+            let reactive_factors = self.anti_aliasing.taa.as_ref().map(|taa| {
+                [
+                    taa.tuning.reactive_transparent,
+                    taa.tuning.reactive_material,
+                ]
+            });
+            // TAA with a HUD: the HUD geometry pass rasterises with an
+            // unjittered twin of the camera (03 §5.4). Requested while a HUD
+            // has ever existed (sticky, like `hud_depth`); never without TAA.
+            let hud_camera = temporal && self.meshes.has_seen_hud();
+            if self.camera.sync_hud_buffer(&self.gpu, hud_camera)? {
+                self.bind_groups
+                    .mark_create(crate::bind_groups::BindGroupCreate::CameraHud);
+            }
             self.camera.prepare_frame(
                 jitter,
                 temporal,
                 render_w as f32,
                 render_h as f32,
                 self.features.depth(),
+                reactive_factors,
+                hud_camera,
             );
         }
         self.camera
@@ -1137,6 +1154,7 @@ impl AwsmRenderer {
             post_size: frame_sizes.post,
             surface_size: frame_sizes.surface,
             prep_config: &self.prep_config,
+            reactive_written: std::cell::Cell::new(false),
             // GPU timestamp handle — `None` (no slots ever allocated) unless the
             // `gpu` tier is on AND the device supports timestamp queries.
             gpu_timestamps: if self.logging.gpu.enabled() {
@@ -1326,6 +1344,11 @@ impl AwsmRenderer {
         // 400×800 mobile viewport the wasted bandwidth is ~40 MB per
         // frame, every frame, when HUD is empty. The same skip applies to
         // the HUD transparent + HUD line passes further below.
+        // TAA: HUD meshes shaded by the opaque (visibility) path stay here
+        // and are flagged fully reactive by the seed (from `hud_depth`); the
+        // forward-shaded (transparent-pipeline) HUD pass moves after the
+        // resolve (03 §5.4, below).
+        let hud_after_taa = ctx.anti_aliasing.taa.is_some() && self.render_passes.taa.is_some();
         if !renderables.hud.is_empty() {
             let _maybe_span_guard =
                 crate::profiling::cpu_scope(&self.logging, "HUD Geometry RenderPass", true);
@@ -1852,7 +1875,44 @@ impl AwsmRenderer {
             || !renderables.hud.is_empty();
         let keep_color = !msaa_on || color_read_later;
         let lines_drawable = self.lines.has_drawable();
+        // TAA: seed the reactive mask from `temporal: reactive` opaque
+        // materials (03 §5.2) and from the HUD drawn with the scene (03
+        // §5.4, via `hud_depth`) at the start of the world transparent pass.
+        // Only when either exists.
+        let hud_in_scene = !renderables.hud.is_empty();
+        // 03 §5.3: SSR reflectivity adds reactivity (the seed's `ssr`
+        // variant) only while SSR runs and `reactive_ssr > 0`.
+        let k_ssr = ctx
+            .anti_aliasing
+            .taa
+            .as_ref()
+            .map(|taa| taa.tuning.reactive_ssr)
+            .filter(|k| *k > 0.0 && ctx.post_processing.ssr.enabled);
+        let reactive_seed = if ctx.anti_aliasing.taa.is_some()
+            && (self.materials.has_temporal_reactive() || hud_in_scene || k_ssr.is_some())
+        {
+            self.render_passes
+                .taa
+                .as_ref()
+                .and_then(|taa| taa.reactive_seed.as_ref())
+        } else {
+            None
+        };
         if let Some(hook) = before_hook {
+            // The hook draws between lines and transparents in passes of its
+            // own, so the seed gets a pass of its own too (first: it clears
+            // the mask).
+            if let Some(seed) = reactive_seed {
+                let render_pass = ctx.begin_world_transparent_pass_timed(
+                    Some("TAA Reactive Seed"),
+                    None,
+                    true,
+                    false,
+                    true,
+                )?;
+                seed.draw(&ctx, &render_pass, hud_in_scene, k_ssr)?;
+                render_pass.end();
+            }
             // Lines first, so the hook's overlays draw on top of them.
             if lines_drawable {
                 let _maybe_span_guard =
@@ -1877,7 +1937,11 @@ impl AwsmRenderer {
                     keep_color,
                 )?;
             }
-        } else if msaa_on || lines_drawable || !renderables.transparent.is_empty() {
+        } else if msaa_on
+            || lines_drawable
+            || !renderables.transparent.is_empty()
+            || reactive_seed.is_some()
+        {
             let _maybe_span_guard =
                 crate::profiling::cpu_scope(&self.logging, "Material Transparent RenderPass", true);
             let render_pass = ctx.begin_world_transparent_pass_timed(
@@ -1885,7 +1949,11 @@ impl AwsmRenderer {
                 Some("Material Transparent"),
                 keep_color,
                 blit_in_world_pass,
+                true,
             )?;
+            if let Some(seed) = reactive_seed {
+                seed.draw(&ctx, &render_pass, hud_in_scene, k_ssr)?;
+            }
             self.lines.draw(&ctx, &render_pass)?;
             self.render_passes.material_transparent.draw(
                 &ctx,
@@ -1903,12 +1971,21 @@ impl AwsmRenderer {
             }
         }
 
+        // TAA: the resolve reads the reactive mask only when a pass wrote it
+        // this frame (03 §5); otherwise it holds last frame's (or nothing).
+        if ctx.anti_aliasing.taa.is_some() {
+            if let Some(taa) = self.render_passes.taa.as_ref() {
+                taa.params
+                    .set_reactive_valid(&self.gpu, ctx.reactive_written.get())?;
+            }
+        }
+
         // HUD transparent / lit pass. Same skip-on-empty rationale as the
         // HUD geometry pass above — both attachments are LoadOp::Load on
         // the world-state textures + HUD depth, so emitting the pass
         // descriptor with zero draws still costs a full-screen tile
         // round-trip on TBR mobile GPUs.
-        if !renderables.hud.is_empty() {
+        if !renderables.hud.is_empty() && !hud_after_taa {
             let _maybe_span_guard =
                 crate::profiling::cpu_scope(&self.logging, "HUD RenderPass", true);
 
@@ -1965,6 +2042,19 @@ impl AwsmRenderer {
                     crate::profiling::cpu_scope(&self.logging, "TAA RenderPass", true);
                 taa.render(&ctx)?;
             }
+        }
+
+        // TAA: the forward-shaded HUD after the resolve (03 §5.4): drawn
+        // into `taa_out` at post size with the unjittered camera (`hud_post`
+        // pipelines), so it is never accumulated and its edges do not shake.
+        // (HUD meshes shaded by the opaque path were drawn with the scene and
+        // are fully reactive instead; see the seed.)
+        if hud_after_taa && !renderables.hud.is_empty() {
+            let _maybe_span_guard =
+                crate::profiling::cpu_scope(&self.logging, "HUD RenderPass", true);
+            self.render_passes
+                .material_transparent
+                .render_hud_post(&ctx, renderables.hud)?;
         }
 
         // SMAA pre-pass — edge detection + blend-weight calculation from the
@@ -2804,6 +2894,10 @@ pub struct RenderContext<'a> {
     /// only when `render_passes.material_prep` is `Some` (i.e. when this is
     /// enabled). Threaded through so later stages can branch shading on it.
     pub prep_config: &'a crate::render_passes::material_prep::PrepPassConfig,
+    /// TAA: a pass this frame attached the reactive mask (the first one
+    /// clears it, later ones load). Read after the transparent passes to tell
+    /// the resolve whether the mask is valid. Always `false` without TAA.
+    pub reactive_written: std::cell::Cell<bool>,
 }
 
 impl<'a> RenderContext<'a> {
@@ -2879,11 +2973,16 @@ impl<'a> RenderContext<'a> {
 
     /// Begins a world-space transparent effect pass that targets the transparent color buffer and
     /// shared scene depth.
+    ///
+    /// Under TAA the pass has no reactive-mask attachment: what a hook draws
+    /// here is accumulated like opaque colour. A hook drawing content that
+    /// moves without motion vectors (particles, overlays) should keep it
+    /// small or draw it after the frame.
     pub fn begin_world_transparent_pass(
         &'a self,
         label: Option<&'a str>,
     ) -> Result<RenderPassEncoder> {
-        self.begin_world_transparent_pass_timed(label, None, true, false)
+        self.begin_world_transparent_pass_timed(label, None, true, false, false)
     }
 
     /// [`Self::begin_world_transparent_pass`] that also attaches a GPU
@@ -2900,12 +2999,18 @@ impl<'a> RenderContext<'a> {
     /// `starts_from_opaque` (MSAA 4x only): the opaque image was not blitted
     /// into the colour attachment, so the pass clears it instead of loading it
     /// and draws that blit before anything else.
+    ///
+    /// `reactive`: attach the TAA reactive mask as colour target 1 (when TAA
+    /// is on; ignored otherwise). Every pipeline drawn in the pass must then
+    /// write it (the renderer's own transparent and line pipelines do under
+    /// TAA). The first such pass of the frame clears it.
     pub(crate) fn begin_world_transparent_pass_timed(
         &'a self,
         label: Option<&'a str>,
         timing: Option<&'static str>,
         keep_color: bool,
         starts_from_opaque: bool,
+        reactive: bool,
     ) -> Result<RenderPassEncoder> {
         let msaa_on = self.anti_aliasing.msaa_sample_count.is_some();
         let mut color_attachment = ColorAttachment::new(
@@ -2926,11 +3031,25 @@ impl<'a> RenderContext<'a> {
             color_attachment =
                 color_attachment.with_resolve_target(&self.render_texture_views.composite);
         }
+        let mut color_attachments = vec![color_attachment];
+        if let Some(view) = self
+            .render_texture_views
+            .reactive
+            .as_ref()
+            .filter(|_| reactive)
+        {
+            let load = if self.reactive_written.replace(true) {
+                LoadOp::Load
+            } else {
+                LoadOp::Clear
+            };
+            color_attachments.push(ColorAttachment::new(view, load, StoreOp::Store));
+        }
 
         let render_pass = self.command_encoder.begin_render_pass(
             &RenderPassDescriptor {
                 label,
-                color_attachments: vec![color_attachment],
+                color_attachments,
                 depth_stencil_attachment: Some(
                     DepthStencilAttachment::new(&self.render_texture_views.depth)
                         .with_depth_load_op(LoadOp::Load)
@@ -3002,6 +3121,47 @@ impl<'a> RenderContext<'a> {
                 &RenderPassDescriptor {
                     label,
                     color_attachments: vec![color_attachment],
+                    depth_stencil_attachment: Some(
+                        DepthStencilAttachment::new(hud_depth_view)
+                            .with_depth_load_op(LoadOp::Clear)
+                            .with_depth_clear_value(self.features.depth().clear_value())
+                            .with_depth_store_op(StoreOp::Store),
+                    ),
+                    timestamp_writes: timing
+                        .and_then(|name| self.gpu_timestamps.and_then(|t| t.writes_for(name))),
+                    ..Default::default()
+                }
+                .into(),
+            )
+            .map_err(Into::into)
+    }
+
+    /// TAA: begins the HUD's lit pass after the resolve: `taa_out` (post
+    /// size, loaded) with the post-size HUD depth (cleared). Only called
+    /// under TAA with HUD renderables.
+    pub(crate) fn begin_hud_post_pass_timed(
+        &'a self,
+        label: Option<&'a str>,
+        timing: Option<&'static str>,
+    ) -> Result<RenderPassEncoder> {
+        let taa = self
+            .render_passes
+            .taa
+            .as_ref()
+            .expect("begin_hud_post_pass without the TAA pass");
+        let hud_depth_view = self.render_texture_views.hud_depth_post.as_ref().expect(
+            "hud_depth_post absent at begin_hud_post_pass — invariant violated: allocated \
+             under TAA once a HUD renderable exists",
+        );
+        self.command_encoder
+            .begin_render_pass(
+                &RenderPassDescriptor {
+                    label,
+                    color_attachments: vec![ColorAttachment::new(
+                        &taa.textures.out_view,
+                        LoadOp::Load,
+                        StoreOp::Store,
+                    )],
                     depth_stencil_attachment: Some(
                         DepthStencilAttachment::new(hud_depth_view)
                             .with_depth_load_op(LoadOp::Clear)
