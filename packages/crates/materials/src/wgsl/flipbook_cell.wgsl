@@ -23,30 +23,33 @@ const FLIPBOOK_MODE_ONCE: u32 = 3u;
 // CPU-side writer clamps so this is safe.
 fn flipbook_apply_mode(frame_f: f32, count: u32, mode: u32) -> u32 {
     let safe_frame_f = max(frame_f, 0.0);
+    // single-exit-switch: this runs in the multisampled transparent pass, where
+    // returning from inside a switch was measured up to 20x slower (M1 Max).
+    var frame = 0u;
     switch mode {
         case 0u: { // Loop
-            return u32(safe_frame_f) % count;
+            frame = u32(safe_frame_f) % count;
         }
         case 1u: { // PingPong
-            if count <= 1u {
-                return 0u;
+            if count > 1u {
+                let count_f = f32(count);
+                let period = 2.0 * count_f - 2.0;
+                let phase = safe_frame_f - floor(safe_frame_f / period) * period;
+                // First half is forward; second half mirrors back. `min`
+                // clamps the very last step (phase ≈ period) so we never
+                // escape [0, count-1].
+                let mirrored = select(phase, period - phase, phase >= count_f);
+                frame = min(u32(mirrored), count - 1u);
             }
-            let count_f = f32(count);
-            let period = 2.0 * count_f - 2.0;
-            let phase = safe_frame_f - floor(safe_frame_f / period) * period;
-            // First half is forward; second half mirrors back. `min`
-            // clamps the very last step (phase ≈ period) so we never
-            // escape [0, count-1].
-            let mirrored = select(phase, period - phase, phase >= count_f);
-            return min(u32(mirrored), count - 1u);
         }
         case 2u: { // Clamp
-            return min(u32(safe_frame_f), count - 1u);
+            frame = min(u32(safe_frame_f), count - 1u);
         }
         default: { // Once (alpha=0 past end handled by caller)
-            return min(u32(safe_frame_f), count - 1u);
+            frame = min(u32(safe_frame_f), count - 1u);
         }
     }
+    return frame;
 }
 
 // `true` iff `mode == Once` and the running frame has advanced past

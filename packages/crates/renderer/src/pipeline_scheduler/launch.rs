@@ -953,6 +953,7 @@ impl crate::AwsmRenderer {
                 EdgePipelineSlot::Shade(id) => CompileInstallTarget::EdgeResolveShade {
                     shader_id: id.shader_id,
                     mipmaps: id.mipmaps,
+                    edge_pixels: id.edge_pixels,
                 },
                 EdgePipelineSlot::FinalBlend => CompileInstallTarget::EdgeResolveFinalBlend,
             };
@@ -1407,12 +1408,15 @@ fn install_edge_per_pass(
 /// would panic.
 fn edge_slot_from_target(t: &CompileInstallTarget) -> EdgePipelineSlot {
     match t {
-        CompileInstallTarget::EdgeResolveShade { shader_id, mipmaps } => {
-            EdgePipelineSlot::Shade(EdgeResolvePipelineKeyId {
-                shader_id: *shader_id,
-                mipmaps: *mipmaps,
-            })
-        }
+        CompileInstallTarget::EdgeResolveShade {
+            shader_id,
+            mipmaps,
+            edge_pixels,
+        } => EdgePipelineSlot::Shade(EdgeResolvePipelineKeyId {
+            shader_id: *shader_id,
+            mipmaps: *mipmaps,
+            edge_pixels: *edge_pixels,
+        }),
         CompileInstallTarget::EdgeResolveFinalBlend => EdgePipelineSlot::FinalBlend,
         _ => unreachable!("edge_slot_from_target called with non-edge variant"),
     }

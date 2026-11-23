@@ -42,13 +42,8 @@ struct SsrParams {
 
 @group(0) @binding(0) var<uniform> camera_raw: CameraRaw;
 @group(0) @binding(1) var<uniform> params: SsrParams;
-// Full-res post-opaque depth — multisampled under MSAA, mirroring the trace's
-// own depth binding (same buffer, same variant axis).
-{% if multisampled_geometry %}
-@group(0) @binding(2) var depth_tex: texture_depth_multisampled_2d;
-{% else %}
+// Full-res post-opaque depth. Always single-sample, as in trace.wgsl.
 @group(0) @binding(2) var depth_tex: texture_depth_2d;
-{% endif %}
 // This frame's spatially-resolved reflection (integer textureLoad only).
 @group(0) @binding(3) var current_tex: texture_2d<f32>;
 // Previous frame's accumulated history — the reprojected UV is fractional, so

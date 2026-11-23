@@ -52,6 +52,9 @@ pub const TILE_PIXEL_SIZE: u32 = 16;
 
 /// Number of view-space depth slices per screen tile.
 pub const DEFAULT_SLICE_COUNT: u32 = 32;
+// The froxel pass (`cs_main`) runs one invocation per slice, and WebGPU's
+// default workgroup limit is 256 invocations.
+const _: () = assert!(DEFAULT_SLICE_COUNT <= 256);
 
 /// Initial per-froxel light-index budget.
 pub const DEFAULT_MAX_PER_FROXEL_CAPACITY: u32 = 32;

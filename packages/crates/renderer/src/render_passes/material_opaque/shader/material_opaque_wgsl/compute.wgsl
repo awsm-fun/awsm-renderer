@@ -832,7 +832,7 @@ fn shade_sample(
     {% endif %}
 
     {% if write_ssr_descriptor %}
-    // M2a: this sample's SSR descriptor rides back to the edge arm, which
+    // M2a: this sample's SSR descriptor rides back to cs_shade_edge, which
     // accumulates it into the slot's descriptor words; final_blend resolves
     // the pixel's coverage-correct descriptor from all samples (edge pixels'
     // primary-pass sample-0 store gets overwritten there).
@@ -912,27 +912,9 @@ fn cs_shade(
         let camera = camera_from_raw(camera_raw);
         let frame_globals = frame_globals_from_raw(frame_globals_raw);
 
-        // early return if we only hit skybox / no geometry (for all samples).
-        // This is the pure material kernel — it never writes the skybox.
-        var any_sample_hit = false;
-        for (var s = 0u; s < {{ msaa_sample_count }}u; s++) {
-            var vis_check: vec4<u32>;
-            switch(s) {
-                case 0u: { vis_check = textureLoad(visibility_data_tex, coords, 0); }
-                case 1u: { vis_check = textureLoad(visibility_data_tex, coords, 1); }
-                case 2u: { vis_check = textureLoad(visibility_data_tex, coords, 2); }
-                case 3u, default: { vis_check = textureLoad(visibility_data_tex, coords, 3); }
-            }
-            if (join32(vis_check.x, vis_check.y) != U32_MAX) {
-                any_sample_hit = true;
-                break;
-            }
-        }
-        if (!any_sample_hit) {
-            return;
-        }
-
-        // Sample-0 skybox at a silhouette edge — skybox owns the base color.
+        // Sample-0 skybox, whether the whole pixel or a silhouette — skybox
+        // owns the base color; this pure material kernel never writes it. No
+        // need to look at the other samples: the pixel returns either way.
         if (triangle_index == U32_MAX) {
             return;
         }
@@ -1196,176 +1178,218 @@ fn cs_shade(
         return;
     }
 
-    // ── EDGE ARM (cs_edge per-sample shade + accumulate, verbatim) ────
-    // `edge_id` (= the compact edge_pixel_id) is this pixel's accumulator
-    // base. We reconstruct the per-sample ownership mask cs_edge read from
-    // the compact list by reading the 4 sample materials at this pixel and
-    // testing each against THIS bucket's shader_id (the same gate
-    // `shade_sample` applies); the slot-find against `edge_slot_map` then
-    // gates the single accumulator write to exactly this material's slot
-    // (identical to cs_edge — a sample owned by a different bucket sharing
-    // our shader_id finds no matching slot here and is skipped).
-    let edge_pixel_id = edge_id;
+    // An edge pixel: `cs_shade_edge` below shades it, in a dispatch of its own.
+}
 
-    // Find our slot in the slot_map (IDENTICAL to cs_edge).
-    {% if edge_slot_bits == 16 %}
-    let slot_w0 = edge_data[edge_layout.edge_slot_map_base + edge_pixel_id * 2u];
-    let slot_w1 = edge_data[edge_layout.edge_slot_map_base + edge_pixel_id * 2u + 1u];
-    {% else %}
-    let slot_map = edge_data[edge_layout.edge_slot_map_base + edge_pixel_id];
-    {% endif %}
+// ════════════════════════════════════════════════════════════════════
+// cs_shade_edge — the edge pixels, DENSE
+//
+// Dispatched over the edge-pixel list (the final-blend args: one workgroup
+// per 64 edge pixels), once per bucket, after that bucket's cs_shade.
+//
+// It is an entry point of its own because a GPU runs 16 to 64 invocations in
+// lockstep. Inside cs_shade, one edge pixel made every lane of its group sit
+// through per-sample shading, and edges are lines: few pixels, many tiles.
+// (M1 Max, 42k edge pixels: 0.6 ms as a band, 8.7 ms one to a tile.) Here
+// the cost follows the number of shades, wherever the edges are:
+//
+//   1. each lane finds the distinct surfaces of its pixel that this bucket
+//      owns, and queues one item for each;
+//   2. the lanes share the queue out, so the shading has no idle lanes;
+//   3. each lane sums its own pixel from the results.
+//
+// A sample whose visibility, barycentric and normal texels match one already
+// queued reuses its result: raster writes per-pixel attributes, so those are
+// the same fragment, and shading it again gave the same colour. (Shadow
+// visibility is the one per-sample input that can differ; a reused sample
+// takes the shadow of the sample it matches, as every interior pixel does.
+// The match must stay the same test as cs_prep_edge's.)
+// ════════════════════════════════════════════════════════════════════
+const EDGE_GROUP_SIZE: u32 = 64u;
+const EDGE_NO_ITEM: u32 = 0xFFFFFFFFu;
+
+// Zeroed by WebGPU at the start of every workgroup.
+var<workgroup> edge_queue: array<u32, 256>; // lane << 2 | sample
+var<workgroup> edge_queued: atomic<u32>;
+var<workgroup> edge_lane_xy: array<u32, 64>;
+var<workgroup> edge_results: array<ShadeSampleOut, 256>;
+
+@compute @workgroup_size(64)
+fn cs_shade_edge(
+    @builtin(global_invocation_id) gid: vec3<u32>,
+    @builtin(local_invocation_index) lane: u32,
+) {
+    let edge_pixel_id = gid.x;
+    let group_first_id = edge_pixel_id - lane;
+    // No returns above the barriers: they need uniform control flow.
+    let live = edge_pixel_id < min(edge_data[edge_layout.edge_count_index], edge_layout.max_edge_budget);
+
+    // Our slot in the slot_map.
     var slot_index: u32 = 4u;
-    for (var i = 0u; i < 4u; i++) {
+    if (live) {
         {% if edge_slot_bits == 16 %}
-        let word = select(slot_w0, slot_w1, i >= 2u);
-        let field = (word >> ((i % 2u) * 16u)) & 0xFFFFu;
+        let slot_w0 = edge_data[edge_layout.edge_slot_map_base + edge_pixel_id * 2u];
+        let slot_w1 = edge_data[edge_layout.edge_slot_map_base + edge_pixel_id * 2u + 1u];
         {% else %}
-        let field = (slot_map >> (i * 8u)) & 0xFFu;
+        let slot_map = edge_data[edge_layout.edge_slot_map_base + edge_pixel_id];
         {% endif %}
-        if (field == {{ bucket_index }}u) {
-            slot_index = i;
-            break;
+        for (var i = 0u; i < 4u; i++) {
+            {% if edge_slot_bits == 16 %}
+            let word = select(slot_w0, slot_w1, i >= 2u);
+            let field = (word >> ((i % 2u) * 16u)) & 0xFFFFu;
+            {% else %}
+            let field = (slot_map >> (i * 8u)) & 0xFFu;
+            {% endif %}
+            if (field == {{ bucket_index }}u) {
+                slot_index = i;
+                break;
+            }
         }
     }
-    if (slot_index >= 4u) {
-        return;
+
+    // ── 1. Queue this pixel's distinct surfaces ──────────────────────
+    var item_of_sample: array<u32, 4>;
+    for (var s = 0u; s < 4u; s++) {
+        item_of_sample[s] = EDGE_NO_ITEM;
+    }
+    if (slot_index < 4u) {
+        let packed_xy = edge_data[edge_layout.edge_to_xy_base + edge_pixel_id];
+        edge_lane_xy[lane] = packed_xy;
+        let coords = vec2<i32>(i32(packed_xy & 0xFFFFu), i32(packed_xy >> 16u));
+
+        var uniq_vis: array<vec4<u32>, 4>;
+        var uniq_bary: array<vec4<u32>, 4>;
+        var uniq_normal: array<vec4<f32>, 4>;
+        var uniq_item: array<u32, 4>;
+        var uniq_count: u32 = 0u;
+
+        for (var s = 0u; s < 4u; s++) {
+            var vis_s: vec4<u32>;
+            var bary_s: vec4<u32>;
+            var normal_s: vec4<f32>;
+            switch(s) {
+                case 0u: {
+                    vis_s = textureLoad(visibility_data_tex, coords, 0);
+                    bary_s = textureLoad(barycentric_tex, coords, 0);
+                    normal_s = textureLoad(normal_tangent_tex, coords, 0);
+                }
+                case 1u: {
+                    vis_s = textureLoad(visibility_data_tex, coords, 1);
+                    bary_s = textureLoad(barycentric_tex, coords, 1);
+                    normal_s = textureLoad(normal_tangent_tex, coords, 1);
+                }
+                case 2u: {
+                    vis_s = textureLoad(visibility_data_tex, coords, 2);
+                    bary_s = textureLoad(barycentric_tex, coords, 2);
+                    normal_s = textureLoad(normal_tangent_tex, coords, 2);
+                }
+                case 3u, default: {
+                    vis_s = textureLoad(visibility_data_tex, coords, 3);
+                    bary_s = textureLoad(barycentric_tex, coords, 3);
+                    normal_s = textureLoad(normal_tangent_tex, coords, 3);
+                }
+            }
+            // The gate shade_sample applies: covered, not HUD, this shader id.
+            if (join32(vis_s.x, vis_s.y) == U32_MAX) {
+                continue;
+            }
+            let mesh_meta_s = material_mesh_metas[join32(vis_s.z, vis_s.w) / META_SIZE_IN_BYTES];
+            if (mesh_meta_s.is_hud == 1u) {
+                continue;
+            }
+            if (material_load_shader_id(mesh_meta_s.material_offset) != {{ shader_id.as_u32() }}u) {
+                continue;
+            }
+
+            var item = EDGE_NO_ITEM;
+            for (var u = 0u; u < uniq_count; u++) {
+                if (all(uniq_vis[u] == vis_s) && all(uniq_bary[u] == bary_s) && all(uniq_normal[u] == normal_s)) {
+                    item = uniq_item[u];
+                    break;
+                }
+            }
+            if (item == EDGE_NO_ITEM) {
+                item = atomicAdd(&edge_queued, 1u);
+                edge_queue[item] = (lane << 2u) | s;
+                uniq_vis[uniq_count] = vis_s;
+                uniq_bary[uniq_count] = bary_s;
+                uniq_normal[uniq_count] = normal_s;
+                uniq_item[uniq_count] = item;
+                uniq_count += 1u;
+            }
+            item_of_sample[s] = item;
+        }
     }
 
-    let edge_camera = camera_from_raw(camera_raw);
-    let edge_screen_dims_u = textureDimensions(visibility_data_tex);
-    let edge_screen_dims = vec2<u32>(edge_screen_dims_u.x, edge_screen_dims_u.y);
-    let edge_screen_dims_f32 = vec2<f32>(f32(edge_screen_dims.x), f32(edge_screen_dims.y));
-    {% if inc.light_access %}
-    let lights_info = get_lights_info();
-    {% endif %}{% if prep_present %}
-    // EDGE mode (same as cs_edge): read the compact per-edge-sample shadow
-    // buffer; `edge_shadow_xy` is set PER SAMPLE in the loop below.
-    g_prep_ctx = PrepReadContext(PREP_MODE_EDGE, coords, vec2<i32>(0, 0));
-{% endif %}
+    workgroupBarrier();
+
+    // ── 2. Shade the queue, every lane working ───────────────────────
+    let queued = atomicLoad(&edge_queued);
+    if (lane < queued) {
+        let edge_camera = camera_from_raw(camera_raw);
+        let edge_screen_dims_u = textureDimensions(visibility_data_tex);
+        let edge_screen_dims = vec2<u32>(edge_screen_dims_u.x, edge_screen_dims_u.y);
+        let edge_screen_dims_f32 = vec2<f32>(f32(edge_screen_dims.x), f32(edge_screen_dims.y));
+        {% if inc.light_access %}
+        let lights_info = get_lights_info();
+        {% endif %}
+        for (var item = lane; item < queued; item += EDGE_GROUP_SIZE) {
+            let queued_item = edge_queue[item];
+            let owner = queued_item >> 2u;
+            let s = queued_item & 3u;
+            let packed_xy = edge_lane_xy[owner];
+            let coords = vec2<i32>(i32(packed_xy & 0xFFFFu), i32(packed_xy >> 16u));
+            {% if prep_present %}
+            // EDGE mode: the compact per-edge-sample shadow buffer.
+            g_prep_ctx = PrepReadContext(PREP_MODE_EDGE, coords, prep_edge_shadow_xy(group_first_id + owner, s));
+            {% endif %}
+            edge_results[item] = shade_sample(coords, s, edge_camera, edge_screen_dims, edge_screen_dims_f32{% if inc.light_access %}, lights_info{% endif %});
+        }
+    }
+
+    workgroupBarrier();
+
+    // ── 3. Sum this pixel and accumulate ─────────────────────────────
     var color_sum = vec3<f32>(0.0);
-    var alpha_sum: f32 = 0.0;
     var sample_count: u32 = 0u;
-    var weight_sum: f32 = 0.0;
     {% if write_ssr_descriptor %}
     var desc_rgb_sum = vec3<f32>(0.0);
     var desc_spread_wsum: f32 = 0.0;
     {% endif %}
-
-    // Samples already shaded for this pixel, keyed by the geometry they
-    // carry. An edge pixel is NOT usually four different surfaces: classify
-    // also marks pixels next to a silhouette and pixels on a crease, and in
-    // those all four samples belong to one triangle — and since the raster
-    // writes per-pixel (centre/centroid) attributes, the four samples hold
-    // bit-identical visibility, barycentric and normal texels. Shading each
-    // one again produced the same colour four times. A sample whose texels
-    // match one already shaded reuses that result; only its place in the
-    // average is counted. (Shadow visibility is the one per-sample input that
-    // can differ; a reused sample takes the shadow of the sample it matches,
-    // which is what every non-edge pixel does anyway.)
-    var uniq_vis: array<vec4<u32>, 4>;
-    var uniq_bary: array<vec4<u32>, 4>;
-    var uniq_normal: array<vec4<f32>, 4>;
-    var uniq_out: array<ShadeSampleOut, 4>;
-    var uniq_count: u32 = 0u;
-
     for (var s = 0u; s < 4u; s++) {
-        // Per-sample ownership: the same shader_id gate `shade_sample`
-        // applies. Reading the sample material here reconstructs cs_edge's
-        // compact-list sample_mask (which-samples-this-bucket-owns).
-        var owns_sample = false;
-        var vis_s: vec4<u32>;
-        var bary_s: vec4<u32>;
-        var normal_s: vec4<f32>;
-        switch(s) {
-            case 0u: {
-                vis_s = textureLoad(visibility_data_tex, coords, 0);
-                bary_s = textureLoad(barycentric_tex, coords, 0);
-                normal_s = textureLoad(normal_tangent_tex, coords, 0);
-            }
-            case 1u: {
-                vis_s = textureLoad(visibility_data_tex, coords, 1);
-                bary_s = textureLoad(barycentric_tex, coords, 1);
-                normal_s = textureLoad(normal_tangent_tex, coords, 1);
-            }
-            case 2u: {
-                vis_s = textureLoad(visibility_data_tex, coords, 2);
-                bary_s = textureLoad(barycentric_tex, coords, 2);
-                normal_s = textureLoad(normal_tangent_tex, coords, 2);
-            }
-            case 3u, default: {
-                vis_s = textureLoad(visibility_data_tex, coords, 3);
-                bary_s = textureLoad(barycentric_tex, coords, 3);
-                normal_s = textureLoad(normal_tangent_tex, coords, 3);
-            }
+        let item = item_of_sample[s];
+        if (item == EDGE_NO_ITEM) {
+            continue;
         }
-        {
-            let tri_s = join32(vis_s.x, vis_s.y);
-            if (tri_s != U32_MAX) {
-                let mat_off_s = join32(vis_s.z, vis_s.w);
-                let mesh_meta_s = material_mesh_metas[mat_off_s / META_SIZE_IN_BYTES];
-                if (mesh_meta_s.is_hud != 1u) {
-                    let sid_s = material_load_shader_id(mesh_meta_s.material_offset);
-                    if (sid_s == {{ shader_id.as_u32() }}u) {
-                        owns_sample = true;
-                    }
-                }
-            }
-        }
-        if (owns_sample) {
-            var ss: ShadeSampleOut;
-            var reused = false;
-            for (var u = 0u; u < uniq_count; u++) {
-                if (all(uniq_vis[u] == vis_s) && all(uniq_bary[u] == bary_s) && all(uniq_normal[u] == normal_s)) {
-                    ss = uniq_out[u];
-                    reused = true;
-                    break;
-                }
-            }
-            if (!reused) {
-                {% if prep_present %}
-                g_prep_ctx.edge_shadow_xy = prep_edge_shadow_xy(edge_pixel_id, s);
-                {% endif %}
-                ss = shade_sample(coords, s, edge_camera, edge_screen_dims, edge_screen_dims_f32{% if inc.light_access %}, lights_info{% endif %});
-                uniq_vis[uniq_count] = vis_s;
-                uniq_bary[uniq_count] = bary_s;
-                uniq_normal[uniq_count] = normal_s;
-                uniq_out[uniq_count] = ss;
-                uniq_count += 1u;
-            }
-            let shaded = ss.color;
-            // Tonemapped-space resolve; rationale in final_blend.wgsl. Store
-            // Σ t(s) per channel with t(s) = s/(1+s); final_blend averages
-            // then inverts. The weight word carries the plain SAMPLE COUNT.
-            color_sum += shaded.rgb / (vec3<f32>(1.0) + shaded.rgb);
-            alpha_sum += shaded.a;
-            sample_count += 1u;
-            weight_sum += 1.0;
-            {% if write_ssr_descriptor %}
-            // SSR descriptor accumulation — RAW sums (final_blend divides by
-            // the 4 MSAA samples); spread weighted by its own reflectivity.
-            desc_rgb_sum += ss.ssr_desc.rgb;
-            desc_spread_wsum += ss.ssr_desc.a
-                * max(ss.ssr_desc.r, max(ss.ssr_desc.g, ss.ssr_desc.b));
-            {% endif %}
-        }
+        let ss = edge_results[item];
+        // Tonemapped-space resolve; rationale in final_blend.wgsl. Store
+        // Σ t(s) per channel with t(s) = s/(1+s); final_blend averages
+        // then inverts. The weight word carries the plain SAMPLE COUNT.
+        color_sum += ss.color.rgb / (vec3<f32>(1.0) + ss.color.rgb);
+        sample_count += 1u;
+        {% if write_ssr_descriptor %}
+        // SSR descriptor accumulation — RAW sums (final_blend divides by
+        // the 4 MSAA samples); spread weighted by its own reflectivity.
+        desc_rgb_sum += ss.ssr_desc.rgb;
+        desc_spread_wsum += ss.ssr_desc.a
+            * max(ss.ssr_desc.r, max(ss.ssr_desc.g, ss.ssr_desc.b));
+        {% endif %}
     }
-
     if (sample_count == 0u) {
         return;
     }
 
-    // Accumulate into accumulator[edge_pixel_id × 4 + slot_index] (IDENTICAL
-    // to cs_edge — same format the unchanged final_blend resolves).
-    // SSR on: 8 words per slot (0..4 Karis color sum + weight, 4..8 SSR
-    // descriptor sums). SSR off: 4 words — the descriptor half is not
-    // ALLOCATED (see ACCUMULATOR_SLOT_BYTES in edge_buffers.rs: the wide
-    // stride cost ~32 MB of idle VRAM at the desktop edge budget).
+    // Accumulate into accumulator[edge_pixel_id × 4 + slot_index], the format
+    // final_blend resolves. SSR on: 8 words per slot (0..4 Karis color sum +
+    // weight, 4..8 SSR descriptor sums). SSR off: 4 words — the descriptor
+    // half is not ALLOCATED (see ACCUMULATOR_SLOT_BYTES in edge_buffers.rs:
+    // the wide stride cost ~32 MB of idle VRAM at the desktop edge budget).
     let accum_word_index = edge_layout.accumulator_base + (edge_pixel_id * 4u + slot_index) * {% if write_ssr_descriptor %}8u{% else %}4u{% endif %};
     edge_data[accum_word_index + 0u] = bitcast<u32>(color_sum.x);
     edge_data[accum_word_index + 1u] = bitcast<u32>(color_sum.y);
     edge_data[accum_word_index + 2u] = bitcast<u32>(color_sum.z);
     // Plain SAMPLE COUNT (tonemapped-space resolve — see final_blend.wgsl).
-    edge_data[accum_word_index + 3u] = bitcast<u32>(weight_sum);
+    edge_data[accum_word_index + 3u] = bitcast<u32>(f32(sample_count));
     {% if write_ssr_descriptor %}
     edge_data[accum_word_index + 4u] = bitcast<u32>(desc_rgb_sum.x);
     edge_data[accum_word_index + 5u] = bitcast<u32>(desc_rgb_sum.y);

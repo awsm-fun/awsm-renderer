@@ -775,6 +775,8 @@ impl AwsmRenderer {
                     crate::render_passes::effects::shader::cache_key::BloomPhase::None,
                 )
                 .into_iter()
+                // DoF's first dispatch fails with the variant it feeds.
+                .chain(passes.effects.pipelines.dof_prepare_pipeline())
                 .collect(),
             effects_bloom_blend: passes
                 .effects

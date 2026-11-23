@@ -51,21 +51,13 @@ use crate::{
     bind_groups::{AwsmBindGroupError, BindGroupRecreateContext},
     error::Result,
     render::RenderContext,
-    render_passes::RenderPassInitContext,
+    render_passes::{ssr::depth_copy::SsrDepthCopy, RenderPassInitContext},
 };
 
-/// Builds the composite WGSL. Under MSAA the post-opaque depth target is
-/// multisampled, so the depth binding's WGSL type differs (`texture_depth_2d`
-/// vs `texture_depth_multisampled_2d`) — mirroring the SSR trace's own
-/// depth-binding handling. The `textureLoad(..., 0)` call is identical for both
-/// (level 0 vs sample 0), so only the declaration line is swapped. Depth is read
-/// via `textureLoad` at integer coords exactly like `trace.wgsl` (non-filterable).
-pub(crate) fn shader_source(multisampled: bool, reverse_z: bool) -> String {
-    let depth_decl = if multisampled {
-        "@group(0) @binding(2) var depth_tex: texture_depth_multisampled_2d;"
-    } else {
-        "@group(0) @binding(2) var depth_tex: texture_depth_2d;"
-    };
+/// Builds the composite WGSL. Depth is always the single-sample view the rest
+/// of SSR reads (`depth_copy.rs` under MSAA), via `textureLoad` at integer
+/// coords exactly like `trace.wgsl` (non-filterable).
+pub(crate) fn shader_source(reverse_z: bool) -> String {
     // Sky test matches the trace's convention: reverse-Z clears to 0 at the
     // far plane, forward-Z to 1.
     let sky_test = if reverse_z {
@@ -92,7 +84,7 @@ struct CameraRaw {{
 
 @group(0) @binding(0) var<uniform> camera_raw: CameraRaw;
 @group(0) @binding(1) var src_tex: texture_2d<f32>;
-{depth_decl}
+@group(0) @binding(2) var depth_tex: texture_depth_2d;
 
 // Reconstruct VIEW-space position from a hardware depth sample at `uv`
 // (forward-Z [0,1], NDC y flipped vs UV). Same convention as trace.wgsl's
@@ -189,10 +181,10 @@ fn frag_main(in: VsOut) -> @location(0) vec4<f32> {{
     )
 }
 
-/// The composite's render pipeline. It is not in the renderer's pipeline
-/// pools (its shader and layout are private to this file), so it carries its
-/// own version of "reserved until the commit".
-enum CompositePipeline {
+/// A render pipeline of the SSR pass's own. These are not in the renderer's
+/// pipeline pools (their shaders and layouts are private to their files), so
+/// each carries its own version of "reserved until the commit".
+pub(crate) enum PassPipeline {
     Ready(web_sys::GpuRenderPipeline),
     /// The compile was issued when the pass was built — before the first
     /// commit, when nothing draws yet — and has not been awaited. The commit
@@ -206,9 +198,71 @@ enum CompositePipeline {
     Failed(String),
 }
 
+impl PassPipeline {
+    pub(crate) async fn new(
+        ctx: &RenderPassInitContext<'_>,
+        shader_module: &web_sys::GpuShaderModule,
+        descriptor: RenderPipelineDescriptor<'_>,
+    ) -> Result<Self> {
+        // Validation and the compile are issued together. The validation is
+        // always awaited here, so a WGSL error is this call's error, as ever.
+        let descriptor: web_sys::GpuRenderPipelineDescriptor = descriptor.into();
+        let compile = wasm_bindgen_futures::JsFuture::from(
+            ctx.gpu.create_render_pipeline_promise(&descriptor),
+        );
+        if ctx.pipelines.is_deferred() {
+            // No scene is committed: leave the compile running and let the
+            // commit collect it with the rest of the load.
+            shader_module.validate_shader().await?;
+            Ok(Self::Pending(compile))
+        } else {
+            let (validated, pipeline) = futures::join!(shader_module.validate_shader(), compile);
+            validated?;
+            Ok(Self::Ready(resolved_pipeline(pipeline)?))
+        }
+    }
+
+    pub(crate) fn ready(&self) -> Option<&web_sys::GpuRenderPipeline> {
+        match self {
+            Self::Ready(pipeline) => Some(pipeline),
+            _ => None,
+        }
+    }
+
+    async fn resolve(&mut self) -> Result<()> {
+        let failed = |message: &str| -> crate::error::AwsmError {
+            awsm_renderer_core::error::AwsmCoreError::PipelineCreation(message.to_string()).into()
+        };
+        let compile = match self {
+            Self::Ready(_) => return Ok(()),
+            Self::Failed(message) => return Err(failed(message)),
+            Self::Pending(compile) => compile,
+        };
+        // Awaited in place, never moved out: a commit that is dropped while
+        // it waits here (an app that races its load against a cancel) must
+        // leave the compile `Pending` for the next commit to collect. Taking
+        // it out first left the composite marked failed, and the next commit
+        // turned SSR off over a pipeline the driver never rejected.
+        let compiled = compile.await;
+        match resolved_pipeline(compiled) {
+            Ok(pipeline) => {
+                *self = Self::Ready(pipeline);
+                Ok(())
+            }
+            Err(err) => {
+                let message = err.to_string();
+                *self = Self::Failed(message.clone());
+                Err(failed(&message))
+            }
+        }
+    }
+}
+
 pub struct SsrComposite {
+    /// Fills the depth every SSR stage reads. MSAA only.
+    depth_copy: Option<SsrDepthCopy>,
     bind_group_layout: web_sys::GpuBindGroupLayout,
-    pipeline: CompositePipeline,
+    pipeline: PassPipeline,
     bind_group: Option<web_sys::GpuBindGroup>,
     /// Whether temporal accumulation is on — selects the reflection source
     /// this pass reads: `ssr_final` (the temporal pass's accumulated output)
@@ -225,13 +279,9 @@ pub struct SsrComposite {
 impl SsrComposite {
     pub async fn new(ctx: &mut RenderPassInitContext<'_>) -> Result<Self> {
         let gpu = ctx.gpu;
-        // Under MSAA the post-opaque depth target is multisampled — match the SSR
-        // trace's depth-binding variant so the joint-bilateral upsample reads the
-        // same buffer under both AA configs.
-        let multisampled = ctx.anti_aliasing.msaa_sample_count.is_some();
         let shader_module = gpu.compile_shader(
             &ShaderModuleDescriptor::new(
-                &shader_source(multisampled, ctx.features.reverse_z),
+                &shader_source(ctx.features.reverse_z),
                 Some("SSR Composite shader"),
             )
             .into(),
@@ -259,14 +309,14 @@ impl SsrComposite {
                     )
                     .with_visibility_fragment(),
                     // 2 — full-res post-opaque depth (non-filterable, textureLoad).
-                    // Multisampled under MSAA, mirroring the SSR trace binding.
+                    // Always single-sample, mirroring the SSR trace binding.
                     BindGroupLayoutEntry::new(
                         2,
                         BindGroupLayoutResource::Texture(
                             TextureBindingLayout::new()
                                 .with_sample_type(TextureSampleType::Depth)
                                 .with_view_dimension(TextureViewDimension::N2d)
-                                .with_multisampled(multisampled),
+                                .with_multisampled(false),
                         ),
                     )
                     .with_visibility_fragment(),
@@ -302,23 +352,15 @@ impl SsrComposite {
             .with_primitive(PrimitiveState::new())
             .with_layout(PipelineLayoutKind::Custom(&pipeline_layout))
             .with_fragment(fragment);
-        // Validation and the compile are issued together. The validation is
-        // always awaited here, so a WGSL error is this call's error, as ever.
-        let descriptor: web_sys::GpuRenderPipelineDescriptor = descriptor.into();
-        let compile =
-            wasm_bindgen_futures::JsFuture::from(gpu.create_render_pipeline_promise(&descriptor));
-        let pipeline = if ctx.pipelines.is_deferred() {
-            // No scene is committed: leave the compile running and let the
-            // commit collect it with the rest of the load.
-            shader_module.validate_shader().await?;
-            CompositePipeline::Pending(compile)
+        let pipeline = PassPipeline::new(ctx, &shader_module, descriptor).await?;
+        let depth_copy = if ctx.anti_aliasing.msaa_sample_count.is_some() {
+            Some(SsrDepthCopy::new(ctx).await?)
         } else {
-            let (validated, pipeline) = futures::join!(shader_module.validate_shader(), compile);
-            validated?;
-            CompositePipeline::Ready(resolved_pipeline(pipeline)?)
+            None
         };
 
         Ok(Self {
+            depth_copy,
             bind_group_layout,
             pipeline,
             bind_group: None,
@@ -328,7 +370,7 @@ impl SsrComposite {
     }
 
     /// Waits for a compile left running by [`Self::new`] (see
-    /// [`CompositePipeline::Pending`]) and reports the pipeline's state: `Ok`
+    /// [`PassPipeline::Pending`]) and reports the pipeline's state: `Ok`
     /// once it exists, the driver's error if it was rejected — on this call
     /// and on every later one. The pass skips its draw while it has no
     /// pipeline; the caller decides what a rejection costs (SSR, at a commit).
@@ -339,30 +381,17 @@ impl SsrComposite {
     /// the composite still failed, or it would succeed with SSR on and a
     /// composite that silently never draws.
     pub(crate) async fn resolve_pipeline(&mut self) -> Result<()> {
-        let failed = |message: &str| -> crate::error::AwsmError {
-            awsm_renderer_core::error::AwsmCoreError::PipelineCreation(message.to_string()).into()
-        };
-        let compile = match &mut self.pipeline {
-            CompositePipeline::Ready(_) => return Ok(()),
-            CompositePipeline::Failed(message) => return Err(failed(message)),
-            CompositePipeline::Pending(compile) => compile,
-        };
-        // Awaited in place, never moved out: a commit that is dropped while
-        // it waits here (an app that races its load against a cancel) must
-        // leave the compile `Pending` for the next commit to collect. Taking
-        // it out first left the composite marked failed, and the next commit
-        // turned SSR off over a pipeline the driver never rejected.
-        let compiled = compile.await;
-        match resolved_pipeline(compiled) {
-            Ok(pipeline) => {
-                self.pipeline = CompositePipeline::Ready(pipeline);
-                Ok(())
-            }
-            Err(err) => {
-                let message = err.to_string();
-                self.pipeline = CompositePipeline::Failed(message.clone());
-                Err(failed(&message))
-            }
+        if let Some(copy) = self.depth_copy.as_mut() {
+            copy.pipeline.resolve().await?;
+        }
+        self.pipeline.resolve().await
+    }
+
+    /// Records the depth copy. It goes before the trace, which reads it.
+    pub(crate) fn render_depth_copy(&self, ctx: &RenderContext) -> Result<()> {
+        match self.depth_copy.as_ref() {
+            Some(copy) => copy.render(ctx),
+            None => Ok(()),
         }
     }
 
@@ -378,6 +407,9 @@ impl SsrComposite {
     /// SSR trace's bindings so the joint-bilateral upsample linearizes against
     /// the same buffers.
     pub fn recreate(&mut self, ctx: &BindGroupRecreateContext<'_>) -> Result<()> {
+        if let Some(copy) = self.depth_copy.as_mut() {
+            copy.recreate(ctx);
+        }
         // The reflection source: with temporal accumulation on, the temporal
         // pass's `ssr_final`; otherwise the spatial resolve's `ssr_resolved`
         // (the temporal pass doesn't run and `ssr_final` stays a 1×1
@@ -396,7 +428,7 @@ impl SsrComposite {
             BindGroupEntry::new(1, BindGroupResource::TextureView(Cow::Borrowed(source))),
             BindGroupEntry::new(
                 2,
-                BindGroupResource::TextureView(Cow::Borrowed(&ctx.render_texture_views.depth)),
+                BindGroupResource::TextureView(Cow::Borrowed(&ctx.render_texture_views.ssr_depth)),
             ),
         ];
         let descriptor =
@@ -425,7 +457,7 @@ impl SsrComposite {
     pub fn render(&self, ctx: &RenderContext) -> Result<()> {
         // Not collected yet (no commit has run) or rejected: nothing to draw
         // with. The reflection simply is not composited.
-        let CompositePipeline::Ready(pipeline) = &self.pipeline else {
+        let PassPipeline::Ready(pipeline) = &self.pipeline else {
             return Ok(());
         };
         let descriptor = self.pass_descriptor.as_ref().ok_or_else(|| {

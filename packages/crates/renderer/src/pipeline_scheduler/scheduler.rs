@@ -89,6 +89,8 @@ pub enum CompileInstallTarget {
         shader_id: awsm_renderer_materials::MaterialShaderId,
         /// Mipmap-gradient variant.
         mipmaps: bool,
+        /// `cs_shade_edge` rather than `cs_shade`.
+        edge_pixels: bool,
     },
     /// Compute: global `final_blend` pipeline (the post-resolve
     /// compositor that reads up-to-4 accumulator slots per edge

@@ -66,8 +66,14 @@
 
 @compute @workgroup_size(8, 8)
 fn main(
-    @builtin(global_invocation_id) gid: vec3<u32>
+    @builtin(global_invocation_id) gid: vec3<u32>,
+    @builtin(workgroup_id) wid: vec3<u32>,
+    @builtin(local_invocation_index) lidx: u32
 ) {
+    {% if dof %}
+        // Holds a workgroup barrier, so it stays ahead of every return.
+        let dof_reach = dof_tile_reach(wid.xy, lidx);
+    {% endif %}
     let coords = vec2<i32>(gid.xy);
     let screen_dims = textureDimensions(composite_tex);
     let screen_dims_i32 = vec2<i32>(i32(screen_dims.x), i32(screen_dims.y));
@@ -86,6 +92,9 @@ fn main(
 
     {% if smaa_anti_alias %}
         var rgb = apply_smaa(composite_color, coords).rgb;
+        {% if dof %}
+            let smaa_correction = rgb - composite_color.rgb;
+        {% endif %}
     {% else %}
         var rgb = composite_color.rgb;
     {% endif %}
@@ -118,7 +127,17 @@ fn main(
     {% endif %}
 
     {% if dof %}
-        rgb = apply_dof(rgb, coords, screen_dims_i32, camera);
+        var effects_delta = rgb - composite_color.rgb;
+        {% if smaa_anti_alias %}
+            // Haze and bloom are linear in the colour SMAA gave them, so this
+            // takes out exactly SMAA's share (see `apply_dof`).
+            {% if atmosphere || atmosphere_volumetric %}
+                effects_delta -= smaa_correction * atmosphere_scene_transmittance;
+            {% else %}
+                effects_delta -= smaa_correction;
+            {% endif %}
+        {% endif %}
+        rgb = apply_dof(rgb, effects_delta, coords, screen_dims_i32, dof_reach);
     {% endif %}
 
     textureStore(effects_tex, coords, vec4<f32>(rgb, 1.0));

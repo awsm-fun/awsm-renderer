@@ -11,14 +11,17 @@
 //     instead of once per (froxel, light) — a ~SLICE_COUNT× reduction in
 //     side-plane work.
 //
-//   cs_main  (Stage B): one workgroup per froxel (tile_x, tile_y, z_slice).
-//     Reads only its tile's candidate list from `tile_lights` and applies
-//     the cheap per-slice Z-test, atomic-appending survivors into the
-//     froxel's slice of `lights_storage`. The output is identical to the
-//     old single-pass cull (same per-froxel lists) because the side
-//     planes don't depend on Z — so the tile candidate set is exactly the
-//     union over the column's froxels. `overflow_counter` + the runtime
-//     `max_per_froxel_capacity` auto-grow behave exactly as before.
+//   cs_main  (Stage B): one workgroup per 2D tile, one invocation per
+//     Z slice. Each invocation walks its tile's candidate list from
+//     `tile_lights`, applies the cheap per-slice Z-test, and appends the
+//     survivors to its own froxel's slice of `lights_storage`. (It used to
+//     be a 64-wide workgroup per froxel: 345k workgroups at 1920x1435 to
+//     place a handful of lights, almost every invocation idle. On an M1
+//     Max with 17 lights the whole cull went from 0.45 to 0.18 ms.) The
+//     lists are those of a single-pass cull, because the side planes don't
+//     depend on Z, so the tile candidate set is exactly the union over the
+//     column's froxels. `overflow_counter` + the runtime
+//     `max_per_froxel_capacity` auto-grow work as before.
 //
 // WebGPU inserts a memory barrier between the two dispatches (cs_main
 // reads `tile_lights` that cs_tile wrote), so a single compute pass
@@ -182,7 +185,12 @@ fn cs_tile(
         let kind = u32(p.kind_outer_pad.x);
         // Skip directional lights — infinite extent; they live in the
         // shading shaders' global-prefix loop.
-        if (kind != 1u) {
+        // A light with no radiance (switched off: intensity or colour 0)
+        // lights nothing, so it is never a candidate. Every froxel walk
+        // (prep, opaque, transparent) reads these lists, so they all skip it
+        // alike and the prep shadow slots stay aligned.
+        let radiance = p.color_intensity.w * max(p.color_intensity.x, max(p.color_intensity.y, p.color_intensity.z));
+        if (kind != 1u && radiance > 0.0) {
             let pos_world = p.pos_range.xyz;
             let range = p.pos_range.w;
             let pos_view = (camera_raw.view * vec4<f32>(pos_world, 1.0)).xyz;
@@ -223,28 +231,31 @@ fn cs_tile(
 }
 
 // ── Stage B: per-froxel Z-slice refine ────────────────────────────────
-@compute @workgroup_size(WORKGROUP_SIZE_LIGHTS)
+// One workgroup per 2D tile; invocation `z` owns froxel (tile, z) outright,
+// so its slice is written with plain stores. The tile's candidates are read
+// once per workgroup, SLICE_COUNT at a time, into workgroup memory (index,
+// view-space Z, range), and every invocation tests its slice against them
+// there instead of each re-reading `tile_lights` and `lights` itself.
+var<workgroup> cand_count_shared: u32;
+var<workgroup> cand_index: array<u32, SLICE_COUNT>;
+var<workgroup> cand_view_z: array<f32, SLICE_COUNT>;
+var<workgroup> cand_range: array<f32, SLICE_COUNT>;
+
+@compute @workgroup_size(SLICE_COUNT)
 fn cs_main(
     @builtin(workgroup_id) wid: vec3<u32>,
     @builtin(local_invocation_id) lid: vec3<u32>,
 ) {
-    let tile_x = wid.x;
-    let tile_y = wid.y;
-    let z_slice = wid.z;
-
-    if (tile_x >= cull_params.tiles_x || tile_y >= cull_params.tiles_y || z_slice >= SLICE_COUNT) {
-        return;
-    }
+    // Uniform per workgroup (a dispatch never exceeds the grid), so the
+    // barriers below are reached by every invocation.
+    let tile_x = min(wid.x, cull_params.tiles_x - 1u);
+    let tile_y = min(wid.y, cull_params.tiles_y - 1u);
+    let z_slice = lid.x;
 
     let tiles_per_layer = cull_params.tiles_x * cull_params.tiles_y;
     let froxel_idx = z_slice * tiles_per_layer + tile_y * cull_params.tiles_x + tile_x;
     let froxel_stride = cull_params.max_per_froxel_capacity + 1u;
     let froxel_base = cull_params.mesh_indices_capacity_u32 + froxel_idx * froxel_stride;
-
-    // Thread 0 resets the per-froxel count.
-    if (lid.x == 0u) {
-        atomicStore(&lights_storage[froxel_base], 0u);
-    }
 
     // Z range for this slice (exponential mapping). Positive forward.
     let s_lo = f32(z_slice) / f32(SLICE_COUNT);
@@ -257,37 +268,45 @@ fn cs_main(
     let tile_cap = cull_params.tile_light_capacity;
     let tile_idx = tile_y * cull_params.tiles_x + tile_x;
     let tile_base = tile_idx * (tile_cap + 1u);
-    let cand_count = min(atomicLoad(&tile_lights[tile_base]), tile_cap);
+    if (lid.x == 0u) {
+        cand_count_shared = min(atomicLoad(&tile_lights[tile_base]), tile_cap);
+    }
+    let cand_count = workgroupUniformLoad(&cand_count_shared);
 
-    // Sync so all threads see the zeroed froxel count before appending.
-    workgroupBarrier();
-
-    var ci = lid.x;
-    loop {
-        if (ci >= cand_count) { break; }
-
-        let light_index = atomicLoad(&tile_lights[tile_base + 1u + ci]);
-        let p = lights[light_index];
-        let pos_world = p.pos_range.xyz;
-        let range = p.pos_range.w;
-        let view_z = -(camera_raw.view * vec4<f32>(pos_world, 1.0)).z;
-
-        // Z-plane test: sphere span [view_z - range, view_z + range] must
-        // overlap [z_lo, z_hi]. The side planes already passed in Stage A.
-        let z_ok = (view_z + range >= z_lo) && (view_z - range <= z_hi);
-
-        if (z_ok) {
-            let slot = atomicAdd(&lights_storage[froxel_base], 1u);
-            if (slot < cull_params.max_per_froxel_capacity) {
-                atomicStore(&lights_storage[froxel_base + 1u + slot], light_index);
-            } else {
-                // Past capacity: the index is dropped this frame (consumers
-                // clamp `count` to `max_per_froxel_capacity`); the CPU's
-                // overflow readback raises the budget next frame.
-                atomicAdd(&overflow_counter, 1u);
+    var count: u32 = 0u;
+    var dropped: u32 = 0u;
+    for (var chunk: u32 = 0u; chunk < cand_count; chunk = chunk + SLICE_COUNT) {
+        let ci = chunk + lid.x;
+        if (ci < cand_count) {
+            let light_index = atomicLoad(&tile_lights[tile_base + 1u + ci]);
+            let p = lights[light_index];
+            cand_index[lid.x] = light_index;
+            cand_view_z[lid.x] = -(camera_raw.view * vec4<f32>(p.pos_range.xyz, 1.0)).z;
+            cand_range[lid.x] = p.pos_range.w;
+        }
+        workgroupBarrier();
+        let n = min(cand_count - chunk, SLICE_COUNT);
+        for (var j: u32 = 0u; j < n; j = j + 1u) {
+            let view_z = cand_view_z[j];
+            let range = cand_range[j];
+            // Z-plane test: sphere span [view_z - range, view_z + range] must
+            // overlap [z_lo, z_hi]. The side planes already passed in Stage A.
+            if ((view_z + range >= z_lo) && (view_z - range <= z_hi)) {
+                if (count < cull_params.max_per_froxel_capacity) {
+                    lights_storage[froxel_base + 1u + count] = cand_index[j];
+                    count = count + 1u;
+                } else {
+                    dropped = dropped + 1u;
+                }
             }
         }
-
-        ci = ci + WORKGROUP_SIZE_LIGHTS;
+        workgroupBarrier();
+    }
+    // The stored count is what fit (consumers clamp it to
+    // `max_per_froxel_capacity` anyway); the dropped ones raise the budget
+    // next frame through the CPU's overflow readback.
+    lights_storage[froxel_base] = count;
+    if (dropped > 0u) {
+        atomicAdd(&overflow_counter, dropped);
     }
 }

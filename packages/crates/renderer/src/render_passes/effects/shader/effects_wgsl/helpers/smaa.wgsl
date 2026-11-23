@@ -42,6 +42,12 @@ fn smaa_fetch_offset(coords: vec2<i32>, dims: vec2<i32>, offset: vec2<f32>) -> v
     return mix(mix(s00, s10, f.x), mix(s01, s11, f.x), f.y);
 }
 
+// What `apply_smaa` did to this pixel, for DoF to do again to blurred colours:
+// in compressed space its output is the pixel plus `smaa_blend.x` of the way to
+// the neighbour at +`smaa_blend_axis` and `.y` to the one at -`smaa_blend_axis`.
+var<private> smaa_blend: vec2<f32> = vec2<f32>(0.0);
+var<private> smaa_blend_axis: vec2<i32> = vec2<i32>(0);
+
 fn apply_smaa(color: vec4<f32>, coords: vec2<i32>) -> vec4<f32> {
     let dims_u = textureDimensions(composite_tex);
     let dims = vec2<i32>(i32(dims_u.x), i32(dims_u.y));
@@ -105,6 +111,10 @@ fn apply_smaa(color: vec4<f32>, coords: vec2<i32>) -> vec4<f32> {
         - max(dot(smaa_compress(n1), lum), dot(smaa_compress(n2), lum));
     let ridge = smoothstep(0.02, 0.10, ridge_amt);
     blended = mix(blended, center_c, ridge);
+
+    let toward = select(blending_offset.yw, blending_offset.xz, h);
+    smaa_blend = blending_weight * toward * (1.0 - ridge);
+    smaa_blend_axis = axis;
 
     return vec4<f32>(smaa_expand(blended), color.a);
 }

@@ -8,7 +8,7 @@ use awsm_renderer_core::command::{
     CommandEncoder, LoadOp, StoreOp,
 };
 use awsm_renderer_core::renderer::AwsmRendererWebGpu;
-use awsm_renderer_core::texture::blit::blit_tex;
+use awsm_renderer_core::texture::blit::{blit_draw, blit_tex};
 
 use crate::anti_alias::AntiAliasing;
 use crate::bind_groups::{BindGroupCreate, BindGroupRecreateContext, BindGroups};
@@ -1454,7 +1454,23 @@ impl AwsmRenderer {
             }
         }
 
-        {
+        // Under MSAA the blit is the first draw of the world transparent pass
+        // when nothing has to touch the 4x colour between the two. On its own
+        // it stores every sample only for that pass to load every one back,
+        // two full-screen round trips to memory at 4 x 8 bytes a pixel. The
+        // decal composite and a `before_transparent_pass` hook draw in passes
+        // of their own, so they still need it done first.
+        let blit_in_world_pass = ctx.anti_aliasing.msaa_sample_count == Some(4)
+            && hooks
+                .and_then(|h| h.before_transparent_pass.as_ref())
+                .is_none()
+            && !(self.render_passes.material_decal.is_some()
+                && self
+                    .decals
+                    .as_ref()
+                    .is_some_and(|decals| !decals.is_empty()));
+
+        if !blit_in_world_pass {
             let _maybe_span_guard =
                 crate::profiling::cpu_scope(ctx.logging, "Opaque to Transparent Blit", true);
 
@@ -1721,7 +1737,9 @@ impl AwsmRenderer {
         //    MSAA one pass must run, because its resolve is what fills the
         //    composite;
         //  - the last pass to touch the 4x colour does not store it back
-        //    (only its resolve is read afterwards).
+        //    (only its resolve is read afterwards);
+        //  - the first one does not load it either, when the opaque blit could
+        //    be deferred into it (`blit_in_world_pass` above).
         let msaa_on = ctx.anti_aliasing.msaa_sample_count.is_some();
         let before_hook = hooks.and_then(|h| h.before_transparent_pass.as_ref());
         // Something still draws into the 4x colour after the world pass.
@@ -1763,6 +1781,7 @@ impl AwsmRenderer {
                 Some("Lines + Material Transparent Pass"),
                 Some("Material Transparent"),
                 keep_color,
+                blit_in_world_pass,
             )?;
             self.lines.draw(&ctx, &render_pass)?;
             self.render_passes.material_transparent.draw(
@@ -2644,7 +2663,7 @@ impl<'a> RenderContext<'a> {
         &'a self,
         label: Option<&'a str>,
     ) -> Result<RenderPassEncoder> {
-        self.begin_world_transparent_pass_timed(label, None, true)
+        self.begin_world_transparent_pass_timed(label, None, true, false)
     }
 
     /// [`Self::begin_world_transparent_pass`] that also attaches a GPU
@@ -2657,16 +2676,25 @@ impl<'a> RenderContext<'a> {
     /// pass `false` and the 4x samples are discarded after the resolve
     /// instead of written back — a full-screen 4x store saved. Ignored
     /// without MSAA (there the attachment IS the image a later blit reads).
+    ///
+    /// `starts_from_opaque` (MSAA 4x only): the opaque image was not blitted
+    /// into the colour attachment, so the pass clears it instead of loading it
+    /// and draws that blit before anything else.
     pub(crate) fn begin_world_transparent_pass_timed(
         &'a self,
         label: Option<&'a str>,
         timing: Option<&'static str>,
         keep_color: bool,
+        starts_from_opaque: bool,
     ) -> Result<RenderPassEncoder> {
         let msaa_on = self.anti_aliasing.msaa_sample_count.is_some();
         let mut color_attachment = ColorAttachment::new(
             &self.render_texture_views.transparent,
-            LoadOp::Load,
+            if starts_from_opaque {
+                LoadOp::Clear
+            } else {
+                LoadOp::Load
+            },
             if msaa_on && !keep_color {
                 StoreOp::Discard
             } else {
@@ -2679,23 +2707,33 @@ impl<'a> RenderContext<'a> {
                 color_attachment.with_resolve_target(&self.render_texture_views.composite);
         }
 
-        self.command_encoder
-            .begin_render_pass(
-                &RenderPassDescriptor {
-                    label,
-                    color_attachments: vec![color_attachment],
-                    depth_stencil_attachment: Some(
-                        DepthStencilAttachment::new(&self.render_texture_views.depth)
-                            .with_depth_load_op(LoadOp::Load)
-                            .with_depth_store_op(StoreOp::Store),
-                    ),
-                    timestamp_writes: timing
-                        .and_then(|name| self.gpu_timestamps.and_then(|t| t.writes_for(name))),
-                    ..Default::default()
-                }
-                .into(),
-            )
-            .map_err(Into::into)
+        let render_pass = self.command_encoder.begin_render_pass(
+            &RenderPassDescriptor {
+                label,
+                color_attachments: vec![color_attachment],
+                depth_stencil_attachment: Some(
+                    DepthStencilAttachment::new(&self.render_texture_views.depth)
+                        .with_depth_load_op(LoadOp::Load)
+                        .with_depth_store_op(StoreOp::Store),
+                ),
+                timestamp_writes: timing
+                    .and_then(|name| self.gpu_timestamps.and_then(|t| t.writes_for(name))),
+                ..Default::default()
+            }
+            .into(),
+        )?;
+        if starts_from_opaque {
+            blit_draw(
+                &self
+                    .render_textures
+                    .opaque_to_transparent_in_pass_blit_pipeline_msaa_4,
+                &self
+                    .render_texture_views
+                    .opaque_to_transparent_blit_bind_group_msaa_4,
+                &render_pass,
+            )?;
+        }
+        Ok(render_pass)
     }
 
     /// Begins a HUD transparent pass using the shared transparent color target and HUD depth.

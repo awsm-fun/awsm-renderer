@@ -41,7 +41,7 @@
 //!     that's the bulk of the -53 KB MSAA win). Easily worth the write+read.
 //!
 //!   * Edge-sample UV0 / vertex-color → RECOMPUTE (deliberately NOT an edge buffer).
-//!     The edge arm in `cs_shade` already holds the per-sample triangle + barycentric
+//!     `cs_shade_edge` already holds the per-sample triangle + barycentric
 //!     in-register (it needs them to shade at all), so the UV/vcolor lerp there is a
 //!     few buffer reads — cheaper than computing the same thing in `cs_prep_edge`,
 //!     writing it, and reading it back, plus the ~16-48 MB the buffer would cost.

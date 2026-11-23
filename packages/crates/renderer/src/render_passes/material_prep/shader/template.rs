@@ -158,8 +158,6 @@ pub struct ShaderTemplateShadowBlurCompute {
     pub blur_radius: u32,
     /// `R + 1` — length of the Gaussian weight table (distances `0..=R`).
     pub blur_radius_plus_one: u32,
-    /// `2R` — neighbour taps per pixel.
-    pub tap_count: u32,
     /// WGSL list of the `R + 1` spatial Gaussian weights.
     pub gaussian_weights: String,
     /// WGSL float literal of the raw depth an empty (sky) texel holds.
@@ -187,7 +185,6 @@ impl TryFrom<&ShaderCacheKeyShadowBlur> for ShaderTemplateShadowBlur {
                 shadow_visibility_layers: layers,
                 blur_radius: radius,
                 blur_radius_plus_one: radius + 1,
-                tap_count: 2 * radius,
                 gaussian_weights: shadow_blur_gaussian_weights(radius),
                 sky_depth: if key.reverse_z { "0.0" } else { "1.0" },
                 tile_texels,

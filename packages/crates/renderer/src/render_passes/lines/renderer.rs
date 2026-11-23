@@ -348,8 +348,12 @@ impl LineRenderer {
         if !self.has_drawable() {
             return Ok(());
         }
-        let render_pass =
-            ctx.begin_world_transparent_pass_timed(Some("Line Render Pass"), Some("Lines"), true)?;
+        let render_pass = ctx.begin_world_transparent_pass_timed(
+            Some("Line Render Pass"),
+            Some("Lines"),
+            true,
+            false,
+        )?;
         self.draw(ctx, &render_pass)?;
         render_pass.end();
         Ok(())

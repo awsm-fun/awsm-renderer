@@ -5,7 +5,7 @@
 //   1: cull_params      — uniform, per-frame tile/slice/capacity/near-far config.
 //   2: lights_info      — uniform `LightsInfoPacked`.
 //   3: lights           — uniform `array<LightPacked, MAX_PUNCTUAL_LIGHTS>`.
-//   4: lights_storage   — storage RW (atomics), merged per-mesh + per-froxel buffer (see layout below).
+//   4: lights_storage   — storage RW, merged per-mesh + per-froxel buffer (see layout below).
 //   5: overflow_counter — storage RW (atomic), single u32 incremented per dropped index.
 //   6: tile_lights      — storage RW (atomics), two-level Stage-A per-2D-tile candidate list.
 //
@@ -84,10 +84,10 @@ struct CullParams {
 // `lights_storage`: per-froxel light-slice u32 array. The cull pass
 // writes per-froxel data at offsets ≥ `cull_params.mesh_indices_capacity_u32`;
 // the `[0..mesh_indices_capacity_u32)` head is an unwritten reserved
-// prefix (a vestige of the removed per-mesh lighting path). Declared as
-// `array<atomic<u32>>` so the per-froxel atomic count + atomic index
-// stores compile cleanly.
-@group(0) @binding(4) var<storage, read_write> lights_storage: array<atomic<u32>>;
+// prefix (a vestige of the removed per-mesh lighting path). Plain u32:
+// `cs_main` gives each froxel slice a single writer (one invocation per
+// froxel), so no write to it needs to be atomic.
+@group(0) @binding(4) var<storage, read_write> lights_storage: array<u32>;
 @group(0) @binding(5) var<storage, read_write> overflow_counter: atomic<u32>;
 // `tile_lights`: two-level cull Stage-A output. One slice per 2D screen
 // tile (`tiles_x * tiles_y`), each `cull_params.tile_light_capacity + 1`

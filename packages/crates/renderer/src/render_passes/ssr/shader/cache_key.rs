@@ -90,9 +90,6 @@ pub struct ShaderCacheKeySsrBvhTrace {
 /// at runtime), so its only axes are the depth-binding type + depth convention.
 #[derive(Hash, Debug, Clone, PartialEq, Eq)]
 pub struct ShaderCacheKeySsrResolve {
-    /// Under MSAA the full-res depth target is multisampled, so the depth
-    /// binding's WGSL type changes — mirroring the trace's depth handling.
-    pub multisampled_geometry: bool,
     /// Depth convention (003) — selects the sky early-out test.
     pub reverse_z: bool,
 }
@@ -105,9 +102,6 @@ pub struct ShaderCacheKeySsrResolve {
 /// depth-binding type + depth convention — same as the resolve.
 #[derive(Hash, Debug, Clone, PartialEq, Eq)]
 pub struct ShaderCacheKeySsrTemporal {
-    /// Under MSAA the full-res depth target is multisampled, so the depth
-    /// binding's WGSL type changes — mirroring the trace's depth handling.
-    pub multisampled_geometry: bool,
     /// Depth convention (003) — selects the sky early-out test.
     pub reverse_z: bool,
 }

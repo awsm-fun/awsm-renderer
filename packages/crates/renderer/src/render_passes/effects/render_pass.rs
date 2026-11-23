@@ -202,6 +202,13 @@ impl EffectsRenderPass {
 
         compute_pass.set_bind_group(0, self.bind_groups.get_bind_group()?, None)?;
 
+        // Same pass, same bind group: WebGPU orders the two dispatches' use of
+        // the DoF buffer. Both are one workgroup per 8x8 pixels.
+        if let Some(pipeline_key) = self.pipelines.dof_prepare_pipeline() {
+            compute_pass.set_pipeline(ctx.pipelines.compute.get(pipeline_key)?);
+            compute_pass.dispatch_workgroups(workgroup_size.0, Some(workgroup_size.1), Some(1));
+        }
+
         if let Some(pipeline_key) = self.pipelines.get_bloom_pipeline(phase) {
             compute_pass.set_pipeline(ctx.pipelines.compute.get(pipeline_key)?);
             compute_pass.dispatch_workgroups(workgroup_size.0, Some(workgroup_size.1), Some(1));

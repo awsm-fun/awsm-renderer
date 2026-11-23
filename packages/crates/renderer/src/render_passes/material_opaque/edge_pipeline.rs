@@ -47,6 +47,10 @@ use crate::shaders::ShaderCacheKey;
 pub struct EdgeResolvePipelineKeyId {
     pub mipmaps: bool,
     pub shader_id: MaterialShaderId,
+    /// `false`: `cs_shade`, the interior pixels over the bucket's tile list.
+    /// `true`: `cs_shade_edge`, the edge pixels over the edge list (material
+    /// buckets only; SKYBOX resolves its edge samples in its `cs_shade`).
+    pub edge_pixels: bool,
 }
 
 /// Slot identity used by the descriptor → resolved-key fold.
@@ -55,8 +59,9 @@ pub enum EdgePipelineSlot {
     /// Unified-edge (U1) per-bucket `cs_shade` pipeline (one per bucket incl
     /// SKYBOX). Same module as the bucket's opaque pipeline (`cs_shade` entry),
     /// but bound to the shade-extended group(3) layout (adds edge_id_tex@12).
-    /// Dispatched over the bucket's tile list (interior → opaque_tex; edge
-    /// samples → accumulator). Built whenever MSAA is on.
+    /// Dispatched over the bucket's tile list (interior → opaque_tex), or,
+    /// as `cs_shade_edge` (`edge_pixels`), over the edge list (edge samples →
+    /// accumulator). Built whenever MSAA is on.
     Shade(EdgeResolvePipelineKeyId),
     /// Global final blend compositor.
     FinalBlend,
@@ -194,6 +199,24 @@ impl MaterialEdgePipelines {
             .get(&EdgeResolvePipelineKeyId {
                 mipmaps: anti_aliasing.mipmap,
                 shader_id,
+                edge_pixels: false,
+            })
+            .copied()
+    }
+
+    /// The `cs_shade_edge` pipeline for `(shader_id, mipmap)`. `None` for the
+    /// SKYBOX bucket, without MSAA, and until compiled.
+    pub fn get_shade_edge_pipeline_key(
+        &self,
+        anti_aliasing: &AntiAliasing,
+        shader_id: MaterialShaderId,
+    ) -> Option<ComputePipelineKey> {
+        anti_aliasing.msaa_sample_count?;
+        self.per_shader_shade
+            .get(&EdgeResolvePipelineKeyId {
+                mipmaps: anti_aliasing.mipmap,
+                shader_id,
+                edge_pixels: true,
             })
             .copied()
     }
@@ -420,10 +443,23 @@ impl MaterialEdgePipelines {
                     dynamic_shader,
                     bucket_entries: bucket_entries.to_vec(),
                 };
-                shader_cache_keys.push(ShaderCacheKey::from(key));
+                let shader_key = ShaderCacheKey::from(key);
+                if !owns_skybox {
+                    // Same module, its own entry point.
+                    shader_cache_keys.push(shader_key.clone());
+                    slots.push(EdgePipelineSlot::Shade(EdgeResolvePipelineKeyId {
+                        mipmaps,
+                        shader_id: entry.shader_id,
+                        edge_pixels: true,
+                    }));
+                    pipeline_layout_keys.push(shade_layout_key);
+                    entry_points.push(Some("cs_shade_edge".to_string()));
+                }
+                shader_cache_keys.push(shader_key);
                 slots.push(EdgePipelineSlot::Shade(EdgeResolvePipelineKeyId {
                     mipmaps,
                     shader_id: entry.shader_id,
+                    edge_pixels: false,
                 }));
                 pipeline_layout_keys.push(shade_layout_key);
                 entry_points.push(Some("cs_shade".to_string()));

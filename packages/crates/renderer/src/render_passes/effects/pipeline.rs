@@ -33,6 +33,10 @@ pub struct EffectsPipelines {
     // When bloom is enabled - blends the dedicated BloomRenderPass's
     // pre-built pyramid over the composite
     bloom_blend_pipeline: Option<ComputePipelineKey>,
+
+    // The dispatch ahead of the other two while DoF is on: fills the CoC
+    // buffer they gather from. `None` while DoF is off.
+    dof_prepare_pipeline: Option<ComputePipelineKey>,
 }
 
 /// Pre-resolved shader + compute-pipeline cache keys for the effects
@@ -99,7 +103,13 @@ impl EffectsPipelines {
             singlesampled_pipeline_layout_key,
             no_bloom_pipeline: None,
             bloom_blend_pipeline: None,
+            dof_prepare_pipeline: None,
         })
+    }
+
+    /// The DoF prepare dispatch of the installed config; `None` without DoF.
+    pub fn dof_prepare_pipeline(&self) -> Option<ComputePipelineKey> {
+        self.dof_prepare_pipeline
     }
 
     /// Get pipeline for a specific bloom phase
@@ -185,7 +195,20 @@ impl EffectsPipelines {
             Vec::with_capacity(shader_cache_keys.len());
         for cache_key in &shader_cache_keys {
             let shader_key = shaders.get_key(gpu, cache_key.clone()).await?;
-            pipeline_cache_keys.push(ComputePipelineCacheKey::new(shader_key, layout_key));
+            // Named, because the DoF variants hold a second entry point and
+            // WebGPU then refuses a pipeline that doesn't say which.
+            pipeline_cache_keys.push(
+                ComputePipelineCacheKey::new(shader_key, layout_key).with_entry_point("main"),
+            );
+        }
+        if post_processing.dof {
+            // `dof_prepare` is the same in every slot's module. The no-bloom
+            // one is always there, so a bloom toggle keeps this pipeline.
+            let shader_key = shaders.get_key(gpu, shader_cache_keys[0].clone()).await?;
+            pipeline_cache_keys.push(
+                ComputePipelineCacheKey::new(shader_key, layout_key)
+                    .with_entry_point("dof_prepare"),
+            );
         }
 
         Ok(EffectsPipelinesDescriptors {
@@ -197,8 +220,9 @@ impl EffectsPipelines {
     /// Writes the resolved keys into the per-phase slots.
     /// Lazy-pool aware: the input length matches the live
     /// `slot_inputs_for(post_processing)` size — 1 when bloom is off,
-    /// 2 when on. Slot identity comes from the matching `slot_inputs`
-    /// list rather than positional indexing. Pure sync.
+    /// 2 when on — plus, last, the DoF prepare pipeline when DoF is on. Slot
+    /// identity comes from the matching `slot_inputs` list rather than
+    /// positional indexing. Pure sync.
     ///
     /// Returns the keys this DISPLACED (a slot that held a different key —
     /// the config re-keyed it) so the caller can hand them to
@@ -208,11 +232,25 @@ impl EffectsPipelines {
     pub fn install_resolved(
         &mut self,
         post_processing: &PostProcessing,
-        resolved: Vec<ComputePipelineKey>,
+        mut resolved: Vec<ComputePipelineKey>,
     ) -> Vec<ComputePipelineKey> {
         let slot_inputs = Self::slot_inputs_for(post_processing);
-        debug_assert_eq!(resolved.len(), slot_inputs.len());
+        debug_assert_eq!(
+            resolved.len(),
+            slot_inputs.len() + usize::from(post_processing.dof)
+        );
         let mut displaced = Vec::new();
+        let dof_prepare = if post_processing.dof {
+            resolved.pop()
+        } else {
+            None
+        };
+        if let Some(old) = self.dof_prepare_pipeline {
+            if dof_prepare != Some(old) {
+                displaced.push(old);
+            }
+        }
+        self.dof_prepare_pipeline = dof_prepare;
         for (phase, key) in slot_inputs.into_iter().zip(resolved) {
             let field = match phase {
                 BloomPhase::None => &mut self.no_bloom_pipeline,

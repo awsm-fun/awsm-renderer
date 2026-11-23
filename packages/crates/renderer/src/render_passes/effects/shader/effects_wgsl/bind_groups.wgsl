@@ -16,6 +16,13 @@
 // but the layout keeps a stable shape across the toggle).
 @group(0) @binding(6) var smaa_weights_tex: texture_2d<f32>;
 
+{% if dof %}
+// Per-tile and per-pixel circles of confusion: written by `dof_prepare`, read
+// by `main` in the dispatch after it. Layout in helpers/dof.wgsl. A 4-byte
+// dummy while DoF is off (that shader doesn't declare it).
+@group(0) @binding(10) var<storage, read_write> dof_data: array<u32>;
+{% endif %}
+
 {% if atmosphere %}
 // Live atmospheric-haze knobs. The LAYOUT always carries this entry (so the
 // haze toggle doesn't move the bind-group shape) but the haze-off shader

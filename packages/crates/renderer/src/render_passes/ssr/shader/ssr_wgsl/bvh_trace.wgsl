@@ -81,11 +81,11 @@ struct BvhInstance {
 
 @group(0) @binding(0) var<uniform> camera_raw: CameraRaw;
 @group(0) @binding(1) var<uniform> params: SsrParams;
+// Always single-sample, as in trace.wgsl.
+@group(0) @binding(2) var depth_tex: texture_depth_2d;
 {% if multisampled_geometry %}
-@group(0) @binding(2) var depth_tex: texture_depth_multisampled_2d;
 @group(0) @binding(3) var normal_tangent_tex: texture_multisampled_2d<f32>;
 {% else %}
-@group(0) @binding(2) var depth_tex: texture_depth_2d;
 @group(0) @binding(3) var normal_tangent_tex: texture_2d<f32>;
 {% endif %}
 @group(0) @binding(4) var reflection_descriptor_tex: texture_2d<f32>;

@@ -532,6 +532,12 @@ impl AwsmRenderer {
             return Ok(());
         }
 
+        let had_dof_prepare = self
+            .render_passes
+            .effects
+            .pipelines
+            .dof_prepare_pipeline()
+            .is_some();
         self.render_passes
             .effects
             .pipelines
@@ -546,6 +552,12 @@ impl AwsmRenderer {
                 self.features.reverse_z,
             )
             .await?;
+        // The effects bind group holds the DoF buffer, sized only while DoF
+        // is on.
+        if had_dof_prepare != self.post_processing.dof {
+            self.bind_groups
+                .mark_create(crate::bind_groups::BindGroupCreate::TextureViewRecreate);
+        }
 
         self.render_passes
             .display

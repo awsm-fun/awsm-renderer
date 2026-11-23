@@ -173,6 +173,24 @@ impl MaterialOpaqueRenderPass {
                     indirect_args_offset(bucket_index as u32),
                 );
             }
+            // ── …then each material bucket's edge pixels ─────────────────
+            // Over the edge list (the final-blend args: a workgroup per 64
+            // edge pixels). An entry point of its own so that lanes shading
+            // an edge are not locked in step with lanes that are not; see
+            // `cs_shade_edge`.
+            for entry in bucket_entries.iter() {
+                let Some(pipeline_key) = self
+                    .edge_pipelines
+                    .get_shade_edge_pipeline_key(ctx.anti_aliasing, entry.shader_id)
+                else {
+                    continue;
+                };
+                compute_pass.set_pipeline(ctx.pipelines.compute.get(pipeline_key)?);
+                compute_pass.dispatch_workgroups_indirect_with_u32(
+                    &edge_buffers.args_buffer,
+                    MaterialEdgeBuffers::final_blend_args_offset(),
+                );
+            }
             compute_pass.end();
         }
 

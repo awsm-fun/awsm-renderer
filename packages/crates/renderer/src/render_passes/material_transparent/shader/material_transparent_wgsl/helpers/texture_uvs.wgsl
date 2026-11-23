@@ -15,16 +15,24 @@ fn texture_pool_sample(info: TextureInfo, uv: vec2<f32>) -> vec4<f32> {
       // Apply texture transform
       let transformed_uv = texture_transform_uvs(uv, info);
 
+      // single-exit-switch: assign in the cases, return after the switch.
+      // NEVER `return` from inside one here. Measured on an M1 Max in Chrome
+      // 158: with returns inside these switches, this shader on one full-screen
+      // quad took 0.77 ms at 1 sample and 8.9 ms at 4; written this way, 0.44
+      // and 0.47. In the game it was 12 ms of MSAA for 40 small blended draws.
+      // Why the compiler does this is not known; the spelling is what was
+      // proven to trigger and to cure it. See `switches_have_a_single_exit` in
+      // wgsl_validation.rs.
+      var color = vec4<f32>(0.0);
       switch info.array_index {
           {% for i in 0..texture_pool_arrays_len %}
               case {{ i }}u: {
-                  return _texture_pool_sample(info, pool_tex_{{ i }}, transformed_uv);
+                  color = _texture_pool_sample(info, pool_tex_{{ i }}, transformed_uv);
               }
           {% endfor %}
-          default: {
-              return vec4<f32>(0.0);
-          }
+          default: {}
       }
+      return color;
   }
 
   fn _texture_pool_sample(
@@ -32,11 +40,13 @@ fn texture_pool_sample(info: TextureInfo, uv: vec2<f32>) -> vec4<f32> {
       tex: texture_2d_array<f32>,
       uv: vec2<f32>
   ) -> vec4<f32> {
+      // single-exit-switch (see texture_pool_sample).
+      var color = vec4<f32>(0.0);
       switch info.sampler_index {
           {% for i in 0..texture_pool_samplers_len %}
               case {{ i }}u: {
                   // textureSample uses automatic derivatives - much simpler than compute!
-                  return textureSample(
+                  color = textureSample(
                       tex,
                       pool_sampler_{{ i }},
                       uv,
@@ -44,10 +54,9 @@ fn texture_pool_sample(info: TextureInfo, uv: vec2<f32>) -> vec4<f32> {
                   );
               }
           {% endfor %}
-          default: {
-              return vec4<f32>(0.0);
-          }
+          default: {}
       }
+      return color;
   }
 
 // Uniformity-safe pool sample for DYNAMIC-material helpers. Their

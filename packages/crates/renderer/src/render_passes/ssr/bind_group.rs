@@ -4,7 +4,8 @@
 //! to its own pass):
 //! - 0 camera uniform (`CameraRaw`) — view/proj/inv_proj for reconstruction
 //! - 1 `SsrParams` live-tuning uniform
-//! - 2 depth (non-filterable, `textureLoad` only)
+//! - 2 depth (non-filterable, `textureLoad` only). ALWAYS single-sample: under
+//!   MSAA every SSR stage reads the sample-0 copy (`depth_copy.rs`)
 //! - 3 `normal_tangent` (packed octahedral world normal)
 //! - 4 HDR color source = the RESOLVED single-sample `composite` target (SSR
 //!   runs post-resolve so the color source is never multisampled)
@@ -104,9 +105,9 @@ impl SsrBindGroups {
         let temporal = ctx.post_processing.ssr.temporal;
         let bvh = ctx.post_processing.ssr.bvh_reflections;
         let layout_key = create_layout(ctx, multisampled, ctx.features.gpu_culling, bvh)?;
-        let resolve_layout_key = create_resolve_layout(ctx, multisampled)?;
+        let resolve_layout_key = create_resolve_layout(ctx)?;
         let temporal_layout_key = if temporal {
-            Some(create_temporal_layout(ctx, multisampled)?)
+            Some(create_temporal_layout(ctx)?)
         } else {
             None
         };
@@ -205,7 +206,7 @@ impl SsrBindGroups {
             ),
             BindGroupEntry::new(
                 2,
-                BindGroupResource::TextureView(Cow::Borrowed(&ctx.render_texture_views.depth)),
+                BindGroupResource::TextureView(Cow::Borrowed(&ctx.render_texture_views.ssr_depth)),
             ),
             BindGroupEntry::new(
                 3,
@@ -285,7 +286,9 @@ impl SsrBindGroups {
                 ),
                 BindGroupEntry::new(
                     2,
-                    BindGroupResource::TextureView(Cow::Borrowed(&ctx.render_texture_views.depth)),
+                    BindGroupResource::TextureView(Cow::Borrowed(
+                        &ctx.render_texture_views.ssr_depth,
+                    )),
                 ),
                 BindGroupEntry::new(
                     3,
@@ -348,7 +351,7 @@ impl SsrBindGroups {
             ),
             BindGroupEntry::new(
                 2,
-                BindGroupResource::TextureView(Cow::Borrowed(&ctx.render_texture_views.depth)),
+                BindGroupResource::TextureView(Cow::Borrowed(&ctx.render_texture_views.ssr_depth)),
             ),
             BindGroupEntry::new(
                 3,
@@ -396,7 +399,7 @@ impl SsrBindGroups {
                     BindGroupEntry::new(
                         2,
                         BindGroupResource::TextureView(Cow::Borrowed(
-                            &ctx.render_texture_views.depth,
+                            &ctx.render_texture_views.ssr_depth,
                         )),
                     ),
                     // 3 — this frame's spatially-resolved reflection.
@@ -470,7 +473,7 @@ fn create_layout(
             TextureBindingLayout::new()
                 .with_view_dimension(TextureViewDimension::N2d)
                 .with_sample_type(TextureSampleType::Depth)
-                .with_multisampled(multisampled),
+                .with_multisampled(false),
         )),
         // 3 — normal_tangent (float)
         compute_only(BindGroupLayoutResource::Texture(
@@ -568,7 +571,7 @@ fn create_bvh_layout(
             TextureBindingLayout::new()
                 .with_view_dimension(TextureViewDimension::N2d)
                 .with_sample_type(TextureSampleType::Depth)
-                .with_multisampled(multisampled),
+                .with_multisampled(false),
         )),
         // 3 — normal_tangent
         compute_only(BindGroupLayoutResource::Texture(
@@ -617,10 +620,7 @@ fn create_bvh_layout(
 
 /// Layout for the spatial-resolve compute (the edge-aware denoise between
 /// trace and composite). Every input is integer `textureLoad` — no sampler.
-fn create_resolve_layout(
-    ctx: &mut RenderPassInitContext<'_>,
-    multisampled: bool,
-) -> Result<BindGroupLayoutKey> {
+fn create_resolve_layout(ctx: &mut RenderPassInitContext<'_>) -> Result<BindGroupLayoutKey> {
     let compute_only = |resource: BindGroupLayoutResource| BindGroupLayoutCacheKeyEntry {
         resource,
         visibility_vertex: false,
@@ -639,13 +639,13 @@ fn create_resolve_layout(
                 .with_sample_type(TextureSampleType::UnfilterableFloat)
                 .with_multisampled(false),
         )),
-        // 2 — full-res depth (non-filterable; multisampled under MSAA,
+        // 2 — full-res depth (non-filterable; always single-sample,
         // mirroring the trace's depth binding).
         compute_only(BindGroupLayoutResource::Texture(
             TextureBindingLayout::new()
                 .with_view_dimension(TextureViewDimension::N2d)
                 .with_sample_type(TextureSampleType::Depth)
-                .with_multisampled(multisampled),
+                .with_multisampled(false),
         )),
         // 3 — resolved reflection target (storage write).
         compute_only(BindGroupLayoutResource::StorageTexture(
@@ -674,10 +674,7 @@ fn create_resolve_layout(
 /// is the one genuinely FILTERED fetch in SSR (fractional reprojected UV), so
 /// it is a filterable Float + a filtering sampler; everything else is integer
 /// `textureLoad` / storage.
-fn create_temporal_layout(
-    ctx: &mut RenderPassInitContext<'_>,
-    multisampled: bool,
-) -> Result<BindGroupLayoutKey> {
+fn create_temporal_layout(ctx: &mut RenderPassInitContext<'_>) -> Result<BindGroupLayoutKey> {
     let compute_only = |resource: BindGroupLayoutResource| BindGroupLayoutCacheKeyEntry {
         resource,
         visibility_vertex: false,
@@ -693,13 +690,13 @@ fn create_temporal_layout(
         compute_only(BindGroupLayoutResource::Buffer(
             BufferBindingLayout::new().with_binding_type(BufferBindingType::Uniform),
         )),
-        // 2 — full-res depth (non-filterable; multisampled under MSAA,
+        // 2 — full-res depth (non-filterable; always single-sample,
         // mirroring the trace's depth binding).
         compute_only(BindGroupLayoutResource::Texture(
             TextureBindingLayout::new()
                 .with_view_dimension(TextureViewDimension::N2d)
                 .with_sample_type(TextureSampleType::Depth)
-                .with_multisampled(multisampled),
+                .with_multisampled(false),
         )),
         // 3 — `ssr_resolved` (this frame, single-sample, textureLoad).
         compute_only(BindGroupLayoutResource::Texture(
