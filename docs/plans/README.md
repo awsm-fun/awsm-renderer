@@ -23,6 +23,7 @@ soak harness it produced lives on at `tools/soak/`).
 | [todo](todo.md) | active | Camera API consolidation (~7 overlapping ways to build one — collapse to a single module, view/projection decoupled, reverse-Z default but not hardcoded, all consumers migrated) + branch leftovers: instancer materials, `SetActiveCamera` + the 2 nanite goldens, camera frustum gizmo |
 | [atmosphere](atmosphere.md) | Phase 1 shipped; **Phase 2 not started** | Reflection-path haze — SSR miss + IBL specular + BVH hits. Blocked on one decision: what Phase 2 means under `mode = volumetric`, now that volumetrics ships |
 | [flat-skybox](flat-skybox.md) | designed, not started | 2D backdrop for static-camera scenes as a structural shader axis (no new binding — binding 11 re-typed). Breaking `EnvSlot` change, by choice |
+| [taa-upscaling/](taa-upscaling/README.md) | designed, not started | TAA + temporal upscaling to replace MSAA: why earlier attempts ghosted, per-surface motion vectors, the resolve step by step, phased plan with numeric ghosting / flicker gates. Plus a separate investigation of hardware-independent neural AA |
 
 ## Open decision — publishing 0.27 (carried over from volumetrics.md)
 
