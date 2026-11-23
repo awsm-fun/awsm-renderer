@@ -63,11 +63,11 @@ pub struct Skins {
     /// TAA: last frame's joint matrices (same layout and offsets as
     /// `matrices_gpu_buffer`). Disabled, owning nothing, unless TAA is on.
     matrices_history: BufferHistory,
-    /// TAA only: skins whose matrix refresh the coverage skin-skip gate
-    /// skipped last frame. When one resumes, its matrices jump over every
-    /// skipped frame at once, so it gets `prev = current` (zero motion for a
-    /// frame) instead of a vector across the gap. Empty when TAA is off.
-    skipped_last_frame: std::collections::HashSet<SkinKey>,
+    // (No special case for skins the skip gate skipped: `prev` mirrors the
+    // matrices the GPU actually drew with last frame, so a skin that resumes
+    // after skipped frames gets the vector of the pose step it really shows.
+    // Marking it fresh instead gave cadence-gated skins zero vectors on every
+    // update frame.)
 }
 
 // COPY_SRC: the source of TAA's previous-joint-matrix copy (a usage flag only;
@@ -128,7 +128,6 @@ impl Skins {
                 "Skin Joint Index Weights",
             ),
             matrices_history: BufferHistory::new("Skin Matrices (previous frame)"),
-            skipped_last_frame: std::collections::HashSet::new(),
         })
     }
 
@@ -470,29 +469,11 @@ impl Skins {
         // TransformKeys than the skin registered — silently nothing updates.
         let mut matched = 0usize;
         let mut skipped_skins = 0usize;
-        let track_skips = self.matrices_history.enabled();
-        let skipped_before = if track_skips {
-            std::mem::take(&mut self.skipped_last_frame)
-        } else {
-            Default::default()
-        };
         // different skins can theoretically share the same joint, so, iterate over them all
         for (skin_key, transform_keys) in self.skeleton_transforms.iter() {
             if !should_update_skin(skin_key) {
                 skipped_skins += 1;
-                if track_skips {
-                    self.skipped_last_frame.insert(skin_key);
-                }
                 continue;
-            }
-            if track_skips && skipped_before.contains(&skin_key) {
-                // Resumed after the skip gate: no valid previous pose.
-                if let (Some(offset), Some(size)) = (
-                    self.skin_matrices.offset(skin_key),
-                    self.skin_matrices.allocated_size(skin_key),
-                ) {
-                    self.matrices_history.mark_fresh(offset, size);
-                }
             }
             for (index, transform_key) in transform_keys.iter().enumerate() {
                 if let Some(world_mat) = dirty_skin_joints.get(transform_key) {
@@ -663,7 +644,6 @@ impl Skins {
     pub(crate) fn set_motion_history(&mut self, on: bool) {
         self.matrices_history.set_enabled(on);
         self.skin_matrices.set_track_new_allocations(on);
-        self.skipped_last_frame.clear();
     }
 
     /// The joint-matrix history and the current buffer's byte size, for the
@@ -704,6 +684,12 @@ impl Skins {
             &self.matrices_gpu_buffer,
             self.skin_matrices.raw_slice().len(),
         )
+    }
+
+    /// The history and the current buffer's CPU mirror (the bytes as
+    /// uploaded), for the motion-history self-check.
+    pub(crate) fn motion_history_view(&self) -> (&BufferHistory, &[u8]) {
+        (&self.matrices_history, self.skin_matrices.raw_slice())
     }
 
     /// The frame that recorded this history's copies was submitted.

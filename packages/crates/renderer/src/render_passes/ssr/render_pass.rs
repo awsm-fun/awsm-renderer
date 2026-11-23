@@ -43,12 +43,20 @@ pub struct SsrParams {
     /// averages it out (a static jitter pattern would survive any amount of
     /// temporal blending).
     frame: u32,
+    /// Added to `frame` in the uniform. Zero unless TAA is on (then
+    /// [`crate::render_passes::taa::render_pass::TAA_JITTER_DECORRELATION_OFFSET`]):
+    /// an AA change rebuilds this pass (`frame` restarts at 0) in the same call
+    /// that resets the TAA camera jitter to phase 0, so without an offset the
+    /// march rotation and the camera jitter would advance in lock-step and
+    /// their patterns would correlate (03 §1.4). With TAA off the sequence is
+    /// exactly what it was.
+    frame_offset: u32,
 }
 
 impl SsrParams {
     pub const BYTE_SIZE: usize = 128;
 
-    pub fn new(gpu: &AwsmRendererWebGpu) -> Result<Self> {
+    pub fn new(gpu: &AwsmRendererWebGpu, frame_offset: u32) -> Result<Self> {
         let gpu_buffer = gpu.create_buffer(
             &BufferDescriptor::new(
                 Some("SsrParams"),
@@ -62,6 +70,7 @@ impl SsrParams {
             raw_data: [0; Self::BYTE_SIZE],
             uploader: MappedUploader::new("SsrParams"),
             frame: 0,
+            frame_offset,
         };
         params.pack(
             1.0,
@@ -100,7 +109,8 @@ impl SsrParams {
         self.raw_data[20..24].copy_from_slice(&edge_fade.to_ne_bytes());
         self.raw_data[24..28].copy_from_slice(&temporal_weight.to_ne_bytes());
         // [28..32] = frame counter (as f32) for temporal jitter rotation.
-        self.raw_data[28..32].copy_from_slice(&(self.frame as f32).to_ne_bytes());
+        let frame = self.frame.wrapping_add(self.frame_offset);
+        self.raw_data[28..32].copy_from_slice(&(frame as f32).to_ne_bytes());
         // [32..64] = reflection-probe box: center + enabled, half-extents +
         // pad. Zeroed = disabled (same convention as the lights info tail).
         self.raw_data[32..64].fill(0);
@@ -269,7 +279,14 @@ impl SsrRenderPass {
     pub async fn new(ctx: &mut RenderPassInitContext<'_>) -> Result<Self> {
         let bind_groups = SsrBindGroups::new(ctx).await?;
         let pipelines = SsrPipelines::new(ctx, &bind_groups).await?;
-        let params = SsrParams::new(ctx.gpu)?;
+        // Rebuilt by `set_anti_aliasing` on every AA change, so the TAA
+        // state seen here is always the live one.
+        let frame_offset = if ctx.anti_aliasing.taa.is_some() {
+            crate::render_passes::taa::render_pass::TAA_JITTER_DECORRELATION_OFFSET
+        } else {
+            0
+        };
+        let params = SsrParams::new(ctx.gpu, frame_offset)?;
         let composite = SsrComposite::new(ctx).await?;
         let tlas = SsrTlas::new(ctx.gpu)?;
         Ok(Self {

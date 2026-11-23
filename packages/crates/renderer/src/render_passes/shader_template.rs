@@ -29,6 +29,7 @@ use crate::{
         shader_cache_key::ShaderCacheKeyRenderPass,
         smaa::shader::template::ShaderTemplateSmaa,
         ssr::shader::template::ShaderTemplateSsr,
+        taa::shader::template::ShaderTemplateTaa,
         volumetrics::shader::template::ShaderTemplateVolumetrics,
     },
     shaders::AwsmShaderError,
@@ -64,6 +65,7 @@ pub enum ShaderTemplateRenderPass {
     Effects(ShaderTemplateEffects),
     Display(ShaderTemplateDisplay),
     Ssr(ShaderTemplateSsr),
+    Taa(ShaderTemplateTaa),
     Volumetrics(ShaderTemplateVolumetrics),
 }
 
@@ -155,6 +157,9 @@ impl TryFrom<&ShaderCacheKeyRenderPass> for ShaderTemplateRenderPass {
             ShaderCacheKeyRenderPass::Ssr(cache_key) => {
                 Ok(ShaderTemplateRenderPass::Ssr(cache_key.try_into()?))
             }
+            ShaderCacheKeyRenderPass::Taa(cache_key) => {
+                Ok(ShaderTemplateRenderPass::Taa(cache_key.try_into()?))
+            }
         }
     }
 }
@@ -192,6 +197,7 @@ impl ShaderTemplateRenderPass {
             ShaderTemplateRenderPass::Effects(tmpl) => tmpl.into_source(),
             ShaderTemplateRenderPass::Display(tmpl) => tmpl.into_source(),
             ShaderTemplateRenderPass::Ssr(tmpl) => tmpl.into_source(),
+            ShaderTemplateRenderPass::Taa(tmpl) => tmpl.into_source(),
         }
     }
 
@@ -228,6 +234,7 @@ impl ShaderTemplateRenderPass {
             ShaderTemplateRenderPass::Effects(tmpl) => tmpl.debug_label(),
             ShaderTemplateRenderPass::Display(tmpl) => tmpl.debug_label(),
             ShaderTemplateRenderPass::Ssr(tmpl) => tmpl.debug_label(),
+            ShaderTemplateRenderPass::Taa(tmpl) => tmpl.debug_label(),
             ShaderTemplateRenderPass::Volumetrics(tmpl) => tmpl.debug_label(),
         }
     }

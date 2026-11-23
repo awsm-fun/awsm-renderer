@@ -563,6 +563,12 @@ impl<Key: slotmap::Key, Info> MorphData<Key, Info> {
         )
     }
 
+    /// The history and the current buffer's CPU mirror (the bytes as
+    /// uploaded), for the motion-history self-check.
+    pub(crate) fn motion_history_view(&self) -> (&BufferHistory, &[u8]) {
+        (&self.weights_history, self.weights.raw_slice())
+    }
+
     /// The frame that recorded this history's copies was submitted.
     pub(crate) fn history_frame_submitted(&self) {
         self.weights_history.frame_submitted();

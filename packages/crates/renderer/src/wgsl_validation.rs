@@ -3226,3 +3226,154 @@ fn taa_prev_functions_mirror_current() {
         );
     }
 }
+
+#[test]
+fn taa_resolve_shader_validates() {
+    // The TAA resolve must naga-validate for every variant (reverse_z ×
+    // reactive). Beyond validity, pin what keeps it from ghosting (01 G2-G7,
+    // 03 §4) and the Apple GPU rules it was written to (02).
+    use crate::render_passes::taa::shader::{
+        cache_key::ShaderCacheKeyTaa, template::ShaderTemplateTaa,
+    };
+    for reverse_z in [false, true] {
+        for reactive in [false, true] {
+            let label = format!("taa resolve reverse_z={reverse_z} reactive={reactive}");
+            let src = ShaderTemplateTaa::try_from(&ShaderCacheKeyTaa {
+                reverse_z,
+                reactive,
+            })
+            .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
+            .into_source()
+            .unwrap_or_else(|e| panic!("{label}: render failed: {e:?}"));
+            naga_validate(&src, &label);
+            assert!(
+                src.contains("fn cs_main("),
+                "{label}: resolve module missing `fn cs_main` entry point"
+            );
+
+            // G5 — the variance clip (03 §4.6), comment-pinned in the wgsl:
+            // a mean ± γσ box in YCoCg of the TONEMAPPED current 3×3, the
+            // history CLIPPED along the line to the mean (not clamped per
+            // channel), and the clipped history is what gets blended.
+            for line in [
+                "let mean = m1 / 9.0;",
+                "let sigma = sqrt(max(m2 / 9.0 - mean * mean, vec3<f32>(0.0)));",
+                "let box_extent = max(gamma * sigma, vec3<f32>(1.5e-3));",
+                "let clip_scale = max(max(over.x, max(over.y, over.z)), 1.0);",
+                "let history_clipped = max(ycocg_to_rgb(mean + to_history / clip_scale), vec3<f32>(0.0));",
+                "var result = mix(history_clipped, current, alpha);",
+            ] {
+                assert!(src.contains(line), "{label}: variance clip must contain `{line}`");
+            }
+            // Unconditional: every statement of the clip sits at the top
+            // level of cs_main (4-space indent), never inside a branch that
+            // could skip it ("no skip-the-clip-when-still shortcut").
+            for line in [
+                "    let history_y = rgb_to_ycocg(history_rgb);",
+                "    let over = abs(to_history) / box_extent;",
+                "    let history_clipped = max(",
+                "    var result = mix(history_clipped, current, alpha);",
+            ] {
+                assert!(
+                    src.lines().any(|l| l.starts_with(line)),
+                    "{label}: `{}` must be an unconditional top-level statement",
+                    line.trim()
+                );
+            }
+            assert!(
+                !src.contains("clamp(history_y") && !src.contains("clamp(history_rgb, nb_"),
+                "{label}: history must be clipped towards the mean, not clamped per channel"
+            );
+            // G11 — the box and the blend live in tonemapped space.
+            assert!(
+                src.contains("let t = tonemap(sanitize(textureLoad(color_tex, p, 0).rgb));"),
+                "{label}: the current 3×3 must be tonemapped before the moments"
+            );
+            // G2 — jitter removed where the current frame is sampled.
+            assert!(
+                src.contains("let d = vec2<f32>(p) + 0.5 - jitter - r_pos;"),
+                "{label}: reconstruction must place each sample at p + 0.5 - j"
+            );
+            // G4 — Catmull-Rom history (5 bilinear taps), never plain bilinear.
+            assert_eq!(
+                src.matches("textureSampleLevel(history_prev_tex").count(),
+                5,
+                "{label}: history fetch must be the 5-tap Catmull-Rom"
+            );
+            // G6 / G3 — depth convention picks the nearer sample.
+            let nearer = if reverse_z {
+                "return a > b;"
+            } else {
+                "return a < b;"
+            };
+            assert!(src.contains(nearer), "{label}: nearer() must be `{nearer}`");
+            let sky = if reverse_z {
+                "depth <= 0.0"
+            } else {
+                "depth >= 1.0"
+            };
+            assert!(src.contains(sky), "{label}: sky test must be `{sky}`");
+            // The reactive axis really is structural.
+            assert_eq!(
+                src.contains("var reactive_tex"),
+                reactive,
+                "{label}: reactive binding must exist exactly in the reactive variant"
+            );
+            // Single-sample depth (MSAA is off under TAA).
+            assert!(
+                !src.contains("texture_depth_multisampled_2d"),
+                "{label}: resolve must not bind multisampled depth"
+            );
+
+            // Apple GPU rules (02): no `switch` at all (a `return` inside one
+            // cost 19x on one quad), no loops (the 3×3 is unrolled at
+            // template time), and no per-invocation array in any function.
+            // Comments mention the rules by name, so check the code only.
+            let code: String = src
+                .lines()
+                .map(|l| l.split("//").next().unwrap_or(""))
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(
+                !code.contains("switch"),
+                "{label}: no `switch` in the resolve"
+            );
+            for kw in ["for (", "for(", "loop {", "while ("] {
+                assert!(
+                    !code.contains(kw),
+                    "{label}: the resolve must be loop-free (found `{kw}`); unroll at template time"
+                );
+            }
+            assert_eq!(
+                src.matches("// This sample really sits at p + 0.5 - j")
+                    .count(),
+                9,
+                "{label}: the 3×3 neighbourhood must be unrolled into 9 blocks"
+            );
+            let module = naga::front::wgsl::parse_str(&src).expect("validated above");
+            let functions = module
+                .functions
+                .iter()
+                .map(|(_, f)| f)
+                .chain(module.entry_points.iter().map(|ep| &ep.function));
+            for function in functions {
+                let name = function.name.as_deref().unwrap_or("?");
+                for (_, local) in function.local_variables.iter() {
+                    assert!(
+                        !matches!(module.types[local.ty].inner, naga::TypeInner::Array { .. }),
+                        "{label}: fn {name} declares a per-invocation array `{}`",
+                        local.name.as_deref().unwrap_or("?")
+                    );
+                }
+                for (_, expr) in function.expressions.iter() {
+                    if let naga::Expression::Compose { ty, .. } = expr {
+                        assert!(
+                            !matches!(module.types[*ty].inner, naga::TypeInner::Array { .. }),
+                            "{label}: fn {name} builds an array value"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}

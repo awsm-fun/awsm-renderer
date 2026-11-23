@@ -215,6 +215,15 @@ impl BufferHistory {
     /// [`Self::record_frame_end`] was submitted: forget the work it did. Not
     /// called for a frame that failed before its submit, so that work is
     /// recorded again next frame.
+    /// What this frame's [`Self::record_frame_start`] treats as having no
+    /// previous value (for the motion-history self-check).
+    pub fn pending_fresh(&self) -> FreshSnapshot {
+        FreshSnapshot {
+            all: self.all_fresh.get(),
+            ranges: self.fresh.borrow().clone(),
+        }
+    }
+
     pub fn frame_submitted(&self) {
         self.retired.borrow_mut().take();
         self.all_fresh.set(false);
@@ -324,7 +333,12 @@ impl MotionHistoryBuffer {
                 &BufferDescriptor::new(
                     Some("TAA previous-frame state"),
                     total,
-                    BufferUsage::new().with_storage().with_copy_dst(),
+                    // COPY_SRC: the motion-history self-check reads it back
+                    // (`debug_verify_motion_history`). TAA only.
+                    BufferUsage::new()
+                        .with_storage()
+                        .with_copy_dst()
+                        .with_copy_src(),
                 )
                 .into(),
             )?
@@ -391,5 +405,203 @@ mod tests {
         assert!(!h.written.get());
         h.set_enabled(true);
         assert!(h.fresh.borrow().is_empty());
+    }
+}
+
+/// The ranges a history's frame start gives `prev = current`.
+#[derive(Clone, Debug, Default)]
+pub struct FreshSnapshot {
+    /// The whole buffer (history just placed).
+    pub all: bool,
+    /// Byte ranges of the current buffer.
+    pub ranges: Vec<(usize, usize)>,
+}
+
+impl FreshSnapshot {
+    fn contains(&self, offset: usize) -> bool {
+        self.all
+            || self
+                .ranges
+                .iter()
+                .any(|(o, l)| offset >= *o && offset < o + l)
+    }
+}
+
+/// One region of [`MotionHistoryCheck`].
+#[derive(Clone, Debug, Default)]
+pub struct MotionHistoryRegionCheck {
+    /// `transforms`, `joint_matrices`, `morph_weights` or `instance_transforms`.
+    pub name: &'static str,
+    /// Bytes of one record (transform 112, joint matrix 64, morph weight 4,
+    /// instance transform 64): `first_*_slot = offset / stride`.
+    pub stride: usize,
+    /// Bytes compared against LAST frame's current contents (not fresh).
+    pub bytes_compared: usize,
+    pub bytes_mismatching: usize,
+    pub first_mismatch_offset: Option<usize>,
+    pub first_mismatch_slot: Option<usize>,
+    /// Bytes this frame gave `prev = current` (new / reused / reset slots),
+    /// compared against THIS frame's current contents.
+    pub fresh_bytes_compared: usize,
+    pub fresh_bytes_mismatching: usize,
+    pub first_fresh_mismatch_offset: Option<usize>,
+    pub first_fresh_mismatch_slot: Option<usize>,
+}
+
+/// Result of [`crate::AwsmRenderer::debug_verify_motion_history`]: whether
+/// the previous-frame state the last rendered frame's shaders saw is exactly
+/// the previous frame's current state (and the current one where fresh).
+#[derive(Clone, Debug, Default)]
+pub struct MotionHistoryCheck {
+    /// `false` on the first captured frame after enabling the check: there
+    /// is no previous snapshot, so only the fresh ranges are compared.
+    pub previous_available: bool,
+    pub regions: Vec<MotionHistoryRegionCheck>,
+}
+
+impl MotionHistoryCheck {
+    /// No mismatching byte in any region.
+    pub fn passed(&self) -> bool {
+        self.regions
+            .iter()
+            .all(|r| r.bytes_mismatching == 0 && r.fresh_bytes_mismatching == 0)
+    }
+}
+
+/// One history's capture for a frame (see [`MotionHistoryDebug`]).
+pub(crate) struct RegionCapture {
+    pub name: &'static str,
+    pub stride: usize,
+    /// GPU copy of the prev region as the frame's passes saw it (after the
+    /// frame-start fix-ups). `None` when the history had no region.
+    pub staging: Option<web_sys::GpuBuffer>,
+    /// The current buffer's CPU mirror this frame (the bytes as uploaded).
+    pub current: Vec<u8>,
+    pub fresh: FreshSnapshot,
+}
+
+struct ReadyCapture {
+    previous: Option<Vec<Vec<u8>>>,
+    regions: Vec<RegionCapture>,
+}
+
+/// Debug-only state of the motion-history self-check
+/// (`AwsmRenderer::set_debug_motion_history_check`). Absent (zero cost)
+/// unless enabled.
+#[derive(Default)]
+pub(crate) struct MotionHistoryDebug {
+    /// This frame's captures, recorded at frame start.
+    in_flight: RefCell<Option<Vec<RegionCapture>>>,
+    /// The current contents of the last submitted frame, per region.
+    last_current: Option<Vec<Vec<u8>>>,
+    /// The last submitted frame's captures + the snapshot before it.
+    ready: RefCell<Option<ReadyCapture>>,
+}
+
+impl MotionHistoryDebug {
+    /// Records, into the frame encoder right after the frame-start fix-ups,
+    /// a copy of each prev region into a mappable staging buffer, and keeps
+    /// the CPU mirrors + fresh sets of this frame.
+    pub(crate) fn capture(
+        &self,
+        gpu: &AwsmRendererWebGpu,
+        encoder: &CommandEncoder,
+        regions: Vec<(&'static str, usize, &BufferHistory, &[u8])>,
+    ) -> Result<(), AwsmCoreError> {
+        let mut captures = Vec::with_capacity(regions.len());
+        for (name, stride, history, current) in regions {
+            let staging = match history.region() {
+                Some(region) if !current.is_empty() => {
+                    let len = (current.len().min(region.size)) & !3;
+                    let staging = gpu.create_buffer(
+                        &BufferDescriptor::new(
+                            Some("Motion history check"),
+                            len.max(4),
+                            BufferUsage::new().with_copy_dst().with_map_read(),
+                        )
+                        .into(),
+                    )?;
+                    copy(encoder, &region.buffer, region.base, &staging, 0, len)?;
+                    Some(staging)
+                }
+                _ => None,
+            };
+            captures.push(RegionCapture {
+                name,
+                stride,
+                staging,
+                current: current.to_vec(),
+                fresh: history.pending_fresh(),
+            });
+        }
+        *self.in_flight.borrow_mut() = Some(captures);
+        Ok(())
+    }
+
+    /// The frame with this frame's captures was submitted.
+    pub(crate) fn frame_submitted(&mut self) {
+        let Some(regions) = self.in_flight.borrow_mut().take() else {
+            return;
+        };
+        let current: Vec<Vec<u8>> = regions.iter().map(|r| r.current.clone()).collect();
+        let previous = self.last_current.replace(current);
+        *self.ready.borrow_mut() = Some(ReadyCapture { previous, regions });
+    }
+
+    /// Maps the last submitted frame's staging buffers and compares.
+    pub(crate) fn verify(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<MotionHistoryCheck, String>>>>
+    {
+        let ready = self.ready.borrow_mut().take();
+        Box::pin(async move {
+            let ready = ready.ok_or_else(|| {
+                "no frame captured: enable the check, then render at least one frame".to_string()
+            })?;
+            let mut out = MotionHistoryCheck {
+                previous_available: ready.previous.is_some(),
+                regions: Vec::new(),
+            };
+            for (i, cap) in ready.regions.into_iter().enumerate() {
+                let mut r = MotionHistoryRegionCheck {
+                    name: cap.name,
+                    stride: cap.stride,
+                    ..Default::default()
+                };
+                if let Some(staging) = cap.staging {
+                    let gpu_prev = awsm_renderer_core::buffers::extract_buffer_vec(&staging, None)
+                        .await
+                        .map_err(|e| format!("{} readback: {e:?}", cap.name))?;
+                    staging.destroy();
+                    let previous = ready.previous.as_ref().and_then(|p| p.get(i));
+                    for (offset, got) in gpu_prev.iter().enumerate() {
+                        if cap.fresh.contains(offset) {
+                            let Some(want) = cap.current.get(offset) else {
+                                continue;
+                            };
+                            r.fresh_bytes_compared += 1;
+                            if got != want {
+                                r.fresh_bytes_mismatching += 1;
+                                if r.first_fresh_mismatch_offset.is_none() {
+                                    r.first_fresh_mismatch_offset = Some(offset);
+                                    r.first_fresh_mismatch_slot = Some(offset / cap.stride);
+                                }
+                            }
+                        } else if let Some(want) = previous.and_then(|p| p.get(offset)) {
+                            r.bytes_compared += 1;
+                            if got != want {
+                                r.bytes_mismatching += 1;
+                                if r.first_mismatch_offset.is_none() {
+                                    r.first_mismatch_offset = Some(offset);
+                                    r.first_mismatch_slot = Some(offset / cap.stride);
+                                }
+                            }
+                        }
+                    }
+                }
+                out.regions.push(r);
+            }
+            Ok(out)
+        })
     }
 }

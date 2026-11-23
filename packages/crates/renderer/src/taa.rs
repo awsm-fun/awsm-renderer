@@ -269,6 +269,9 @@ pub struct TaaRuntime {
     pub(crate) reset_pending: bool,
     pub(crate) debug_view: TaaDebugView,
     pub(crate) jitter_override: Option<JitterOverride>,
+    /// Resolve dispatches per frame (`AwsmRenderer::set_taa_debug_repeat`,
+    /// cost measurement). 0 (the default) and 1 both mean one dispatch.
+    pub(crate) debug_repeat: u32,
 }
 
 /// Number of jitter phases for a render width and an output width:

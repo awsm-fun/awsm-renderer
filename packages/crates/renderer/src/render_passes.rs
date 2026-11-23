@@ -25,6 +25,7 @@ pub mod shadow_masked_custom_vertex;
 pub mod shared;
 pub mod smaa;
 pub mod ssr;
+pub mod taa;
 pub mod volumetrics;
 
 use std::ops::Range;
@@ -150,6 +151,11 @@ pub struct RenderPasses {
     /// first enable. Kept `Some` after a later disable (targets shrink back to
     /// 1×1; `set_anti_aliasing` keeps the layouts fresh while it exists).
     pub ssr: Option<SsrRenderPass>,
+    /// TAA resolve (+ temporal upscaling). LAZY like SMAA: `None` unless
+    /// `anti_aliasing.taa` is `Some`; built by `set_anti_aliasing` (or at boot
+    /// when the boot AA config has TAA) and DROPPED on disable, textures
+    /// destroyed, so TAA off is zero-cost.
+    pub taa: Option<crate::render_passes::taa::render_pass::TaaRenderPass>,
     pub display: DisplayRenderPass,
 }
 
@@ -269,6 +275,9 @@ pub struct RenderPassesDescriptors {
     /// Fully-constructed SMAA pre-pass — self-contained + lazy on
     /// `anti_aliasing.smaa` like bloom is on `post_processing.bloom`.
     smaa: Option<crate::render_passes::smaa::render_pass::SmaaRenderPass>,
+    /// Fully-constructed TAA pass — self-contained + lazy on
+    /// `anti_aliasing.taa` like SMAA.
+    taa: Option<crate::render_passes::taa::render_pass::TaaRenderPass>,
 }
 
 impl RenderPassesDescriptors {
@@ -850,6 +859,22 @@ impl RenderPasses {
             None
         };
 
+        // TAA resolve — self-contained + lazy like SMAA: built at boot only when
+        // the boot AA config has TAA (`set_anti_aliasing` builds / drops it
+        // mid-session). Textures start 1×1; the first frame sizes them (and
+        // that first frame resets the history).
+        let taa = if ctx.anti_aliasing.taa.is_some() {
+            Some(
+                crate::render_passes::taa::render_pass::TaaRenderPass::new(
+                    ctx,
+                    crate::render_passes::taa::render_pass::REACTIVE_MASK,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
+
         Ok(RenderPassesDescriptors {
             bindings,
             compute_pipeline_cache_keys: compute_pool,
@@ -881,6 +906,7 @@ impl RenderPasses {
             volumetrics,
             ssr,
             smaa,
+            taa,
         })
     }
 
@@ -915,6 +941,7 @@ impl RenderPasses {
             volumetrics,
             ssr,
             smaa,
+            taa,
             ..
         } = descs;
         let RenderPassesBindings {
@@ -1124,6 +1151,7 @@ impl RenderPasses {
             volumetrics,
             ssr,
             smaa,
+            taa,
             display,
         })
     }

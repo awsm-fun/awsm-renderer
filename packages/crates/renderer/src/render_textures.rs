@@ -246,7 +246,9 @@ impl RenderTextures {
         };
 
         let anti_aliasing_changed = match self.inner.as_ref() {
-            Some(inner) => inner.anti_aliasing != anti_aliasing,
+            // Structural only: a change inside `taa: Some(..)` (tuning,
+            // sharpening, render scale) needs no new targets.
+            Some(inner) => !inner.anti_aliasing.same_structure(&anti_aliasing),
             None => false,
         };
 

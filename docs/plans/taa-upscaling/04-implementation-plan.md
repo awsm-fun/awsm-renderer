@@ -67,19 +67,19 @@ tolerance.
 
 ## Phase 1: motion vectors
 
-- [ ] Previous-state buffers (03 §2.3): prev world matrices, instance
+- [x] Previous-state buffers (03 §2.3): prev world matrices, instance
       transforms, joint matrices, morph weights, `prev_time`; end-of-frame
       copies; prev = current on insert / slot reuse; `reset_history`.
-- [ ] Geometry pass, TAA variant: second `apply_vertex` with the previous
+- [x] Geometry pass, TAA variant: second `apply_vertex` with the previous
       inputs, `clip_now` / `clip_prev` varyings, fifth target
       `velocity: rg16float`. The masked and custom-vertex variants too. HUD
       writes zero.
-- [ ] Device check: `maxColorAttachmentBytesPerSample ≥ 36` picks this path.
+- [x] Device check: `maxColorAttachmentBytesPerSample ≥ 36` picks this path.
       Otherwise TAA is unavailable until phase 5.
-- [ ] Sky vector (rotation only) as a helper the resolve and the debug view
+- [x] Sky vector (rotation only) as a helper the resolve and the debug view
       share.
-- [ ] Debug view `Velocity` (05 §2).
-- [ ] `wgsl_validation`: the TAA geometry variants validate; the velocity
+- [x] Debug view `Velocity` (05 §2).
+- [x] `wgsl_validation`: the TAA geometry variants validate; the velocity
       output divides per fragment (pin the `clip.xy / clip.w` in the fragment
       stage, so nobody moves it into the vertex stage).
 
@@ -178,6 +178,39 @@ Phase 0:
   rounding as a clipped history.
 - The resolve's WGSL and plumbing were written while phase 1 was in progress.
   It was not turned on or judged until the phase-1 vector gate passed.
+
+Phase 1:
+
+- Previous transforms are mirrored at the full 112 B stride (same offsets as
+  the current buffer), not 64 B: one contiguous copy and no change to the
+  mesh meta. About 1 MB at 10k transforms, TAA only.
+- Previous transforms, joint matrices and morph weights share **one** storage
+  buffer (`prev_state`, three regions). Chrome on the M1 grants 10 storage
+  buffers per shader stage and separate buffers needed 12 in the masked +
+  custom-vertex variant. The region bases and `prev_time` ride in
+  `frame_globals`' spare words (zero with TAA off). The device check is
+  `maxColorAttachmentBytesPerSample >= 36` and 10 storage buffers per stage.
+- The current transform / instance / joint / morph-weight buffers carry
+  `COPY_SRC` in every mode. A usage flag, no memory and no copies.
+- Copies: `prev = current` for new, reused and relocated ranges is recorded
+  before any pass of the frame (G10); the whole-buffer `current → prev` copy
+  after the last pass, only when that buffer was uploaded since the last copy.
+  A static scene copies nothing. A relocated instancer block gets one frame
+  of zero motion rather than its old vectors carried over.
+- `AwsmRenderer::reset_motion_history(TransformKey)` (subtree, instances,
+  skins) exists beside `Transforms::reset_history(key)`. A teleported parent
+  moves its children.
+- HUD meshes write their true motion (about zero when attached to the
+  camera), not a forced zero: the exact evaluation gives it for free.
+- Geometry drawn through `begin_world_geometry_extension_pass` writes no
+  velocity (documented on the method).
+- A custom-vertex material whose pipeline variant is missing after an AA
+  change is now recompiled at the next commit, in every mode. In 0.45 such a
+  mesh rendered undisplaced after an MSAA flip.
+- `rg16float` resolves a vector to about 1/2048 of its length: 0.24 px on a
+  272 px teleport. Every non-teleport frame is within the ±0.02 px bound.
+- The material-transparent and shadow shader variants are untouched; the 16
+  TAA-off geometry-family shader sources are byte-identical to 0.45.
 
 ## Things to keep out of v1
 

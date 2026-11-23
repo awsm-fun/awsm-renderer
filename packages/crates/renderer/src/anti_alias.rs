@@ -73,6 +73,17 @@ impl AntiAliasing {
         Ok(())
     }
 
+    /// Whether `self` and `other` need the same targets, pipelines and passes:
+    /// equal except possibly inside `taa: Some(..)` (its tuning, sharpening
+    /// and render scale are live values). Render textures rebuild, and
+    /// `set_anti_aliasing` recompiles, only when this is false.
+    pub fn same_structure(&self, other: &AntiAliasing) -> bool {
+        self.msaa_sample_count == other.msaa_sample_count
+            && self.smaa == other.smaa
+            && self.mipmap == other.mipmap
+            && self.taa.is_some() == other.taa.is_some()
+    }
+
     /// Returns whether MSAA is enabled and supported.
     pub fn has_msaa_checked(&self) -> crate::error::Result<bool> {
         match self.msaa_sample_count {
@@ -179,6 +190,15 @@ impl AwsmRenderer {
                 ));
             }
         }
+        // TAA stays on and only its config changed (tuning, sharpening, render
+        // scale): nothing structural moves. No pipeline, texture or bind-group
+        // rebuild and NO history reset (03 §8: a render-scale change is not a
+        // reset); the resolve's params and the frame sizes follow the new
+        // config on the next frame.
+        if self.anti_aliasing.same_structure(&aa) {
+            self.anti_aliasing = aa;
+            return Ok(());
+        }
         // On a committed scene: drain anything still reserved first, so the
         // branch guards below (`has_branch_for`) reflect COMPILED reality — a
         // reserved-but-pending branch must not be mistaken for a ready one.
@@ -238,6 +258,12 @@ impl AwsmRenderer {
                 smaa.textures.destroy();
             }
         }
+
+        // ── TAA lifecycle: build the resolve pass (shader, pipeline,
+        //    textures) on enable and reset the temporal history, DROP it on
+        //    disable (textures destroyed — TAA off is zero-cost). Same shape
+        //    as SMAA above.
+        self.sync_taa_pass().await?;
 
         // MSAA off → on transition: allocate `material_edge_buffers`
         // + `material_edge_layout_uniform` if they're not already

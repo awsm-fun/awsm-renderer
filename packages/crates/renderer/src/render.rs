@@ -553,8 +553,41 @@ impl AwsmRenderer {
         // packed it. The phase count follows post / render (03 §1.1: O / R).
         {
             let (render_w, render_h) = frame_sizes.render;
-            let jitter = self.frame_jitter(render_w, frame_sizes.post.0);
             let temporal = self.taa_jitter_enabled();
+            // A camera jump nobody flagged (03 §8) resets the history. It is
+            // decided before the jitter is chosen, so the cycle restarts on
+            // this frame.
+            if temporal {
+                // Scale of the translation test: the distance from the camera
+                // to the scene bounds centre, floored by their radius (O(1):
+                // the spatial index's root box). No bounds: rotation only.
+                let view_distance = match (
+                    self.scene_spatial.root_bounds(),
+                    self.camera.last_matrices.as_ref(),
+                ) {
+                    (Some((center, radius)), Some(m)) => {
+                        Some(m.position_world.distance(center).max(radius))
+                    }
+                    _ => None,
+                };
+                if self.camera.detect_jump(view_distance) {
+                    self.reset_temporal_history();
+                }
+            }
+            // A history this frame is about to (re)create (first frame, post
+            // size change; `prepare_taa_frame` does the allocation) starts
+            // empty: reset here, before the jitter, so the cycle restarts on
+            // the frame that fills it.
+            if temporal
+                && !self
+                    .render_passes
+                    .taa
+                    .as_ref()
+                    .is_some_and(|taa| taa.history_matches(frame_sizes.post))
+            {
+                self.reset_temporal_history();
+            }
+            let jitter = self.frame_jitter(render_w, frame_sizes.post.0);
             if temporal {
                 // The jitter phase advances once per rendered frame.
                 self.taa.frame_index = self.taa.frame_index.wrapping_add(1);
@@ -706,6 +739,13 @@ impl AwsmRenderer {
             }
         }
 
+        // TAA upkeep — size its textures (history / out at post size, previous
+        // depth at render size), decide this frame's reset (a pending reset,
+        // incl. the camera-jump guard above, or a fresh history) and upload
+        // its params. Before the bind-group ledger runs, which rebinds what
+        // this recreated. No-op while TAA is off (the pass is `None`).
+        self.prepare_taa_frame(&render_texture_views)?;
+
         // Bloom pyramid upkeep — only when bloom is enabled (matches the
         // dispatch gate below), so a disabled bloom costs no memory or work.
         // Both the resize and the live-param upload happen HERE, before the
@@ -781,6 +821,7 @@ impl AwsmRenderer {
                     z_near,
                     frame,
                     history_valid,
+                    self.anti_aliasing.taa.is_some(),
                 )?;
             }
         }
@@ -1115,6 +1156,29 @@ impl AwsmRenderer {
         // values. Recorded before any pass of the frame encoder (the uploads
         // were submitted ahead of it). Records nothing unless TAA is on.
         Self::record_motion_history(&ctx, true)?;
+        // Motion-history self-check (test hook, off by default): snapshot the
+        // prev regions as this frame's passes will read them.
+        if let Some(check) = self.motion_check.as_ref() {
+            let regions = vec![
+                {
+                    let (h, b) = self.transforms.motion_history_view();
+                    ("transforms", crate::transforms::Transforms::BYTE_SIZE, h, b)
+                },
+                {
+                    let (h, b) = self.meshes.skins.motion_history_view();
+                    ("joint_matrices", 64, h, b)
+                },
+                {
+                    let (h, b) = self.meshes.morphs.geometry.motion_history_view();
+                    ("morph_weights", 4, h, b)
+                },
+                {
+                    let (h, b) = self.instances.motion_history_view();
+                    ("instance_transforms", 64, h, b)
+                },
+            ];
+            check.capture(&self.gpu, &ctx.command_encoder, regions)?;
+        }
 
         // Snapshot per-opaque-renderable info that the occlusion + indirect-
         // draw infrastructure needs after `renderables.opaque` is consumed
@@ -1891,6 +1955,18 @@ impl AwsmRenderer {
             }
         }
 
+        // TAA resolve (03 §6): the lit, SSR-composited render-size image plus
+        // history -> `taa_out` at post size, which bloom / effects / display
+        // read from here on. Then this frame's depth is saved for the next
+        // resolve. Records nothing while TAA is off (the pass is `None`).
+        if ctx.anti_aliasing.taa.is_some() {
+            if let Some(taa) = self.render_passes.taa.as_ref() {
+                let _maybe_span_guard =
+                    crate::profiling::cpu_scope(&self.logging, "TAA RenderPass", true);
+                taa.render(&ctx)?;
+            }
+        }
+
         // SMAA pre-pass — edge detection + blend-weight calculation from the
         // composite. The effects pass consumes the weights via its
         // `smaa_anti_alias` shader variant (the neighborhood-blend stage).
@@ -2010,6 +2086,20 @@ impl AwsmRenderer {
         self.instances.history_frame_submitted();
         self.meshes.skins.history_frame_submitted();
         self.meshes.morphs.geometry.history_frame_submitted();
+        if let Some(check) = self.motion_check.as_mut() {
+            check.frame_submitted();
+        }
+        // TAA resolve: a submitted resolve flips the history parity and has
+        // honoured any pending reset. A frame that failed before this point
+        // redoes both.
+        if self
+            .render_passes
+            .taa
+            .as_ref()
+            .is_some_and(|taa| taa.frame_submitted())
+        {
+            self.taa.reset_pending = false;
+        }
         // The light-cull counts this frame recorded are now on the GPU.
         self.render_passes.light_culling.commit_submitted();
         laps.lap("Submit: Finish + Queue Submit");
@@ -2529,6 +2619,47 @@ pub(crate) struct HudResolveState {
 }
 
 impl AwsmRenderer {
+    /// TAA test hook: turn the motion-history self-check on or off. While on,
+    /// every rendered frame (with TAA on) snapshots the previous-frame regions
+    /// its passes read (a GPU copy into a mappable buffer, after the
+    /// frame-start fix-ups) and the CPU mirrors of the current buffers; see
+    /// [`Self::debug_verify_motion_history`]. Debug only: it allocates and
+    /// copies every frame. Off (the default) costs nothing.
+    pub fn set_debug_motion_history_check(&mut self, on: bool) {
+        self.motion_check = on.then(crate::buffer::history::MotionHistoryDebug::default);
+    }
+
+    /// TAA test hook: verify the LAST rendered frame's previous-frame state
+    /// byte for byte. Per region (transforms, joint matrices, morph weights,
+    /// instance transforms): what the frame's shaders read as "previous" must
+    /// equal the previous rendered frame's current contents, except in the
+    /// ranges the frame marked fresh (new / reused / reset slots), which must
+    /// equal this frame's current contents. Call after `render()` with the
+    /// check on; the first frame after enabling has no previous snapshot
+    /// (`previous_available == false`, only the fresh ranges are compared).
+    /// The comparison runs on the mapped readback, so drop the renderer
+    /// borrow before awaiting.
+    pub fn debug_verify_motion_history(
+        &self,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<crate::buffer::history::MotionHistoryCheck>>>,
+    > {
+        let fut = self.motion_check.as_ref().map(|check| check.verify());
+        Box::pin(async move {
+            let fut = fut.ok_or_else(|| {
+                AwsmError::from(
+                    crate::render_textures::AwsmRenderTextureError::DebugReadback(
+                        "motion-history check is off (set_debug_motion_history_check(true))"
+                            .to_string(),
+                    ),
+                )
+            })?;
+            fut.await.map_err(|e| {
+                AwsmError::from(crate::render_textures::AwsmRenderTextureError::DebugReadback(e))
+            })
+        })
+    }
+
     /// Records TAA's previous-frame copies into the frame encoder: the
     /// frame-start fix-ups (`start == true`) or the end-of-frame
     /// `current -> prev` copies. Every owner records nothing while its history

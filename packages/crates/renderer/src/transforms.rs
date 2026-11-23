@@ -877,6 +877,12 @@ impl Transforms {
             .record_frame_start(encoder, &self.gpu_buffer, self.buffer.raw_slice().len())
     }
 
+    /// The history and the current buffer's CPU mirror (the bytes as
+    /// uploaded), for the motion-history self-check.
+    pub(crate) fn motion_history_view(&self) -> (&BufferHistory, &[u8]) {
+        (&self.history, self.buffer.raw_slice())
+    }
+
     /// The frame that recorded this history's copies was submitted.
     pub(crate) fn history_frame_submitted(&self) {
         self.history.frame_submitted();

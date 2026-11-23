@@ -701,7 +701,11 @@ impl Instances {
             // through a bind group: nothing to mark when it is recreated.
             self.transform_history.sync_own(
                 gpu,
-                BufferUsage::new().with_vertex().with_copy_dst(),
+                // COPY_SRC: read back by the motion-history self-check.
+                BufferUsage::new()
+                    .with_vertex()
+                    .with_copy_dst()
+                    .with_copy_src(),
                 self.transform_buffer.raw_slice().len(),
             )?;
         }
@@ -740,6 +744,12 @@ impl Instances {
             &self.gpu_transform_buffer,
             self.transform_buffer.raw_slice().len(),
         )
+    }
+
+    /// The history and the current buffer's CPU mirror (the bytes as
+    /// uploaded), for the motion-history self-check.
+    pub(crate) fn motion_history_view(&self) -> (&BufferHistory, &[u8]) {
+        (&self.transform_history, self.transform_buffer.raw_slice())
     }
 
     /// The frame that recorded this history's copies was submitted.

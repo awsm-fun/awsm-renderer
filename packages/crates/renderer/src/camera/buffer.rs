@@ -19,6 +19,8 @@ struct RenderedCamera {
     jitter_px: Vec2,
     /// Camera world position.
     position: Vec3,
+    /// World-space view direction.
+    forward: Vec3,
 }
 
 /// GPU camera buffer and cached state.
@@ -32,6 +34,9 @@ pub struct CameraBuffer {
     /// last camera that was SET. They differ when the app sets the camera
     /// more than once per frame, or not every frame.
     rendered: Option<RenderedCamera>,
+    /// Whether the camera jumped between the last two rendered frames (see
+    /// [`Self::jumped`]).
+    jumped: bool,
     /// Whether `raw_data` currently holds a jittered projection.
     raw_is_jittered: bool,
     gpu_dirty: bool,
@@ -102,6 +107,7 @@ impl CameraBuffer {
             last_matrices: None,
             camera_moved: false,
             rendered: None,
+            jumped: false,
             raw_is_jittered: false,
             warned_convention: false,
             gpu_buffer,
@@ -249,11 +255,45 @@ impl CameraBuffer {
                 prev_position,
             );
         }
+        // World-space view direction: the view matrix's third row, negated.
+        let forward = -matrices.view.row(2).truncate().normalize_or_zero();
         self.rendered = Some(RenderedCamera {
             view_projection,
             jitter_px: jitter.unwrap_or(Vec2::ZERO),
             position: matrices.position_world,
+            forward,
         });
+    }
+
+    /// Whether the camera moved so far between the previous rendered frame
+    /// and this one that it is a cut nobody flagged: it turned by more than
+    /// 30°, or travelled more than 20% of its view distance (the focus
+    /// distance). Temporal history is reset on it. A guard, not the main
+    /// mechanism: apps call `reset_temporal_history` on cuts they know of.
+    pub fn jumped(&self) -> bool {
+        self.jumped
+    }
+
+    /// Evaluates [`Self::jumped`] for the frame about to render: the camera
+    /// as last set against the camera of the last rendered frame. Call once
+    /// per rendered frame BEFORE choosing the frame's jitter, so a reset the
+    /// jump triggers restarts the jitter cycle on this very frame.
+    ///
+    /// `view_distance`: how far what the camera looks at is, the scale of the
+    /// translation test (the caller passes the distance to the scene bounds,
+    /// floored by their radius). `None`: only the rotation test applies.
+    pub(crate) fn detect_jump(&mut self, view_distance: Option<f32>) -> bool {
+        self.jumped = match (&self.last_matrices, self.rendered) {
+            (Some(now), Some(prev)) => camera_jumped(
+                prev.position,
+                prev.forward,
+                now.position_world,
+                -now.view.row(2).truncate().normalize_or_zero(),
+                view_distance,
+            ),
+            _ => false,
+        };
+        self.jumped
     }
 
     /// The jitter (render pixels) in the uniform as packed, zero if none.
@@ -422,6 +462,27 @@ impl CameraBuffer {
     }
 }
 
+/// The camera-jump test behind [`CameraBuffer::jumped`]: turned by more than
+/// 30°, or (when the scale is known) moved more than 20% of `view_distance`.
+fn camera_jumped(
+    prev_position: Vec3,
+    prev_forward: Vec3,
+    position: Vec3,
+    forward: Vec3,
+    view_distance: Option<f32>,
+) -> bool {
+    const MAX_ROTATION_COS: f32 = 0.866_025_4; // cos 30°
+    const MAX_TRANSLATION: f32 = 0.2;
+    let turned = prev_forward.dot(forward) < MAX_ROTATION_COS;
+    let moved = match view_distance {
+        Some(d) if d.is_finite() && d > 0.0 => {
+            prev_position.distance(position) > MAX_TRANSLATION * d
+        }
+        _ => false,
+    };
+    turned || moved
+}
+
 /// The Halton low-discrepancy sequence — `index`-th term in `base`.
 ///
 /// Shared rather than private because more than one feature wants a jitter
@@ -485,4 +546,55 @@ fn write_f32_slice(buffer: &mut [u8], offset: &mut usize, values: &[f32]) {
     let bytes = unsafe { std::slice::from_raw_parts(values.as_ptr() as *const u8, byte_len) };
     buffer[*offset..*offset + byte_len].copy_from_slice(bytes);
     *offset += byte_len;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn jump_guard() {
+        let f = Vec3::NEG_Z;
+        let d = Some(10.0);
+        // Still, and ordinary motion: no jump.
+        assert!(!camera_jumped(Vec3::ZERO, f, Vec3::ZERO, f, d));
+        assert!(!camera_jumped(
+            Vec3::ZERO,
+            f,
+            Vec3::new(0.5, 0.0, 0.0),
+            f,
+            d
+        ));
+        let turned_10 = Vec3::new(10f32.to_radians().sin(), 0.0, -10f32.to_radians().cos());
+        assert!(!camera_jumped(Vec3::ZERO, f, Vec3::ZERO, turned_10, d));
+        // More than 30° in one frame, or more than 20% of the view distance.
+        let turned_45 = Vec3::new(45f32.to_radians().sin(), 0.0, -45f32.to_radians().cos());
+        assert!(camera_jumped(Vec3::ZERO, f, Vec3::ZERO, turned_45, d));
+        assert!(camera_jumped(Vec3::ZERO, f, Vec3::new(2.5, 0.0, 0.0), f, d));
+        // The translation test scales with the scene: the same 2.5-unit step
+        // is ordinary motion 100 units away from a large scene.
+        assert!(!camera_jumped(
+            Vec3::ZERO,
+            f,
+            Vec3::new(2.5, 0.0, 0.0),
+            f,
+            Some(100.0)
+        ));
+        // Unknown scale (no scene bounds) or a degenerate one: rotation only.
+        assert!(!camera_jumped(
+            Vec3::ZERO,
+            f,
+            Vec3::new(1.0e6, 0.0, 0.0),
+            f,
+            None
+        ));
+        assert!(!camera_jumped(
+            Vec3::ZERO,
+            f,
+            Vec3::new(0.1, 0.0, 0.0),
+            f,
+            Some(0.0)
+        ));
+        assert!(camera_jumped(Vec3::ZERO, f, Vec3::ZERO, turned_45, None));
+    }
 }

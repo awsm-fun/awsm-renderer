@@ -333,6 +333,9 @@ pub struct AwsmRenderer {
     /// Test override of [`AwsmRenderer::taa_velocity_path`] (forces the
     /// phase-5 prep-pass fallback on a capable device). `None` = by limits.
     pub(crate) taa_velocity_path_override: Option<crate::anti_alias::TaaVelocityPath>,
+    /// TAA test hook: the motion-history self-check
+    /// (`set_debug_motion_history_check`). `None` (no cost) unless enabled.
+    pub(crate) motion_check: Option<crate::buffer::history::MotionHistoryDebug>,
     /// Plan B shared-prep + deferred-shadow config, captured at build time
     /// (`docs/plans/deferred-shared-prep-pass.md`). The shared prep pass is
     /// unconditional; this only carries the `K` shadow-caster sizing knob.
@@ -578,6 +581,10 @@ impl AwsmRenderer {
     /// at a time, and the commit compiles the lot in a single batch.
     pub fn begin_load(&mut self) {
         self.scene_committed = false;
+        // The scene on screen is going away (teardown / reload): forget the
+        // temporal history now; `commit_load` resets again when the new scene
+        // lands (03 §8). Free with TAA off.
+        self.reset_temporal_history();
         self.pipelines.set_deferred(true);
         self.load_phase = crate::loading::LoadPhase::Idle;
     }
@@ -1318,6 +1325,11 @@ impl AwsmRenderer {
     ) -> crate::error::Result<crate::loading::LoadingStats> {
         use crate::loading::{LoadPhase, LoadingStats};
 
+        // A commit that ends a full load (after `begin_load`) puts a new scene
+        // on screen: TAA must not blend it with the old one (03 §8). A live
+        // add keeps the history.
+        let ends_full_load = !self.scene_committed;
+
         // ── Phase -1: the deferred boot pool — compile everything the current
         //    config needs that build() only reserved (plus any config re-keys
         //    since). Cheap no-op when already warm. Reported under `Compiling`
@@ -1418,6 +1430,10 @@ impl AwsmRenderer {
         self.pipelines.set_deferred(false);
         self.scene_committed = true;
         self.load_phase = LoadPhase::Ready;
+        if ends_full_load {
+            // Two field writes; free with TAA off (nothing reads them).
+            self.reset_temporal_history();
+        }
         let final_stats = self.loading_stats();
         on_progress(final_stats);
         Ok(final_stats)
@@ -3160,6 +3176,7 @@ impl AwsmRendererBuilder {
             render_scale: 1.0,
             taa: crate::taa::TaaRuntime::default(),
             taa_velocity_path_override: None,
+            motion_check: None,
             prep_config,
             post_processing,
             picker,
