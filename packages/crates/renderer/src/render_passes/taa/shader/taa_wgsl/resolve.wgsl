@@ -152,6 +152,43 @@ fn view_distance(depth: f32, inv_proj: mat4x4<f32>) -> f32 {
     return -v.z / v.w;
 }
 
+// Last frame's depth around unjittered position `uv`: the nearest of the 2x2
+// footprint. Last frame's render pixel p held unjittered position
+// p + 0.5 - prev_jitter, so the texel-space position is
+// uv * size + prev_jitter - 0.5, in that texture's own size (the render size
+// may have changed since).
+fn prev_nearest_depth(uv: vec2<f32>, prev_jitter: vec2<f32>) -> f32 {
+    let dims = vec2<i32>(textureDimensions(prev_depth_tex));
+    let hi = dims - 1;
+    let pd0 = vec2<i32>(floor(uv * vec2<f32>(dims) + prev_jitter - 0.5));
+    let pd00 = textureLoad(prev_depth_tex, clamp(pd0, vec2<i32>(0), hi), 0);
+    let pd10 = textureLoad(prev_depth_tex, clamp(pd0 + vec2<i32>(1, 0), vec2<i32>(0), hi), 0);
+    let pd01 = textureLoad(prev_depth_tex, clamp(pd0 + vec2<i32>(0, 1), vec2<i32>(0), hi), 0);
+    let pd11 = textureLoad(prev_depth_tex, clamp(pd0 + vec2<i32>(1, 1), vec2<i32>(0), hi), 0);
+    {% if reverse_z %}
+    return max(max(pd00, pd10), max(pd01, pd11));
+    {% else %}
+    return min(min(pd00, pd10), min(pd01, pd11));
+    {% endif %}
+}
+
+// Where the point seen now at unjittered `uv` with raw depth `depth` was
+// last frame IF IT DID NOT MOVE: xy = its previous uv, z = its previous view
+// distance. The jitter does not touch z, so the jittered inverse and the
+// unjittered previous matrix agree on depth.
+fn static_reprojection(uv: vec2<f32>, depth: f32, cam: Camera) -> vec3<f32> {
+    let ndc = vec2<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0)
+        + vec2<f32>(2.0 * cam.jitter.x, -2.0 * cam.jitter.y) / cam.viewport_size;
+    let world_h = cam.inv_view_proj * vec4<f32>(ndc, depth, 1.0);
+    let prev_clip = cam.prev_view_proj * vec4<f32>(world_h.xyz / world_h.w, 1.0);
+    let prev_ndc = prev_clip.xyz / prev_clip.w;
+    return vec3<f32>(
+        prev_ndc.x * 0.5 + 0.5,
+        0.5 - prev_ndc.y * 0.5,
+        view_distance(prev_ndc.z, cam.inv_proj),
+    );
+}
+
 // ---- History fetch (G4) ---------------------------------------------------
 // Catmull-Rom as 5 bilinear fetches: the 9-tap form with the 4 corners
 // dropped. Plain bilinear history blurs a little every frame, and blur that
@@ -225,6 +262,13 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var nearest_p = p0;
     var farthest_depth = nearest_depth;
     var farthest_p = p0;
+    // The centre pixel's own depth and its four axis neighbours', for the
+    // own-surface disocclusion test (4.7).
+    var z_own = nearest_depth;
+    var z_left = nearest_depth;
+    var z_right = nearest_depth;
+    var z_up = nearest_depth;
+    var z_down = nearest_depth;
     var reactive = 0.0;
     // Samples that count: all 9, minus opaque-path HUD pixels in the
     // reactive variant (the HUD is not part of the world's neighbourhood).
@@ -257,6 +301,10 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         m2 += y * y * keep;
         kept += keep;
         let z = textureLoad(depth_tex, p, 0);
+        {% if dx == 0 && dy == 1 %}z_left = z;{% endif %}
+        {% if dx == 2 && dy == 1 %}z_right = z;{% endif %}
+        {% if dx == 1 && dy == 0 %}z_up = z;{% endif %}
+        {% if dx == 1 && dy == 2 %}z_down = z;{% endif %}
         if (nearer(z, nearest_depth)) {
             nearest_depth = z;
             nearest_p = p;
@@ -313,43 +361,60 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let history_rgb = sample_history(uv_hist, O);
 
     // ---- 4.7 Disocclusion (G6) -------------------------------------------
-    // Last frame's depth where this surface was. Last frame's render pixel p
-    // held unjittered position p + 0.5 - prev_jitter, so the texel-space
-    // position of `uv_hist` is uv_hist * R + prev_jitter - 0.5; take the
-    // nearest of the 2x2 around it (in that texture's own size: the render
-    // size may have changed since). Both sides of the test use the nearest
-    // depth of their footprint, so a static silhouette does not trip it.
-    let prev_dims = vec2<i32>(textureDimensions(prev_depth_tex));
-    let pd_max = prev_dims - 1;
-    let prev_pos = uv_hist * vec2<f32>(prev_dims) + cam.prev_jitter - 0.5;
-    let pd0 = vec2<i32>(floor(prev_pos));
-    let pd00 = textureLoad(prev_depth_tex, clamp(pd0, vec2<i32>(0), pd_max), 0);
-    let pd10 = textureLoad(prev_depth_tex, clamp(pd0 + vec2<i32>(1, 0), vec2<i32>(0), pd_max), 0);
-    let pd01 = textureLoad(prev_depth_tex, clamp(pd0 + vec2<i32>(0, 1), vec2<i32>(0), pd_max), 0);
-    let pd11 = textureLoad(prev_depth_tex, clamp(pd0 + vec2<i32>(1, 1), vec2<i32>(0), pd_max), 0);
-    {% if reverse_z %}
-    let prev_depth = max(max(pd00, pd10), max(pd01, pd11));
-    {% else %}
-    let prev_depth = min(min(pd00, pd10), min(pd01, pd11));
-    {% endif %}
-    // Compare two PREVIOUS-frame distances: where this surface point was
-    // last frame (its world position through last frame's view-projection)
-    // against what last frame's depth buffer holds there. Comparing against
-    // this frame's distance instead would trip on every fast dolly. The
-    // jitter does not touch z, so jittered and unjittered matrices agree.
+    // Both sides compare two PREVIOUS-frame distances: where a surface point
+    // was last frame (through last frame's view-projection) against what last
+    // frame's depth buffer holds where its history is fetched. Comparing
+    // against this frame's distance would trip on every fast dolly. A test
+    // fires only when something NEARER was there, i.e. the surface was
+    // hidden. When in doubt it rejects: a false disocclusion costs a frame of
+    // aliasing, a missed one costs a ghost.
+    //
+    // Test 1: the surface whose vector the pixel uses (the nearest of the
+    // 3x3). Both sides are the nearest depth of their footprint, so a static
+    // silhouette does not trip it.
     var d_expected = 1.0e30;
     if (!sky) {
-        let ndc_now = vec2<f32>(uv_q.x * 2.0 - 1.0, 1.0 - uv_q.y * 2.0)
-            + vec2<f32>(2.0 * jitter.x, -2.0 * jitter.y) / R;
-        let world_h = cam.inv_view_proj * vec4<f32>(ndc_now, nearest_depth, 1.0);
-        let prev_clip = cam.prev_view_proj * vec4<f32>(world_h.xyz / world_h.w, 1.0);
-        d_expected = view_distance(prev_clip.z / prev_clip.w, cam.inv_proj);
+        d_expected = static_reprojection(uv_q, nearest_depth, cam).z;
     }
-    let d_prev = view_distance(prev_depth, cam.inv_proj);
-    // Fires only when something NEARER was there last frame, i.e. this
-    // surface was hidden. When in doubt it rejects: a false disocclusion
-    // costs one frame of aliasing, a missed one costs a ghost.
-    let disoccluded = d_prev < d_expected * (1.0 - params.disocclusion_threshold);
+    let d_prev = view_distance(prev_nearest_depth(uv_hist, cam.prev_jitter), cam.inv_proj);
+    var disoccluded = d_prev < d_expected * (1.0 - params.disocclusion_threshold);
+
+    // Test 2: the pixel's OWN surface, with its own depth and its own vector.
+    // Test 1 alone has two blind spots, both on the strip a moving object has
+    // just left. A pixel next to the object takes the object's vector
+    // (dilation), so test 1 compares the object with itself while the pixel
+    // really shows what was behind it. And an object resting on the surface
+    // behind it is within the relative slack of that surface near the contact
+    // line. For a surface that did not move (its vector is the camera's
+    // reprojection) the expected previous distance is exact, so there the
+    // slack shrinks to the surface's own depth slope across a pixel.
+    let dilated = any(nearest_p != p0);
+    if (!is_sky(z_own)) {
+        var v_own = v;
+        if (dilated) {
+            v_own = textureLoad(velocity_tex, p0, 0).xy;
+        }
+        let own = static_reprojection(uv_q, z_own, cam);
+        let uv_hist_own = uv_q - v_own;
+        let is_static = length((uv_hist_own - own.xy) * O) < 0.1;
+        let d_own = view_distance(z_own, cam.inv_proj);
+        let slope = max(
+            max(abs(view_distance(z_left, cam.inv_proj) - d_own), abs(view_distance(z_right, cam.inv_proj) - d_own)),
+            max(abs(view_distance(z_up, cam.inv_proj) - d_own), abs(view_distance(z_down, cam.inv_proj) - d_own)),
+        );
+        // Twice the steepest one-pixel step (the previous footprint is the
+        // nearest of a 2x2, up to a pixel away), plus a floor for depth
+        // precision. Never looser than the general threshold.
+        let slack_static = min(params.disocclusion_threshold, 2.0 * slope / max(d_own, 1.0e-6) + 0.002);
+        let slack_own = select(params.disocclusion_threshold, slack_static, is_static);
+        var d_prev_own = d_prev;
+        if (dilated) {
+            d_prev_own = view_distance(prev_nearest_depth(uv_hist_own, cam.prev_jitter), cam.inv_proj);
+        }
+        if (d_prev_own < own.z * (1.0 - slack_own)) {
+            disoccluded = true;
+        }
+    }
 
     // ---- 4.6 Variance clip (G5). UNCONDITIONAL: wgsl_validation pins it. -
     // The box comes from the current frame's plain 3x3, in YCoCg of the
