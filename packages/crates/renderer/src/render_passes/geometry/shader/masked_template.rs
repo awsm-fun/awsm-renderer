@@ -69,6 +69,8 @@ pub struct ShaderTemplateGeometryMaskedFragment {
     /// `awsm_renderer_materials::flipbook::FLIPBOOK_CELL_WGSL`, injected so the masked
     /// cutout evaluates the SAME cell the shaded material shows.
     flipbook_cell_wgsl: String,
+    /// TAA variant: writes the motion-vector target (`@location(4)`).
+    velocity: bool,
 }
 
 impl ShaderTemplateGeometryMaskedFragment {
@@ -86,6 +88,7 @@ impl ShaderTemplateGeometryMaskedFragment {
         dynamic_texture_helpers: String,
         dynamic_alpha_wgsl: String,
         flipbook_cell_wgsl: String,
+        velocity: bool,
     ) -> Self {
         Self {
             texture_pool_arrays_len,
@@ -97,6 +100,7 @@ impl ShaderTemplateGeometryMaskedFragment {
             dynamic_texture_helpers,
             dynamic_alpha_wgsl,
             flipbook_cell_wgsl,
+            velocity,
         }
     }
 }
@@ -112,6 +116,7 @@ impl TryFrom<&ShaderCacheKeyGeometryMasked> for ShaderTemplateGeometryMasked {
             instancing_transforms: false,
             meta_storage_array: false,
             msaa_samples: None,
+            velocity: value.velocity,
             // Masked geometry reuses the plain vertex; custom-vertex masked is a
             // CV2 follow-on, so the vertex stays non-custom here.
             dynamic_vertex_shader: None,
@@ -147,6 +152,7 @@ impl TryFrom<&ShaderCacheKeyGeometryMasked> for ShaderTemplateGeometryMasked {
                 } else {
                     String::new()
                 },
+                value.velocity,
             ),
         })
     }

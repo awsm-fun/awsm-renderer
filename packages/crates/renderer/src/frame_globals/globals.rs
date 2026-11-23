@@ -112,12 +112,18 @@ impl FrameGlobals {
     }
 
     /// Pack the per-frame values and upload via the mapped-ring path.
+    ///
+    /// `taa_motion`: `Some([joint_matrix_base, morph_weight_base])` (vec4
+    /// units into the shared previous-frame buffer) when TAA is on; the spare
+    /// words then carry those and last frame's time. `None` (TAA off) leaves
+    /// them zero, exactly the 0.45 upload.
     pub fn write_gpu(
         &mut self,
         logging: &AwsmRendererLogging,
         gpu: &AwsmRendererWebGpu,
         frame_count: u32,
         resolution: [u32; 2],
+        taa_motion: Option<[u32; 2]>,
     ) -> std::result::Result<(), AwsmFrameGlobalsError> {
         let _maybe_span_guard = if logging.cpu.sub_frame() {
             Some(tracing::span!(tracing::Level::INFO, "FrameGlobals GPU write").entered())
@@ -143,25 +149,36 @@ impl FrameGlobals {
             Some(prev) => (time - prev).clamp(0.0, DELTA_TIME_CLAMP_SECS),
             None => 0.0,
         };
+        // The time a vertex hook saw LAST frame (unclamped; equal to `time`
+        // on the first frame). Rides in the spare word at offset 12, so the
+        // layout every shader declares is unchanged; only the TAA geometry
+        // variant reads it (`bitcast<f32>(frame_globals_raw._pad)`, to
+        // evaluate a custom vertex hook as of last frame, 03 §2.3).
+        let prev_time = self.last_time.unwrap_or(time);
         self.last_time = Some(time);
 
         // Pack the 32-byte uniform:
         //   0   time           : f32
         //   4   delta_time     : f32
         //   8   frame_count    : u32
-        //  12   _pad           : u32
+        //  12   prev_time      : f32 (WGSL: `_pad`, TAA only)
         //  16   resolution.x   : u32
         //  20   resolution.y   : u32
-        //  24   _pad2.x        : u32
-        //  28   _pad2.y        : u32
+        //  24   _pad2.x        : u32 (TAA only: joint-matrix base of the
+        //                              previous-frame buffer, vec4 units)
+        //  28   _pad2.y        : u32 (TAA only: morph-weight base, same)
         self.raw_data[0..4].copy_from_slice(&time.to_ne_bytes());
         self.raw_data[4..8].copy_from_slice(&delta_time.to_ne_bytes());
         self.raw_data[8..12].copy_from_slice(&frame_count.to_ne_bytes());
-        self.raw_data[12..16].copy_from_slice(&0u32.to_ne_bytes());
+        let (prev_time_bits, motion_bases) = match taa_motion {
+            Some(bases) => (prev_time.to_bits(), bases),
+            None => (0u32, [0u32; 2]),
+        };
+        self.raw_data[12..16].copy_from_slice(&prev_time_bits.to_ne_bytes());
         self.raw_data[16..20].copy_from_slice(&resolution[0].to_ne_bytes());
         self.raw_data[20..24].copy_from_slice(&resolution[1].to_ne_bytes());
-        self.raw_data[24..28].copy_from_slice(&0u32.to_ne_bytes());
-        self.raw_data[28..32].copy_from_slice(&0u32.to_ne_bytes());
+        self.raw_data[24..28].copy_from_slice(&motion_bases[0].to_ne_bytes());
+        self.raw_data[28..32].copy_from_slice(&motion_bases[1].to_ne_bytes());
 
         self.snapshot = FrameGlobalsSnapshot {
             time,

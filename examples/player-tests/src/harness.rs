@@ -95,9 +95,13 @@ pub async fn create_renderer_sized(
         .with_features(features)
         .with_optimization_policy(policy)
         .with_pbr_specialization(specialization)
-        .with_anti_aliasing(awsm_renderer::anti_alias::AntiAliasing {
-            msaa_sample_count: msaa.then_some(4),
-            ..Default::default()
+        // Explicit constructors, never `..Default::default()`: the default AA
+        // mode is not a stable choice (it becomes TAA), and MSAA + TAA is a
+        // rejected combination.
+        .with_anti_aliasing(if msaa {
+            awsm_renderer::anti_alias::AntiAliasing::msaa4()
+        } else {
+            awsm_renderer::anti_alias::AntiAliasing::none()
         })
         .build()
         .await

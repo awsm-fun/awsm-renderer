@@ -58,6 +58,7 @@ impl TryFrom<&ShaderCacheKeyGeometryMaskedCustomVertex>
             instancing_transforms: false,
             meta_storage_array: false,
             msaa_samples: value.msaa_samples,
+            velocity: value.velocity,
             dynamic_vertex_shader: Some(value.dynamic_vertex.clone()),
         };
 
@@ -96,6 +97,7 @@ impl TryFrom<&ShaderCacheKeyGeometryMaskedCustomVertex>
                 } else {
                     String::new()
                 },
+                value.velocity,
             ),
         })
     }

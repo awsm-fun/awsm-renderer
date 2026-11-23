@@ -404,6 +404,9 @@ pub struct RenderTextureViews {
     pub barycentric: web_sys::GpuTextureView,
     pub normal_tangent: web_sys::GpuTextureView,
     pub barycentric_derivatives: web_sys::GpuTextureView,
+    /// TAA motion vectors (`rg16float`, render size, UV units `uv_now -
+    /// uv_prev`): the geometry pass's fifth target. `None` unless TAA is on.
+    pub velocity: Option<web_sys::GpuTextureView>,
 
     // Output from opaque pass
     pub opaque: web_sys::GpuTextureView,
@@ -521,6 +524,7 @@ impl RenderTextureViews {
             barycentric: inner.barycentric_view.clone(),
             normal_tangent: inner.normal_tangent_view.clone(),
             barycentric_derivatives: inner.barycentric_derivatives_view.clone(),
+            velocity: inner.velocity_view.clone(),
             opaque: inner.opaque_storage_view.clone(),
             opaque_storage: inner.opaque_storage_view.clone(),
             opaque_full: inner.opaque_full_view.clone(),
@@ -577,7 +581,8 @@ impl RenderTextureViews {
 /// Two sizes (see [`crate::size::FrameSizes`]); without TAA they are equal.
 ///
 /// - **Render size** (the scene; TAA's input): `visibility_data`,
-///   `barycentric`, `normal_tangent`, `barycentric_derivatives`, `depth`,
+///   `barycentric`, `normal_tangent`, `barycentric_derivatives`, `velocity`
+///   (TAA only), `depth`,
 ///   `ssr_depth`, `hud_depth`, `opaque` (+ mips, `opaque_clearer`),
 ///   `transparent`, `decal_color`, `prep_*`, `edge_id`, `composite`,
 ///   `reflection_descriptor`, and the SSR targets (`ssr`, `ssr_resolved`,
@@ -605,6 +610,12 @@ pub struct RenderTexturesInner {
 
     pub barycentric_derivatives: web_sys::GpuTexture,
     pub barycentric_derivatives_view: web_sys::GpuTextureView,
+
+    /// TAA motion-vector target. `None` unless `anti_aliasing.taa` is set
+    /// (an AA change rebuilds the whole set, so it appears / disappears with
+    /// TAA).
+    pub velocity: Option<web_sys::GpuTexture>,
+    pub velocity_view: Option<web_sys::GpuTextureView>,
 
     pub opaque: web_sys::GpuTexture,
     pub opaque_clearer: TextureClearer,
@@ -837,6 +848,35 @@ impl RenderTexturesInner {
             )
             .map_err(AwsmRenderTextureError::CreateTexture)?;
 
+        // TAA motion vectors: geometry-pass target, render size, single-sampled
+        // (TAA turns MSAA off). COPY_SRC for the harness readback
+        // (`debug_read_velocity`). Zero cost when TAA is off: not allocated.
+        let velocity = if anti_aliasing.taa.is_some() {
+            Some(
+                gpu.create_texture(
+                    &TextureDescriptor::new(
+                        crate::render_passes::geometry::pipeline::VELOCITY_FORMAT,
+                        Extent3d::new(render_w, Some(render_h), Some(1)),
+                        TextureUsage::new()
+                            .with_render_attachment()
+                            .with_texture_binding()
+                            .with_copy_src(),
+                    )
+                    .with_label("Velocity")
+                    .into(),
+                )
+                .map_err(AwsmRenderTextureError::CreateTexture)?,
+            )
+        } else {
+            None
+        };
+        let velocity_view = match velocity.as_ref() {
+            Some(tex) => Some(tex.create_view().map_err(|e| {
+                AwsmRenderTextureError::CreateTextureView(format!("velocity: {e:?}"))
+            })?),
+            None => None,
+        };
+
         // NEVER multisampled, used as a storage texture. Allocate a full
         // mip chain so the transparent pass can do hardware-filtered
         // background sampling for rough/refractive materials. Mip 0 is
@@ -943,7 +983,18 @@ impl RenderTexturesInner {
 
         let depth = gpu
             .create_texture(
-                &maybe_multisample_texture(render_texture_formats.depth, "Depth").into(),
+                &{
+                    let mut descriptor =
+                        maybe_multisample_texture(render_texture_formats.depth, "Depth");
+                    // TAA: depth is also a copy source (last frame's depth for
+                    // the resolve's disocclusion test, and the harness's
+                    // `debug_read_depth`). Usage flag only, and only with TAA.
+                    if anti_aliasing.taa.is_some() {
+                        descriptor.usage = descriptor.usage.with_copy_src();
+                    }
+                    descriptor
+                }
+                .into(),
             )
             // Keeping the depth buffer bindable allows later passes (e.g. compute shading) to
             // sample it directly for world-position reconstruction.
@@ -1496,6 +1547,9 @@ impl RenderTexturesInner {
             barycentric_derivatives,
             barycentric_derivatives_view,
 
+            velocity,
+            velocity_view,
+
             opaque,
             opaque_storage_view,
             opaque_full_view,
@@ -1580,6 +1634,9 @@ impl RenderTexturesInner {
         // }
         self.normal_tangent.destroy();
         self.barycentric_derivatives.destroy();
+        if let Some(tex) = self.velocity {
+            tex.destroy();
+        }
         self.opaque.destroy();
         self.transparent.destroy();
         if let Some(tex) = self.decal_color {
@@ -1651,4 +1708,170 @@ pub enum AwsmRenderTextureError {
 
     #[error("[render_texture] Blit pipeline: {0:?}")]
     BlitPipeline(AwsmCoreError),
+
+    #[error("[render_texture] debug readback unavailable: {0}")]
+    DebugReadback(String),
+}
+
+/// What a TAA debug readback reads.
+#[derive(Clone, Copy)]
+enum DebugReadTarget {
+    Velocity,
+    Depth,
+}
+
+/// `(width, height, values)` of a TAA debug readback: render size, rows top
+/// to bottom, tightly packed.
+pub type DebugReadback = (u32, u32, Vec<f32>);
+
+impl crate::AwsmRenderer {
+    /// TAA test hook: the motion vectors of the LAST rendered frame, as
+    /// `(width, height, data)`. Render size; `data` holds `width * height`
+    /// `(x, y)` pairs (`2 * width * height` floats), rows top to bottom, in UV
+    /// units: `uv_now - uv_prev` of the surface at that pixel (`x` right, `y`
+    /// down; multiply by the render size for pixels). Sky / nothing drawn is
+    /// `(0, 0)`; a point that was behind last frame's camera is `(2, 2)`.
+    ///
+    /// Requires TAA on (`anti_aliasing.taa`); errors otherwise. The copy is
+    /// submitted synchronously (call it between frames, after `render()`);
+    /// only the map + decode is awaited, so the caller can drop its borrow of
+    /// the renderer before awaiting. Not for per-frame use (one buffer
+    /// allocation + a GPU sync per call).
+    pub fn debug_read_velocity(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::error::Result<DebugReadback>>>>
+    {
+        self.debug_read(DebugReadTarget::Velocity)
+    }
+
+    /// TAA test hook: the raw depth buffer of the LAST rendered frame, same
+    /// shape as [`Self::debug_read_velocity`] with one float per pixel (the
+    /// depth-buffer value: reverse-Z when `features.reverse_z`, so 0 = far).
+    /// Requires TAA on (single-sampled depth with copy usage).
+    pub fn debug_read_depth(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::error::Result<DebugReadback>>>>
+    {
+        self.debug_read(DebugReadTarget::Depth)
+    }
+
+    fn debug_read(
+        &self,
+        target: DebugReadTarget,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = crate::error::Result<DebugReadback>>>>
+    {
+        use awsm_renderer_core::buffers::{BufferDescriptor, BufferUsage};
+        use awsm_renderer_core::command::copy_texture::{
+            TexelCopyBufferInfo, TexelCopyTextureInfo,
+        };
+
+        let submitted = (|| -> crate::error::Result<(web_sys::GpuBuffer, u32, u32, u32)> {
+            let unavailable = |what: &str| {
+                crate::error::AwsmError::from(AwsmRenderTextureError::DebugReadback(format!(
+                    "{what}: TAA must be on and a frame rendered"
+                )))
+            };
+            let inner = self
+                .render_textures
+                .inner()
+                .filter(|inner| inner.anti_aliasing.taa.is_some())
+                .ok_or_else(|| unavailable("debug readback"))?;
+            let texture = match target {
+                DebugReadTarget::Velocity => inner
+                    .velocity
+                    .as_ref()
+                    .ok_or_else(|| unavailable("velocity"))?,
+                DebugReadTarget::Depth => &inner.depth,
+            };
+            // Both targets are render size.
+            let (render_w, render_h) = inner.render_size;
+            // rg16float and depth32float are both 4 bytes per pixel.
+            let bytes_per_row = (render_w * 4).div_ceil(256) * 256;
+            let buffer = self.gpu.create_buffer(
+                &BufferDescriptor::new(
+                    Some("TAA Debug Readback"),
+                    (bytes_per_row * render_h) as usize,
+                    BufferUsage::new().with_copy_dst().with_map_read(),
+                )
+                .into(),
+            )?;
+            let encoder = self.gpu.create_command_encoder(Some("TAA Debug Readback"));
+            encoder.copy_texture_to_buffer(
+                &TexelCopyTextureInfo::new(texture).into(),
+                &TexelCopyBufferInfo::new(&buffer)
+                    .with_bytes_per_row(bytes_per_row)
+                    .with_rows_per_image(render_h)
+                    .into(),
+                &Extent3d::new(render_w, Some(render_h), Some(1)).into(),
+            )?;
+            self.gpu.submit_commands(&encoder.finish());
+            Ok((buffer, render_w, render_h, bytes_per_row))
+        })();
+
+        Box::pin(async move {
+            let (buffer, width, height, bytes_per_row) = submitted?;
+            let bytes = awsm_renderer_core::buffers::extract_buffer_vec(&buffer, None).await?;
+            buffer.destroy();
+            let mut out = Vec::with_capacity((width * height * 2) as usize);
+            for row in 0..height as usize {
+                let start = row * bytes_per_row as usize;
+                let row_bytes = &bytes[start..start + width as usize * 4];
+                match target {
+                    DebugReadTarget::Velocity => {
+                        for half in row_bytes.chunks_exact(2) {
+                            out.push(f16_to_f32(u16::from_le_bytes([half[0], half[1]])));
+                        }
+                    }
+                    DebugReadTarget::Depth => {
+                        for word in row_bytes.chunks_exact(4) {
+                            out.push(f32::from_le_bytes([word[0], word[1], word[2], word[3]]));
+                        }
+                    }
+                }
+            }
+            Ok((width, height, out))
+        })
+    }
+}
+
+/// IEEE 754 half -> single (exact; subnormals, infinities and NaN included).
+fn f16_to_f32(h: u16) -> f32 {
+    let sign = ((h >> 15) & 1) as u32;
+    let exponent = ((h >> 10) & 0x1f) as u32;
+    let mantissa = (h & 0x3ff) as u32;
+    let bits = match (exponent, mantissa) {
+        (0, 0) => sign << 31,
+        (0, m) => {
+            // Subnormal: normalise.
+            let mut e: i32 = -14;
+            let mut m = m;
+            while m & 0x400 == 0 {
+                m <<= 1;
+                e -= 1;
+            }
+            (sign << 31) | (((e + 127) as u32) << 23) | ((m & 0x3ff) << 13)
+        }
+        (0x1f, m) => (sign << 31) | (0xff << 23) | (m << 13),
+        (e, m) => (sign << 31) | ((e + 127 - 15) << 23) | (m << 13),
+    };
+    f32::from_bits(bits)
+}
+
+#[cfg(test)]
+mod debug_readback_tests {
+    use super::f16_to_f32;
+
+    #[test]
+    fn half_floats_decode_exactly() {
+        assert_eq!(f16_to_f32(0x0000), 0.0);
+        assert_eq!(f16_to_f32(0x3c00), 1.0);
+        assert_eq!(f16_to_f32(0xc000), -2.0);
+        assert_eq!(f16_to_f32(0x4000), 2.0);
+        assert_eq!(f16_to_f32(0x3555), 0.333_251_95);
+        // Smallest subnormal and the largest finite value.
+        assert_eq!(f16_to_f32(0x0001), 2f32.powi(-24));
+        assert_eq!(f16_to_f32(0x7bff), 65504.0);
+        assert!(f16_to_f32(0x7c00).is_infinite());
+        assert!(f16_to_f32(0x7e00).is_nan());
+    }
 }

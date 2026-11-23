@@ -185,10 +185,10 @@ impl AwsmRenderer {
             // (matches the compiled shape of every variant pool).
             // -----------------------------------------------------------------
             let canonical_shader_id = self.materials.canonical_shader_id(routing_material);
-            let msaa = match self.anti_aliasing.msaa_sample_count {
-                Some(4) => Some(4u32),
-                _ => None,
-            };
+            let geometry_targets =
+                crate::render_passes::geometry::pipeline::GeometryTargets::from_aa(
+                    &self.anti_aliasing,
+                );
             let is_masked =
                 !mesh.instanced && self.materials.alpha_cutoff(routing_material).is_some();
             // Cheap per-frame existence check (no DynamicVertexShaderInfo build /
@@ -205,7 +205,7 @@ impl AwsmRenderer {
                 self.render_passes
                     .geometry
                     .masked_custom_vertex_pipelines
-                    .get(msaa, canonical_shader_id, cull_mode)
+                    .get(geometry_targets, canonical_shader_id, cull_mode)
             } else {
                 None
             };
@@ -220,7 +220,7 @@ impl AwsmRenderer {
             let geometry_custom_vertex_render_pipeline_key =
                 if !combined_claimed && is_custom_vertex {
                     self.render_passes.geometry.custom_vertex_pipelines.get(
-                        msaa,
+                        geometry_targets,
                         canonical_shader_id,
                         cull_mode,
                     )
@@ -243,7 +243,7 @@ impl AwsmRenderer {
                 // Key on the CANONICAL id — the masked fragment is
                 // variant-independent.
                 self.render_passes.geometry.masked_pipelines.get(
-                    msaa,
+                    geometry_targets,
                     canonical_shader_id,
                     cull_mode,
                 )

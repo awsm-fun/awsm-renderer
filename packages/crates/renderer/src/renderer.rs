@@ -330,6 +330,9 @@ pub struct AwsmRenderer {
     /// TAA runtime state (jitter phase, pending reset, debug view). Plain
     /// CPU values; see [`crate::taa`].
     pub(crate) taa: crate::taa::TaaRuntime,
+    /// Test override of [`AwsmRenderer::taa_velocity_path`] (forces the
+    /// phase-5 prep-pass fallback on a capable device). `None` = by limits.
+    pub(crate) taa_velocity_path_override: Option<crate::anti_alias::TaaVelocityPath>,
     /// Plan B shared-prep + deferred-shadow config, captured at build time
     /// (`docs/plans/deferred-shared-prep-pass.md`). The shared prep pass is
     /// unconditional; this only carries the `K` shadow-caster sizing knob.
@@ -2405,6 +2408,10 @@ impl AwsmRendererBuilder {
             render_texture_formats_depth_override,
         } = self;
 
+        // Reject an unsupported AA mode before any GPU work (TAA combined with
+        // MSAA / SMAA, a TAA scale outside 0.5..=1, an unsupported MSAA count).
+        anti_aliasing.validate()?;
+
         let mut phase_handler = phase_handler;
         let build_start_ms = crate::profiling::boot_clock_ms();
         let mut phase_start_ms = build_start_ms;
@@ -3152,6 +3159,7 @@ impl AwsmRendererBuilder {
             anti_aliasing,
             render_scale: 1.0,
             taa: crate::taa::TaaRuntime::default(),
+            taa_velocity_path_override: None,
             prep_config,
             post_processing,
             picker,
@@ -3208,6 +3216,17 @@ impl AwsmRendererBuilder {
         // reserves its pipelines, and the commit compiles them all in one
         // batch (see `ComputePipelines::set_deferred`).
         _self.pipelines.set_deferred(true);
+
+        // TAA from the start: the device must support its motion-vector path,
+        // and the previous-frame buffers turn on (no-op without TAA).
+        if _self.anti_aliasing.taa.is_some()
+            && _self.taa_velocity_path() != crate::anti_alias::TaaVelocityPath::GeometryTarget
+        {
+            return Err(crate::error::AwsmError::TaaUnavailable(
+                "this device has no TAA motion-vector path (see taa_velocity_path)".to_string(),
+            ));
+        }
+        _self.sync_motion_history();
 
         // Apply the configured registration ceiling (§2). Validated +
         // clamped in `with_bucket_config`, so this only sets the field; it

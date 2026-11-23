@@ -14,6 +14,7 @@ use thiserror::Error;
 use crate::{
     bind_groups::{AwsmBindGroupError, BindGroupCreate, BindGroups},
     buffer::dynamic_storage::DynamicStorageBuffer,
+    buffer::history::BufferHistory,
     transforms::TransformKey,
     AwsmRendererLogging,
 };
@@ -59,10 +60,24 @@ pub struct Skins {
     pub(crate) joint_index_weights_gpu_buffer: web_sys::GpuBuffer,
     matrices_uploader: crate::buffer::mapped_uploader::MappedUploader,
     joint_index_weights_uploader: crate::buffer::mapped_uploader::MappedUploader,
+    /// TAA: last frame's joint matrices (same layout and offsets as
+    /// `matrices_gpu_buffer`). Disabled, owning nothing, unless TAA is on.
+    matrices_history: BufferHistory,
+    /// TAA only: skins whose matrix refresh the coverage skin-skip gate
+    /// skipped last frame. When one resumes, its matrices jump over every
+    /// skipped frame at once, so it gets `prev = current` (zero motion for a
+    /// frame) instead of a vector across the gap. Empty when TAA is off.
+    skipped_last_frame: std::collections::HashSet<SkinKey>,
 }
 
-static BUFFER_USAGE: LazyLock<BufferUsage> =
-    LazyLock::new(|| BufferUsage::new().with_storage().with_copy_dst());
+// COPY_SRC: the source of TAA's previous-joint-matrix copy (a usage flag only;
+// nothing is copied unless TAA is on).
+static BUFFER_USAGE: LazyLock<BufferUsage> = LazyLock::new(|| {
+    BufferUsage::new()
+        .with_storage()
+        .with_copy_dst()
+        .with_copy_src()
+});
 impl Skins {
     /// Initial size for skin matrix storage.
     pub const SKIN_MATRICES_INITIAL_SIZE: usize = 16 * 4 * 32; // 32 elements is a good starting point
@@ -112,6 +127,8 @@ impl Skins {
             joint_index_weights_uploader: crate::buffer::mapped_uploader::MappedUploader::new(
                 "Skin Joint Index Weights",
             ),
+            matrices_history: BufferHistory::new("Skin Matrices (previous frame)"),
+            skipped_last_frame: std::collections::HashSet::new(),
         })
     }
 
@@ -453,11 +470,29 @@ impl Skins {
         // TransformKeys than the skin registered — silently nothing updates.
         let mut matched = 0usize;
         let mut skipped_skins = 0usize;
+        let track_skips = self.matrices_history.enabled();
+        let skipped_before = if track_skips {
+            std::mem::take(&mut self.skipped_last_frame)
+        } else {
+            Default::default()
+        };
         // different skins can theoretically share the same joint, so, iterate over them all
         for (skin_key, transform_keys) in self.skeleton_transforms.iter() {
             if !should_update_skin(skin_key) {
                 skipped_skins += 1;
+                if track_skips {
+                    self.skipped_last_frame.insert(skin_key);
+                }
                 continue;
+            }
+            if track_skips && skipped_before.contains(&skin_key) {
+                // Resumed after the skip gate: no valid previous pose.
+                if let (Some(offset), Some(size)) = (
+                    self.skin_matrices.offset(skin_key),
+                    self.skin_matrices.allocated_size(skin_key),
+                ) {
+                    self.matrices_history.mark_fresh(offset, size);
+                }
             }
             for (index, transform_key) in transform_keys.iter().enumerate() {
                 if let Some(world_mat) = dirty_skin_joints.get(transform_key) {
@@ -563,6 +598,13 @@ impl Skins {
             }
 
             self.matrices_gpu_dirty = false;
+            self.matrices_history.mark_written();
+        }
+        if self.matrices_history.enabled() {
+            // G10: new skins (and skin instances) have no previous pose.
+            for (offset, size) in self.skin_matrices.take_new_allocations() {
+                self.matrices_history.mark_fresh(offset, size);
+            }
         }
 
         if self.joint_index_weights_gpu_dirty {
@@ -615,6 +657,70 @@ impl Skins {
         }
 
         Ok(())
+    }
+
+    /// Turns the previous-frame copy (TAA motion vectors) on or off.
+    pub(crate) fn set_motion_history(&mut self, on: bool) {
+        self.matrices_history.set_enabled(on);
+        self.skin_matrices.set_track_new_allocations(on);
+        self.skipped_last_frame.clear();
+    }
+
+    /// The joint-matrix history and the current buffer's byte size, for the
+    /// shared previous-frame buffer (`Transforms::sync_motion_buffer`).
+    pub(crate) fn motion_history_mut(&mut self) -> (&mut BufferHistory, usize) {
+        let size = self.skin_matrices.raw_slice().len();
+        (&mut self.matrices_history, size)
+    }
+
+    /// The skin's pose jumped: zero motion this frame. No-op when TAA is off.
+    pub fn reset_history(&self, key: SkinKey) {
+        if let (Some(offset), Some(size)) = (
+            self.skin_matrices.offset(key),
+            self.skin_matrices.allocated_size(key),
+        ) {
+            self.matrices_history.mark_fresh(offset, size);
+        }
+    }
+
+    /// Skins with any joint in `joints` (for a subtree reset).
+    pub(crate) fn skins_with_joints<'a>(
+        &'a self,
+        joints: &'a std::collections::HashSet<TransformKey>,
+    ) -> impl Iterator<Item = SkinKey> + 'a {
+        self.skeleton_transforms
+            .iter()
+            .filter(|(_, keys)| keys.iter().any(|k| joints.contains(k)))
+            .map(|(key, _)| key)
+    }
+
+    /// TAA frame-start fix-ups. No-op when TAA is off.
+    pub(crate) fn record_history_frame_start(
+        &self,
+        encoder: &awsm_renderer_core::command::CommandEncoder,
+    ) -> std::result::Result<(), AwsmCoreError> {
+        self.matrices_history.record_frame_start(
+            encoder,
+            &self.matrices_gpu_buffer,
+            self.skin_matrices.raw_slice().len(),
+        )
+    }
+
+    /// The frame that recorded this history's copies was submitted.
+    pub(crate) fn history_frame_submitted(&self) {
+        self.matrices_history.frame_submitted();
+    }
+
+    /// TAA end-of-frame `current -> prev` copy. No-op when TAA is off.
+    pub(crate) fn record_history_frame_end(
+        &self,
+        encoder: &awsm_renderer_core::command::CommandEncoder,
+    ) -> std::result::Result<(), AwsmCoreError> {
+        self.matrices_history.record_frame_end(
+            encoder,
+            &self.matrices_gpu_buffer,
+            self.skin_matrices.raw_slice().len(),
+        )
     }
 
     /// Removes a skin and associated data.

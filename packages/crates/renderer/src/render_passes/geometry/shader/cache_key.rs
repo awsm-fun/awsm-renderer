@@ -50,6 +50,10 @@ pub struct ShaderCacheKeyGeometry {
     /// uniform-with-dynamic-offset binding regardless of the toggle).
     pub meta_storage_array: bool,
     pub msaa_samples: Option<u32>,
+    /// TAA variant: the vertex stage also evaluates the vertex with last
+    /// frame's inputs and the fragment writes a fifth `rg16float` target, the
+    /// motion vector (03 §2.2). `false` renders exactly the pre-TAA shader.
+    pub velocity: bool,
     /// `Some` → this is a per-material **custom-vertex** geometry pipeline: the
     /// vertex shader compiles the material's `custom_displace_vertex` hook (and
     /// the draw binds the material uniform/texture groups + a UV0 attribute).

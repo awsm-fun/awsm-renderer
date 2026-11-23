@@ -65,6 +65,11 @@ pub struct DynamicStorageBuffer<K: Key, const ZERO: u8 = 0> {
     /// The original `initial_bytes` argument passed to [`Self::new`],
     /// kept so that [`Self::clear`] can reset to the same starting size.
     initial_bytes_arg: usize,
+    /// TAA (G10): byte ranges allocated since the last
+    /// [`Self::take_new_allocations`] — new keys, reused slots and
+    /// relocations, i.e. data with no previous-frame value. `None` (the
+    /// default) tracks nothing; see [`Self::set_track_new_allocations`].
+    new_allocations: Option<Vec<(usize, usize)>>,
 }
 
 impl<K: Key, const ZERO: u8> DynamicStorageBuffer<K, ZERO> {
@@ -92,6 +97,22 @@ impl<K: Key, const ZERO: u8> DynamicStorageBuffer<K, ZERO> {
             gpu_buffer_needs_resize: capacity != initial_bytes,
             label,
             initial_bytes_arg,
+            new_allocations: None,
+        }
+    }
+
+    /// Starts (`true`) or stops recording newly allocated byte ranges, for a
+    /// previous-frame mirror of this buffer (`crate::buffer::history`).
+    pub fn set_track_new_allocations(&mut self, on: bool) {
+        self.new_allocations = on.then(Vec::new);
+    }
+
+    /// Takes the byte ranges allocated since the last call (empty when not
+    /// tracking).
+    pub fn take_new_allocations(&mut self) -> Vec<(usize, usize)> {
+        match self.new_allocations.as_mut() {
+            Some(list) => std::mem::take(list),
+            None => Vec::new(),
         }
     }
 
@@ -100,7 +121,8 @@ impl<K: Key, const ZERO: u8> DynamicStorageBuffer<K, ZERO> {
     /// After this call the buffer is in the same state as a freshly
     /// constructed one (with the same `initial_bytes` and `label`).
     pub fn clear(&mut self) {
-        let fresh = Self::new(self.initial_bytes_arg, self.label.clone());
+        let mut fresh = Self::new(self.initial_bytes_arg, self.label.clone());
+        fresh.new_allocations = self.new_allocations.take().map(|_| Vec::new());
         *self = fresh;
     }
 
@@ -207,6 +229,9 @@ impl<K: Key, const ZERO: u8> DynamicStorageBuffer<K, ZERO> {
         self.raw_data[off..off + bytes.len()].copy_from_slice(bytes);
         self.slot_indices.insert(key, (off, req));
         self.mark_dirty_range(off, req);
+        if let Some(list) = self.new_allocations.as_mut() {
+            list.push((off, req));
+        }
 
         Ok(off)
     }

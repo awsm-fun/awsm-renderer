@@ -1,7 +1,7 @@
 // Shared masking-alpha helpers (material loads, UV reconstruction, pool sample,
 // custom alpha-only wrapper, and `mask_alpha_at`). Also used by the masked
 // shadow fragment so the cutout test is byte-identical across both passes.
-{% include "shared_wgsl/masked_alpha.wgsl" %}
+{% include "shared_wgsl/masked_alpha.wgsl" %}{% if velocity %}{% include "shared_wgsl/motion_vector.wgsl" %}{% endif %}
 
 // Barycentric at a sub-pixel offset (pixel-space, center origin), via the
 // screen-space derivatives of the interpolated barycentric.
@@ -31,14 +31,21 @@ struct FragmentInput {
     // See the plain geometry fragment: flip the normal for back faces so
     // double-sided masked meshes (e.g. foliage) shade two-sided correctly —
     // including diffuse-transmission undersides.
-    @builtin(front_facing) front_facing: bool,
+    @builtin(front_facing) front_facing: bool,{% if velocity %}
+    // TAA: unjittered clip positions now / last frame (see vertex.wgsl).
+    @location(7) @interpolate(perspective, center) clip_now: vec4<f32>,
+    @location(8) @interpolate(perspective, center) clip_prev: vec4<f32>,
+    {% endif +%}
 }
 
 struct FragmentOutput {
     @location(0) visibility_data_out: vec4<u32>,
     @location(1) barycentric: vec4<u32>,
     @location(2) normal_tangent: vec4<f32>,
-    @location(3) barycentric_derivatives: vec4<f32>,
+    @location(3) barycentric_derivatives: vec4<f32>,{% if velocity %}
+    // RG16Float: motion vector in UV units (TAA, 03 §2).
+    @location(4) velocity: vec2<f32>,
+    {% endif +%}
     {% if msaa_sample_count > 1 %}
     // Per-sample cutout coverage. Fractional at the cutout boundary so the
     // covered samples write the surface while the rest stay the cleared skybox
@@ -127,7 +134,9 @@ fn fs_main(input: FragmentInput) -> FragmentOutput {
         vec2<f32>(-BARY_DERIV_LIMIT), vec2<f32>(BARY_DERIV_LIMIT));
     let ddy = clamp(dpdy(input.barycentric_center),
         vec2<f32>(-BARY_DERIV_LIMIT), vec2<f32>(BARY_DERIV_LIMIT));
-    out.barycentric_derivatives = vec4<f32>(ddx.x, ddy.x, ddx.y, ddy.y);
+    out.barycentric_derivatives = vec4<f32>(ddx.x, ddy.x, ddx.y, ddy.y);{% if velocity %}
+    out.velocity = taa_motion_vector(input.clip_now, input.clip_prev);
+    {% endif +%}
 
     return out;
 }

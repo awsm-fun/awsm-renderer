@@ -9,7 +9,7 @@
 {% endif %}
 {% include "shared_wgsl/vertex/morph.wgsl" %}
 {% include "shared_wgsl/vertex/skin.wgsl" %}
-{% include "shared_wgsl/vertex/apply_vertex.wgsl" %}
+{% include "shared_wgsl/vertex/apply_vertex.wgsl" %}{% if velocity %}{% include "shared_wgsl/vertex/motion_prev.wgsl" %}{% endif %}
 
 
 //***** MAIN *****
@@ -28,7 +28,14 @@ struct VertexInput {
     @location(8) instance_transform_row_2: vec4<f32>,
     @location(9) instance_transform_row_3: vec4<f32>,
     {% endif %}
-    {% if has_custom_vertex %} @location(10) uv0: vec2<f32>, {% endif %}
+    {% if has_custom_vertex %} @location(10) uv0: vec2<f32>, {% endif %}{% if velocity && instancing_transforms %}
+    // TAA: last frame's instance transform (the instancer's prev buffer, same
+    // offset as the current one).
+    @location(11) prev_instance_transform_row_0: vec4<f32>,
+    @location(12) prev_instance_transform_row_1: vec4<f32>,
+    @location(13) prev_instance_transform_row_2: vec4<f32>,
+    @location(14) prev_instance_transform_row_3: vec4<f32>,
+    {% endif %}
 };
 
 struct VertexOutput {
@@ -83,7 +90,14 @@ struct VertexOutput {
     // binding directly — but since the field is identical across
     // stages there either way, threading it as a varying is the
     // cheaper / more uniform fix.
-    @location(5) @interpolate(flat) material_mesh_meta_offset: u32,
+    @location(5) @interpolate(flat) material_mesh_meta_offset: u32,{% if velocity %}
+    // TAA motion vectors (03 §2.2): this surface point's UNJITTERED clip
+    // position now and last frame. Interpolated in clip space and divided
+    // per FRAGMENT: interpolating already-divided positions is wrong under
+    // perspective. Center-sampled (single-sampled targets under TAA).
+    @location(7) @interpolate(perspective, center) clip_now: vec4<f32>,
+    @location(8) @interpolate(perspective, center) clip_prev: vec4<f32>,
+    {% endif +%}
 }
 
 @vertex
@@ -159,7 +173,35 @@ fn vert_main(
         {% endif %}
     ), camera {% if has_custom_vertex %}, _cv_uv, _cv_uv_count, instance_id, frame_globals, _mm.material_offset {% endif %});
 
-    out.clip_position = applied.clip_position;
+    out.clip_position = applied.clip_position;{% if velocity %}
+    // Unjittered on both sides (G2): the jitter lives only in `view_proj`.
+    out.clip_now = camera.view_proj_unjittered * vec4<f32>(applied.world_position, 1.0);
+    {
+        {% if has_custom_vertex %}
+        // Last frame's frame-globals for the vertex hook: `prev_time` rides in
+        // the uniform's spare word (FrameGlobals::write_gpu, offset 12).
+        let prev_globals = FrameGlobals(
+            bitcast<f32>(frame_globals_raw._pad),
+            frame_globals.delta_time,
+            frame_globals.frame_count - 1u,
+            frame_globals.resolution,
+        );
+        {% endif %}
+        let world_prev = apply_vertex_prev(ApplyVertexInput(
+            input.original_vertex_index,
+            input.position,
+            input.normal,
+            input.tangent,
+            {% if instancing_transforms %}
+                input.prev_instance_transform_row_0,
+                input.prev_instance_transform_row_1,
+                input.prev_instance_transform_row_2,
+                input.prev_instance_transform_row_3,
+            {% endif %}
+        ), camera {% if has_custom_vertex %}, _cv_uv, _cv_uv_count, instance_id, prev_globals, _mm.material_offset {% endif %});
+        out.clip_prev = camera.prev_view_proj * vec4<f32>(world_prev, 1.0);
+    }
+    {% endif +%}
     out.world_normal = applied.world_normal;
     out.world_tangent = applied.world_tangent;
 

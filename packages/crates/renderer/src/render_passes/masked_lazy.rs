@@ -50,7 +50,7 @@ pub(crate) struct MaskedLazyCompile {
 struct Attempt {
     geometry_epoch: u64,
     shadow_epoch: u64,
-    msaa_sample_count: Option<u32>,
+    geometry_targets: crate::render_passes::geometry::pipeline::GeometryTargets,
     families: Vec<MaterialShaderId>,
 }
 
@@ -81,10 +81,8 @@ impl AwsmRenderer {
         if self.masked_lazy.inflight.is_some() || self.materials.masked_builtin().is_empty() {
             return Ok(());
         }
-        let msaa_sample_count = match self.anti_aliasing.msaa_sample_count {
-            Some(4) => Some(4u32),
-            _ => None,
-        };
+        let geometry_targets =
+            crate::render_passes::geometry::pipeline::GeometryTargets::from_aa(&self.anti_aliasing);
         let geometry_pool = &self.render_passes.geometry.masked_pipelines;
         let shadow_pool = &self.render_passes.shadow_masked.pipelines;
 
@@ -92,7 +90,7 @@ impl AwsmRenderer {
         let mut shadow_variants = Vec::new();
         let mut families = Vec::new();
         for (shader_id, base) in self.materials.masked_builtin().families() {
-            let needs_geometry = !geometry_pool.has_variant(msaa_sample_count, shader_id);
+            let needs_geometry = !geometry_pool.has_variant(geometry_targets, shader_id);
             let needs_shadow = !shadow_pool.has_variant(shader_id);
             if needs_geometry {
                 geometry_variants.push(MaskedVariant {
@@ -118,7 +116,7 @@ impl AwsmRenderer {
         let attempt = Attempt {
             geometry_epoch: geometry_pool.epoch(),
             shadow_epoch: shadow_pool.epoch(),
-            msaa_sample_count,
+            geometry_targets,
             families,
         };
         if self.masked_lazy.failed.as_ref() == Some(&attempt) {

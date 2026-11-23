@@ -42,6 +42,9 @@ pub struct ShaderCacheKeyGeometryCustomVertex {
     /// for single-sampled. The plain geometry fragment is MSAA-agnostic; the
     /// field is carried so a multisampled pipeline re-keys distinctly.
     pub msaa_samples: Option<u32>,
+    /// TAA variant (motion-vector target). See
+    /// [`ShaderCacheKeyGeometry::velocity`](super::cache_key::ShaderCacheKeyGeometry::velocity).
+    pub velocity: bool,
     /// Variant takes per-instance vertex attributes (instance transform
     /// matrix). Mirrors [`ShaderCacheKeyGeometry::instancing_transforms`].
     pub instancing_transforms: bool,

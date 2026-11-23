@@ -300,6 +300,18 @@ impl Mesh {
                 Some(offset as u64),
                 None,
             );
+            // TAA: last frame's instance transforms at the same offset, at the
+            // slot every instanced TAA geometry pipeline declares them.
+            if ctx.render_texture_views.velocity.is_some() {
+                if let Some(prev) = ctx.instances.prev_gpu_transform_buffer() {
+                    render_pass.set_vertex_buffer(
+                        crate::render_passes::geometry::pipeline::PREV_INSTANCE_VERTEX_SLOT,
+                        prev,
+                        Some(offset as u64),
+                        None,
+                    );
+                }
+            }
         }
 
         // Cluster-LOD per-cluster cut (Phase B, B.3): if this is the cluster

@@ -3028,3 +3028,201 @@ fn switches_have_a_single_exit() {
         failures.join("\n")
     );
 }
+
+/// Extracts `fn <name>(...) { ... }` (signature through the matching closing
+/// brace) from rendered WGSL.
+fn wgsl_function<'a>(src: &'a str, name: &str) -> &'a str {
+    let start = src
+        .find(&format!("fn {name}("))
+        .unwrap_or_else(|| panic!("fn {name} not found"));
+    let open = start + src[start..].find('{').expect("fn body");
+    let mut depth = 0usize;
+    for (i, c) in src[open..].char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return &src[start..open + i + 1];
+                }
+            }
+            _ => {}
+        }
+    }
+    panic!("fn {name}: unbalanced braces")
+}
+
+/// TAA (plan 04, phase 1): every geometry-family variant with the motion
+/// vector target renders and validates — plain (3 shapes), masked,
+/// custom-vertex (plain + instanced) and masked + custom-vertex.
+#[test]
+fn taa_geometry_variants_validate() {
+    use crate::render_passes::geometry::shader::variant_tests::rendered_variants;
+    let variants = rendered_variants(None, true);
+    assert_eq!(variants.len(), 8, "the variant list itself changed");
+    for (label, src) in variants {
+        let label = format!("TAA {label}");
+        naga_validate(&src, &label);
+        assert!(
+            src.contains("fn apply_vertex_prev("),
+            "{label}: no previous evaluation"
+        );
+        assert!(
+            src.contains("velocity: vec2<f32>"),
+            "{label}: no velocity output"
+        );
+    }
+}
+
+/// TAA zero-cost-off: no geometry variant without TAA carries any of its code
+/// (the rendered sources are also byte-identical to the pre-TAA tree; that was
+/// checked when the variant landed, this keeps the identifiers out).
+#[test]
+fn taa_off_geometry_variants_have_no_taa_code() {
+    use crate::render_passes::geometry::shader::variant_tests::rendered_variants;
+    for msaa in [None, Some(4)] {
+        for (label, src) in rendered_variants(msaa, false) {
+            // (`prev_view_proj` / `prev_position` are camera fields every
+            // shader declares; these are the geometry variant's own.)
+            for ident in [
+                "prev_state",
+                "prev_morph_weight",
+                "prev_skin_joint_matrix",
+                "prev_instance_transform",
+                "_prev(",
+                "velocity",
+                "clip_now",
+                "clip_prev",
+                "taa_motion_vector",
+                "apply_vertex_prev",
+            ] {
+                assert!(
+                    !src.contains(ident),
+                    "{label} msaa={msaa:?}: TAA-off source contains `{ident}`"
+                );
+            }
+        }
+    }
+}
+
+/// TAA motion vectors are divided PER FRAGMENT (03 §2.2): the vertex stage
+/// outputs the clip positions and the fragment divides. Dividing in the vertex
+/// stage and interpolating NDC is wrong under perspective, so pin the
+/// spelling: the divide lives in `taa_motion_vector`, the fragment calls it
+/// with the interpolated clip varyings, and the vertex stage never divides
+/// them.
+#[test]
+fn taa_motion_vector_divides_per_fragment() {
+    use crate::render_passes::geometry::shader::variant_tests::rendered_variants;
+    for (label, src) in rendered_variants(None, true) {
+        let divide = wgsl_function(&src, "taa_motion_vector");
+        assert!(
+            divide.contains("clip_now.xy / clip_now.w")
+                && divide.contains("clip_prev.xy / clip_prev.w"),
+            "{label}: the per-fragment divide moved:\n{divide}"
+        );
+        let fragment = wgsl_function(&src, "fs_main");
+        assert!(
+            fragment.contains("taa_motion_vector(input.clip_now, input.clip_prev)"),
+            "{label}: the fragment no longer divides the interpolated clip positions"
+        );
+        let vertex = wgsl_function(&src, "vert_main");
+        assert!(
+            vertex.contains("out.clip_now = camera.view_proj_unjittered *")
+                && vertex.contains("out.clip_prev = camera.prev_view_proj *"),
+            "{label}: the vertex stage must output UNJITTERED clip positions"
+        );
+        for bad in [
+            "clip_now.xy /",
+            "clip_prev.xy /",
+            "clip_now.w",
+            "clip_prev.w",
+        ] {
+            assert!(
+                !vertex.contains(bad),
+                "{label}: the vertex stage divides the motion clip positions (`{bad}`)"
+            );
+        }
+    }
+}
+
+/// The previous-frame evaluation (`motion_prev.wgsl`) copies the current
+/// morph / skin functions with only the buffer swapped. Pin that they stay
+/// copies: any change to the current ones must be mirrored, or the vectors of
+/// morphed / skinned meshes go wrong silently.
+#[test]
+fn taa_prev_functions_mirror_current() {
+    use crate::render_passes::geometry::shader::variant_tests::rendered_variants;
+    // The custom-vertex variant has every function (normal / tangent morphs
+    // are only emitted for the hook).
+    let (_, src) = rendered_variants(None, true)
+        .into_iter()
+        .find(|(label, _)| label == "custom-vertex inst=false")
+        .expect("custom-vertex variant");
+    // `buffer[X]` -> `accessor(X)` (no nested brackets in these reads).
+    fn swap_reads(src: &str, buffer: &str, accessor: &str) -> String {
+        let mut out = String::new();
+        let mut rest = src;
+        while let Some(at) = rest.find(buffer) {
+            let before = &rest[..at];
+            // Only whole identifiers (`skin_joint_matrices`, not a suffix).
+            let whole = before
+                .chars()
+                .last()
+                .is_none_or(|c| !(c.is_alphanumeric() || c == '_'));
+            let after = &rest[at + buffer.len()..];
+            if whole && after.starts_with('[') {
+                let close = after.find(']').expect("closing bracket");
+                out.push_str(before);
+                out.push_str(&format!("{accessor}({})", &after[1..close]));
+                rest = &after[close + 1..];
+            } else {
+                out.push_str(&rest[..at + buffer.len()]);
+                rest = after;
+            }
+        }
+        out.push_str(rest);
+        out
+    }
+    for (current, prev, buffer, accessor) in [
+        (
+            "apply_position_morphs",
+            "apply_position_morphs_prev",
+            "geometry_morph_weights",
+            "prev_morph_weight",
+        ),
+        (
+            "apply_normal_morphs",
+            "apply_normal_morphs_prev",
+            "geometry_morph_weights",
+            "prev_morph_weight",
+        ),
+        (
+            "apply_tangent_morphs",
+            "apply_tangent_morphs_prev",
+            "geometry_morph_weights",
+            "prev_morph_weight",
+        ),
+        (
+            "apply_position_skin",
+            "apply_position_skin_prev",
+            "skin_joint_matrices",
+            "prev_skin_joint_matrix",
+        ),
+    ] {
+        let expected = swap_reads(
+            &wgsl_function(&src, current).replacen(
+                &format!("fn {current}("),
+                &format!("fn {prev}("),
+                1,
+            ),
+            buffer,
+            accessor,
+        );
+        assert_eq!(
+            wgsl_function(&src, prev),
+            expected,
+            "{prev} no longer mirrors {current}"
+        );
+    }
+}

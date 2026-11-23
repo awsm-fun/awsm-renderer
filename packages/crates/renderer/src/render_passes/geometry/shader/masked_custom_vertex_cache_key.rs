@@ -48,6 +48,9 @@ pub struct ShaderCacheKeyGeometryMaskedCustomVertex {
     /// MSAA sample count of the visibility buffer (`Some(4)`), or `None`. When
     /// multisampled the masked fragment emits per-sample cutout coverage.
     pub msaa_samples: Option<u32>,
+    /// TAA variant (motion-vector target). See
+    /// [`ShaderCacheKeyGeometry::velocity`](super::cache_key::ShaderCacheKeyGeometry::velocity).
+    pub velocity: bool,
 }
 
 impl From<ShaderCacheKeyGeometryMaskedCustomVertex> for ShaderCacheKey {

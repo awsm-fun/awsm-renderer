@@ -216,10 +216,8 @@ impl AwsmRenderer {
         // mesh whose material carries a cutoff but whose masked variant isn't
         // compiled at the live MSAA needs this rebuild (else it silently
         // renders solid via the plain-geometry fallback forever).
-        let msaa = match self.anti_aliasing.msaa_sample_count {
-            Some(4) => Some(4u32),
-            _ => None,
-        };
+        let geometry_targets =
+            crate::render_passes::geometry::pipeline::GeometryTargets::from_aa(&self.anti_aliasing);
         // The built-in families that have an alpha-tested material right now.
         // Only these get masked geometry / masked shadow variants below: the
         // masked pipelines are selected per mesh on `alpha_cutoff().is_some()`,
@@ -237,7 +235,10 @@ impl AwsmRenderer {
                     .render_passes
                     .geometry
                     .masked_pipelines
-                    .has_variant(msaa, self.materials.canonical_shader_id(mesh.material_key))
+                    .has_variant(
+                        geometry_targets,
+                        self.materials.canonical_shader_id(mesh.material_key),
+                    )
         })
         // …or a built-in family that has just gained its first alpha-tested
         // material (possibly only on instanced meshes, which the mesh probe
@@ -247,11 +248,33 @@ impl AwsmRenderer {
                 .render_passes
                 .geometry
                 .masked_pipelines
-                .has_variant(msaa, *family)
+                .has_variant(geometry_targets, *family)
+        });
+        // A registered custom-vertex material whose variant isn't compiled for
+        // the live geometry targets (an AA-mode change: MSAA, or TAA's motion
+        // vector variant) needs the same rebuild, else its meshes draw
+        // un-displaced through the plain pipeline (and, under TAA, with the
+        // plain pipeline's un-displaced motion vectors). Also fires with TAA
+        // off: it fixes a 0.45 state (custom-vertex meshes drawn un-displaced
+        // after an MSAA flip), a deliberate change recorded in the TAA plan.
+        let custom_vertex_missing = self.dynamic_materials.iter().any(|(id, _)| {
+            if !self.dynamic_materials.has_vertex_shader(id) {
+                return false;
+            }
+            let geometry = &self.render_passes.geometry;
+            if self.dynamic_materials.alpha_info_for(id).is_some() {
+                !geometry
+                    .masked_custom_vertex_pipelines
+                    .has_variant(geometry_targets, id)
+            } else {
+                !geometry
+                    .custom_vertex_pipelines
+                    .has_variant(geometry_targets, id)
+            }
         });
         let was_dirty = pool_dirty || sampler_pool_dirty;
 
-        if !was_dirty && !force_masked && !masked_builtin_missing {
+        if !was_dirty && !force_masked && !masked_builtin_missing && !custom_vertex_missing {
             return Ok(());
         }
 

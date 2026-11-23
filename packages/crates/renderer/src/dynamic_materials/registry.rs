@@ -1002,6 +1002,7 @@ impl DynamicMaterials {
             texture_pool_arrays_len: 1,
             texture_pool_samplers_len: 1,
             msaa_samples: None,
+            velocity: false,
             instancing_transforms: false,
             meta_storage_array: false,
         };
@@ -1164,6 +1165,7 @@ impl DynamicMaterials {
             texture_pool_arrays_len: 1,
             texture_pool_samplers_len: 1,
             msaa_samples: None,
+            velocity: false,
         };
         let template = match ShaderTemplateGeometryMaskedCustomVertex::try_from(&key) {
             Ok(t) => t,

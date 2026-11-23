@@ -128,6 +128,10 @@ pub enum BindGroupCreate {
     IblTextures,
     EnvironmentSkyboxCreate,
     TransformsResize,
+    /// TAA: the shared previous-frame buffer (transforms, joint matrices,
+    /// morph weights) was created, regrown or dropped. The geometry pass's
+    /// TAA-variant group 1 binds it. Never fires with TAA off.
+    MotionHistoryBuffers,
     GeometryMorphTargetWeightsResize,
     GeometryMorphTargetValuesResize,
     MaterialMorphTargetWeightsResize,
@@ -358,6 +362,9 @@ impl BindGroups {
                     // renders black until an unrelated event (e.g. a viewport
                     // resize) rebuilds the classify bind group.
                     functions_to_call.insert(FunctionToCall::MaterialClassify);
+                }
+                BindGroupCreate::MotionHistoryBuffers => {
+                    functions_to_call.insert(FunctionToCall::GeometryTransformMaterials);
                 }
                 BindGroupCreate::GeometryMeshMetaResize => {
                     functions_to_call.insert(FunctionToCall::GeometryMeta);

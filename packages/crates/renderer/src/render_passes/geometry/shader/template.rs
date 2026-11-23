@@ -64,6 +64,9 @@ pub struct ShaderTemplateGeometryVertex {
     /// Auto-generated `material_data_load` accessor for the hook.
     /// Empty unless `has_custom_vertex`.
     dynamic_vertex_loader_decl: String,
+    /// TAA variant: second (previous-frame) vertex evaluation + the
+    /// `clip_now` / `clip_prev` varyings. See [`ShaderCacheKeyGeometry::velocity`].
+    velocity: bool,
 }
 
 impl ShaderTemplateGeometryVertex {
@@ -79,6 +82,7 @@ impl ShaderTemplateGeometryVertex {
             dynamic_wgsl_vertex: dv.map(|d| d.wgsl_vertex.clone()).unwrap_or_default(),
             dynamic_vertex_struct_decl: dv.map(|d| d.struct_decl.clone()).unwrap_or_default(),
             dynamic_vertex_loader_decl: dv.map(|d| d.loader_decl.clone()).unwrap_or_default(),
+            velocity: cache_key.velocity,
         }
     }
 }
@@ -86,12 +90,17 @@ impl ShaderTemplateGeometryVertex {
 /// Fragment shader template for the geometry pass.
 #[derive(Template, Debug)]
 #[template(path = "geometry_wgsl/fragment.wgsl", whitespace = "minimize")]
-pub struct ShaderTemplateGeometryFragment {}
+pub struct ShaderTemplateGeometryFragment {
+    /// TAA variant: writes the motion-vector target (`@location(4)`).
+    velocity: bool,
+}
 
 impl ShaderTemplateGeometryFragment {
     /// Creates a fragment shader template from the cache key.
-    pub fn new(_cache_key: &ShaderCacheKeyGeometry) -> Self {
-        Self {}
+    pub fn new(cache_key: &ShaderCacheKeyGeometry) -> Self {
+        Self {
+            velocity: cache_key.velocity,
+        }
     }
 }
 

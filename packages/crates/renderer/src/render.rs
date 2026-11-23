@@ -452,6 +452,15 @@ impl AwsmRenderer {
         self.meshes
             .morphs
             .write_gpu(&self.logging, &self.gpu, &mut self.bind_groups)?;
+        // TAA: place the previous transforms / joint matrices / morph weights
+        // in their shared previous-frame buffer for this frame's sizes (no-op
+        // when TAA is off).
+        {
+            let skins = self.meshes.skins.motion_history_mut();
+            let morphs = self.meshes.morphs.geometry.motion_history_mut();
+            self.transforms
+                .sync_motion_buffer(&self.gpu, &mut self.bind_groups, skins, morphs)?;
+        }
         laps.lap("Prep: Skins + Morphs Upload");
         // ── Light culling per-frame setup ────────────────────────
         //
@@ -571,6 +580,13 @@ impl AwsmRenderer {
                 &self.gpu,
                 self.render_textures.frame_count(),
                 [frame_sizes.render.0, frame_sizes.render.1],
+                // TAA: where the joint matrices and morph weights sit in the
+                // shared previous-frame buffer (`vec4` units), plus last
+                // frame's time. `None` with TAA off: the 0.45 upload.
+                self.anti_aliasing.taa.as_ref().map(|_| {
+                    let bases = self.transforms.motion_buffer_bases_vec4();
+                    [bases[1], bases[2]]
+                }),
             )?;
         }
         // Extras pool — flush any dirty bytes from BufferSlot
@@ -1093,6 +1109,12 @@ impl AwsmRenderer {
         if let Some(ts) = ctx.gpu_timestamps {
             ts.begin_frame();
         }
+
+        // TAA previous-frame state, frame start (03 §2.3): new / reused /
+        // reset slots get prev = current, a regrown prev keeps last frame's
+        // values. Recorded before any pass of the frame encoder (the uploads
+        // were submitted ahead of it). Records nothing unless TAA is on.
+        Self::record_motion_history(&ctx, true)?;
 
         // Snapshot per-opaque-renderable info that the occlusion + indirect-
         // draw infrastructure needs after `renderables.opaque` is consumed
@@ -1967,6 +1989,13 @@ impl AwsmRenderer {
                 None
             };
 
+        // TAA previous-frame state, frame end (03 §2.3): current -> prev,
+        // recorded after every pass that reads either buffer (only the GPU
+        // timestamp resolve follows), so next frame `prev` holds this frame's
+        // values. Only buffers uploaded since the last submitted copy; nothing
+        // unless TAA is on.
+        Self::record_motion_history(&ctx, false)?;
+
         // Record `resolveQuerySet` + copy-to-readback into the frame's encoder
         // BEFORE `finish()`. No-op unless GPU timing is on and slots were used.
         let kick_gpu_timestamps = ctx
@@ -1975,6 +2004,12 @@ impl AwsmRenderer {
             .unwrap_or(false);
 
         self.gpu.submit_commands(&ctx.command_encoder.finish());
+        // TAA previous-frame state: the copies recorded above are submitted,
+        // so their pending work (fresh slots, regrow, end copy) is done.
+        self.transforms.history_frame_submitted();
+        self.instances.history_frame_submitted();
+        self.meshes.skins.history_frame_submitted();
+        self.meshes.morphs.geometry.history_frame_submitted();
         // The light-cull counts this frame recorded are now on the GPU.
         self.render_passes.light_culling.commit_submitted();
         laps.lap("Submit: Finish + Queue Submit");
@@ -2493,6 +2528,34 @@ pub(crate) struct HudResolveState {
     inflight: Option<HudResolveInflight>,
 }
 
+impl AwsmRenderer {
+    /// Records TAA's previous-frame copies into the frame encoder: the
+    /// frame-start fix-ups (`start == true`) or the end-of-frame
+    /// `current -> prev` copies. Every owner records nothing while its history
+    /// is off (TAA off).
+    fn record_motion_history(ctx: &RenderContext, start: bool) -> Result<()> {
+        let encoder = &ctx.command_encoder;
+        if start {
+            ctx.transforms.record_history_frame_start(encoder)?;
+            ctx.instances.record_history_frame_start(encoder)?;
+            ctx.meshes.skins.record_history_frame_start(encoder)?;
+            ctx.meshes
+                .morphs
+                .geometry
+                .record_history_frame_start(encoder)?;
+        } else {
+            ctx.transforms.record_history_frame_end(encoder)?;
+            ctx.instances.record_history_frame_end(encoder)?;
+            ctx.meshes.skins.record_history_frame_end(encoder)?;
+            ctx.meshes
+                .morphs
+                .geometry
+                .record_history_frame_end(encoder)?;
+        }
+        Ok(())
+    }
+}
+
 /// Context passed to render passes during a frame.
 pub struct RenderContext<'a> {
     pub gpu: &'a AwsmRendererWebGpu,
@@ -2634,6 +2697,13 @@ impl<'a> RenderContext<'a> {
     ///
     /// This pass loads the existing visibility attachments and world depth, allowing custom hooks
     /// to append opaque geometry before light culling/material-opaque shading.
+    ///
+    /// **TAA:** the pass has the same four visibility attachments in every AA
+    /// mode; it does not include TAA's motion-vector target. Geometry a hook
+    /// draws here therefore writes no motion vector: its pixels keep the
+    /// vector of whatever the main geometry pass drew there (zero over sky).
+    /// That is right for geometry that does not move on screen and wrong for
+    /// anything that does, which then ghosts under TAA.
     pub fn begin_world_geometry_extension_pass(
         &'a self,
         label: Option<&'a str>,

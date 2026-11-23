@@ -6,3 +6,6 @@ pub mod masked_custom_vertex_cache_key;
 pub mod masked_custom_vertex_template;
 pub mod masked_template;
 pub mod template;
+
+#[cfg(test)]
+pub(crate) mod variant_tests;

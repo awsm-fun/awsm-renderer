@@ -13,6 +13,7 @@ use thiserror::Error;
 use crate::{
     bind_groups::{AwsmBindGroupError, BindGroupCreate, BindGroups},
     buffer::dynamic_storage::DynamicStorageBuffer,
+    buffer::history::BufferHistory,
     transforms::{Transform, TransformKey},
     AwsmRendererLogging,
 };
@@ -108,6 +109,10 @@ pub struct Instances {
     attribute_gpu_dirty: bool,
     transform_uploader: crate::buffer::mapped_uploader::MappedUploader,
     attribute_uploader: crate::buffer::mapped_uploader::MappedUploader,
+    /// TAA: last frame's instance transforms (same layout and offsets as
+    /// `gpu_transform_buffer`), bound as a second per-instance vertex buffer.
+    /// Disabled, owning nothing, unless TAA is on.
+    transform_history: BufferHistory,
 }
 
 impl Instances {
@@ -146,6 +151,7 @@ impl Instances {
             attribute_uploader: crate::buffer::mapped_uploader::MappedUploader::new(
                 "Instance Attributes",
             ),
+            transform_history: BufferHistory::new("Instance Transforms (previous frame)"),
         })
     }
 
@@ -164,9 +170,23 @@ impl Instances {
         // Do the fallible GPU buffer update first so the CPU-side maps are not
         // left with a partially-inserted entry on failure.
         let bytes = Self::transforms_to_bytes(transforms);
-        self.transform_buffer.update(key, &bytes).map_err(|e| {
+        // TAA only (zero cost off): the count before this insert.
+        let old_count = if self.transform_history.enabled() {
+            self.transform_count.get(key).copied().unwrap_or(0)
+        } else {
+            0
+        };
+        let offset = self.transform_buffer.update(key, &bytes).map_err(|e| {
             AwsmInstanceError::BufferCapacityOverflow(format!("instance transforms: {e}"))
         })?;
+        // G10: instances beyond the previous count have no previous value (a
+        // relocated block is reported by the buffer's allocation tracking).
+        if self.transform_history.enabled() && transforms.len() > old_count {
+            self.transform_history.mark_fresh(
+                offset + old_count * INSTANCE_TRANSFORM_BYTE_SIZE,
+                (transforms.len() - old_count) * INSTANCE_TRANSFORM_BYTE_SIZE,
+            );
+        }
         self.cpu_transforms.insert(key, transforms.to_vec());
         self.transform_count.insert(key, transforms.len());
         self.transform_gpu_dirty = true;
@@ -320,6 +340,13 @@ impl Instances {
                     let end = offset + bytes.len();
                     buffer[offset..end].copy_from_slice(&bytes);
                 });
+            // G10 (TAA only): the appended instances have no previous value.
+            if self.transform_history.enabled() {
+                if let Some(base) = self.transform_buffer.offset(key) {
+                    self.transform_history
+                        .mark_fresh(base + offset, bytes.len());
+                }
+            }
         } else {
             let full_list = self
                 .cpu_transforms
@@ -602,6 +629,7 @@ impl Instances {
                 self.gpu_transform_buffer = gpu_create_vertex_buffer(gpu, new_size)?;
                 resized = true;
             }
+            self.transform_history.mark_written();
 
             if resized {
                 self.transform_buffer.clear_dirty_ranges();
@@ -664,7 +692,71 @@ impl Instances {
 
             self.attribute_gpu_dirty = false;
         }
+        if self.transform_history.enabled() {
+            // G10: new allocations and relocated blocks.
+            for (offset, size) in self.transform_buffer.take_new_allocations() {
+                self.transform_history.mark_fresh(offset, size);
+            }
+            // The prev buffer is bound per draw (`set_vertex_buffer`), not
+            // through a bind group: nothing to mark when it is recreated.
+            self.transform_history.sync_own(
+                gpu,
+                BufferUsage::new().with_vertex().with_copy_dst(),
+                self.transform_buffer.raw_slice().len(),
+            )?;
+        }
         Ok(())
+    }
+
+    /// Turns the previous-frame copy (TAA motion vectors) on or off.
+    pub(crate) fn set_motion_history(&mut self, on: bool) {
+        self.transform_history.set_enabled(on);
+        self.transform_buffer.set_track_new_allocations(on);
+    }
+
+    /// Last frame's instance-transform vertex buffer (TAA on and allocated),
+    /// same layout and offsets as [`Self::gpu_transform_buffer`].
+    pub fn prev_gpu_transform_buffer(&self) -> Option<&web_sys::GpuBuffer> {
+        self.transform_history.region().map(|r| &r.buffer)
+    }
+
+    /// Every instance of `key` jumped (a teleport): zero motion this frame.
+    pub fn reset_history(&mut self, key: TransformKey) {
+        if let (Some(offset), Some(size)) = (
+            self.transform_buffer.offset(key),
+            self.transform_buffer.allocated_size(key),
+        ) {
+            self.transform_history.mark_fresh(offset, size);
+        }
+    }
+
+    /// TAA frame-start fix-ups. No-op when TAA is off.
+    pub(crate) fn record_history_frame_start(
+        &self,
+        encoder: &awsm_renderer_core::command::CommandEncoder,
+    ) -> std::result::Result<(), AwsmCoreError> {
+        self.transform_history.record_frame_start(
+            encoder,
+            &self.gpu_transform_buffer,
+            self.transform_buffer.raw_slice().len(),
+        )
+    }
+
+    /// The frame that recorded this history's copies was submitted.
+    pub(crate) fn history_frame_submitted(&self) {
+        self.transform_history.frame_submitted();
+    }
+
+    /// TAA end-of-frame `current -> prev` copy. No-op when TAA is off.
+    pub(crate) fn record_history_frame_end(
+        &self,
+        encoder: &awsm_renderer_core::command::CommandEncoder,
+    ) -> std::result::Result<(), AwsmCoreError> {
+        self.transform_history.record_frame_end(
+            encoder,
+            &self.gpu_transform_buffer,
+            self.transform_buffer.raw_slice().len(),
+        )
     }
 
     fn transforms_to_bytes(transforms: &[Transform]) -> Vec<u8> {
@@ -726,7 +818,12 @@ fn gpu_create_vertex_buffer(gpu: &AwsmRendererWebGpu, size: usize) -> Result<web
         &BufferDescriptor::new(
             Some("InstanceTransformVertex"),
             size,
-            BufferUsage::new().with_copy_dst().with_vertex(),
+            // COPY_SRC: the source of TAA's previous-instance copy (a usage
+            // flag only; nothing is copied unless TAA is on).
+            BufferUsage::new()
+                .with_copy_dst()
+                .with_vertex()
+                .with_copy_src(),
         )
         .into(),
     )?)

@@ -66,9 +66,10 @@ impl GeometryRenderPass {
     /// compiled at construction time. The inactive branch is filled
     /// on the first `set_anti_aliasing` flip.
     pub async fn new(ctx: &mut RenderPassInitContext<'_>) -> Result<Self> {
-        let multisampled_geometry = ctx.anti_aliasing.has_msaa_checked()?;
+        ctx.anti_aliasing.has_msaa_checked()?;
+        let targets = super::pipeline::GeometryTargets::from_aa(ctx.anti_aliasing);
         let bind_groups = GeometryBindGroups::new(ctx).await?;
-        let pipelines = GeometryPipelines::new(ctx, &bind_groups, multisampled_geometry).await?;
+        let pipelines = GeometryPipelines::new(ctx, &bind_groups, targets).await?;
         let masked_bind_group = GeometryMaskedBindGroup::new(ctx).await?;
         let masked_pipelines = GeometryMaskedPipelines::new(ctx, &masked_bind_group, &bind_groups)?;
         let custom_vertex_pipelines =
@@ -93,7 +94,7 @@ impl GeometryRenderPass {
         renderables: &[Renderable],
         is_hud: bool,
     ) -> Result<()> {
-        let color_attachments = if is_hud {
+        let mut color_attachments = if is_hud {
             vec![
                 ColorAttachment::new(
                     &ctx.render_texture_views.visibility_data,
@@ -142,6 +143,20 @@ impl GeometryRenderPass {
                 ),
             ]
         };
+
+        // TAA: the fifth target, motion vectors. Cleared to zero by the world
+        // pass (sky and anything not drawn: no vector; the resolve computes
+        // the sky's from depth). The HUD pass loads it and writes the HUD's
+        // own exact vectors over it (plan 04 deviation: exact evaluation
+        // instead of a v = 0 variant; phase 3 makes the HUD reactive).
+        let velocity = ctx.render_texture_views.velocity.is_some();
+        if let Some(view) = ctx.render_texture_views.velocity.as_ref() {
+            color_attachments.push(ColorAttachment::new(
+                view,
+                if is_hud { LoadOp::Load } else { LoadOp::Clear },
+                StoreOp::Store,
+            ));
+        }
 
         // T2.6: `hud_depth` is Optional — built only after the first
         // HUD-flagged mesh registers. The caller in
@@ -177,7 +192,12 @@ impl GeometryRenderPass {
 
         render_pass.set_bind_group(0, self.bind_groups.camera.get_bind_group()?, None)?;
 
-        render_pass.set_bind_group(1, self.bind_groups.transforms.get_bind_group()?, None)?;
+        // The TAA variant's group 1 adds the shared previous-frame buffer.
+        render_pass.set_bind_group(
+            1,
+            self.bind_groups.transforms.get_bind_group_for(velocity)?,
+            None,
+        )?;
 
         render_pass.set_bind_group(3, self.bind_groups.animation.get_bind_group()?, None)?;
 

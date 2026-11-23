@@ -62,6 +62,11 @@ pub struct DynamicUniformBuffer<K: Key, const ZERO_VALUE: u8 = 0> {
     /// The original `initial_capacity` argument passed to [`Self::new`],
     /// kept so that [`Self::clear`] can reset to the same starting size.
     initial_capacity_arg: usize,
+    /// TAA (G10): byte ranges allocated since the last
+    /// [`Self::take_new_allocations`] — new keys, reused slots and
+    /// relocations, i.e. data with no previous-frame value. `None` (the
+    /// default) tracks nothing; see [`Self::set_track_new_allocations`].
+    new_allocations: Option<Vec<(usize, usize)>>,
 }
 
 impl<K: Key, const ZERO_VALUE: u8> DynamicUniformBuffer<K, ZERO_VALUE> {
@@ -91,6 +96,22 @@ impl<K: Key, const ZERO_VALUE: u8> DynamicUniformBuffer<K, ZERO_VALUE> {
             byte_size,
             aligned_slice_size,
             initial_capacity_arg: initial_capacity,
+            new_allocations: None,
+        }
+    }
+
+    /// Starts (`true`) or stops recording newly allocated byte ranges, for a
+    /// previous-frame mirror of this buffer (`crate::buffer::history`).
+    pub fn set_track_new_allocations(&mut self, on: bool) {
+        self.new_allocations = on.then(Vec::new);
+    }
+
+    /// Takes the byte ranges allocated since the last call (empty when not
+    /// tracking).
+    pub fn take_new_allocations(&mut self) -> Vec<(usize, usize)> {
+        match self.new_allocations.as_mut() {
+            Some(list) => std::mem::take(list),
+            None => Vec::new(),
         }
     }
 
@@ -99,12 +120,13 @@ impl<K: Key, const ZERO_VALUE: u8> DynamicUniformBuffer<K, ZERO_VALUE> {
     /// After this call the buffer is in the same state as a freshly
     /// constructed one (with the same constructor arguments).
     pub fn clear(&mut self) {
-        let fresh = Self::new(
+        let mut fresh = Self::new(
             self.initial_capacity_arg,
             self.byte_size,
             Some(self.aligned_slice_size),
             self.label.clone(),
         );
+        fresh.new_allocations = self.new_allocations.take().map(|_| Vec::new());
         *self = fresh;
     }
 
@@ -144,6 +166,9 @@ impl<K: Key, const ZERO_VALUE: u8> DynamicUniformBuffer<K, ZERO_VALUE> {
                 };
 
                 self.slot_indices.insert(key, slot);
+                if let Some(list) = self.new_allocations.as_mut() {
+                    list.push((slot * self.aligned_slice_size, self.aligned_slice_size));
+                }
 
                 slot
             }

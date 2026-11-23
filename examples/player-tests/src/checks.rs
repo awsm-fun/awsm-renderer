@@ -2064,12 +2064,7 @@ async fn aa_before_commit_reserves() -> Result<String> {
     // deliberately issued — not awaited — as soon as the pass is built.)
     let rejected =
         reject_compute_pipeline_compiles("^SSR (Trace|Resolve|Temporal|BVH Trace)$", u32::MAX)?;
-    let set_aa = renderer
-        .set_anti_aliasing(AntiAliasing {
-            msaa_sample_count: None,
-            ..Default::default()
-        })
-        .await;
+    let set_aa = renderer.set_anti_aliasing(AntiAliasing::none()).await;
     let compiled_by_setter = reserved_before.saturating_sub(pending(&renderer));
     let rejected_by_setter = rejected.length();
     // The commit is where the batch compiles — and where SSR is turned off.
@@ -2134,9 +2129,10 @@ async fn aa_flip_before_commit_leaves_nothing() -> Result<String> {
         let trace = CompileTrace::install("^$", 0)?;
         let (mut flipped, _canvas) = create_renderer_with_msaa(base_features(), !to_msaa).await?;
         let set = flipped
-            .set_anti_aliasing(AntiAliasing {
-                msaa_sample_count: to_msaa.then_some(4),
-                ..Default::default()
+            .set_anti_aliasing(if to_msaa {
+                AntiAliasing::msaa4()
+            } else {
+                AntiAliasing::none()
             })
             .await;
         let commit = match set {
@@ -2228,9 +2224,9 @@ async fn aa_toggle_pipelines_stable(origin: &str) -> Result<String> {
     for _ in 0..3 {
         for msaa in [None, Some(4)] {
             renderer
-                .set_anti_aliasing(AntiAliasing {
-                    msaa_sample_count: msaa,
-                    ..Default::default()
+                .set_anti_aliasing(match msaa {
+                    Some(_) => AntiAliasing::msaa4(),
+                    None => AntiAliasing::none(),
                 })
                 .await
                 .map_err(|e| anyhow!("set_anti_aliasing({msaa:?}): {e}"))?;
@@ -3274,16 +3270,15 @@ async fn mask_without_commit(origin: &str, msaa: bool) -> Result<String> {
     let eye = orbit_eye(center, radius, 2.2, 0.8);
     run_frames(&mut renderer, center, radius, 3, |_| eye).await?;
 
-    let msaa = match renderer.anti_aliasing.msaa_sample_count {
-        Some(4) => Some(4u32),
-        _ => None,
-    };
+    let targets = awsm_renderer::render_passes::geometry::pipeline::GeometryTargets::from_aa(
+        &renderer.anti_aliasing,
+    );
     let has_geometry_variant = |renderer: &AwsmRenderer| {
         renderer
             .render_passes
             .geometry
             .masked_pipelines
-            .has_variant(msaa, MaterialShaderId::PBR)
+            .has_variant(targets, MaterialShaderId::PBR)
     };
     if has_geometry_variant(&renderer) {
         return Err(anyhow!(
