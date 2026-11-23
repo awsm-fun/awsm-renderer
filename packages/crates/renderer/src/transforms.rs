@@ -70,6 +70,11 @@ impl AwsmRenderer {
     /// every skin with a joint in it. Call it in the frame of the jump, after
     /// setting the new transform. No-op when TAA is off.
     ///
+    /// Apps must call it on teleports: nothing detects an object jump, and
+    /// the camera-jump guard only covers the camera (and cannot catch a
+    /// teleport inside a world larger than the camera's distance to its
+    /// centre). A moved camera: [`AwsmRenderer::reset_temporal_history`].
+    ///
     /// Shared-arena mode (a physics worker writes world matrices directly):
     /// the worker cannot call this; its owner thread must, for any jump the
     /// worker makes, in the same frame the jump is rendered. A jump it does

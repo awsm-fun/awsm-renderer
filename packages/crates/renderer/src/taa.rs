@@ -335,8 +335,11 @@ pub const RECONSTRUCTION_SHARPNESS: f32 = 2.29;
 
 impl AwsmRenderer {
     /// Forget all temporal history (TAA, and the jitter cycle restarts).
-    /// Call it on camera cuts and teleports. The renderer calls it itself
-    /// when the AA mode or the output size changes.
+    /// Apps must call it on camera cuts and teleports. The renderer calls it
+    /// itself when the AA mode or the output size changes and on scene load /
+    /// teardown; its camera-jump guard is only a backstop: it cannot catch a
+    /// teleport inside a world larger than the camera's distance to its
+    /// centre.
     ///
     /// Costs nothing when TAA is off.
     pub fn reset_temporal_history(&mut self) {

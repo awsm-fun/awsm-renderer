@@ -198,7 +198,10 @@ impl BufferHistory {
         if fresh.is_empty() {
             return Ok(());
         }
-        for (offset, len) in crate::buffer::helpers::prepare_dirty_ranges(&fresh[..], size) {
+        // Exact ranges only: never the upload path's coalescing policy, which
+        // widens to the whole buffer above a range count / density, and a
+        // widened fresh copy would zero the vector of everything moving.
+        for (offset, len) in coalesce_exact(&fresh[..], size) {
             copy(
                 encoder,
                 current,
@@ -211,10 +214,6 @@ impl BufferHistory {
         Ok(())
     }
 
-    /// The frame whose copies were recorded by [`Self::record_frame_start`] /
-    /// [`Self::record_frame_end`] was submitted: forget the work it did. Not
-    /// called for a frame that failed before its submit, so that work is
-    /// recorded again next frame.
     /// What this frame's [`Self::record_frame_start`] treats as having no
     /// previous value (for the motion-history self-check).
     pub fn pending_fresh(&self) -> FreshSnapshot {
@@ -224,6 +223,10 @@ impl BufferHistory {
         }
     }
 
+    /// The frame whose copies were recorded by [`Self::record_frame_start`] /
+    /// [`Self::record_frame_end`] was submitted: forget the work it did. Not
+    /// called for a frame that failed before its submit, so that work is
+    /// recorded again next frame.
     pub fn frame_submitted(&self) {
         self.retired.borrow_mut().take();
         self.all_fresh.set(false);
@@ -379,9 +382,53 @@ fn copy(
     encoder.copy_buffer_to_buffer(src, src_offset as u32, dst, dst_offset as u32, len as u32)
 }
 
+/// `ranges` sorted, clipped to `[0, size)`, and merged where they overlap or
+/// touch. Never widened: every byte of the output is in some input range.
+fn coalesce_exact(ranges: &[(usize, usize)], size: usize) -> Vec<(usize, usize)> {
+    let mut sorted: Vec<(usize, usize)> = ranges
+        .iter()
+        .filter(|(offset, len)| *len > 0 && *offset < size)
+        .map(|&(offset, len)| (offset, offset.saturating_add(len).min(size)))
+        .collect();
+    sorted.sort_unstable();
+    let mut out: Vec<(usize, usize)> = Vec::with_capacity(sorted.len());
+    for (start, end) in sorted {
+        match out.last_mut() {
+            Some((_, last_end)) if start <= *last_end => *last_end = (*last_end).max(end),
+            _ => out.push((start, end)),
+        }
+    }
+    out.into_iter()
+        .map(|(start, end)| (start, end - start))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fresh_ranges_are_never_widened() {
+        // 33 disjoint slots: above the upload path's 32-range collapse.
+        let ranges: Vec<(usize, usize)> = (0..33).map(|i| (i * 128, 64)).collect();
+        let out = coalesce_exact(&ranges, 33 * 128);
+        assert_eq!(out, ranges);
+        assert!(!out.contains(&(0, 33 * 128)));
+    }
+
+    #[test]
+    fn dense_fresh_ranges_are_never_widened() {
+        // 3 of 4 slots fresh (75 % density, above the 60 % collapse): the
+        // fourth slot keeps its history.
+        let out = coalesce_exact(&[(128, 64), (0, 64), (192, 64)], 256);
+        assert_eq!(out, vec![(0, 64), (128, 128)]);
+    }
+
+    #[test]
+    fn fresh_ranges_merge_and_clip() {
+        let out = coalesce_exact(&[(32, 32), (0, 48), (200, 100), (300, 8), (90, 0)], 256);
+        assert_eq!(out, vec![(0, 64), (200, 56)]);
+    }
 
     #[test]
     fn disabled_history_tracks_nothing() {
@@ -468,6 +515,13 @@ impl MotionHistoryCheck {
     }
 }
 
+/// Destroys the staging buffers of captures that will never be read.
+fn destroy_captures(regions: Vec<RegionCapture>) {
+    for staging in regions.into_iter().filter_map(|r| r.staging) {
+        staging.destroy();
+    }
+}
+
 /// One history's capture for a frame (see [`MotionHistoryDebug`]).
 pub(crate) struct RegionCapture {
     pub name: &'static str,
@@ -534,7 +588,10 @@ impl MotionHistoryDebug {
                 fresh: history.pending_fresh(),
             });
         }
-        *self.in_flight.borrow_mut() = Some(captures);
+        // A capture still in flight belonged to a frame that never submitted.
+        if let Some(stale) = self.in_flight.borrow_mut().replace(captures) {
+            destroy_captures(stale);
+        }
         Ok(())
     }
 
@@ -545,7 +602,14 @@ impl MotionHistoryDebug {
         };
         let current: Vec<Vec<u8>> = regions.iter().map(|r| r.current.clone()).collect();
         let previous = self.last_current.replace(current);
-        *self.ready.borrow_mut() = Some(ReadyCapture { previous, regions });
+        // An unverified older capture is superseded.
+        if let Some(stale) = self
+            .ready
+            .borrow_mut()
+            .replace(ReadyCapture { previous, regions })
+        {
+            destroy_captures(stale.regions);
+        }
     }
 
     /// Maps the last submitted frame's staging buffers and compares.
@@ -562,17 +626,24 @@ impl MotionHistoryDebug {
                 previous_available: ready.previous.is_some(),
                 regions: Vec::new(),
             };
-            for (i, cap) in ready.regions.into_iter().enumerate() {
+            let mut regions = ready.regions.into_iter().enumerate();
+            while let Some((i, cap)) = regions.next() {
                 let mut r = MotionHistoryRegionCheck {
                     name: cap.name,
                     stride: cap.stride,
                     ..Default::default()
                 };
                 if let Some(staging) = cap.staging {
-                    let gpu_prev = awsm_renderer_core::buffers::extract_buffer_vec(&staging, None)
-                        .await
-                        .map_err(|e| format!("{} readback: {e:?}", cap.name))?;
+                    let gpu_prev =
+                        awsm_renderer_core::buffers::extract_buffer_vec(&staging, None).await;
                     staging.destroy();
+                    let gpu_prev = match gpu_prev {
+                        Ok(bytes) => bytes,
+                        Err(e) => {
+                            destroy_captures(regions.map(|(_, c)| c).collect());
+                            return Err(format!("{} readback: {e:?}", cap.name));
+                        }
+                    };
                     let previous = ready.previous.as_ref().and_then(|p| p.get(i));
                     for (offset, got) in gpu_prev.iter().enumerate() {
                         if cap.fresh.contains(offset) {

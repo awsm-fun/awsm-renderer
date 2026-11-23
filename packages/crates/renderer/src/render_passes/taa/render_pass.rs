@@ -90,7 +90,10 @@ impl TaaParamsValues {
         reset: bool,
     ) -> Self {
         let tuning = &config.tuning;
-        let upscaling = config.upscales();
+        // From the sizes actually rendered, not `config.upscales()`: the scene
+        // scale is pinned at 1.0 until plan phase 4, so a Quality / Balanced /
+        // Performance preset still renders at native size.
+        let upscaling = render_size != post_size;
         Self {
             render_size,
             post_size,
@@ -560,12 +563,12 @@ mod tests {
         // f32 each: 16 x 4 = 64 bytes, no implicit padding (vec2 at offsets
         // 0 and 8 are 8-aligned).
         let config = TaaConfig::native();
-        let v = TaaParamsValues::new(&config, (1286, 961), (1920, 1435), 3, true);
+        let v = TaaParamsValues::new(&config, (1920, 1435), (1920, 1435), 3, true);
         let bytes = v.pack();
         let f = |i: usize| f32::from_ne_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap());
         let t = &config.tuning;
         assert_eq!(bytes.len(), 64);
-        assert_eq!((f(0), f(1)), (1286.0, 961.0), "render_size");
+        assert_eq!((f(0), f(1)), (1920.0, 1435.0), "render_size");
         assert_eq!((f(2), f(3)), (1920.0, 1435.0), "post_size");
         assert_eq!(f(4), t.gamma_still);
         assert_eq!(f(5), t.gamma_moving);
@@ -584,9 +587,19 @@ mod tests {
         let v = TaaParamsValues::new(&up, (1286, 961), (1920, 1435), 0, false);
         let bytes = v.pack();
         let f = |i: usize| f32::from_ne_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap());
+        assert_eq!((f(0), f(1)), (1286.0, 961.0), "render_size");
+        assert_eq!((f(2), f(3)), (1920.0, 1435.0), "post_size");
         assert_eq!(f(8), up.tuning.max_history_upscaling);
         assert_eq!(f(11), 1.0);
         assert_eq!(f(12), 0.0);
+
+        // An upscaling preset rendered at native size (scale pinned at 1.0
+        // before phase 4) is not upscaling: native N_max, flag off.
+        let v = TaaParamsValues::new(&up, (1920, 1435), (1920, 1435), 0, false);
+        let bytes = v.pack();
+        let f = |i: usize| f32::from_ne_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap());
+        assert_eq!(f(8), up.tuning.max_history_native);
+        assert_eq!(f(11), 0.0);
     }
 
     #[test]
