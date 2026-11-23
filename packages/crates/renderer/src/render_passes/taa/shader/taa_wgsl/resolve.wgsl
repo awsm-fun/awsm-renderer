@@ -419,7 +419,13 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         if (dilated) {
             d_prev_own = view_distance(prev_depth_footprint(uv_hist_own, cam.prev_jitter).y, cam.inv_proj);
         }
-        if (d_prev_own < own.z * (1.0 - slack_own)) {
+        // A pixel beside a nearer surface (dilated) only counts when that
+        // surface moves relative to its own. Without relative motion the
+        // nearer thing seen last frame is the same static edge, or a wire a
+        // pixel or two wide, that the jitter moved across the footprint:
+        // resetting there every few frames would make thin geometry shimmer.
+        let relative_motion = length((v - v_own) * O) > 0.25;
+        if ((!dilated || relative_motion) && d_prev_own < own.z * (1.0 - slack_own)) {
             disoccluded = true;
         }
     }
