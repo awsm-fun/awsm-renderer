@@ -60,6 +60,7 @@ impl MaterialTransparentRenderPass {
                 Some("Material Transparent Pass"),
                 Some("Material Transparent"),
                 keep_color,
+                false,
             )?
         };
         self.draw(ctx, &render_pass, renderables)?;

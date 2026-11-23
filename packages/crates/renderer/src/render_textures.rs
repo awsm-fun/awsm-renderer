@@ -5,7 +5,9 @@ use awsm_renderer_core::{
     error::AwsmCoreError,
     renderer::AwsmRendererWebGpu,
     texture::{
-        blit::{blit_get_bind_group, blit_get_pipeline, BlitPipeline},
+        blit::{
+            blit_get_bind_group, blit_get_pipeline, blit_get_pipeline_for_depth_pass, BlitPipeline,
+        },
         clear::TextureClearer,
         Extent3d, TextureDescriptor, TextureFormat, TextureUsage, TextureViewDescriptor,
         TextureViewDimension,
@@ -19,6 +21,9 @@ use crate::{anti_alias::AntiAliasing, features::RendererFeatures};
 pub struct RenderTextures {
     pub formats: RenderTextureFormats,
     pub opaque_to_transparent_blit_pipeline_msaa_4: BlitPipeline,
+    /// The same blit as the first draw of the world transparent pass, which
+    /// has a depth attachment. Uses the `_msaa_4` blit's bind group.
+    pub opaque_to_transparent_in_pass_blit_pipeline_msaa_4: BlitPipeline,
     pub opaque_to_transparent_blit_pipeline_no_anti_alias: BlitPipeline,
     pub transparent_to_composite_blit_pipeline_no_anti_alias: BlitPipeline,
     /// Feature gates picked at construction time. Threaded through to
@@ -126,7 +131,8 @@ impl RenderTextures {
         // and the transparent→composite blits — they share the same
         // shader + color target + (no) MSAA, so a single compiled
         // GpuRenderPipeline is reused. The `Some(4)` (MSAA-4) variant
-        // is used by the opaque→transparent blit only. Compile both
+        // is used by the opaque→transparent blit only, with a twin for
+        // drawing it inside the world transparent pass. Compile all
         // variants concurrently; the `None` result is cloned into
         // the two destination fields (wasm-bindgen JS handle clone =
         // refcount bump, not a pipeline copy).
@@ -134,19 +140,25 @@ impl RenderTextures {
         // Each variant is asked for exactly once. (`blit_get_pipeline`
         // would dedupe a second request for a key that is still compiling,
         // but there is no reason to make one.)
-        let (single_sample_pipeline, msaa_4_pipeline) = futures::future::try_join(
-            async {
-                blit_get_pipeline(gpu, formats.color, None)
-                    .await
-                    .map_err(AwsmRenderTextureError::BlitPipeline)
-            },
-            async {
-                blit_get_pipeline(gpu, formats.color, Some(4))
-                    .await
-                    .map_err(AwsmRenderTextureError::BlitPipeline)
-            },
-        )
-        .await?;
+        let (single_sample_pipeline, msaa_4_pipeline, msaa_4_in_pass_pipeline) =
+            futures::future::try_join3(
+                async {
+                    blit_get_pipeline(gpu, formats.color, None)
+                        .await
+                        .map_err(AwsmRenderTextureError::BlitPipeline)
+                },
+                async {
+                    blit_get_pipeline(gpu, formats.color, Some(4))
+                        .await
+                        .map_err(AwsmRenderTextureError::BlitPipeline)
+                },
+                async {
+                    blit_get_pipeline_for_depth_pass(gpu, formats.color, Some(4), formats.depth)
+                        .await
+                        .map_err(AwsmRenderTextureError::BlitPipeline)
+                },
+            )
+            .await?;
 
         Ok(Self {
             formats,
@@ -157,6 +169,7 @@ impl RenderTextures {
             pending_destroy: Vec::new(),
             views_recreated_unacknowledged: false,
             opaque_to_transparent_blit_pipeline_msaa_4: msaa_4_pipeline,
+            opaque_to_transparent_in_pass_blit_pipeline_msaa_4: msaa_4_in_pass_pipeline,
             opaque_to_transparent_blit_pipeline_no_anti_alias: single_sample_pipeline.clone(),
             transparent_to_composite_blit_pipeline_no_anti_alias: single_sample_pipeline,
         })
@@ -466,6 +479,9 @@ pub struct RenderTextureViews {
     pub reflection_descriptor: web_sys::GpuTextureView,
 
     pub depth: web_sys::GpuTextureView,
+    /// The depth SSR reads, always single-sample: `depth` itself without MSAA,
+    /// and the SSR pass's sample-0 copy of it with (1x1 while SSR is off).
+    pub ssr_depth: web_sys::GpuTextureView,
     /// T2.6: `None` until the first HUD renderable registers
     /// (`Meshes::has_seen_hud`). The HUD geometry / transparent
     /// passes are already gated on `renderables.hud.is_empty()` at
@@ -525,6 +541,11 @@ impl RenderTextureViews {
             prep_shadow_visibility_blur_tmp: inner.prep_shadow_visibility_blur_tmp_view.clone(),
             edge_id: inner.edge_id_view.clone(),
             depth: inner.depth_view.clone(),
+            ssr_depth: inner
+                .ssr_depth_view
+                .as_ref()
+                .unwrap_or(&inner.depth_view)
+                .clone(),
             hud_depth: inner.hud_depth_view.clone(),
             // ^ `Option::clone()` — `None` until T2.6's sticky flag
             // flips on the first HUD renderable insertion.
@@ -620,6 +641,9 @@ pub struct RenderTexturesInner {
 
     pub depth: web_sys::GpuTexture,
     pub depth_view: web_sys::GpuTextureView,
+    /// Sample-0 copy of `depth` for SSR. `None` without MSAA.
+    pub ssr_depth: Option<web_sys::GpuTexture>,
+    pub ssr_depth_view: Option<web_sys::GpuTextureView>,
 
     /// T2.6: lazy HUD depth attachment — `None` while
     /// `Meshes::has_seen_hud` is false. The texture sits on the inner
@@ -901,6 +925,24 @@ impl RenderTexturesInner {
             // Keeping the depth buffer bindable allows later passes (e.g. compute shading) to
             // sample it directly for world-position reconstruction.
             .map_err(AwsmRenderTextureError::CreateTexture)?;
+
+        let ssr_depth = match anti_aliasing.msaa_sample_count {
+            Some(_) => Some(
+                gpu.create_texture(
+                    &TextureDescriptor::new(
+                        render_texture_formats.depth,
+                        Extent3d::new(refl_w, Some(refl_h), Some(1)),
+                        TextureUsage::new()
+                            .with_render_attachment()
+                            .with_texture_binding(),
+                    )
+                    .with_label("SSR Depth")
+                    .into(),
+                )
+                .map_err(AwsmRenderTextureError::CreateTexture)?,
+            ),
+            None => None,
+        };
 
         // T2.6: HUD depth attachment is allocated only after the first
         // HUD renderable has registered. Saves a full-screen depth
@@ -1337,6 +1379,13 @@ impl RenderTexturesInner {
             .create_view()
             .map_err(|e| AwsmRenderTextureError::CreateTextureView(format!("depth: {e:?}")))?;
 
+        let ssr_depth_view = match ssr_depth.as_ref() {
+            Some(tex) => Some(tex.create_view().map_err(|e| {
+                AwsmRenderTextureError::CreateTextureView(format!("ssr_depth: {e:?}"))
+            })?),
+            None => None,
+        };
+
         let hud_depth_view = match hud_depth.as_ref() {
             Some(tex) => Some(tex.create_view().map_err(|e| {
                 AwsmRenderTextureError::CreateTextureView(format!("hud_depth: {e:?}"))
@@ -1453,6 +1502,8 @@ impl RenderTexturesInner {
 
             depth,
             depth_view,
+            ssr_depth,
+            ssr_depth_view,
 
             hud_depth,
             hud_depth_view,
@@ -1522,6 +1573,9 @@ impl RenderTexturesInner {
             tex.destroy();
         }
         self.depth.destroy();
+        if let Some(tex) = self.ssr_depth {
+            tex.destroy();
+        }
         if let Some(tex) = self.hud_depth {
             tex.destroy();
         }

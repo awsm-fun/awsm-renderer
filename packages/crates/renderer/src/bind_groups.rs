@@ -925,13 +925,14 @@ impl BindGroups {
                     let crate::render_passes::effects::render_pass::EffectsRenderPass {
                         bind_groups,
                         atmosphere_params,
-                        ..
+                        pipelines,
                     } = &mut render_passes.effects;
                     bind_groups.recreate(
                         &ctx,
                         weights_view.as_ref(),
                         &atmosphere_params.gpu_buffer,
                         volume_view.as_ref(),
+                        pipelines.dof_prepare_pipeline().is_some(),
                     )?;
                 }
                 FunctionToCall::Display => {

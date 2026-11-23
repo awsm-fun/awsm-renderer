@@ -1,8 +1,9 @@
 // SMAA pass 1 — edge detection (Jimenez et al., luma variant).
 //
-// Reads the HDR composite, detects luma-contrast edges in COMPRESSED space
-// (t = s/(1+s), matching the MSAA edge resolve) so hot emissive silhouettes
-// register perceptually instead of saturating, applies the reference's local
+// Reads the HDR composite, detects luma-contrast edges in compressed,
+// GAMMA-ENCODED space (t = (s/(1+s))^(1/2.2)): compressed, so hot emissive
+// silhouettes register instead of saturating; encoded, because the reference
+// threshold is defined on gamma colour. Applies the reference's local
 // contrast adaptation (an edge adjacent to a much stronger edge is spurious
 // and would corrupt the pattern search), and writes the RG edges mask:
 //   R = edge on the LEFT   border of this pixel (vertical edge line)
@@ -12,8 +13,11 @@
 @group(0) @binding(1) var edges_tex: texture_storage_2d<rgba8unorm, write>;
 
 // Detection threshold — the reference HIGH-preset default (0.1), applied in
-// compressed-luma space. Deliberately NOT tuned per-content: the compressed
-// [0,1] range is comparable to the gamma-LDR range the reference assumes.
+// encoded compressed-luma space, which is comparable to the gamma-LDR range
+// the reference assumes. (Compressed but LINEAR is not: there a dark object
+// on a dark ground, 0.02 against 0.08, is a delta of 0.06 and no edge, though
+// on screen it is a step of about a quarter of the range. Dark scenes got
+// almost no anti-aliasing.) Deliberately NOT tuned per-content.
 const SMAA_THRESHOLD: f32 = 0.1;
 // Local contrast adaptation factor (reference: 2.0) — an edge survives only
 // if its delta is at least 1/2 of the strongest neighboring delta.
@@ -23,7 +27,8 @@ fn luma_at(coords: vec2<i32>, dims: vec2<i32>) -> f32 {
     let c = clamp(coords, vec2<i32>(0), dims - vec2<i32>(1));
     let hdr = textureLoad(composite_tex, c, 0).rgb;
     let t = hdr / (vec3<f32>(1.0) + hdr);
-    return dot(t, vec3<f32>(0.2126, 0.7152, 0.0722));
+    let encoded = pow(max(t, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.2));
+    return dot(encoded, vec3<f32>(0.2126, 0.7152, 0.0722));
 }
 
 @compute @workgroup_size(8, 8)

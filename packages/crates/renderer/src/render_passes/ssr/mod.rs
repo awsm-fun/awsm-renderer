@@ -15,6 +15,7 @@
 
 pub mod bind_group;
 pub mod composite;
+pub(crate) mod depth_copy;
 pub mod pipeline;
 pub mod render_pass;
 pub mod shader;

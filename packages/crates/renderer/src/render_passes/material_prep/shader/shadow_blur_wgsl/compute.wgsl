@@ -122,32 +122,27 @@ fn blur_axis(gid: vec2<u32>, lid: vec2<u32>, lidx: u32, wid: vec2<u32>, horizont
     let z_sigma = max(center_z, 0.05) * BLUR_DEPTH_REL_SIGMA;
     let inv_two_z_var = 1.0 / (2.0 * z_sigma * z_sigma);
 
-    // Edge-stopping is geometry-only (depth), so the per-tap spatial × depth
-    // weight is identical for every layer — compute it ONCE per tap.
-    var taps: array<i32, {{ tap_count }}>;
-    var weights: array<f32, {{ tap_count }}>;
-    var tap_count: u32 = 0u;
-    for (var k: i32 = 1; k <= BLUR_RADIUS; k = k + 1) {
-        let gw = BLUR_GAUSS[k];
-        for (var s: i32 = -1; s <= 1; s = s + 2) {
-            let ni = ci + s * k * stride;
-            let nz = tile_z[ni];
-            let dz = nz - center_z;
-            let wz = select(exp(-(dz * dz) * inv_two_z_var), 0.0, nz == SKY_Z);
-            taps[tap_count] = ni;
-            weights[tap_count] = gw * wz;
-            tap_count = tap_count + 1u;
-        }
-    }
-
+    // The taps go straight into the sums. They used to be gathered first into
+    // per-invocation `taps` / `weights` arrays (the weight is the same for
+    // every layer), but arrays indexed by a loop counter live in memory, not
+    // registers, on some GPUs: on an M1 Max at 1920x1435 that made each axis
+    // 0.6 ms instead of 0.27. With more than one layer the weights are
+    // recomputed per layer instead, which is a few multiplies and an exp.
     let c = vec2<i32>(gid);
     for (var l: u32 = 0u; l < BLUR_LAYERS; l = l + 1u) {
         // Centre tap (weight BLUR_GAUSS[0] = 1).
         var sum = unpack4x8unorm(tile_vis[u32(ci) * BLUR_LAYERS + l]);
         var wsum = 1.0;
-        for (var t: u32 = 0u; t < tap_count; t = t + 1u) {
-            sum = sum + unpack4x8unorm(tile_vis[u32(taps[t]) * BLUR_LAYERS + l]) * weights[t];
-            wsum = wsum + weights[t];
+        for (var k: i32 = 1; k <= BLUR_RADIUS; k = k + 1) {
+            let gw = BLUR_GAUSS[k];
+            for (var s: i32 = -1; s <= 1; s = s + 2) {
+                let ni = ci + s * k * stride;
+                let nz = tile_z[ni];
+                let dz = nz - center_z;
+                let w = gw * select(exp(-(dz * dz) * inv_two_z_var), 0.0, nz == SKY_Z);
+                sum = sum + unpack4x8unorm(tile_vis[u32(ni) * BLUR_LAYERS + l]) * w;
+                wsum = wsum + w;
+            }
         }
         textureStore(blur_dst, c, i32(l), sum / wsum);
     }

@@ -99,20 +99,14 @@ impl SsrPipelines {
     /// The spatial-resolve variant: runs at the SSR target's own resolution
     /// (whatever that is — it reads its output dims at runtime), so only the
     /// depth-binding type (MSAA) + depth convention are axes.
-    fn resolve_key(multisampled: bool, reverse_z: bool) -> ShaderCacheKeySsrResolve {
-        ShaderCacheKeySsrResolve {
-            multisampled_geometry: multisampled,
-            reverse_z,
-        }
+    fn resolve_key(reverse_z: bool) -> ShaderCacheKeySsrResolve {
+        ShaderCacheKeySsrResolve { reverse_z }
     }
 
     /// The temporal-accumulation variant: same axes as the resolve (it also
     /// runs at the SSR target's own resolution and reads the full-res depth).
-    fn temporal_key(multisampled: bool, reverse_z: bool) -> ShaderCacheKeySsrTemporal {
-        ShaderCacheKeySsrTemporal {
-            multisampled_geometry: multisampled,
-            reverse_z,
-        }
+    fn temporal_key(reverse_z: bool) -> ShaderCacheKeySsrTemporal {
+        ShaderCacheKeySsrTemporal { reverse_z }
     }
 
     pub async fn new(
@@ -166,10 +160,7 @@ impl SsrPipelines {
             .await?;
         let resolve_shader = ctx
             .shaders
-            .get_key(
-                ctx.gpu,
-                Self::resolve_key(multisampled, ctx.features.reverse_z),
-            )
+            .get_key(ctx.gpu, Self::resolve_key(ctx.features.reverse_z))
             .await?;
 
         let mut cache_keys = vec![
@@ -191,10 +182,7 @@ impl SsrPipelines {
             )?;
             let temporal_shader = ctx
                 .shaders
-                .get_key(
-                    ctx.gpu,
-                    Self::temporal_key(multisampled, ctx.features.reverse_z),
-                )
+                .get_key(ctx.gpu, Self::temporal_key(ctx.features.reverse_z))
                 .await?;
             cache_keys.push(ComputePipelineCacheKey::new(
                 temporal_shader,
@@ -259,13 +247,10 @@ impl SsrPipelines {
                 debug,
                 bvh,
             )),
-            ShaderCacheKey::from(Self::resolve_key(multisampled, reverse_z)),
+            ShaderCacheKey::from(Self::resolve_key(reverse_z)),
         ];
         if temporal {
-            keys.push(ShaderCacheKey::from(Self::temporal_key(
-                multisampled,
-                reverse_z,
-            )));
+            keys.push(ShaderCacheKey::from(Self::temporal_key(reverse_z)));
         }
         if bvh {
             keys.push(ShaderCacheKey::from(Self::bvh_key(multisampled, reverse_z)));

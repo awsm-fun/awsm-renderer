@@ -495,8 +495,12 @@ fn first_party_opaque_shaders_validate() {
             // ABSENCE of the cross-AA kernel.
             if msaa.is_some() {
                 assert!(
-                    src.contains("fn cs_shade(") && !src.contains("fn cs_opaque("),
-                    "{label}: MSAA opaque module must define `fn cs_shade` and NOT `fn cs_opaque`"
+                    src.contains("fn cs_shade(")
+                        // The skybox writer keeps its edge pixels in cs_shade.
+                        && src.contains("fn cs_shade_edge(") != owns_skybox
+                        && !src.contains("fn cs_opaque("),
+                    "{label}: MSAA opaque module must define `fn cs_shade`, plus \
+                     `fn cs_shade_edge` unless it owns the skybox, and NOT `fn cs_opaque`"
                 );
             } else {
                 assert!(
@@ -846,6 +850,13 @@ fn opaque_shadow_from_buffer_variant_validates() {
     assert!(
         !src.contains("fn sample_shadow_directional"),
         "shadow_from_buffer opaque module should DROP `fn sample_shadow_directional` (the inline sampler)"
+    );
+    // Nor is there a runtime choice of shadow source left in the light walk:
+    // with nothing sampling inline, its dead arm cost 0.64 ms a frame (M1 Max,
+    // 1920x1435, 17 lights).
+    assert!(
+        !src.contains("g_prep_ctx.mode == PREP_MODE_PRIMARY || g_prep_ctx.mode == PREP_MODE_EDGE"),
+        "shadow_from_buffer opaque module must not test the prep mode in the light walk"
     );
     // (d) the cascade-debug overlay SURVIVES the drop: it's a shading-time
     // colour op reading only the always-bound shadow uniforms, emitted
@@ -1763,13 +1774,19 @@ fn ssr_shaders_validate() {
                             "{label}: trace must blend hits toward the env fallback by \
                              fade * travel_fade * hit_conf"
                         );
-                        // The multisampled variant must bind the MSAA depth type.
-                        if multisampled_geometry {
-                            assert!(
-                                src.contains("texture_depth_multisampled_2d"),
-                                "{label}: MSAA SSR must bind texture_depth_multisampled_2d"
-                            );
-                        }
+                        // Depth is single-sample under every AA mode (MSAA
+                        // reads the sample-0 copy, ssr/depth_copy.rs); the
+                        // normals stay multisampled under MSAA.
+                        assert!(
+                            src.contains("var depth_tex: texture_depth_2d")
+                                && !src.contains("texture_depth_multisampled_2d"),
+                            "{label}: SSR trace must bind a single-sample texture_depth_2d"
+                        );
+                        assert_eq!(
+                            src.contains("texture_multisampled_2d<f32>"),
+                            multisampled_geometry,
+                            "{label}: SSR trace normals must follow the AA mode"
+                        );
                         // Hi-Z variant must bind + traverse the pyramid; linear
                         // must not reference it at all.
                         if trace == SsrTrace::HiZ {
@@ -1804,13 +1821,10 @@ fn ssr_temporal_shader_validates() {
         ShaderCacheKeySsr, ShaderCacheKeySsrTemporal,
     };
     use crate::render_passes::ssr::shader::template::ShaderTemplateSsr;
-    for multisampled_geometry in [false, true] {
-        for reverse_z in [false, true] {
-            let key = ShaderCacheKeySsr::Temporal(ShaderCacheKeySsrTemporal {
-                multisampled_geometry,
-                reverse_z,
-            });
-            let label = format!("ssr temporal msaa={multisampled_geometry} reverse_z={reverse_z}");
+    for reverse_z in [false, true] {
+        {
+            let key = ShaderCacheKeySsr::Temporal(ShaderCacheKeySsrTemporal { reverse_z });
+            let label = format!("ssr temporal reverse_z={reverse_z}");
             let src = ShaderTemplateSsr::try_from(&key)
                 .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
                 .into_source()
@@ -1860,19 +1874,13 @@ fn ssr_temporal_shader_validates() {
                 "{label}: temporal must clamp history unconditionally \
                  (no reprojection gating)"
             );
-            // The multisampled variant must bind the MSAA depth type; the
-            // single-sample variant must not.
-            if multisampled_geometry {
-                assert!(
-                    src.contains("texture_depth_multisampled_2d"),
-                    "{label}: MSAA temporal must bind texture_depth_multisampled_2d"
-                );
-            } else {
-                assert!(
-                    src.contains("var depth_tex: texture_depth_2d"),
-                    "{label}: non-MSAA temporal must bind texture_depth_2d"
-                );
-            }
+            // Single-sample under every AA mode: MSAA reads the sample-0 copy
+            // (ssr/depth_copy.rs), the cheap texture to load at random.
+            assert!(
+                src.contains("var depth_tex: texture_depth_2d")
+                    && !src.contains("texture_depth_multisampled_2d"),
+                "{label}: temporal must bind a single-sample texture_depth_2d"
+            );
             // Sky early-out matches the depth convention (reverse-Z far = 0).
             let expect = if reverse_z {
                 "depth <= 0.0"
@@ -1941,13 +1949,10 @@ fn ssr_resolve_shader_validates() {
         ShaderCacheKeySsr, ShaderCacheKeySsrResolve,
     };
     use crate::render_passes::ssr::shader::template::ShaderTemplateSsr;
-    for multisampled_geometry in [false, true] {
-        for reverse_z in [false, true] {
-            let key = ShaderCacheKeySsr::Resolve(ShaderCacheKeySsrResolve {
-                multisampled_geometry,
-                reverse_z,
-            });
-            let label = format!("ssr resolve msaa={multisampled_geometry} reverse_z={reverse_z}");
+    for reverse_z in [false, true] {
+        {
+            let key = ShaderCacheKeySsr::Resolve(ShaderCacheKeySsrResolve { reverse_z });
+            let label = format!("ssr resolve reverse_z={reverse_z}");
             let src = ShaderTemplateSsr::try_from(&key)
                 .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
                 .into_source()
@@ -2017,19 +2022,13 @@ fn ssr_resolve_shader_validates() {
                 "{label}: resolve must define its SSR_SPREAD_GATE with the \
                  `ssr-spread-gate` sync tag"
             );
-            // The multisampled variant must bind the MSAA depth type; the
-            // single-sample variant must not.
-            if multisampled_geometry {
-                assert!(
-                    src.contains("texture_depth_multisampled_2d"),
-                    "{label}: MSAA resolve must bind texture_depth_multisampled_2d"
-                );
-            } else {
-                assert!(
-                    src.contains("var depth_tex: texture_depth_2d"),
-                    "{label}: non-MSAA resolve must bind texture_depth_2d"
-                );
-            }
+            // Single-sample under every AA mode: MSAA reads the sample-0 copy
+            // (ssr/depth_copy.rs), the cheap texture to load at random.
+            assert!(
+                src.contains("var depth_tex: texture_depth_2d")
+                    && !src.contains("texture_depth_multisampled_2d"),
+                "{label}: resolve must bind a single-sample texture_depth_2d"
+            );
             // Sky early-out matches the depth convention (reverse-Z far = 0).
             let expect = if reverse_z {
                 "center_depth <= 0.0"
@@ -2046,47 +2045,49 @@ fn ssr_resolve_shader_validates() {
 
 #[test]
 fn ssr_composite_shader_validates() {
-    // M4b: the SSR composite pass is a plain const/function-built WGSL string
-    // (NOT part of the `ShaderTemplateSsr` naga suite above), so validate it
-    // here. The joint-bilateral upsample reads the full-res depth binding, whose
-    // WGSL type differs under MSAA (`texture_depth_multisampled_2d`); both
-    // variants must parse + validate and carry the fragment entry point.
+    // M4b: the SSR composite pass is a plain function-built WGSL string (NOT
+    // part of the `ShaderTemplateSsr` naga suite above), so validate it here.
+    // Its depth is the single-sample view every SSR stage reads.
     use crate::render_passes::ssr::composite::shader_source;
-    for multisampled in [false, true] {
-        for reverse_z in [false, true] {
-            let label = format!("ssr composite multisampled={multisampled} reverse_z={reverse_z}");
-            let src = shader_source(multisampled, reverse_z);
-            naga_validate(&src, &label);
-            // The sky early-out must match the depth convention: reverse-Z
-            // clears to 0 at the far plane, forward-Z to 1.
-            let expect = if reverse_z {
-                "center_depth <= 0.0"
-            } else {
-                "center_depth >= 1.0"
-            };
-            assert!(
-                src.contains(expect),
-                "{label}: composite sky test must be `{expect}`"
-            );
-        }
-        let label = format!("ssr composite multisampled={multisampled}");
-        let src = shader_source(multisampled, true);
+    for reverse_z in [false, true] {
+        let label = format!("ssr composite reverse_z={reverse_z}");
+        let src = shader_source(reverse_z);
+        naga_validate(&src, &label);
+        // The sky early-out must match the depth convention: reverse-Z
+        // clears to 0 at the far plane, forward-Z to 1.
+        let expect = if reverse_z {
+            "center_depth <= 0.0"
+        } else {
+            "center_depth >= 1.0"
+        };
+        assert!(
+            src.contains(expect),
+            "{label}: composite sky test must be `{expect}`"
+        );
         assert!(
             src.contains("fn frag_main("),
             "{label}: composite module missing `fn frag_main` entry point"
         );
-        if multisampled {
-            assert!(
-                src.contains("texture_depth_multisampled_2d"),
-                "{label}: MSAA composite must bind texture_depth_multisampled_2d"
-            );
-        } else {
-            assert!(
-                src.contains("var depth_tex: texture_depth_2d"),
-                "{label}: non-MSAA composite must bind texture_depth_2d"
-            );
-        }
+        assert!(
+            src.contains("var depth_tex: texture_depth_2d"),
+            "{label}: composite must bind a single-sample texture_depth_2d"
+        );
     }
+}
+
+#[test]
+fn ssr_depth_copy_shader_validates() {
+    // Under MSAA, SSR reads sample 0 of depth from a single-sample copy. The
+    // copy must read sample 0 (what every SSR stage read before) and write it
+    // as fragment depth.
+    use crate::render_passes::ssr::depth_copy::SHADER_SOURCE;
+    naga_validate(SHADER_SOURCE, "ssr depth copy");
+    assert!(
+        SHADER_SOURCE.contains("var src_tex: texture_depth_multisampled_2d")
+            && SHADER_SOURCE.contains("textureLoad(src_tex, vec2<i32>(pos.xy), 0)")
+            && SHADER_SOURCE.contains("@builtin(frag_depth) f32"),
+        "ssr depth copy must write sample 0 of the multisampled depth as frag_depth"
+    );
 }
 
 /// A.4: the decal compute pass unpacks a flat `texture_index` with a templated
@@ -2472,7 +2473,8 @@ fn effects_key(
 }
 
 /// Every effects variant across the atmosphere × dof × bloom × msaa ×
-/// reverse-z matrix must be valid WGSL.
+/// reverse-z × smaa matrix must be valid WGSL, with the entry points the
+/// pipelines name (`main`, plus `dof_prepare` exactly when DoF is on).
 ///
 /// The atmosphere include is what makes this matrix worth walking: it needs
 /// `load_depth` / `linearize_depth`, which used to live inside `dof.wgsl` and
@@ -2495,11 +2497,17 @@ fn effects_variants_are_valid_wgsl() {
                             "effects atmosphere={atmosphere:?} dof={dof} \
                              bloom={bloom_phase:?} msaa={msaa} reverse_z={reverse_z}"
                         );
-                        let src = render_effects(
-                            &effects_key(atmosphere, dof, bloom_phase, msaa, reverse_z),
-                            &label,
-                        );
-                        naga_validate(&src, &label);
+                        for smaa_anti_alias in [false, true] {
+                            let label = format!("{label} smaa={smaa_anti_alias}");
+                            let key = ShaderCacheKeyEffects {
+                                smaa_anti_alias,
+                                ..effects_key(atmosphere, dof, bloom_phase, msaa, reverse_z)
+                            };
+                            let src = render_effects(&key, &label);
+                            naga_validate(&src, &label);
+                            assert!(src.contains("fn main("), "{label}: no `main`");
+                            assert_eq!(src.contains("fn dof_prepare("), dof, "{label}");
+                        }
                     }
                 }
             }
@@ -2869,8 +2877,154 @@ fn shadow_blur_shaders_validate() {
                         .and_then(|t| t.into_source())
                         .unwrap_or_else(|e| panic!("{label}: render failed: {e:?}"));
                     naga_validate(&src, &label);
+                    // The taps go straight into the sums: gathered first into
+                    // per-invocation arrays, each axis cost 0.6 ms instead of
+                    // 0.27 at 1920x1435 on an M1 Max.
+                    assert!(
+                        !src.contains("var taps:") && !src.contains("var weights:"),
+                        "{label}: the blur must not gather its taps into private arrays"
+                    );
                 }
             }
         }
     }
+}
+
+/// The light cull validates under both depth conventions, and its froxel pass
+/// is one invocation per Z slice (the slice count's limit is asserted where
+/// `DEFAULT_SLICE_COUNT` is defined).
+#[test]
+fn light_culling_shader_validates() {
+    use crate::render_passes::light_culling::buffers::DEFAULT_SLICE_COUNT;
+    use crate::render_passes::light_culling::shader::cache_key::ShaderCacheKeyLightCulling;
+    use crate::render_passes::light_culling::shader::template::ShaderTemplateLightCulling;
+
+    for reverse_z in [false, true] {
+        let key = ShaderCacheKeyLightCulling {
+            slice_count: DEFAULT_SLICE_COUNT,
+            reverse_z,
+        };
+        let label = format!("light culling {key:?}");
+        let src = ShaderTemplateLightCulling::try_from(&key)
+            .and_then(|t| t.into_source())
+            .unwrap_or_else(|e| panic!("{label}: render failed: {e:?}"));
+        naga_validate(&src, &label);
+        assert!(
+            src.contains("@workgroup_size(SLICE_COUNT)\nfn cs_main("),
+            "{label}: cs_main must run one invocation per Z slice"
+        );
+    }
+}
+
+/// The functions of `source` that `return` from inside a `switch`.
+fn returns_inside_switch(source: &str) -> Vec<String> {
+    // Comments and template tags are not code (and tags hold braces).
+    let mut code = String::with_capacity(source.len());
+    let mut rest = source;
+    while !rest.is_empty() {
+        let skip_to = [
+            ("//", "\n"),
+            ("/*", "*/"),
+            ("{%", "%}"),
+            ("{{", "}}"),
+            ("{#", "#}"),
+        ]
+        .into_iter()
+        .find(|(open, _)| rest.starts_with(open))
+        .map(|(open, close)| match rest[open.len()..].find(close) {
+            Some(at) => open.len() + at + close.len(),
+            None => rest.len(),
+        });
+        match skip_to {
+            Some(skip) => {
+                code.push(' ');
+                rest = &rest[skip..];
+            }
+            None => {
+                let c = rest.chars().next().unwrap();
+                code.push(c);
+                rest = &rest[c.len_utf8()..];
+            }
+        }
+    }
+
+    let mut found = Vec::new();
+    let (mut depth, mut function, mut switch_pending) = (0usize, String::new(), false);
+    let mut switches: Vec<usize> = Vec::new();
+    let mut word = String::new();
+    let mut previous = String::new();
+    for c in code.chars().chain([' ']) {
+        if c.is_alphanumeric() || c == '_' {
+            word.push(c);
+            continue;
+        }
+        if !word.is_empty() {
+            if previous == "fn" {
+                function = word.clone();
+            }
+            switch_pending |= word == "switch";
+            if word == "return" && !switches.is_empty() {
+                found.push(function.clone());
+            }
+            previous = std::mem::take(&mut word);
+        }
+        if c == '{' {
+            depth += 1;
+            if std::mem::take(&mut switch_pending) {
+                switches.push(depth);
+            }
+        } else if c == '}' {
+            if switches.last() == Some(&depth) {
+                switches.pop();
+            }
+            depth = depth.saturating_sub(1);
+        }
+    }
+    found.dedup();
+    found
+}
+
+/// single-exit-switch: no shader returns from inside a `switch`.
+///
+/// Measured on an M1 Max in Chrome 158: the transparent fragment shader, with
+/// returns inside its texture-pool switches, took 0.77 ms on one full-screen
+/// quad at 1 sample and 8.9 ms at 4. With the cases assigning and one return
+/// after each switch it took 0.44 and 0.47. Why is not known (the compiler's
+/// output was not inspected); this spelling is what was shown to trigger the
+/// slowdown and to cure it, so every shader keeps to the cure.
+#[test]
+fn switches_have_a_single_exit() {
+    let bad = "fn f(i: u32) -> u32 { switch i { case 0u: { return 1u; } default: {} } return 0u; }";
+    assert_eq!(
+        returns_inside_switch(bad),
+        ["f"],
+        "the check itself is broken"
+    );
+
+    fn scan(dir: &std::path::Path, failures: &mut Vec<String>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                scan(&path, failures);
+            } else if path.extension().is_some_and(|e| e == "wgsl") {
+                let source = std::fs::read_to_string(&path).unwrap();
+                for function in returns_inside_switch(&source) {
+                    failures.push(format!("{}: fn {function}", path.display()));
+                }
+            }
+        }
+    }
+    let crates = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut failures = Vec::new();
+    scan(&crates.join("src"), &mut failures);
+    // A published crate has no sibling to scan.
+    let materials = crates.join("../materials/src");
+    if materials.is_dir() {
+        scan(&materials, &mut failures);
+    }
+    assert!(
+        failures.is_empty(),
+        "return inside a switch (assign and return after it instead):\n{}",
+        failures.join("\n")
+    );
 }

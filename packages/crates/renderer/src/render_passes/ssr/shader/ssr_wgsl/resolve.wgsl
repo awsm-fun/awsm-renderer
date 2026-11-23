@@ -45,13 +45,8 @@ const SSR_SPREAD_GATE: f32 = 0.15;
 @group(0) @binding(0) var<uniform> camera_raw: CameraRaw;
 // The raw SSR trace output (rgba16float, premultiplied rgb + coverage alpha).
 @group(0) @binding(1) var src_tex: texture_2d<f32>;
-// Full-res post-opaque depth — multisampled under MSAA, mirroring the trace's
-// own depth binding (same buffer, same variant axis).
-{% if multisampled_geometry %}
-@group(0) @binding(2) var depth_tex: texture_depth_multisampled_2d;
-{% else %}
+// Full-res post-opaque depth. Always single-sample, as in trace.wgsl.
 @group(0) @binding(2) var depth_tex: texture_depth_2d;
-{% endif %}
 // Same-size resolved output; the composite reads THIS instead of the raw trace.
 @group(0) @binding(3) var out_tex: texture_storage_2d<rgba16float, write>;
 // Material-owned reflection descriptor (single-sample, FULL-res; same texture

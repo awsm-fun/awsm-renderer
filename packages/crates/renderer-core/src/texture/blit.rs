@@ -11,11 +11,13 @@ use crate::{
     },
     command::{
         color::Color,
-        render_pass::{ColorAttachment, RenderPassDescriptor},
+        render_pass::{ColorAttachment, RenderPassDescriptor, RenderPassEncoder},
         LoadOp, StoreOp,
     },
+    compare::CompareFunction,
     error::Result,
     pipeline::{
+        depth_stencil::DepthStencilState,
         fragment::{ColorTargetState, FragmentState},
         layout::{PipelineLayoutDescriptor, PipelineLayoutKind},
         multisample::MultisampleState,
@@ -42,6 +44,7 @@ struct BlitPipelineCacheKey {
     device: DeviceId,
     dst_format: TextureFormatKey,
     dst_sample_count: Option<u32>,
+    pass_depth_format: Option<TextureFormatKey>,
 }
 thread_local! {
     static BLIT_PIPELINE: RefCell<HashMap<BlitPipelineCacheKey, BlitPipeline>> = RefCell::new(HashMap::new());
@@ -123,12 +126,24 @@ pub fn blit_tex(
         .into(),
     )?;
 
+    blit_draw(pipeline, bind_group, &render_pass)?;
+
+    render_pass.end();
+
+    Ok(())
+}
+
+/// Records the blit into an open render pass. A pass with a depth attachment
+/// needs a pipeline from [`blit_get_pipeline_for_depth_pass`].
+pub fn blit_draw(
+    pipeline: &BlitPipeline,
+    bind_group: &web_sys::GpuBindGroup,
+    render_pass: &RenderPassEncoder,
+) -> Result<()> {
     render_pass.set_bind_group(0, bind_group, None)?;
     render_pass.set_pipeline(&pipeline.render_pipeline);
 
     render_pass.draw(3);
-
-    render_pass.end();
 
     Ok(())
 }
@@ -158,10 +173,33 @@ pub async fn blit_get_pipeline(
     dst_format: TextureFormat,
     dst_sample_count: Option<u32>,
 ) -> Result<BlitPipeline> {
+    get_pipeline(gpu, dst_format, dst_sample_count, None).await
+}
+
+/// Returns a cached blit pipeline to draw inside a pass that has a depth
+/// attachment of `depth_format`. It neither tests nor writes that depth. Its
+/// bind group layout is group-equivalent to [`blit_get_pipeline`]'s, so the
+/// two share bind groups.
+pub async fn blit_get_pipeline_for_depth_pass(
+    gpu: &AwsmRendererWebGpu,
+    dst_format: TextureFormat,
+    dst_sample_count: Option<u32>,
+    depth_format: TextureFormat,
+) -> Result<BlitPipeline> {
+    get_pipeline(gpu, dst_format, dst_sample_count, Some(depth_format)).await
+}
+
+async fn get_pipeline(
+    gpu: &AwsmRendererWebGpu,
+    dst_format: TextureFormat,
+    dst_sample_count: Option<u32>,
+    pass_depth_format: Option<TextureFormat>,
+) -> Result<BlitPipeline> {
     let key = BlitPipelineCacheKey {
         device: gpu.device_id(),
         dst_format: dst_format.into(),
         dst_sample_count,
+        pass_depth_format: pass_depth_format.map(Into::into),
     };
     // One compile per key: a caller that arrives while it is running waits
     // for it instead of starting another (see `crate::in_flight`).
@@ -221,6 +259,14 @@ pub async fn blit_get_pipeline(
     if let Some(sample_count) = dst_sample_count {
         pipeline_descriptor =
             pipeline_descriptor.with_multisample(MultisampleState::new().with_count(sample_count));
+    }
+
+    if let Some(format) = pass_depth_format {
+        pipeline_descriptor = pipeline_descriptor.with_depth_stencil(
+            DepthStencilState::new(format)
+                .with_depth_write_enabled(false)
+                .with_depth_compare(CompareFunction::Always),
+        );
     }
 
     // Validation and the pipeline compile are issued together: waiting for

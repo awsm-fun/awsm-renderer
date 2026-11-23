@@ -103,12 +103,13 @@ impl LightCullingRenderPass {
         // Z-independent). Writes each tile's candidate light list.
         compute_pass.set_pipeline(tile_pipeline);
         compute_pass.dispatch_workgroups(tiles_x, Some(tiles_y), Some(1));
-        // Stage B — per-froxel Z-refine. Reads each froxel's tile
-        // candidate list (written by Stage A above; WebGPU inserts the
-        // read-after-write storage barrier between dispatches in the same
-        // pass) and applies only the cheap Z-slice test.
+        // Stage B — per-froxel Z-refine, one workgroup per tile and one
+        // invocation per Z slice (the workgroup size is the slice count).
+        // Reads each tile's candidate list (written by Stage A above; WebGPU
+        // inserts the read-after-write storage barrier between dispatches in
+        // the same pass) and applies only the cheap Z-slice test.
         compute_pass.set_pipeline(froxel_pipeline);
-        compute_pass.dispatch_workgroups(tiles_x, Some(tiles_y), Some(buffers.slice_count));
+        compute_pass.dispatch_workgroups(tiles_x, Some(tiles_y), Some(1));
         compute_pass.end();
         self.pending_clean_grid
             .set(Some(no_punctual.then_some(grid)));

@@ -295,6 +295,7 @@ impl SsrRenderPass {
         view_height: u32,
         half_res: bool,
     ) -> Result<()> {
+        self.composite.render_depth_copy(ctx)?;
         {
             let compute_pass = ctx.command_encoder.begin_compute_pass(Some(
                 &ComputePassDescriptor::new(Some("SSR Trace + Resolve + Temporal"))

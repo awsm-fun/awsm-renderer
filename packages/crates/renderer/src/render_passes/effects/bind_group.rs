@@ -17,7 +17,7 @@ use awsm_renderer_core::{
         BufferBindingLayout, BufferBindingType, SamplerBindingLayout, SamplerBindingType,
         StorageTextureAccess, StorageTextureBindingLayout, TextureBindingLayout,
     },
-    buffers::BufferBinding,
+    buffers::{BufferBinding, BufferDescriptor, BufferUsage},
     sampler::{AddressMode, FilterMode, SamplerDescriptor},
     texture::{TextureSampleType, TextureViewDimension},
 };
@@ -41,6 +41,17 @@ pub struct EffectsBindGroups {
     /// a nearest fetch shows every froxel boundary, and hardware trilinear is
     /// free next to the alternative (marching, or a finer grid).
     volume_sampler: Option<web_sys::GpuSampler>,
+    /// The DoF working buffer and its size in bytes: viewport-sized while DoF
+    /// is on, 4 bytes while it is off. Created by `recreate`.
+    dof_data: Option<(web_sys::GpuBuffer, usize)>,
+}
+
+/// Bytes of the DoF working buffer: a word per 8x8 tile, then a word per two
+/// pixels of each row. Mirrors the layout in `helpers/dof.wgsl`.
+fn dof_data_byte_size(width: u32, height: u32) -> usize {
+    let tiles = width.div_ceil(8) as usize * height.div_ceil(8) as usize;
+    let pixels = width.div_ceil(2) as usize * height as usize;
+    (tiles + pixels) * 4
 }
 
 impl EffectsBindGroups {
@@ -121,6 +132,7 @@ impl EffectsBindGroups {
             dummy_weights_view: Some(dummy_weights_view),
             dummy_volume_view: Some(dummy_volume_view),
             volume_sampler: Some(volume_sampler),
+            dof_data: None,
         })
     }
 
@@ -140,13 +152,36 @@ impl EffectsBindGroups {
     /// layout shape doesn't move with the haze toggle). `volumetric_view` is
     /// the integrated froxel volume when the volumetrics pass exists; `None`
     /// binds the internal 1×1×1 dummy, same discipline as the SMAA weights.
+    /// `dof` says whether the installed shader variant uses the DoF buffer.
     pub fn recreate(
         &mut self,
         ctx: &BindGroupRecreateContext<'_>,
         smaa_weights_view: Option<&web_sys::GpuTextureView>,
         atmosphere_params: &web_sys::GpuBuffer,
         volumetric_view: Option<&web_sys::GpuTextureView>,
+        dof: bool,
     ) -> Result<()> {
+        let dof_data_size = if dof {
+            dof_data_byte_size(
+                ctx.render_texture_views.width,
+                ctx.render_texture_views.height,
+            )
+        } else {
+            4
+        };
+        if self.dof_data.as_ref().map(|(_, size)| *size) != Some(dof_data_size) {
+            // Dropped, not destroyed: a submit still in flight may use it.
+            let buffer = ctx.gpu.create_buffer(
+                &BufferDescriptor::new(
+                    Some("Effects DoF Data"),
+                    dof_data_size,
+                    BufferUsage::new().with_storage(),
+                )
+                .into(),
+            )?;
+            self.dof_data = Some((buffer, dof_data_size));
+        }
+
         let mut entries = Vec::new();
 
         entries.push(BindGroupEntry::new(
@@ -198,6 +233,11 @@ impl EffectsBindGroups {
         entries.push(BindGroupEntry::new(
             entries.len() as u32,
             BindGroupResource::Sampler(volume_sampler),
+        ));
+        let (dof_data, _) = self.dof_data.as_ref().expect("created above");
+        entries.push(BindGroupEntry::new(
+            entries.len() as u32,
+            BindGroupResource::Buffer(BufferBinding::new(dof_data)),
         ));
 
         let descriptor = BindGroupDescriptor::new(
@@ -327,6 +367,15 @@ fn bind_group_layout_cache_key(
             BindGroupLayoutCacheKeyEntry {
                 resource: BindGroupLayoutResource::Sampler(
                     SamplerBindingLayout::new().with_binding_type(SamplerBindingType::Filtering),
+                ),
+                visibility_vertex: false,
+                visibility_fragment: false,
+                visibility_compute: true,
+            },
+            // DoF working buffer (4-byte dummy while DoF is off).
+            BindGroupLayoutCacheKeyEntry {
+                resource: BindGroupLayoutResource::Buffer(
+                    BufferBindingLayout::new().with_binding_type(BufferBindingType::Storage),
                 ),
                 visibility_vertex: false,
                 visibility_fragment: false,

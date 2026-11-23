@@ -64,8 +64,6 @@ pub struct ShaderTemplateSsrBvhTrace {
 #[derive(Template, Debug)]
 #[template(path = "ssr_wgsl/resolve.wgsl", whitespace = "minimize")]
 pub struct ShaderTemplateSsrResolve {
-    /// Multisampled depth binding (MSAA) — same axis as the trace.
-    pub multisampled_geometry: bool,
     /// Depth convention (003).
     pub reverse_z: bool,
 }
@@ -76,8 +74,6 @@ pub struct ShaderTemplateSsrResolve {
 #[derive(Template, Debug)]
 #[template(path = "ssr_wgsl/temporal.wgsl", whitespace = "minimize")]
 pub struct ShaderTemplateSsrTemporal {
-    /// Multisampled depth binding (MSAA) — same axis as the trace.
-    pub multisampled_geometry: bool,
     /// Depth convention (003).
     pub reverse_z: bool,
 }
@@ -97,11 +93,9 @@ impl TryFrom<&ShaderCacheKeySsr> for ShaderTemplateSsr {
                 bvh: key.bvh,
             }),
             ShaderCacheKeySsr::Resolve(key) => Self::Resolve(ShaderTemplateSsrResolve {
-                multisampled_geometry: key.multisampled_geometry,
                 reverse_z: key.reverse_z,
             }),
             ShaderCacheKeySsr::Temporal(key) => Self::Temporal(ShaderTemplateSsrTemporal {
-                multisampled_geometry: key.multisampled_geometry,
                 reverse_z: key.reverse_z,
             }),
             ShaderCacheKeySsr::BvhTrace(key) => Self::BvhTrace(ShaderTemplateSsrBvhTrace {

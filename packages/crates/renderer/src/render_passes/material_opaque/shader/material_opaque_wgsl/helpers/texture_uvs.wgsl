@@ -129,16 +129,17 @@ fn _texture_uv_per_vertex(attribute_data_offset: u32, set_index: u32, vertex_ind
                 info,
             );
 
+            // single-exit-switch (see the transparent pass's texture_pool_sample).
+            var color = vec4<f32>(0.0, 0.0, 0.0, 0.0);
             switch info.array_index {
                 {% for i in 0..texture_pool_arrays_len %}
                     case {{ i }}u: {
-                        return _texture_pool_sample_grad(info, pool_tex_{{ i }}, transformed_uvs.uv, transformed_uvs.derivs);
+                        color = _texture_pool_sample_grad(info, pool_tex_{{ i }}, transformed_uvs.uv, transformed_uvs.derivs);
                     }
                 {% endfor %}
-                default: {
-                    return vec4<f32>(0.0, 0.0, 0.0, 0.0);
-                }
+                default: {}
             }
+            return color;
         }
 
 
@@ -160,9 +161,12 @@ fn _texture_uv_per_vertex(attribute_data_offset: u32, set_index: u32, vertex_ind
                 {% for i in 0..texture_pool_arrays_len %}
                     case {{ i }}u: { dims = textureDimensions(pool_tex_{{ i }}).xy; }
                 {% endfor %}
-                default: {
-                    return 0.0;
-                }
+                default: {}
+            }
+            // An unknown array is LOD 0 (single-exit-switch: not returned from
+            // inside). Real textures are never 0 texels wide.
+            if (dims.x == 0u) {
+                return 0.0;
             }
             let d = vec2<f32>(f32(dims.x), f32(dims.y));
             let dx = transformed_uvs.derivs.ddx * d;
@@ -213,18 +217,19 @@ fn _texture_uv_per_vertex(attribute_data_offset: u32, set_index: u32, vertex_ind
                 attribute_uv,
                 info,
             );
+            // single-exit-switch (see the transparent pass's texture_pool_sample).
+            // If we somehow reference an out-of-range sampler (should not happen) this stays black, to
+            // avoid propagating NaNs that could poison later colour math.
+            var color = vec4<f32>(0.0, 0.0, 0.0, 0.0);
             switch info.array_index {
                 {% for i in 0..texture_pool_arrays_len %}
                     case {{ i }}u: {
-                        return _texture_pool_sample_no_mips(info, pool_tex_{{ i }}, transformed_uvs.uv);
+                        color = _texture_pool_sample_no_mips(info, pool_tex_{{ i }}, transformed_uvs.uv);
                     }
                 {% endfor %}
-                default: {
-                    // If we somehow reference an out-of-range sampler (should not happen), return black to
-                    // avoid propagating NaNs that could poison later colour math.
-                    return vec4<f32>(0.0, 0.0, 0.0, 0.0);
-                }
+                default: {}
             }
+            return color;
         }
 
         fn _texture_pool_sample_no_mips(
@@ -267,16 +272,17 @@ fn _texture_uv_per_vertex(attribute_data_offset: u32, set_index: u32, vertex_ind
 // behavior regardless of the pipeline's mipmap mode.
 fn texture_pool_sample(info: TextureInfo, attribute_uv: vec2<f32>) -> vec4<f32> {
     let uv = texture_transform_uvs(attribute_uv, info);
+    // single-exit-switch (see the transparent pass's texture_pool_sample).
+    var color = vec4<f32>(0.0, 0.0, 0.0, 0.0);
     switch info.array_index {
         {% for i in 0..texture_pool_arrays_len %}
             case {{ i }}u: {
-                return _texture_pool_sample_lod0(info, pool_tex_{{ i }}, uv);
+                color = _texture_pool_sample_lod0(info, pool_tex_{{ i }}, uv);
             }
         {% endfor %}
-        default: {
-            return vec4<f32>(0.0, 0.0, 0.0, 0.0);
-        }
+        default: {}
     }
+    return color;
 }
 
 fn _texture_pool_sample_lod0(

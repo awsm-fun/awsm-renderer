@@ -259,16 +259,59 @@ fn cs_prep_edge(@builtin(global_invocation_id) gid: vec3<u32>) {
     let pix_uv = (vec2<f32>(coords) + vec2<f32>(0.5, 0.5))
         / vec2<f32>(f32(dims.x), f32(dims.y));
 
+    // Only texels cs_shade reads are computed. It shades a sample only when no
+    // earlier sample of the pixel has equal visibility, barycentric and normal
+    // texels (a match reuses that shade, and with it that sample's shadow), and
+    // never shades a sky sample. So neither needs the froxel walk, the shadow
+    // filter or the SSCS march. Most edge pixels (next to a silhouette, on a
+    // crease) are one surface at all four samples: one walk instead of four.
+    // The match must stay the same test as cs_shade's `uniq_*` one. A repeat
+    // still gets the matched sample's value, so no covered texel is ever stale.
+    var seen_packed: array<array<vec4<f32>, MAX_PREP_SHADOW_LAYERS>, 4>;
+    var seen_vis: array<vec4<u32>, 4>;
+    var seen_bary: array<vec4<u32>, 4>;
+    var seen_nt: array<vec4<f32>, 4>;
+    var seen_count: u32 = 0u;
+
     for (var s: u32 = 0u; s < {{ msaa_sample_count }}u; s = s + 1u) {
         // Per-sample normal AND per-sample depth. Multisampled textureLoad needs a
-        // CONSTANT sample index, so both come from one constant-index switch.
+        // CONSTANT sample index, so all come from constant-index switches.
+        var vis_s: vec4<u32>;
+        var bary_s: vec4<u32>;
         var packed_nt: vec4<f32>;
+        switch (s) {
+            case 0u: { vis_s = textureLoad(visibility_data_tex, coords, 0); bary_s = textureLoad(barycentric_tex, coords, 0); packed_nt = textureLoad(normal_tangent_tex, coords, 0); }
+            case 1u: { vis_s = textureLoad(visibility_data_tex, coords, 1); bary_s = textureLoad(barycentric_tex, coords, 1); packed_nt = textureLoad(normal_tangent_tex, coords, 1); }
+            case 2u: { vis_s = textureLoad(visibility_data_tex, coords, 2); bary_s = textureLoad(barycentric_tex, coords, 2); packed_nt = textureLoad(normal_tangent_tex, coords, 2); }
+            case 3u, default: { vis_s = textureLoad(visibility_data_tex, coords, 3); bary_s = textureLoad(barycentric_tex, coords, 3); packed_nt = textureLoad(normal_tangent_tex, coords, 3); }
+        }
+        if (join32(vis_s.x, vis_s.y) == U32_MAX) {
+            continue;
+        }
+        let out_coords = edge_shadow_coords(edge_pixel_id * MAX_EDGE_SHADOW_SAMPLES + s);
+        var repeated = false;
+        for (var u = 0u; u < seen_count; u = u + 1u) {
+            if (all(seen_vis[u] == vis_s) && all(seen_bary[u] == bary_s) && all(seen_nt[u] == packed_nt)) {
+                for (var l: u32 = 0u; l < MAX_PREP_SHADOW_LAYERS; l = l + 1u) {
+                    textureStore(edge_shadow_out, out_coords, i32(l), seen_packed[u][l]);
+                }
+                repeated = true;
+                break;
+            }
+        }
+        if (repeated) {
+            continue;
+        }
+        seen_vis[seen_count] = vis_s;
+        seen_bary[seen_count] = bary_s;
+        seen_nt[seen_count] = packed_nt;
+
         var depth_s: f32;
         switch (s) {
-            case 0u: { packed_nt = textureLoad(normal_tangent_tex, coords, 0); depth_s = textureLoad(depth_tex, coords, 0); }
-            case 1u: { packed_nt = textureLoad(normal_tangent_tex, coords, 1); depth_s = textureLoad(depth_tex, coords, 1); }
-            case 2u: { packed_nt = textureLoad(normal_tangent_tex, coords, 2); depth_s = textureLoad(depth_tex, coords, 2); }
-            case 3u, default: { packed_nt = textureLoad(normal_tangent_tex, coords, 3); depth_s = textureLoad(depth_tex, coords, 3); }
+            case 0u: { depth_s = textureLoad(depth_tex, coords, 0); }
+            case 1u: { depth_s = textureLoad(depth_tex, coords, 1); }
+            case 2u: { depth_s = textureLoad(depth_tex, coords, 2); }
+            case 3u, default: { depth_s = textureLoad(depth_tex, coords, 3); }
         }
         let normal = unpack_normal_tangent(packed_nt).N;
 
@@ -286,9 +329,9 @@ fn cs_prep_edge(@builtin(global_invocation_id) gid: vec3<u32>) {
         let view_z = -(cam.view * vec4<f32>(world_pos, 1.0)).z;
 
         let packed = compute_shadow_visibility_packed(pixel_xy, world_pos, view_z, normal);
+        seen_packed[seen_count] = packed;
+        seen_count = seen_count + 1u;
 
-        let base_idx = edge_pixel_id * MAX_EDGE_SHADOW_SAMPLES + s;
-        let out_coords = edge_shadow_coords(base_idx);
         for (var l: u32 = 0u; l < MAX_PREP_SHADOW_LAYERS; l = l + 1u) {
             textureStore(edge_shadow_out, out_coords, i32(l), packed[l]);
         }
