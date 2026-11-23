@@ -206,12 +206,13 @@ impl RenderTextures {
 
     /// Returns render texture views, recreating if size or AA changed.
     ///
-    /// `current_size` is the live swap-chain `(width, height)` — caller
+    /// `sizes` is the frame's [`crate::size::FrameSizes`] — the caller
     /// passes the value `AwsmRenderer::render` already snapped at the
-    /// top of the frame, sparing this method a redundant
-    /// `getCurrentTexture().getSize()` wasm↔JS hop. The pair is stable
-    /// for the duration of the frame, so the cached value is
-    /// unconditionally safe to reuse.
+    /// top of the frame (`AwsmRenderer::frame_sizes`), sparing this method a
+    /// redundant `getCurrentTexture().getSize()` wasm↔JS hop. Render-size
+    /// textures are allocated at `sizes.render`, post-size ones at
+    /// `sizes.post` (see [`RenderTexturesInner`] for which is which); a change
+    /// in either rebuilds.
     ///
     /// `needs_opaque_mip_chain` is `Materials::has_seen_transmission`
     /// — T2.5 lazy mip-chain allocation. When `false`, the opaque
@@ -231,7 +232,7 @@ impl RenderTextures {
         &mut self,
         gpu: &AwsmRendererWebGpu,
         anti_aliasing: AntiAliasing,
-        current_size: (u32, u32),
+        sizes: crate::size::FrameSizes,
         needs_opaque_mip_chain: bool,
         needs_hud_depth: bool,
         ssr_enabled: bool,
@@ -240,7 +241,7 @@ impl RenderTextures {
         ssr_bvh: bool,
     ) -> Result<RenderTextureViews> {
         let size_changed = match self.inner.as_ref() {
-            Some(inner) => (inner.width, inner.height) != current_size,
+            Some(inner) => inner.render_size != sizes.render || inner.post_size != sizes.post,
             None => true,
         };
 
@@ -327,8 +328,8 @@ impl RenderTextures {
                 &self.opaque_to_transparent_blit_pipeline_msaa_4,
                 &self.opaque_to_transparent_blit_pipeline_no_anti_alias,
                 &self.transparent_to_composite_blit_pipeline_no_anti_alias,
-                current_size.0,
-                current_size.1,
+                sizes.render,
+                sizes.post,
                 anti_aliasing,
                 &self.features,
                 self.prep_shadow_layers,
@@ -359,8 +360,6 @@ impl RenderTextures {
         Ok(RenderTextureViews::new(
             self.inner.as_ref().unwrap(),
             self.ping_pong(),
-            current_size.0,
-            current_size.1,
             views_recreated,
         ))
     }
@@ -497,21 +496,24 @@ pub struct RenderTextureViews {
     /// just on viewport resize — the destroyed textures and their
     /// views are no longer valid.
     pub views_recreated: bool,
-    pub width: u32,
-    pub height: u32,
+    /// Scene resolution `(width, height)`: the size of every render-size
+    /// texture above (geometry targets, depth, opaque, transparent,
+    /// composite, prep, SSR's full-res inputs). Dispatches over those read
+    /// this.
+    pub render_size: (u32, u32),
+    /// Post-processing resolution `(width, height)`: the size of `effects`,
+    /// `bloom` (and the bloom pyramid / SMAA targets owned by their passes).
+    /// Equal to `render_size` without TAA. There is deliberately no plain
+    /// `width`/`height`: every consumer chooses one of the two
+    /// (`size::tests::render_texture_consumers_choose_a_size`).
+    pub post_size: (u32, u32),
     pub curr_index: usize,
     pub prev_index: usize,
 }
 
 impl RenderTextureViews {
     /// Builds view handles for the current render textures.
-    pub fn new(
-        inner: &RenderTexturesInner,
-        ping_pong: bool,
-        width: u32,
-        height: u32,
-        views_recreated: bool,
-    ) -> Self {
+    pub fn new(inner: &RenderTexturesInner, ping_pong: bool, views_recreated: bool) -> Self {
         let curr_index = if ping_pong { 0 } else { 1 };
         let prev_index = if ping_pong { 1 } else { 0 };
         Self {
@@ -564,13 +566,30 @@ impl RenderTextureViews {
             views_recreated,
             curr_index,
             prev_index,
-            width,
-            height,
+            render_size: inner.render_size,
+            post_size: inner.post_size,
         }
     }
 }
 
 /// Internal texture storage and GPU objects.
+///
+/// Two sizes (see [`crate::size::FrameSizes`]); without TAA they are equal.
+///
+/// - **Render size** (the scene; TAA's input): `visibility_data`,
+///   `barycentric`, `normal_tangent`, `barycentric_derivatives`, `depth`,
+///   `ssr_depth`, `hud_depth`, `opaque` (+ mips, `opaque_clearer`),
+///   `transparent`, `decal_color`, `prep_*`, `edge_id`, `composite`,
+///   `reflection_descriptor`, and the SSR targets (`ssr`, `ssr_resolved`,
+///   `ssr_final`, `ssr_history`, `ssr_bvh`; half of render size when SSR runs
+///   half-res). Outside this struct: the HZB and the volumetrics froxel grid
+///   (aligned with light culling) follow render size too.
+/// - **Post size** (after the TAA resolve): `effects`, `bloom`. Outside this
+///   struct: the bloom pyramid and the SMAA edges/weights (SMAA is rejected
+///   together with TAA, so for SMAA the two sizes are always equal; it is
+///   post-side because its weights are consumed by the effects pass blend).
+///   TAA's history / output targets will be post size as well, and the HUD
+///   depth moves to post size when the HUD is drawn after TAA (plan phase 3).
 #[allow(dead_code)]
 pub struct RenderTexturesInner {
     pub visibility_data: web_sys::GpuTexture,
@@ -695,8 +714,10 @@ pub struct RenderTexturesInner {
     pub reflection_descriptor: web_sys::GpuTexture,
     pub reflection_descriptor_view: web_sys::GpuTextureView,
 
-    pub width: u32,
-    pub height: u32,
+    /// Size of every render-size texture (see the type docs).
+    pub render_size: (u32, u32),
+    /// Size of every post-size texture (`effects`, `bloom`).
+    pub post_size: (u32, u32),
 
     pub anti_aliasing: AntiAliasing,
     /// Whether the `ssr` + `reflection_descriptor` targets are full-res (SSR on)
@@ -727,8 +748,8 @@ impl RenderTexturesInner {
         opaque_to_transparent_blit_pipeline_msaa_4: &BlitPipeline,
         opaque_to_transparent_blit_pipeline_no_anti_alias: &BlitPipeline,
         transparent_to_composite_blit_pipeline_no_anti_alias: &BlitPipeline,
-        width: u32,
-        height: u32,
+        render_size: (u32, u32),
+        post_size: (u32, u32),
         anti_aliasing: AntiAliasing,
         features: &RendererFeatures,
         prep_shadow_layers: u32,
@@ -739,6 +760,8 @@ impl RenderTexturesInner {
         ssr_temporal: bool,
         ssr_bvh: bool,
     ) -> Result<Self> {
+        let (render_w, render_h) = render_size;
+        let (post_w, post_h) = post_size;
         // Lazy SSR-target sizing: full-res only when SSR is on, else a 1×1
         // placeholder (the material_opaque layout always binds `reflection_descriptor`
         // at binding 24, so a resource must exist — but the SSR-off kernel never
@@ -749,14 +772,14 @@ impl RenderTexturesInner {
         // on. Only the `ssr` reflection TARGET shrinks to half-res (the trace
         // writes it, the composite step bilinearly upsamples it).
         let (refl_w, refl_h) = if ssr_enabled {
-            (width, height)
+            (render_w, render_h)
         } else {
             (1u32, 1u32)
         };
         let (ssr_w, ssr_h) = if ssr_enabled && ssr_half_res {
             (
-                crate::size::half_extent(width),
-                crate::size::half_extent(height),
+                crate::size::half_extent(render_w),
+                crate::size::half_extent(render_h),
             )
         } else {
             (refl_w, refl_h)
@@ -765,7 +788,7 @@ impl RenderTexturesInner {
             |format: TextureFormat, label: &'static str| -> TextureDescriptor<'static> {
                 let mut descriptor = TextureDescriptor::new(
                     format,
-                    Extent3d::new(width, Some(height), Some(1)),
+                    Extent3d::new(render_w, Some(render_h), Some(1)),
                     TextureUsage::new()
                         .with_render_attachment()
                         .with_texture_binding(),
@@ -837,7 +860,7 @@ impl RenderTexturesInner {
         // material registration flips that flag and reallocates with the
         // full chain on the next `views()` call.
         let opaque_mip_count = if needs_opaque_mip_chain {
-            mip_levels_for(width, height)
+            mip_levels_for(render_w, render_h)
         } else {
             1
         };
@@ -845,7 +868,7 @@ impl RenderTexturesInner {
             .create_texture(
                 &TextureDescriptor::new(
                     render_texture_formats.color,
-                    Extent3d::new(width, Some(height), Some(1)),
+                    Extent3d::new(render_w, Some(render_h), Some(1)),
                     TextureUsage::new()
                         .with_storage_binding()
                         .with_texture_binding()
@@ -876,7 +899,7 @@ impl RenderTexturesInner {
             }
             let mut descriptor = TextureDescriptor::new(
                 render_texture_formats.color,
-                Extent3d::new(width, Some(height), Some(1)),
+                Extent3d::new(render_w, Some(render_h), Some(1)),
                 usage,
             )
             .with_label("Transparent");
@@ -904,7 +927,7 @@ impl RenderTexturesInner {
                 gpu.create_texture(
                     &TextureDescriptor::new(
                         render_texture_formats.color,
-                        Extent3d::new(width, Some(height), Some(1)),
+                        Extent3d::new(render_w, Some(render_h), Some(1)),
                         TextureUsage::new()
                             .with_storage_binding()
                             .with_texture_binding(),
@@ -971,7 +994,7 @@ impl RenderTexturesInner {
             .create_texture(
                 &TextureDescriptor::new(
                     render_texture_formats.color,
-                    Extent3d::new(width, Some(height), Some(1)),
+                    Extent3d::new(render_w, Some(render_h), Some(1)),
                     TextureUsage::new()
                         .with_texture_binding()
                         .with_render_attachment(),
@@ -989,7 +1012,7 @@ impl RenderTexturesInner {
             .create_texture(
                 &TextureDescriptor::new(
                     render_texture_formats.color,
-                    Extent3d::new(width, Some(height), Some(1)),
+                    Extent3d::new(post_w, Some(post_h), Some(1)),
                     TextureUsage::new()
                         .with_storage_binding()
                         .with_texture_binding(),
@@ -1003,7 +1026,7 @@ impl RenderTexturesInner {
             .create_texture(
                 &TextureDescriptor::new(
                     render_texture_formats.color,
-                    Extent3d::new(width, Some(height), Some(1)),
+                    Extent3d::new(post_w, Some(post_h), Some(1)),
                     TextureUsage::new()
                         .with_storage_binding()
                         .with_texture_binding(),
@@ -1201,8 +1224,8 @@ impl RenderTexturesInner {
                 &TextureDescriptor::new(
                     TextureFormat::Rg32float,
                     Extent3d::new(
-                        width,
-                        Some(height),
+                        render_w,
+                        Some(render_h),
                         Some(crate::render_passes::material_prep::MAX_PREP_UV_SETS),
                     ),
                     TextureUsage::new()
@@ -1235,8 +1258,8 @@ impl RenderTexturesInner {
                 &TextureDescriptor::new(
                     TextureFormat::Rgba32float,
                     Extent3d::new(
-                        width,
-                        Some(height),
+                        render_w,
+                        Some(render_h),
                         Some(crate::render_passes::material_prep::MAX_PREP_COLOR_SETS),
                     ),
                     TextureUsage::new()
@@ -1271,7 +1294,7 @@ impl RenderTexturesInner {
             gpu.create_texture(
                 &TextureDescriptor::new(
                     TextureFormat::Rgba8unorm,
-                    Extent3d::new(width, Some(height), Some(prep_shadow_layers.max(1))),
+                    Extent3d::new(render_w, Some(render_h), Some(prep_shadow_layers.max(1))),
                     TextureUsage::new()
                         .with_storage_binding()
                         .with_texture_binding(),
@@ -1310,7 +1333,7 @@ impl RenderTexturesInner {
             gpu.create_texture(
                 &TextureDescriptor::new(
                     TextureFormat::Rgba8unorm,
-                    Extent3d::new(width, Some(height), Some(prep_shadow_layers.max(1))),
+                    Extent3d::new(render_w, Some(render_h), Some(prep_shadow_layers.max(1))),
                     TextureUsage::new()
                         .with_storage_binding()
                         .with_texture_binding(),
@@ -1351,7 +1374,7 @@ impl RenderTexturesInner {
                 gpu.create_texture(
                     &TextureDescriptor::new(
                         TextureFormat::R32uint,
-                        Extent3d::new(width, Some(height), Some(1)),
+                        Extent3d::new(render_w, Some(render_h), Some(1)),
                         TextureUsage::new()
                             .with_storage_binding()
                             .with_texture_binding(),
@@ -1478,8 +1501,13 @@ impl RenderTexturesInner {
             opaque_full_view,
             opaque_mip_count,
             opaque_has_mip_chain: needs_opaque_mip_chain,
-            opaque_clearer: TextureClearer::new(gpu, render_texture_formats.color, width, height)
-                .map_err(AwsmRenderTextureError::CreateTextureClearer)?,
+            opaque_clearer: TextureClearer::new(
+                gpu,
+                render_texture_formats.color,
+                render_w,
+                render_h,
+            )
+            .map_err(AwsmRenderTextureError::CreateTextureClearer)?,
             opaque_to_transparent_blit_bind_group_msaa_4,
             opaque_to_transparent_blit_bind_group_no_anti_alias,
 
@@ -1532,8 +1560,8 @@ impl RenderTexturesInner {
             reflection_descriptor,
             reflection_descriptor_view,
 
-            width,
-            height,
+            render_size,
+            post_size,
 
             anti_aliasing,
             ssr_enabled,

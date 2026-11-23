@@ -128,11 +128,11 @@ impl AwsmRenderer {
         // mesh or surface size). That is fine: `views()` keeps reporting the
         // rebuild until the render preamble acknowledges it, so the frame's
         // bind groups are still rebuilt. Do not acknowledge it here.
-        let viewport_size = self.render_size()?;
+        let frame_sizes = self.frame_sizes()?;
         let render_texture_views = self.render_textures.views(
             &self.gpu,
             self.anti_aliasing.clone(),
-            viewport_size,
+            frame_sizes,
             self.materials.has_seen_transmission(),
             self.meshes.has_seen_hud(),
             // Must match the render-loop `views()` value so the SSR targets

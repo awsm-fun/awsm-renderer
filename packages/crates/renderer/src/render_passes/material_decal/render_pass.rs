@@ -292,8 +292,8 @@ impl MaterialDecalRenderPass {
         compute_pass.set_bind_group(0, self.bind_groups.get_main()?, None)?;
         compute_pass.set_bind_group(1, self.bind_groups.get_texture_pool()?, None)?;
 
-        let workgroups_x = ctx.render_texture_views.width.div_ceil(8);
-        let workgroups_y = ctx.render_texture_views.height.div_ceil(8);
+        let workgroups_x = ctx.render_texture_views.render_size.0.div_ceil(8);
+        let workgroups_y = ctx.render_texture_views.render_size.1.div_ceil(8);
         compute_pass.dispatch_workgroups(workgroups_x, Some(workgroups_y), Some(1));
         compute_pass.end();
 

@@ -10,9 +10,69 @@ pub struct AntiAliasing {
     pub msaa_sample_count: Option<u32>,
     pub smaa: bool,
     pub mipmap: bool,
+    /// Temporal anti-aliasing (and temporal upscaling when its
+    /// `render_scale` is below 1). `Some` requires `msaa_sample_count: None`
+    /// and `smaa: false`: the three are independent modes, and
+    /// [`Self::validate`] rejects a combination rather than picking one
+    /// silently. `None` costs nothing: no targets, buffers, copies, passes
+    /// or shader work.
+    pub taa: Option<crate::taa::TaaConfig>,
 }
 
 impl AntiAliasing {
+    /// No anti-aliasing at all.
+    pub fn none() -> Self {
+        Self {
+            msaa_sample_count: None,
+            smaa: false,
+            mipmap: true,
+            taa: None,
+        }
+    }
+
+    /// MSAA 4×.
+    pub fn msaa4() -> Self {
+        Self {
+            msaa_sample_count: Some(4),
+            ..Self::none()
+        }
+    }
+
+    /// SMAA (post-process, no MSAA).
+    pub fn smaa() -> Self {
+        Self {
+            smaa: true,
+            ..Self::none()
+        }
+    }
+
+    /// TAA with `config` (MSAA and SMAA off).
+    pub fn taa(config: crate::taa::TaaConfig) -> Self {
+        Self {
+            taa: Some(config),
+            ..Self::none()
+        }
+    }
+
+    /// Checks the mode is one the renderer supports: a supported MSAA count,
+    /// and TAA neither combined with MSAA or SMAA nor given a render scale
+    /// outside `0.5..=1.0`.
+    pub fn validate(&self) -> crate::error::Result<()> {
+        self.has_msaa_checked()?;
+        if let Some(taa) = &self.taa {
+            if self.msaa_sample_count.is_some() || self.smaa {
+                return Err(crate::error::AwsmError::TaaCombinedWithOtherAa);
+            }
+            let scale = taa.render_scale;
+            if !(scale.is_finite()
+                && (crate::taa::TaaConfig::MIN_RENDER_SCALE..=1.0).contains(&scale))
+            {
+                return Err(crate::error::AwsmError::TaaRenderScale(scale));
+            }
+        }
+        Ok(())
+    }
+
     /// Returns whether MSAA is enabled and supported.
     pub fn has_msaa_checked(&self) -> crate::error::Result<bool> {
         match self.msaa_sample_count {
@@ -39,6 +99,7 @@ impl Default for AntiAliasing {
             // MSAA-less configurations, where it earns its keep.
             smaa: false,
             mipmap: true,
+            taa: None,
         }
     }
 }
@@ -80,6 +141,7 @@ impl AwsmRenderer {
         if self.anti_aliasing == aa {
             return Ok(());
         }
+        aa.validate()?;
         // On a committed scene: drain anything still reserved first, so the
         // branch guards below (`has_branch_for`) reflect COMPILED reality — a
         // reserved-but-pending branch must not be mistaken for a ready one.
@@ -658,18 +720,43 @@ impl AwsmRenderer {
         (self.render_scale - 1.0).abs() > f32::EPSILON
     }
 
-    /// The internal render resolution: swap-chain size scaled by
-    /// [`Self::render_scale`] (identical to the swap-chain size at 1.0).
-    /// Every viewport-derived consumer (render targets, light-culling
-    /// froxels, LOD screen-error, camera viewport uniform, picker) reads
-    /// THIS, never the raw swap-chain size — the display pass output and
-    /// swap-chain readbacks are the only canvas-sized stages.
-    pub(crate) fn render_size(&self) -> Result<(u32, u32)> {
-        let (w, h) = self.gpu.current_context_texture_size()?;
-        Ok((
-            crate::size::scale_extent(w, self.render_scale),
-            crate::size::scale_extent(h, self.render_scale),
+    /// Surface, render and post sizes for the live swap chain (see
+    /// [`crate::size::FrameSizes`]). The one place the swap-chain size is
+    /// turned into the sizes render textures are allocated and dispatched at;
+    /// `render()` snaps it once per frame.
+    pub(crate) fn frame_sizes(&self) -> Result<crate::size::FrameSizes> {
+        let surface = self.gpu.current_context_texture_size()?;
+        Ok(crate::size::FrameSizes::new(
+            surface,
+            self.render_scale,
+            self.post_is_surface(),
         ))
+    }
+
+    /// True when post-processing runs at surface size rather than render size,
+    /// i.e. when a temporal resolve upsamples the scene to the output. Never
+    /// today: without TAA, bloom / effects / display input run at render size
+    /// (supersampling included, exactly as 0.45). TAA (phase 2) makes this
+    /// `self.anti_aliasing.taa.is_some()`.
+    fn post_is_surface(&self) -> bool {
+        false
+    }
+
+    /// The scene resolution: swap-chain size scaled by
+    /// [`Self::render_scale`] (identical to the swap-chain size at 1.0).
+    /// Every scene-side consumer (geometry/shading targets, light-culling
+    /// froxels, LOD screen-error, camera viewport uniform, picker, SSR, HZB)
+    /// reads THIS, never the raw swap-chain size.
+    pub fn render_size(&self) -> Result<(u32, u32)> {
+        Ok(self.frame_sizes()?.render)
+    }
+
+    /// The post-processing resolution: what bloom, SMAA and the effects pass
+    /// (haze, DoF, bloom composite, SMAA blend) run at and what the display
+    /// pass reads. Equal to [`Self::render_size`] without TAA; the surface
+    /// size with TAA, where the resolve writes the output resolution.
+    pub fn post_size(&self) -> Result<(u32, u32)> {
+        Ok(self.frame_sizes()?.post)
     }
 
     /// Runtime anisotropic-filtering toggle (default ON). OFF rebinds every

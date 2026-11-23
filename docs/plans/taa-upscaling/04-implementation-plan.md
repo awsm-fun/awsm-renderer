@@ -45,14 +45,14 @@ every frame without a reset (03 §8). Scene files carry the TAA choice in
 
 ## Phase 0: groundwork, no visible change
 
-- [ ] Fix the camera jitter (03 §1): NDC scale `2·j/R`, constant amplitude,
+- [x] Fix the camera jitter (03 §1): NDC scale `2·j/R`, constant amplitude,
       index from `(frame % N) + 1`, `N` from the scale. Keep `camera::halton`.
       Add `view_projection_unjittered` and `jitter` (current, previous) to the
       camera uniform, end-appended. `APPLY_JITTER` becomes "TAA is on".
-- [ ] Unit tests: the Halton phases; the NDC offset moves a known point by
+- [x] Unit tests: the Halton phases; the NDC offset moves a known point by
       exactly `j` render pixels (perspective and orthographic, both depth
       conventions); the unjittered matrix round-trips.
-- [ ] Introduce the post size: `render_size()` (scene) and `post_size()`
+- [x] Introduce the post size: `render_size()` (scene) and `post_size()`
       (surface). Bloom, effects and display take `post_size()`. At scale 1 the
       two are equal, so nothing changes yet. Add a test that every
       render-texture consumer reads one of the two explicitly.
@@ -146,6 +146,38 @@ Gate: 05 §4 tests at 0.67 and 0.5; 05 §5 frame-time targets.
 - [ ] Editor: TAA in the post-processing panel, the debug views, the tuning
       knobs.
 - [ ] Release notes; delete this plan.
+
+## Deviations and notes (recorded as the work goes)
+
+Phase 0:
+
+- The camera uniform grew by three end-appended fields, not two:
+  `view_projection_unjittered`, `jitter` (xy = this frame, zw = previous,
+  render pixels) and `prev_position` (billboards need the previous camera
+  position to rebuild their previous facing). `R` is not stored separately:
+  `viewport.zw` already is the render size. 560 → 656 bytes, for every mode.
+- `prev_view_projection` under TAA is the last **rendered** frame's matrix
+  (`CameraBuffer::prepare_frame`, once per `render()`), not the last camera
+  that was set. An app that sets the camera only when it changes, or twice a
+  frame, would otherwise get wrong camera vectors. With TAA off the upload is
+  what 0.45 packed, so SSR's temporal pass keeps its 0.45 behaviour there.
+- Post size is `FrameSizes { surface, render, post }` (`size.rs`). Without TAA
+  `post == render`, which keeps supersampling exactly as in 0.45 (bloom and
+  effects at the supersampled size, display downsamples). With TAA
+  `post == surface`.
+- The jitter override (`AwsmRenderer::set_jitter_override`) exists for the
+  reference capture: it jitters the camera with TAA off.
+- `prev_depth` is a depth-format copy bound as `texture_depth_2d`, not
+  `r32float`: WebGPU cannot copy `depth32float` into `r32float`.
+- The disocclusion test compares two previous-frame distances (this surface
+  point through `prev_view_projection` against last frame's depth there),
+  not this frame's distance against last frame's: the latter trips on any
+  fast dolly. Same direction and same τ.
+- The clip-box half-width has a floor of 1.5e-3 (a few steps of the
+  `rgba16float` history's quantisation), or flat areas read their own
+  rounding as a clipped history.
+- The resolve's WGSL and plumbing were written while phase 1 was in progress.
+  It was not turned on or judged until the phase-1 vector gate passed.
 
 ## Things to keep out of v1
 

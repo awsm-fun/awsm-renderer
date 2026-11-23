@@ -77,6 +77,15 @@ pub enum AwsmError {
     #[error("Unregistered Msaa count: {0}")]
     UnsupportedMsaaCount(u32),
 
+    #[error("TAA cannot be combined with MSAA or SMAA: choose one anti-aliasing mode")]
+    TaaCombinedWithOtherAa,
+
+    #[error("TAA render scale {0} is outside 0.5..=1.0")]
+    TaaRenderScale(f32),
+
+    #[error("TAA is not available on this device: {0}")]
+    TaaUnavailable(String),
+
     #[error("Unregistered Cull Mode: {0:?}")]
     UnsupportedCullMode(CullMode),
 

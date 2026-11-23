@@ -370,8 +370,8 @@ impl LineRenderer {
             return Ok(());
         }
         let msaa = ctx.anti_aliasing.has_msaa_checked()?;
-        let viewport_w = ctx.render_texture_views.width as f32;
-        let viewport_h = ctx.render_texture_views.height as f32;
+        let viewport_w = ctx.render_texture_views.render_size.0 as f32;
+        let viewport_h = ctx.render_texture_views.render_size.1 as f32;
         let mut current_variant: Option<LineVariantKey> = None;
 
         for entry in self.entries.values() {

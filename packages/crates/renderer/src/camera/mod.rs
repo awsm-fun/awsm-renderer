@@ -93,7 +93,6 @@ impl AwsmRenderer {
 
         self.camera.update(
             camera_matrices,
-            &self.render_textures,
             current_width as f32,
             current_height as f32,
             self.features.depth(),

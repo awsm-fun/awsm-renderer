@@ -327,6 +327,9 @@ pub struct AwsmRenderer {
     /// clamped to [1.0, 2.0]. NOT persisted scene data — a player/editor
     /// quality option, same class as MSAA/SMAA.
     pub(crate) render_scale: f32,
+    /// TAA runtime state (jitter phase, pending reset, debug view). Plain
+    /// CPU values; see [`crate::taa`].
+    pub(crate) taa: crate::taa::TaaRuntime,
     /// Plan B shared-prep + deferred-shadow config, captured at build time
     /// (`docs/plans/deferred-shared-prep-pass.md`). The shared prep pass is
     /// unconditional; this only carries the `K` shadow-caster sizing knob.
@@ -3148,6 +3151,7 @@ impl AwsmRendererBuilder {
             render_textures,
             anti_aliasing,
             render_scale: 1.0,
+            taa: crate::taa::TaaRuntime::default(),
             prep_config,
             post_processing,
             picker,

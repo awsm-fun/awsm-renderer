@@ -7,10 +7,19 @@ use glam::{Mat4, Vec2, Vec3, Vec4};
 
 use super::{CameraMatrices, Result};
 use crate::bind_groups::BindGroups;
-use crate::render_textures::RenderTextures;
 use crate::AwsmRendererLogging;
 
-const APPLY_JITTER: bool = false;
+/// What the last RENDERED frame used: the previous-frame side of every
+/// temporal reprojection.
+#[derive(Clone, Copy, Debug)]
+struct RenderedCamera {
+    /// Unjittered view-projection.
+    view_projection: Mat4,
+    /// Jitter in render pixels (zero when the frame was not jittered).
+    jitter_px: Vec2,
+    /// Camera world position.
+    position: Vec3,
+}
 
 /// GPU camera buffer and cached state.
 pub struct CameraBuffer {
@@ -18,6 +27,13 @@ pub struct CameraBuffer {
     pub gpu_buffer: web_sys::GpuBuffer,
     pub last_matrices: Option<CameraMatrices>,
     camera_moved: bool,
+    /// The camera of the last frame that was actually rendered (latched by
+    /// [`Self::prepare_frame`]), as opposed to `last_matrices`, which is the
+    /// last camera that was SET. They differ when the app sets the camera
+    /// more than once per frame, or not every frame.
+    rendered: Option<RenderedCamera>,
+    /// Whether `raw_data` currently holds a jittered projection.
+    raw_is_jittered: bool,
     gpu_dirty: bool,
     /// One-shot latch for the depth-convention mismatch error — a static
     /// misconfiguration, so it must not spam once per frame.
@@ -38,7 +54,19 @@ impl CameraBuffer {
     //  viewport (vec4) 16 bytes
     //  dof_params (vec4: focus_distance, aperture, unused, unused) 16 bytes
     //  prev_view_projection (mat4)  64 bytes  (M3 SSR temporal reprojection)
-    // Total = 560 bytes (all members 16-byte aligned, no implicit gaps)
+    //  view_projection_unjittered (mat4) 64 bytes  (TAA motion vectors)
+    //  jitter (vec4: xy = this frame, zw = previous frame; render pixels) 16 bytes
+    //  prev_position (vec4, w=unused) 16 bytes  (TAA: billboards' previous facing)
+    // Total = 656 bytes (all members 16-byte aligned, no implicit gaps)
+    //
+    // The last three are END-APPENDED for TAA, the same way
+    // `prev_view_projection` was. `view`, `projection`, `view_projection` and
+    // every inverse are the JITTERED matrices when a jitter is applied: they
+    // read or write the depth buffer, which was rasterised jittered, so they
+    // must match it. Motion vectors and history reprojection use
+    // `view_projection_unjittered` and `prev_view_projection` (also
+    // unjittered), so a vector never contains jitter. Without jitter the two
+    // view-projections are identical and `jitter` is zero.
     //
     // `prev_view_projection` is END-APPENDED (M3): it carries the PRIOR frame's
     // unjittered view-projection so the SSR temporal variant can depth-reproject
@@ -55,7 +83,7 @@ impl CameraBuffer {
     // `crates/renderer/src/frame_globals`). The slot was removed —
     // Camera is 16 bytes slimmer.
     /// Byte size of the camera uniform buffer.
-    pub const BYTE_SIZE: usize = 560;
+    pub const BYTE_SIZE: usize = 656;
 
     /// Creates a camera buffer on the GPU.
     pub fn new(gpu: &AwsmRendererWebGpu) -> Result<Self> {
@@ -73,6 +101,8 @@ impl CameraBuffer {
             gpu_dirty: true,
             last_matrices: None,
             camera_moved: false,
+            rendered: None,
+            raw_is_jittered: false,
             warned_convention: false,
             gpu_buffer,
             uploader: crate::buffer::mapped_uploader::MappedUploader::new("Camera"),
@@ -89,7 +119,6 @@ impl CameraBuffer {
     pub(crate) fn update(
         &mut self,
         camera_matrices_orig: CameraMatrices,
-        render_textures: &RenderTextures,
         screen_width: f32,
         screen_height: f32,
         convention: crate::depth_convention::DepthConvention,
@@ -113,8 +142,6 @@ impl CameraBuffer {
                 convention.reverse_z
             );
         }
-        let mut camera_matrices = camera_matrices_orig.clone();
-
         self.camera_moved = match &self.last_matrices {
             Some(last_matrices) => {
                 fn matrices_equal(a: Mat4, b: Mat4, epsilon: f32) -> bool {
@@ -126,25 +153,147 @@ impl CameraBuffer {
                     true
                 }
                 // Check if matrices changed (with small epsilon for floating point comparison)
-                !matrices_equal(last_matrices.view, camera_matrices.view, 1e-6)
-                    || !matrices_equal(last_matrices.projection, camera_matrices.projection, 1e-6)
+                !matrices_equal(last_matrices.view, camera_matrices_orig.view, 1e-6)
+                    || !matrices_equal(
+                        last_matrices.projection,
+                        camera_matrices_orig.projection,
+                        1e-6,
+                    )
             }
             _ => true, // First frame, assume movement
         };
 
-        if APPLY_JITTER {
-            let jitter_strength = if self.camera_moved { 0.2 } else { 0.8 };
-            // TAA jitter
-            let jitter = get_halton_jitter(render_textures.frame_count());
-            let jitter_ndc_x = (jitter.x / screen_width) * jitter_strength;
-            let jitter_ndc_y = (jitter.y / screen_height) * jitter_strength;
+        // The PRIOR frame's unjittered view-projection, for depth
+        // reprojection in the temporal passes. `self.last_matrices` still
+        // holds the previously set matrices here: it is overwritten with THIS
+        // call's below. Frame 0 (no history) → the current view-projection,
+        // i.e. zero camera motion, so the first temporal frame reprojects
+        // onto itself.
+        //
+        // This is the unjittered upload. When a jitter applies (TAA),
+        // `prepare_frame` re-packs once per rendered frame with the jitter
+        // and with the last RENDERED frame's matrix as the previous one.
+        let prev_view_projection = self
+            .last_matrices
+            .as_ref()
+            .map(|m| m.view_projection())
+            .unwrap_or_else(|| camera_matrices_orig.view_projection());
+        let prev_position = self
+            .last_matrices
+            .as_ref()
+            .map(|m| m.position_world)
+            .unwrap_or(camera_matrices_orig.position_world);
+        self.pack(
+            &camera_matrices_orig,
+            None,
+            screen_width,
+            screen_height,
+            convention,
+            prev_view_projection,
+            Vec2::ZERO,
+            prev_position,
+        );
 
-            // Create jitter translation matrix
-            let jitter_matrix = Mat4::from_translation(Vec3::new(jitter_ndc_x, jitter_ndc_y, 0.0));
+        // Store for next frame (unjittered versions)
+        self.last_matrices = Some(camera_matrices_orig);
 
-            // Apply to your projection matrix
-            camera_matrices.projection = jitter_matrix * camera_matrices.projection;
+        Ok(())
+    }
+
+    /// Once per rendered frame, before [`Self::write_gpu`]: applies this
+    /// frame's jitter (`Some` when TAA is on or a jitter override is set) and
+    /// latches the camera this frame renders with as the next frame's
+    /// "previous".
+    ///
+    /// `temporal` is "TAA is on". Then the uniform is re-packed every frame
+    /// with the last RENDERED frame as the previous one, jittered or not.
+    /// With `temporal == false`, `jitter == None` and no jittered data left
+    /// in the buffer this only latches: the uniform is exactly what `update`
+    /// packed, so a renderer without TAA uploads what it always did.
+    ///
+    /// `render_width` / `render_height` are the render size `R`: the jitter
+    /// is in render pixels.
+    pub(crate) fn prepare_frame(
+        &mut self,
+        jitter: Option<Vec2>,
+        temporal: bool,
+        render_width: f32,
+        render_height: f32,
+        convention: crate::depth_convention::DepthConvention,
+    ) {
+        let Some(matrices) = self.last_matrices.clone() else {
+            return;
+        };
+        let view_projection = matrices.view_projection();
+        if temporal || jitter.is_some() || self.raw_is_jittered {
+            // Previous = the last frame that was RENDERED. Not the last
+            // camera that was set: an app that sets the camera twice in one
+            // frame, or only when it changes, must still get the true
+            // frame-to-frame motion. First frame: zero motion.
+            let (prev_view_projection, prev_jitter, prev_position) = match self.rendered {
+                Some(r) => (r.view_projection, r.jitter_px, r.position),
+                None => (
+                    view_projection,
+                    jitter.unwrap_or(Vec2::ZERO),
+                    matrices.position_world,
+                ),
+            };
+            self.pack(
+                &matrices,
+                jitter,
+                render_width,
+                render_height,
+                convention,
+                prev_view_projection,
+                prev_jitter,
+                prev_position,
+            );
         }
+        self.rendered = Some(RenderedCamera {
+            view_projection,
+            jitter_px: jitter.unwrap_or(Vec2::ZERO),
+            position: matrices.position_world,
+        });
+    }
+
+    /// The jitter (render pixels) in the uniform as packed, zero if none.
+    pub fn jitter_px(&self) -> Vec2 {
+        let at = Self::BYTE_SIZE - 32;
+        let f = |i: usize| {
+            f32::from_ne_bytes(
+                self.raw_data[at + i * 4..at + i * 4 + 4]
+                    .try_into()
+                    .unwrap(),
+            )
+        };
+        Vec2::new(f(0), f(1))
+    }
+
+    /// Packs the uniform. `jitter` is in render pixels; `screen_width` /
+    /// `screen_height` are the render size.
+    #[allow(clippy::too_many_arguments)]
+    fn pack(
+        &mut self,
+        camera_matrices_orig: &CameraMatrices,
+        jitter: Option<Vec2>,
+        screen_width: f32,
+        screen_height: f32,
+        convention: crate::depth_convention::DepthConvention,
+        prev_view_projection: Mat4,
+        prev_jitter: Vec2,
+        prev_position: Vec3,
+    ) {
+        let mut camera_matrices = camera_matrices_orig.clone();
+        if let Some(jitter) = jitter {
+            // TAA jitter (see `crate::taa`): constant amplitude, one render
+            // pixel is `2 / size` in NDC, y flipped.
+            camera_matrices.projection = crate::taa::jittered_projection(
+                camera_matrices.projection,
+                jitter,
+                Vec2::new(screen_width, screen_height),
+            );
+        }
+        self.raw_is_jittered = jitter.is_some();
 
         // Layout written below (mirrors `CameraUniform` in WGSL). The additional inverse
         // projection and frustum rays let compute passes reconstruct per-pixel view/world
@@ -204,32 +353,38 @@ impl CameraBuffer {
             ],
         );
 
-        // M3 SSR temporal: the PRIOR frame's unjittered view-projection, for
-        // depth reprojection in the temporal SSR variant. `self.last_matrices`
-        // still holds the previous frame's matrices here — it is overwritten
-        // with THIS frame's below. Frame 0 (no history) → the current
-        // view-projection, i.e. zero camera motion so the first temporal frame
-        // reprojects onto itself. Non-temporal shaders ignore this trailing
-        // field (see `BYTE_SIZE`'s rationale).
-        let prev_view_projection = self
-            .last_matrices
-            .as_ref()
-            .map(|m| m.view_projection())
-            .unwrap_or_else(|| camera_matrices_orig.view_projection());
+        // M3 SSR temporal / TAA: the prior frame's unjittered
+        // view-projection. Non-temporal shaders ignore the trailing fields
+        // (see `BYTE_SIZE`'s rationale).
         write_f32_slice(
             &mut self.raw_data,
             &mut offset,
             &prev_view_projection.to_cols_array(),
         );
 
+        // TAA: this frame's UNJITTERED view-projection (motion vectors must
+        // not contain jitter), then the jitter itself so the resolve can
+        // remove it where the current frame is sampled.
+        write_f32_slice(
+            &mut self.raw_data,
+            &mut offset,
+            &camera_matrices_orig.view_projection().to_cols_array(),
+        );
+        let jitter = jitter.unwrap_or(Vec2::ZERO);
+        write_f32_slice(
+            &mut self.raw_data,
+            &mut offset,
+            &[jitter.x, jitter.y, prev_jitter.x, prev_jitter.y],
+        );
+        write_f32_slice(
+            &mut self.raw_data,
+            &mut offset,
+            &prev_position.extend(0.0).to_array(),
+        );
+
         debug_assert_eq!(offset, Self::BYTE_SIZE, "Buffer layout mismatch!");
 
         self.gpu_dirty = true;
-
-        // Store for next frame (unjittered versions)
-        self.last_matrices = Some(camera_matrices_orig);
-
-        Ok(())
     }
 
     /// Returns true if the camera was moved since the last update.
@@ -267,18 +422,12 @@ impl CameraBuffer {
     }
 }
 
-fn get_halton_jitter(frame_count: u32) -> Vec2 {
-    let x = halton(frame_count, 2) - 0.5;
-    let y = halton(frame_count, 3) - 0.5;
-    Vec2::new(x, y)
-}
-
 /// The Halton low-discrepancy sequence — `index`-th term in `base`.
 ///
 /// Shared rather than private because more than one feature wants a jitter
 /// sequence and they must not each grow their own: volumetrics jitters its
-/// froxel sample point with it, the (currently disabled) TAA camera jitter
-/// above uses it, and any future temporal pass will want it too. What is NOT
+/// froxel sample point with it and the TAA camera jitter (`crate::taa`) uses
+/// it. What is NOT
 /// shared is the SPACE each applies it in — NDC pixels for a camera jitter,
 /// froxel units for a volume — because that is genuinely per-feature.
 pub(crate) fn halton(mut index: u32, base: u32) -> f32 {

@@ -52,11 +52,11 @@ impl DisplayRenderPass {
         // Exposure is a camera setting that rarely changes between frames
         // — skip the `writeBuffer` when the value matches the prior frame.
         let exposure_scale = ctx.post_processing.exposure.exp2();
-        // Downsample ratio for the supersample shader variant: composite
-        // (render-res) extent over swap-chain extent. Exactly 1.0 when
-        // render_scale is off (ctx.viewport_size == ctx.surface_size).
-        let scale_x = ctx.viewport_size.0 as f32 / ctx.surface_size.0.max(1) as f32;
-        let scale_y = ctx.viewport_size.1 as f32 / ctx.surface_size.1.max(1) as f32;
+        // Downsample ratio for the supersample shader variant: the display
+        // input (`effects`, post size) over the swap-chain extent. Exactly
+        // 1.0 when post size is the surface (no supersampling, or TAA).
+        let scale_x = ctx.post_size.0 as f32 / ctx.surface_size.0.max(1) as f32;
+        let scale_y = ctx.post_size.1 as f32 / ctx.surface_size.1.max(1) as f32;
         let current = (exposure_scale, scale_x, scale_y);
         let needs_upload = match self.last_exposure_scale.get() {
             Some(prev) => {

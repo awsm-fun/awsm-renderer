@@ -108,6 +108,7 @@ impl RendererProfile {
                     msaa_sample_count: None,
                     smaa: false,
                     mipmap: true,
+                    taa: None,
                 },
                 post_processing: PostProcessing {
                     tonemapping: ToneMapping::KhronosNeutralPbr,
@@ -174,6 +175,7 @@ impl RendererProfile {
                     msaa_sample_count: Some(4),
                     smaa: false,
                     mipmap: true,
+                    taa: None,
                 },
                 post_processing: PostProcessing {
                     tonemapping: ToneMapping::KhronosNeutralPbr,

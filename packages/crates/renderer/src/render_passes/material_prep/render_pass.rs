@@ -380,8 +380,8 @@ impl MaterialPrepRenderPass {
         compute_pass.set_bind_group(1, lights_bind_group, None)?;
         compute_pass.set_bind_group(2, shadows_bind_group, None)?;
 
-        let workgroups_x = ctx.render_texture_views.width.div_ceil(8);
-        let workgroups_y = ctx.render_texture_views.height.div_ceil(8);
+        let workgroups_x = ctx.render_texture_views.render_size.0.div_ceil(8);
+        let workgroups_y = ctx.render_texture_views.render_size.1.div_ceil(8);
         compute_pass.dispatch_workgroups(workgroups_x, Some(workgroups_y), Some(1));
 
         compute_pass.end();
@@ -549,8 +549,8 @@ impl MaterialPrepRenderPass {
         let v_bind_group = self.bind_groups.get_blur_v_bind_group()?;
 
         // 16×16 workgroups (shared-memory tiles — see the blur shader).
-        let workgroups_x = ctx.render_texture_views.width.div_ceil(16);
-        let workgroups_y = ctx.render_texture_views.height.div_ceil(16);
+        let workgroups_x = ctx.render_texture_views.render_size.0.div_ceil(16);
+        let workgroups_y = ctx.render_texture_views.render_size.1.div_ceil(16);
 
         // Horizontal: prep_shadow_visibility → temp.
         {

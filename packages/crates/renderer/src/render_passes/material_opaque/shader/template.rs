@@ -1210,8 +1210,12 @@ mod size_regression {
     // and, under `light_access`, `material_pixel_light_shadow` plus the
     // prep-shadow reader it needs (ALL only, ~+3.4 KB).
     // Measured 99.5 KB empty / 145.4 KB all.
-    const CEIL_EMPTY_MSAA4_MIPS: usize = 101_000;
-    const CEIL_ALL_MSAA4_MIPS: usize = 147_000;
+    // **TAA camera fields:** `CameraRaw` / `Camera` gained
+    // `view_projection_unjittered`, `jitter` and `prev_position` (end-appended, shared by
+    // every pass that includes `camera.wgsl`): +0.4 KB on both.
+    // Measured 101.1 KB empty / 147.3 KB all.
+    const CEIL_EMPTY_MSAA4_MIPS: usize = 101_500;
+    const CEIL_ALL_MSAA4_MIPS: usize = 147_800;
 
     #[test]
     fn custom_shader_sizes_within_ceiling() {

@@ -166,8 +166,8 @@ impl EffectsRenderPass {
         // `composite` directly — disproportionate complexity for the
         // saving. Re-evaluate in a follow-up if profiling justifies.
         let workgroup_size = (
-            ctx.render_texture_views.width.div_ceil(8),
-            ctx.render_texture_views.height.div_ceil(8),
+            ctx.render_texture_views.post_size.0.div_ceil(8),
+            ctx.render_texture_views.post_size.1.div_ceil(8),
         );
 
         if ctx.post_processing.bloom {

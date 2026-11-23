@@ -531,22 +531,36 @@ impl AwsmRenderer {
         self.meshes
             .write_gpu(&self.logging, &self.gpu, &mut self.bind_groups)?;
         laps.lap("Prep: Meshes Upload");
+        // Surface / render / post sizes — read once per frame (one
+        // `getCurrentTexture().getSize()` wasm↔JS hop) and threaded through
+        // `RenderContext.{surface_size, render_size, post_size}` and the
+        // render-texture views. Fixed for the duration of the frame (set by
+        // the surface configuration). Scene-side work reads `render`,
+        // bloom / SMAA / effects / display read `post` (equal without TAA).
+        let frame_sizes = self.frame_sizes()?;
+        // TAA: apply this frame's camera jitter (when one applies) and latch
+        // the camera this frame renders with as next frame's "previous".
+        // Without jitter this leaves the uniform exactly as `set_camera`
+        // packed it. The phase count follows post / render (03 §1.1: O / R).
+        {
+            let (render_w, render_h) = frame_sizes.render;
+            let jitter = self.frame_jitter(render_w, frame_sizes.post.0);
+            let temporal = self.taa_jitter_enabled();
+            if temporal {
+                // The jitter phase advances once per rendered frame.
+                self.taa.frame_index = self.taa.frame_index.wrapping_add(1);
+            }
+            self.camera.prepare_frame(
+                jitter,
+                temporal,
+                render_w as f32,
+                render_h as f32,
+                self.features.depth(),
+            );
+        }
         self.camera
             .write_gpu(&self.logging, &self.gpu, &self.bind_groups)?;
         laps.lap("Prep: Camera Upload");
-        // Live swap-chain size — read once per frame and threaded through
-        // `RenderContext.viewport_size`. The value is fixed for the
-        // duration of the frame (set by the surface configuration), so
-        // every pass-level caller that previously re-read it
-        // (`render_textures.views`, `update_camera`, the FrameGlobals
-        // upload below) now consults the same cached pair. Each
-        // `current_context_texture_size()` is a `getCurrentTexture().getSize()`
-        // wasm↔JS hop — cheap individually but it stacked up.
-        let surface_size = self.gpu.current_context_texture_size()?;
-        let viewport_size = (
-            crate::size::scale_extent(surface_size.0, self.render_scale),
-            crate::size::scale_extent(surface_size.1, self.render_scale),
-        );
         // FrameGlobals — renderer-wide per-frame uniform. Written after
         // Camera so it shares the same upload batch and lands before any
         // pass that reads it. Resolution comes from the live context
@@ -556,7 +570,7 @@ impl AwsmRenderer {
                 &self.logging,
                 &self.gpu,
                 self.render_textures.frame_count(),
-                [viewport_size.0, viewport_size.1],
+                [frame_sizes.render.0, frame_sizes.render.1],
             )?;
         }
         // Extras pool — flush any dirty bytes from BufferSlot
@@ -617,7 +631,7 @@ impl AwsmRenderer {
         let render_texture_views = self.render_textures.views(
             &self.gpu,
             self.anti_aliasing.clone(),
-            viewport_size,
+            frame_sizes,
             // T2.5: lazy opaque-mip-chain allocation. Once a
             // transmissive material registers, the flag is sticky
             // true and the texture grows to full mip count on the
@@ -653,8 +667,8 @@ impl AwsmRenderer {
         if let Some(hzb) = self.render_passes.hzb.as_mut() {
             if hzb.ensure_size(
                 &self.gpu,
-                render_texture_views.width,
-                render_texture_views.height,
+                render_texture_views.render_size.0,
+                render_texture_views.render_size.1,
             )? {
                 self.bind_groups
                     .mark_create(BindGroupCreate::TextureViewRecreate);
@@ -667,8 +681,8 @@ impl AwsmRenderer {
             if let Some(smaa) = self.render_passes.smaa.as_mut() {
                 if smaa.ensure_size(
                     &self.gpu,
-                    render_texture_views.width,
-                    render_texture_views.height,
+                    render_texture_views.post_size.0,
+                    render_texture_views.post_size.1,
                 )? {
                     self.bind_groups
                         .mark_create(BindGroupCreate::TextureViewRecreate);
@@ -690,8 +704,8 @@ impl AwsmRenderer {
             if let Some(bloom) = self.render_passes.bloom.as_mut() {
                 if bloom.ensure_size(
                     &self.gpu,
-                    render_texture_views.width,
-                    render_texture_views.height,
+                    render_texture_views.post_size.0,
+                    render_texture_views.post_size.1,
                 )? {
                     self.bind_groups
                         .mark_create(BindGroupCreate::TextureViewRecreate);
@@ -729,8 +743,10 @@ impl AwsmRenderer {
             if let Some(volumetrics) = self.render_passes.volumetrics.as_mut() {
                 if volumetrics.ensure_size(
                     &self.gpu,
-                    render_texture_views.width,
-                    render_texture_views.height,
+                    // Render size: the froxel grid is aligned with the light
+                    // culling tiles (scene pixels); effects samples it by UV.
+                    render_texture_views.render_size.0,
+                    render_texture_views.render_size.1,
                 )? {
                     self.bind_groups
                         .mark_create(BindGroupCreate::TextureViewRecreate);
@@ -822,8 +838,8 @@ impl AwsmRenderer {
         // (here) and the decal classify buckets (below). Calculate
         // once so the two callers can't drift if the workgroup tile
         // size ever changes.
-        let tile_x = render_texture_views.width.div_ceil(8);
-        let tile_y = render_texture_views.height.div_ceil(8);
+        let tile_x = render_texture_views.render_size.0.div_ceil(8);
+        let tile_y = render_texture_views.render_size.1.div_ceil(8);
         let tile_count = tile_x.saturating_mul(tile_y);
 
         // Classify buckets are sized to fit the current viewport's
@@ -1060,8 +1076,9 @@ impl AwsmRenderer {
             frame_optimizations: std::cell::Cell::new(
                 crate::optimization_policy::FrameOptimizations::default(),
             ),
-            viewport_size,
-            surface_size,
+            render_size: frame_sizes.render,
+            post_size: frame_sizes.post,
+            surface_size: frame_sizes.surface,
             prep_config: &self.prep_config,
             // GPU timestamp handle — `None` (no slots ever allocated) unless the
             // `gpu` tier is on AND the device supports timestamp queries.
@@ -1845,8 +1862,8 @@ impl AwsmRenderer {
                     crate::profiling::cpu_scope(&self.logging, "SSR RenderPass", true);
                 ssr.render(
                     &ctx,
-                    ctx.render_texture_views.width,
-                    ctx.render_texture_views.height,
+                    ctx.render_texture_views.render_size.0,
+                    ctx.render_texture_views.render_size.1,
                     ctx.post_processing.ssr.resolution_scale < 1.0,
                 )?;
             }
@@ -1874,8 +1891,8 @@ impl AwsmRenderer {
                     crate::profiling::cpu_scope(&self.logging, "Bloom RenderPass", true);
                 bloom.render(
                     &ctx,
-                    ctx.render_texture_views.width,
-                    ctx.render_texture_views.height,
+                    ctx.render_texture_views.post_size.0,
+                    ctx.render_texture_views.post_size.1,
                 )?;
             }
         }
@@ -2572,20 +2589,22 @@ pub struct RenderContext<'a> {
     /// `frame_optimizations.get().gpu_occlusion = true` means "run it
     /// this frame."
     pub frame_optimizations: std::cell::Cell<crate::optimization_policy::FrameOptimizations>,
-    /// Cached `(width, height)` of the live swap-chain texture, snapped
-    /// once at the top of `render()` and stable for the whole frame.
-    /// Use this in place of repeated `gpu.current_context_texture_size()`
-    /// calls — each call crosses the wasm↔JS boundary into
-    /// `getCurrentTexture().getSize()`, which is small (~0.1–1 µs) but
-    /// happens at multiple pass-level call sites per frame.
     /// GPU timestamp handle for this frame. `None` when GPU timing is off or
     /// unsupported — passes then attach no `timestampWrites`. See
     /// [`crate::profiling::GpuTimestamps`].
     pub gpu_timestamps: Option<&'a crate::profiling::GpuTimestamps>,
-    pub viewport_size: (u32, u32),
-    /// The raw swap-chain `(width, height)` — differs from
-    /// `viewport_size` only when `render_scale != 1.0`. Only the display
-    /// pass (downsample ratio) should need it.
+    /// Scene resolution for this frame (`AwsmRenderer::render_size`), equal
+    /// to `render_texture_views.render_size`. The three sizes below are
+    /// snapped once at the top of `render()` and stable for the whole frame;
+    /// use them instead of `gpu.current_context_texture_size()` (a wasm↔JS
+    /// hop per call).
+    pub render_size: (u32, u32),
+    /// Post-processing resolution for this frame (`AwsmRenderer::post_size`),
+    /// equal to `render_texture_views.post_size`. Equal to `render_size`
+    /// without TAA.
+    pub post_size: (u32, u32),
+    /// The raw swap-chain `(width, height)`. Only the display pass
+    /// (downsample ratio, colour attachment) should need it.
     pub surface_size: (u32, u32),
     /// Plan B shared-prep config. Inert today — the prep pass is dispatched
     /// only when `render_passes.material_prep` is `Some` (i.e. when this is

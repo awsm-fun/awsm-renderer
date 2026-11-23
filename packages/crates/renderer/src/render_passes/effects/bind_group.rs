@@ -163,8 +163,8 @@ impl EffectsBindGroups {
     ) -> Result<()> {
         let dof_data_size = if dof {
             dof_data_byte_size(
-                ctx.render_texture_views.width,
-                ctx.render_texture_views.height,
+                ctx.render_texture_views.post_size.0,
+                ctx.render_texture_views.post_size.1,
             )
         } else {
             4
