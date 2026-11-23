@@ -152,12 +152,12 @@ fn view_distance(depth: f32, inv_proj: mat4x4<f32>) -> f32 {
     return -v.z / v.w;
 }
 
-// Last frame's depth around unjittered position `uv`: the nearest of the 2x2
-// footprint. Last frame's render pixel p held unjittered position
+// Last frame's depth around unjittered position `uv`: x = the nearest and
+// y = the farthest raw depth of the 2x2 footprint. Last frame's render pixel p held unjittered position
 // p + 0.5 - prev_jitter, so the texel-space position is
 // uv * size + prev_jitter - 0.5, in that texture's own size (the render size
 // may have changed since).
-fn prev_nearest_depth(uv: vec2<f32>, prev_jitter: vec2<f32>) -> f32 {
+fn prev_depth_footprint(uv: vec2<f32>, prev_jitter: vec2<f32>) -> vec2<f32> {
     let dims = vec2<i32>(textureDimensions(prev_depth_tex));
     let hi = dims - 1;
     let pd0 = vec2<i32>(floor(uv * vec2<f32>(dims) + prev_jitter - 0.5));
@@ -165,10 +165,12 @@ fn prev_nearest_depth(uv: vec2<f32>, prev_jitter: vec2<f32>) -> f32 {
     let pd10 = textureLoad(prev_depth_tex, clamp(pd0 + vec2<i32>(1, 0), vec2<i32>(0), hi), 0);
     let pd01 = textureLoad(prev_depth_tex, clamp(pd0 + vec2<i32>(0, 1), vec2<i32>(0), hi), 0);
     let pd11 = textureLoad(prev_depth_tex, clamp(pd0 + vec2<i32>(1, 1), vec2<i32>(0), hi), 0);
+    let lo = min(min(pd00, pd10), min(pd01, pd11));
+    let hi_depth = max(max(pd00, pd10), max(pd01, pd11));
     {% if reverse_z %}
-    return max(max(pd00, pd10), max(pd01, pd11));
+    return vec2<f32>(hi_depth, lo);
     {% else %}
-    return min(min(pd00, pd10), min(pd01, pd11));
+    return vec2<f32>(lo, hi_depth);
     {% endif %}
 }
 
@@ -376,7 +378,8 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (!sky) {
         d_expected = static_reprojection(uv_q, nearest_depth, cam).z;
     }
-    let d_prev = view_distance(prev_nearest_depth(uv_hist, cam.prev_jitter), cam.inv_proj);
+    let prev_footprint = prev_depth_footprint(uv_hist, cam.prev_jitter);
+    let d_prev = view_distance(prev_footprint.x, cam.inv_proj);
     var disoccluded = d_prev < d_expected * (1.0 - params.disocclusion_threshold);
 
     // Test 2: the pixel's OWN surface, with its own depth and its own vector.
@@ -388,6 +391,11 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // line. For a surface that did not move (its vector is the camera's
     // reprojection) the expected previous distance is exact, so there the
     // slack shrinks to the surface's own depth slope across a pixel.
+    //
+    // This test takes the FARTHEST depth of the previous footprint: it asks
+    // whether the pixel's own surface was visible ANYWHERE in the 2x2 it
+    // came from. Taking the nearest would flag every pixel beside a static
+    // silhouette whenever the jitter moved the footprint across it.
     let dilated = any(nearest_p != p0);
     if (!is_sky(z_own)) {
         var v_own = v;
@@ -402,14 +410,14 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
             max(abs(view_distance(z_left, cam.inv_proj) - d_own), abs(view_distance(z_right, cam.inv_proj) - d_own)),
             max(abs(view_distance(z_up, cam.inv_proj) - d_own), abs(view_distance(z_down, cam.inv_proj) - d_own)),
         );
-        // Twice the steepest one-pixel step (the previous footprint is the
-        // nearest of a 2x2, up to a pixel away), plus a floor for depth
-        // precision. Never looser than the general threshold.
+        // Twice the steepest one-pixel step (the footprint's samples are up
+        // to a pixel away), plus a floor for depth precision. Never looser
+        // than the general threshold.
         let slack_static = min(params.disocclusion_threshold, 2.0 * slope / max(d_own, 1.0e-6) + 0.002);
         let slack_own = select(params.disocclusion_threshold, slack_static, is_static);
-        var d_prev_own = d_prev;
+        var d_prev_own = view_distance(prev_footprint.y, cam.inv_proj);
         if (dilated) {
-            d_prev_own = view_distance(prev_nearest_depth(uv_hist_own, cam.prev_jitter), cam.inv_proj);
+            d_prev_own = view_distance(prev_depth_footprint(uv_hist_own, cam.prev_jitter).y, cam.inv_proj);
         }
         if (d_prev_own < own.z * (1.0 - slack_own)) {
             disoccluded = true;
