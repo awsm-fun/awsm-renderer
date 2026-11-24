@@ -331,6 +331,8 @@ pub fn boot() -> Result<(), JsValue> {
             "overlay-cost" => overlay::overlay_cost_mode(&p, &mut r).await,
             #[cfg(feature = "taa-fb-overlay")]
             "overlay-parity" => overlay::overlay_parity_mode(&p, &mut r).await,
+            #[cfg(all(feature = "taa-fb-overlay", feature = "taa-disocclusion"))]
+            "level-switch" => overlay::level_switch_mode(&p, &mut r).await,
             other => r.emit("mode", false, &format!("unknown mode `{other}`")),
         }
         r.complete();

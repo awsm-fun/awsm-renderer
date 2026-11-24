@@ -92,13 +92,17 @@ All colour errors are measured on the tonemapped, display-encoded image in
   (a) pixels are followed along their motion into events. The gate: **in
   the trail band a moving object leaves and in the still parts of the
   frame, no (a) event lasts more than one frame** (`ghost-persist`), at the
-  default configuration; and where (b) and (c) pixels are, TAA's mean error
-  is no worse than MSAA 4×'s on the same region. The moving objects' own
-  surfaces are reported, not gated (softness of moving detail, judged
-  against MSAA by its region error). Scenes without a moving object
-  (`taa-orbit`) and the sub-pixel-wire stress scene (`taa-thin`, whose
-  still-image events repeat with the jitter cycle and are covered by the
-  flicker test) are reported only. The original numbers stay in every
+  default configuration; and over each of those two regions TAA's mean
+  error is no worse than MSAA 4×'s or the oracle's, whichever is larger
+  (`ghost-region`; all four means, with no AA's, are printed, so a region
+  where TAA is above MSAA is visible even when the line passes). The moving
+  objects' own surfaces are reported, not gated (softness of moving detail,
+  judged against MSAA by its region error). `taa-orbit` moves only the
+  camera: its band is the pixels whose motion fell below 0.05 px, so its
+  trail and still regions are reported only, judged by the moving-region
+  error against MSAA. `taa-thin`'s still region is reported only: sub-pixel
+  wires in a still image repeat with the 8-frame jitter cycle, which the
+  flicker test judges. The original numbers stay in every
   report (`trail`, `trail-mean`, `trail-max-restated`, `trail-max-compare`).
 - **Stop:** after motion stops, the whole image is within mean < 1 of the
   reference after 8 frames. A slower settle is history surviving that

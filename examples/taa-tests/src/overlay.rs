@@ -10,6 +10,12 @@
 //!   frames). `&fallback-storage=N` exercises the limit tiers.
 //! - `?mode=overlay-cost&size=1920x1435`: the overlay pass by repetition,
 //!   `(T(N) − T(1)) / (N − 1)` over a busy window (`repeat=1,8`).
+//! - `?mode=level-switch` (round 3, `taa-disocclusion`): live changes of the
+//!   disocclusion level on one renderer (with `&fallback`, on the forced
+//!   fallback, where only the id level copies the previous visibility
+//!   target). Each switch must set and commit, keep the velocity path, and
+//!   converge (time frozen) to the same image as a fresh session set to that
+//!   level once.
 
 use anyhow::{anyhow, Result};
 
@@ -465,4 +471,134 @@ fn pass_stat(stats: &[(&'static str, awsm_renderer::profiling::TimingStat)]) -> 
         .find(|(k, _)| *k == "TAA Overlay")
         .map(|(_, v)| (v.count, v.total_ms))
         .unwrap_or((0, 0.0))
+}
+
+/// The disocclusion levels a `level-switch` run steps through, starting from
+/// the session's level (the default, `DepthMotionAndId`): every transition
+/// between two levels, both ways.
+#[cfg(feature = "taa-disocclusion")]
+const LEVEL_SEQUENCE: [awsm_renderer::taa::TaaDisocclusion; 6] = {
+    use awsm_renderer::taa::TaaDisocclusion::*;
+    [
+        Depth,
+        DepthAndMotion,
+        DepthMotionAndId,
+        DepthAndMotion,
+        Depth,
+        DepthMotionAndId,
+    ]
+};
+
+#[cfg(feature = "taa-disocclusion")]
+pub async fn level_switch_mode(p: &Params, r: &mut Report) {
+    let scenes = if p.scenes_given {
+        p.scenes.clone()
+    } else {
+        vec!["taa-skin".to_string(), "kitchen-sink".to_string()]
+    };
+    for scene in scenes {
+        set_hud(&format!("taa-tests: level-switch {scene}…"));
+        match level_switch_scene(p, &scene).await {
+            Ok(steps) => {
+                for (name, ok, detail) in steps {
+                    r.emit(&format!("level-switch:{scene}:{name}"), ok, &detail);
+                }
+            }
+            Err(e) => r.emit(
+                &format!("level-switch:{scene}"),
+                false,
+                &format!("error: {e:#}"),
+            ),
+        }
+    }
+}
+
+/// Frames rendered moving after a switch, then frozen before the capture.
+#[cfg(feature = "taa-disocclusion")]
+const SWITCH_MOVING: u32 = 12;
+#[cfg(feature = "taa-disocclusion")]
+const SWITCH_FROZEN: u32 = 40;
+
+#[cfg(feature = "taa-disocclusion")]
+async fn set_level(s: &mut Session, level: awsm_renderer::taa::TaaDisocclusion) -> Result<()> {
+    let mut aa = s.renderer.anti_aliasing.clone();
+    aa.taa
+        .as_mut()
+        .ok_or_else(|| anyhow!("TAA is not on"))?
+        .disocclusion = level;
+    s.renderer
+        .set_anti_aliasing(aa)
+        .await
+        .map_err(|e| anyhow!("set_anti_aliasing({level:?}): {e}"))?;
+    s.renderer
+        .commit_load(|_| {})
+        .await
+        .map_err(|e| anyhow!("commit_load({level:?}): {e}"))?;
+    let now = s
+        .renderer
+        .anti_aliasing
+        .taa
+        .as_ref()
+        .map(|t| t.disocclusion);
+    if now != Some(level) {
+        return Err(anyhow!(
+            "level after the switch is {now:?}, asked {level:?}"
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(feature = "taa-disocclusion")]
+async fn frozen_capture(s: &mut Session) -> Result<crate::metrics::Image> {
+    for _ in 0..SWITCH_FROZEN {
+        s.render_frozen(None)?;
+        gpu_idle(&s.renderer).await;
+    }
+    s.render_frozen_captured(None).await
+}
+
+#[cfg(feature = "taa-disocclusion")]
+async fn level_switch_scene(p: &Params, scene: &str) -> Result<Vec<(String, bool, String)>> {
+    let mut steps = Vec::new();
+    let mut s = Session::open(opts(p, scene)).await?;
+    let path = s.renderer.taa_velocity_path();
+    s.play_to(20).await?;
+    for (i, &level) in LEVEL_SEQUENCE.iter().enumerate() {
+        let name = format!("{i}-{level:?}");
+        set_level(&mut s, level).await?;
+        if s.renderer.taa_velocity_path() != path {
+            return Err(anyhow!(
+                "velocity path changed with the level: {path:?} -> {:?}",
+                s.renderer.taa_velocity_path()
+            ));
+        }
+        for _ in 0..SWITCH_MOVING {
+            s.render_next()?;
+            gpu_idle(&s.renderer).await;
+        }
+        let k = s.next_k.saturating_sub(1);
+        let live = frozen_capture(&mut s).await?;
+        // The reference: a fresh session set to this level once, at the
+        // same scenario frame, converged the same way.
+        let mut fresh = Session::open(opts(p, scene)).await?;
+        set_level(&mut fresh, level).await?;
+        fresh.play_to(k).await?;
+        let reference = frozen_capture(&mut fresh).await?;
+        fresh.destroy();
+        let e = crate::metrics::abs_error(&live, &reference, None);
+        // Same frozen frame, converged history: only the jitter phase at the
+        // capture differs (the sessions rendered different frame counts).
+        let ok = e.mean < 0.5 && e.p99 <= 4;
+        steps.push((
+            name,
+            ok,
+            format!(
+                "{path:?}: set + commit ok, path kept; after {SWITCH_MOVING} moving + \
+                 {SWITCH_FROZEN} frozen frames at k{k}, live vs fresh-at-this-level: {e} \
+                 (bound mean < 0.5, p99 <= 4)"
+            ),
+        ));
+    }
+    s.destroy();
+    Ok(steps)
 }
