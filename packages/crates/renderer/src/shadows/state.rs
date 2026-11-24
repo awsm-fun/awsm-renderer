@@ -168,6 +168,11 @@ pub struct Shadows {
     /// Per-slot owner. `None` means the slot is free; `Some(key)`
     /// means it currently holds the shadow for that point light.
     pub cube_slots: Vec<Option<LightKey>>,
+    /// Whether the "cube pool exhausted" warning is showing for the current
+    /// overflow episode (see [`cube_overflow_warning`]): it is logged once
+    /// when casting point lights first outnumber the cube slots, not every
+    /// frame they stay that way.
+    cube_overflow_warned: bool,
     /// Storage buffer of per-shadow descriptors. Kept for forward
     /// compatibility with the plan's storage-buffer layout; the
     /// material-opaque bind group reads from `descriptors_uniform`
@@ -1053,6 +1058,7 @@ impl Shadows {
             cube_face_views,
             cube_resolution,
             cube_slots: vec![None; cube_slot_count as usize],
+            cube_overflow_warned: false,
             evsm_atlas_size,
             evsm_blur_pingpong_texture,
             evsm_blur_pingpong_view,
@@ -1920,7 +1926,7 @@ impl Shadows {
                 }
             }
         }
-        let mut cube_overflow = false;
+        let mut cubeless_lights = 0u32;
         let mut place = |w: u32, h: u32, atlas_size: u32| -> Option<[u32; 4]> {
             if atlas_x + w > atlas_size {
                 atlas_x = 0;
@@ -2396,7 +2402,7 @@ impl Shadows {
                     });
                     let slot = owned.or_else(|| self.cube_slots.iter().position(|s| s.is_none()));
                     let Some(slot_index) = slot else {
-                        cube_overflow = true;
+                        cubeless_lights += 1;
                         continue;
                     };
                     // A slot this light did NOT already own holds another
@@ -2700,11 +2706,12 @@ impl Shadows {
             }
         }
 
-        if cube_overflow {
-            tracing::warn!(
-                "point-light shadow cube pool exhausted (capacity {})",
-                self.cube_slots.len()
-            );
+        if let Some(msg) = cube_overflow_warning(
+            &mut self.cube_overflow_warned,
+            cubeless_lights,
+            self.cube_slots.len(),
+        ) {
+            tracing::warn!("{msg}");
         }
 
         // Propagate per-cascade throttle decisions into the EVSM
@@ -3009,5 +3016,45 @@ fn warn_view_budget(config: &ShadowsConfig) {
             MAX_SHADOW_VIEWS,
             MAX_SHADOW_VIEWS - point_views,
         );
+    }
+}
+
+/// The "cube pool exhausted" warning, edge-triggered: `Some` only on the frame
+/// an overflow starts (`cubeless` casting point lights found no cube slot);
+/// `warned` stays set while it lasts and clears once every caster fits again,
+/// so a later overflow warns again.
+fn cube_overflow_warning(warned: &mut bool, cubeless: u32, capacity: usize) -> Option<String> {
+    if cubeless == 0 {
+        *warned = false;
+        return None;
+    }
+    if std::mem::replace(warned, true) {
+        return None;
+    }
+    Some(format!(
+        "point-light shadow cube pool exhausted (capacity {capacity}): {cubeless} casting \
+         point light(s) render without shadows until slots free up (logged once per episode)"
+    ))
+}
+
+#[cfg(test)]
+mod cube_overflow_warning_tests {
+    use super::cube_overflow_warning;
+
+    #[test]
+    fn an_overflow_warns_once_until_it_clears() {
+        let mut warned = false;
+        // Every caster fits: nothing.
+        assert!(cube_overflow_warning(&mut warned, 0, 8).is_none());
+        // Overflow starts: one warning naming the count...
+        let msg = cube_overflow_warning(&mut warned, 3, 8).expect("first overflow frame warns");
+        assert!(msg.contains("capacity 8") && msg.contains("3 casting"));
+        // ...and none on the following frames while it lasts, whatever the count.
+        for cubeless in [3, 3, 5, 1] {
+            assert!(cube_overflow_warning(&mut warned, cubeless, 8).is_none());
+        }
+        // Clears, then a new overflow warns again.
+        assert!(cube_overflow_warning(&mut warned, 0, 8).is_none());
+        assert!(cube_overflow_warning(&mut warned, 2, 8).is_some());
     }
 }
