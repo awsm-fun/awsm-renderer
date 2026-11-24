@@ -27,11 +27,19 @@ mod gates;
 #[cfg(feature = "taa-hooks")]
 mod hooks;
 mod modes;
+#[cfg(feature = "taa-phase1")]
+mod phase3;
+#[cfg(feature = "taa-phase4")]
+mod phase4;
+#[cfg(feature = "taa-phase1")]
+mod reactive;
 mod report;
 mod session;
 mod store;
 #[cfg(feature = "taa-tuning-v2")]
 mod sweep;
+#[cfg(feature = "taa-tuning-v2")]
+mod sweep2;
 #[cfg(feature = "taa-phase1")]
 mod velocity;
 
@@ -83,6 +91,12 @@ pub struct Params {
     /// `?refcache=<name>`: cache the 64-phase references in the store under
     /// `refcache/<name>/` and reuse them (they do not depend on TAA tuning).
     pub refcache: Option<String>,
+    /// `?ref=karis|linear`: the reference's accumulation space (Karis by
+    /// default: the space the resolve blends in, 05 §3 "the same weights the
+    /// resolve uses"; display-linear is the stricter external yardstick).
+    pub karis: bool,
+    /// `?scale=`: TAA render scale (phase 4; 1 = native).
+    pub scale: f32,
     /// `?combos=a-b`: the slice of the tune-sweep grid this page runs.
     pub combos: Option<(usize, usize)>,
 }
@@ -180,6 +194,10 @@ impl Params {
                 })
                 .unwrap_or_default(),
             refcache: url_value("refcache").filter(|v| !v.is_empty()),
+            karis: url_value("ref").as_deref() != Some("linear"),
+            scale: url_value("scale")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(1.0),
             combos: url_value("combos").and_then(|v| {
                 let (a, b) = v.split_once('-')?;
                 Some((a.parse().ok()?, b.parse().ok()?))
@@ -228,7 +246,18 @@ pub fn boot() -> Result<(), JsValue> {
             r.emit("tune", false, &e);
         }
         #[cfg(feature = "taa-hooks")]
-        r.info("tuning", &hooks::tune_label());
+        {
+            hooks::set_scale(p.scale);
+            r.info(
+                "tuning",
+                &format!(
+                    "{}; TAA render scale {}; reference space {}",
+                    hooks::tune_label(),
+                    p.scale,
+                    if p.karis { "ref=karis" } else { "ref=linear" }
+                ),
+            );
+        }
         match p.mode.as_str() {
             "determinism" => modes::determinism(&p, &mut r).await,
             "baseline-record" => modes::baseline_record(&p, &mut r).await,
@@ -253,11 +282,27 @@ pub fn boot() -> Result<(), JsValue> {
             #[cfg(feature = "taa-phase1")]
             "reference-floor" => evidence::reference_floor_mode(&p, &mut r).await,
             #[cfg(feature = "taa-phase1")]
+            "phase3" => phase3::phase3_mode(&p, &mut r).await,
+            #[cfg(feature = "taa-phase1")]
+            "reactive-sweep" => reactive::reactive_sweep_mode(&p, &mut r).await,
+            #[cfg(feature = "taa-phase4")]
+            "scale-change" => phase4::scale_change_mode(&p, &mut r).await,
+            #[cfg(feature = "taa-phase4")]
+            "mip-bias" => phase4::mip_bias_mode(&p, &mut r).await,
+            #[cfg(feature = "taa-phase4")]
+            "governor-hitch" => phase4::governor_hitch_mode(&p, &mut r).await,
+            #[cfg(feature = "taa-phase1")]
             "disocclusion" => disocc::disocclusion_mode(&p, &mut r).await,
             #[cfg(feature = "taa-phase1")]
             "disocclusion-static" => disocc::disocclusion_static_mode(&p, &mut r).await,
+            #[cfg(feature = "taa-phase1")]
+            "static-rejection" => disocc::static_rejection_mode(&p, &mut r).await,
+            #[cfg(feature = "taa-phase1")]
+            "rejection-motion" => disocc::rejection_motion_mode(&p, &mut r).await,
             #[cfg(feature = "taa-tuning-v2")]
             "tune-sweep" => sweep::tune_sweep_mode(&p, &mut r).await,
+            #[cfg(feature = "taa-tuning-v2")]
+            "tune-sweep2" => sweep2::tune_sweep2_mode(&p, &mut r).await,
             other => r.emit("mode", false, &format!("unknown mode `{other}`")),
         }
         r.complete();

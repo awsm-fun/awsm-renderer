@@ -215,7 +215,14 @@ impl TaaReactiveSeed {
             3,
             1,
             0,
-            seed_instance(hud, ctx.features.depth().clear_value() == 0.0, k_ssr),
+            seed_instance(
+                hud,
+                ctx.features.depth().clear_value() == 0.0,
+                k_ssr,
+                ctx.render_textures
+                    .formats
+                    .taa_prep_velocity(ctx.anti_aliasing),
+            ),
         );
         Ok(())
     }
@@ -228,15 +235,21 @@ impl TaaReactiveSeed {
 
 /// The draw's first instance, the seed's per-draw constants (see the
 /// shader): bits 0-1 the HUD mode (0 none, 1 forward Z, 2 reverse Z), bits
-/// 2.. `k_ssr` in 1/1024 steps.
-pub(crate) fn seed_instance(hud: bool, reverse_z: bool, k_ssr: Option<f32>) -> u32 {
+/// 2-12 `k_ssr` in 1/1024 steps, bit 16 "mark non-rigid meshes" (the
+/// prep-pass fallback).
+pub(crate) fn seed_instance(
+    hud: bool,
+    reverse_z: bool,
+    k_ssr: Option<f32>,
+    non_rigid: bool,
+) -> u32 {
     let hud_mode = match (hud, reverse_z) {
         (false, _) => 0,
         (true, false) => 1,
         (true, true) => 2,
     };
     let k = (k_ssr.unwrap_or(0.0).clamp(0.0, 1.0) * 1024.0).round() as u32;
-    hud_mode | (k << 2)
+    hud_mode | (k << 2) | (u32::from(non_rigid) << 16)
 }
 
 fn layout_cache_key(ssr: bool) -> BindGroupLayoutCacheKey {
@@ -284,10 +297,42 @@ mod tests {
 
     #[test]
     fn seed_instance_packs_hud_mode_and_k_ssr() {
-        assert_eq!(seed_instance(false, false, None), 0);
-        assert_eq!(seed_instance(true, false, None), 1);
-        assert_eq!(seed_instance(true, true, None), 2);
-        assert_eq!(seed_instance(false, false, Some(0.25)) >> 2, 256);
-        assert_eq!(seed_instance(true, true, Some(0.5)), 2 | (512 << 2));
+        assert_eq!(seed_instance(false, false, None, false), 0);
+        assert_eq!(seed_instance(true, false, None, false), 1);
+        assert_eq!(seed_instance(true, true, None, false), 2);
+        assert_eq!(seed_instance(false, false, Some(0.25), false) >> 2, 256);
+        assert_eq!(seed_instance(true, true, Some(0.5), false), 2 | (512 << 2));
+        // k_ssr (bits 2-12) never reaches the non-rigid bit.
+        assert_eq!(seed_instance(false, false, Some(1.0), false) & (1 << 16), 0);
+        assert_eq!(seed_instance(false, false, Some(1.0), true) >> 16, 1);
+    }
+
+    #[test]
+    fn seed_reads_the_non_rigid_meta_word() {
+        use crate::render_passes::taa::shader::{
+            cache_key::ShaderCacheKeyTaaReactiveSeed, template::ShaderTemplateTaaReactiveSeed,
+        };
+        let src =
+            ShaderTemplateTaaReactiveSeed::try_from(&ShaderCacheKeyTaaReactiveSeed::default())
+                .unwrap()
+                .into_source()
+                .unwrap();
+        // The packer writes `non_rigid` at word 23, the slot the shared struct
+        // calls `_reserved3`.
+        let meta = include_str!("../shared/shared_wgsl/material_mesh_meta.wgsl");
+        let body = meta
+            .split("struct MaterialMeshMeta {")
+            .nth(1)
+            .and_then(|rest| rest.split('}').next())
+            .unwrap();
+        let fields: Vec<&str> = body
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.starts_with("//") && l.contains(':'))
+            .map(|l| l.split(':').next().unwrap().trim())
+            .collect();
+        assert_eq!(fields.iter().position(|f| *f == "_reserved3"), Some(23));
+        assert!(src.contains("const META_NON_RIGID: u32 = 23u;"));
+        assert!(src.contains("const NON_RIGID_BIT: u32 = 65536u;"));
     }
 }

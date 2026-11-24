@@ -57,6 +57,46 @@ pub struct MeshMeta {
     /// spend an unreasonable chunk of its budget on a u32 that hasn't
     /// changed since N frames ago.
     shadow_receiver_gate_cache: slotmap::SecondaryMap<MeshKey, u32>,
+    /// Meshes whose material meta carries the non-rigid flag
+    /// (`MaterialMeshMeta::non_rigid`). Gates the TAA reactive seed in the
+    /// prep-pass fallback: no non-rigid mesh, no seed draw.
+    non_rigid: slotmap::SecondaryMap<MeshKey, NonRigidMesh>,
+    /// How many of `non_rigid` currently have their meta flag set.
+    non_rigid_gated: usize,
+    /// Calls of `update_non_rigid_gates` (its own clock: the renderer's
+    /// `frame_index` is public and test harnesses rewind it).
+    non_rigid_clock: u64,
+}
+
+/// A mesh whose surface can move with more than its node's matrix (TAA
+/// prep-pass fallback, 03 §2.4) and what makes it deform. Its meta flag
+/// (word 23) is set only while it actually deforms: a vertex hook always
+/// (unknowable), a skin / morph / instanced mesh for
+/// [`NON_RIGID_LINGER_FRAMES`] frames after its joint matrices / weights /
+/// instance transforms were written. At rest the prep vector is exact.
+#[derive(Clone, Copy, Debug)]
+struct NonRigidMesh {
+    skin: Option<SkinKey>,
+    morph: Option<GeometryMorphKey>,
+    /// The instance transforms' key (the mesh's node), when instanced.
+    instances: Option<crate::transforms::TransformKey>,
+    vertex_hook: bool,
+    /// `MeshMeta::non_rigid_clock` at the last deformation seen.
+    last_deformed: Option<u64>,
+    /// The flag as packed into the meta.
+    gate: bool,
+}
+
+/// Frames a deformation keeps a mesh flagged (the frame of the write plus
+/// two: the history it would otherwise accumulate across the change).
+pub const NON_RIGID_LINGER_FRAMES: u64 = 2;
+
+/// What deformed this frame (see [`MeshMeta::update_non_rigid_gates`]).
+#[derive(Default)]
+pub struct DeformedThisFrame {
+    pub skins: Vec<SkinKey>,
+    pub morphs: Vec<GeometryMorphKey>,
+    pub instances: Vec<crate::transforms::TransformKey>,
 }
 
 impl MeshMeta {
@@ -98,6 +138,9 @@ impl MeshMeta {
                 "MaterialMeshMetaData",
             ),
             shadow_receiver_gate_cache: slotmap::SecondaryMap::new(),
+            non_rigid: slotmap::SecondaryMap::new(),
+            non_rigid_gated: 0,
+            non_rigid_clock: 0,
         })
     }
 
@@ -135,6 +178,14 @@ impl MeshMeta {
         let transform_offset = transforms.buffer_offset(transform_key)?;
         let normal_matrix_offset = transforms.normals_buffer_offset(transform_key)?;
 
+        let vertex_hook = materials.has_vertex_hook(material_key);
+        let non_rigid_class =
+            skin_key.is_some() || geometry_morph_key.is_some() || mesh.instanced || vertex_hook;
+        // A re-insert (meta refresh) keeps the live gate; a new entry starts
+        // flagged only for a vertex hook (the rest flag on their first write).
+        let previous = self.non_rigid.get(mesh_key).copied();
+        let gate = vertex_hook || previous.is_some_and(|p| p.gate && non_rigid_class);
+        let non_rigid = gate;
         let meta_data = MaterialMeshMeta {
             mesh_key,
             material_morph_key,
@@ -148,8 +199,30 @@ impl MeshMeta {
             materials,
             morphs,
             mesh,
+            non_rigid,
         }
         .to_bytes()?;
+        if previous.is_some_and(|p| p.gate) {
+            self.non_rigid_gated -= 1;
+        }
+        if non_rigid_class {
+            self.non_rigid.insert(
+                mesh_key,
+                NonRigidMesh {
+                    skin: skin_key,
+                    morph: geometry_morph_key,
+                    instances: mesh.instanced.then_some(transform_key),
+                    vertex_hook,
+                    last_deformed: previous.and_then(|p| p.last_deformed),
+                    gate,
+                },
+            );
+            if gate {
+                self.non_rigid_gated += 1;
+            }
+        } else {
+            self.non_rigid.remove(mesh_key);
+        }
         self.material_buffers.update(mesh_key, &meta_data);
         self.material_dirty = true;
 
@@ -329,6 +402,65 @@ impl MeshMeta {
         // Drop the cached shadow-gate value so a recycled MeshKey
         // doesn't inherit a stale "no change since last frame" hit.
         self.shadow_receiver_gate_cache.remove(mesh_key);
+        if self.non_rigid.remove(mesh_key).is_some_and(|n| n.gate) {
+            self.non_rigid_gated -= 1;
+        }
+    }
+
+    /// Whether any live mesh is flagged non-rigid right now (see
+    /// [`Self::update_non_rigid_gates`]): gates the TAA reactive seed in the
+    /// prep-pass fallback.
+    pub fn has_non_rigid(&self) -> bool {
+        self.non_rigid_gated > 0
+    }
+
+    /// TAA prep-pass fallback, once per frame: flag (meta word 23) exactly
+    /// the non-rigid meshes that deformed within the last
+    /// [`NON_RIGID_LINGER_FRAMES`] frames (plus vertex hooks, always). Only
+    /// transitions are patched into the meta. O(non-rigid meshes).
+    pub fn update_non_rigid_gates(&mut self, deformed: &DeformedThisFrame) {
+        if self.non_rigid.is_empty() {
+            return;
+        }
+        self.non_rigid_clock += 1;
+        let frame_index = self.non_rigid_clock;
+        let skins: std::collections::HashSet<SkinKey> = deformed.skins.iter().copied().collect();
+        let morphs: std::collections::HashSet<GeometryMorphKey> =
+            deformed.morphs.iter().copied().collect();
+        let instances: std::collections::HashSet<crate::transforms::TransformKey> =
+            deformed.instances.iter().copied().collect();
+        let mut patches: Vec<(MeshKey, bool)> = Vec::new();
+        for (mesh_key, entry) in self.non_rigid.iter_mut() {
+            if entry.skin.is_some_and(|k| skins.contains(&k))
+                || entry.morph.is_some_and(|k| morphs.contains(&k))
+                || entry.instances.is_some_and(|k| instances.contains(&k))
+            {
+                entry.last_deformed = Some(frame_index);
+            }
+            let gate = entry.vertex_hook
+                || entry
+                    .last_deformed
+                    .is_some_and(|f| frame_index.saturating_sub(f) <= NON_RIGID_LINGER_FRAMES);
+            if gate != entry.gate {
+                entry.gate = gate;
+                patches.push((mesh_key, gate));
+            }
+        }
+        for (mesh_key, gate) in patches {
+            if gate {
+                self.non_rigid_gated += 1;
+            } else {
+                self.non_rigid_gated -= 1;
+            }
+            if self.material_buffers.contains_key(mesh_key) {
+                self.material_buffers.update_offset(
+                    mesh_key,
+                    material_meta::MATERIAL_MESH_META_NON_RIGID_OFFSET,
+                    &u32::from(gate).to_le_bytes(),
+                );
+                self.material_dirty = true;
+            }
+        }
     }
 
     /// Writes dirty metadata buffers to the GPU.

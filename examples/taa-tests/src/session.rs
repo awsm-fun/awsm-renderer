@@ -145,6 +145,33 @@ impl Session {
         .map_err(|e| anyhow!("load_scene_for_player({}): {e:#}", opts.scene))?;
         renderer.update_transforms();
         check_aa(&renderer, opts.aa)?;
+        // The loader applies the scene's authored AA (with the schema, its
+        // TAA settings: DEFAULT tuning and native scale), which would silently
+        // replace the harness's `?tune=` / `?scale=` config. Re-apply it and
+        // require the renderer to hold exactly the requested TAA config.
+        #[cfg(feature = "taa-hooks")]
+        if opts.aa == Aa::Taa {
+            let want = crate::hooks::taa_native();
+            if renderer.anti_aliasing.taa != want.taa {
+                renderer
+                    .set_anti_aliasing(want.clone())
+                    .await
+                    .map_err(|e| anyhow!("set_anti_aliasing (tuning): {e}"))?;
+                renderer
+                    .commit_load(|_| {})
+                    .await
+                    .map_err(|e| anyhow!("commit_load after the tuning: {e}"))?;
+            }
+            if renderer.anti_aliasing.taa != want.taa {
+                return Err(anyhow!(
+                    "TAA config after load is {:?}, the harness asked for {:?}",
+                    renderer.anti_aliasing.taa,
+                    want.taa
+                ));
+            }
+            #[cfg(feature = "taa-experimental")]
+            renderer.set_taa_experimental_tuning(crate::hooks::experimental());
+        }
 
         // Name → handles (first node of a name wins; scripts use unique names).
         let mut names: Vec<(String, awsm_renderer_scene::NodeId)> = Vec::new();
@@ -560,6 +587,31 @@ impl Session {
                 self.renderer.remove_line(line);
             }
             hidden.push(name);
+        }
+        hidden
+    }
+
+    /// Hide (for the rest of the session) every node named in `names` (all
+    /// nodes of that name). Returns the names that matched.
+    pub fn hide_named(&mut self, names: &[&str]) -> Vec<String> {
+        let mut hidden = Vec::new();
+        for name in names {
+            let nodes = self.nodes_named(name);
+            if nodes.is_empty() {
+                continue;
+            }
+            for h in nodes {
+                for m in &h.meshes {
+                    let _ = self.renderer.set_mesh_hidden(*m, true);
+                }
+                if let Some(e) = &h.emitter {
+                    let _ = self.renderer.set_mesh_hidden(e.mesh, true);
+                }
+                if let Some(line) = h.line {
+                    self.renderer.remove_line(line);
+                }
+            }
+            hidden.push(name.to_string());
         }
         hidden
     }

@@ -182,13 +182,13 @@ impl Default for TaaTuningSettings {
             max_history_upscaling: 24.0,
             motion_alpha: 0.2,
             motion_alpha_speed: 8.0,
-            reactive_transparent: 0.8,
-            reactive_material: 0.6,
+            reactive_transparent: 0.3,
+            reactive_material: 0.2,
             reactive_ssr: 0.0,
             mip_bias_extra: 0.0,
-            max_history_moving: 4.0,
+            max_history_moving: 2.0,
             max_history_moving_speed: 1.0,
-            motion_edge_alpha: 0.6,
+            motion_edge_alpha: 1.0,
             motion_edge_speed: 2.0,
         }
     }

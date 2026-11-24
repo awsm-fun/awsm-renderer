@@ -564,7 +564,7 @@ impl AwsmRenderer {
             .pipelines
             .set_render_pipeline_key(
                 &self.post_processing,
-                self.render_scale_supersamples(),
+                self.display_downsamples(),
                 &self.gpu,
                 &mut self.shaders,
                 &mut self.pipelines,

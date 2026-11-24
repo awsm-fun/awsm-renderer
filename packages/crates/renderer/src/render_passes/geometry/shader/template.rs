@@ -93,6 +93,8 @@ impl ShaderTemplateGeometryVertex {
 pub struct ShaderTemplateGeometryFragment {
     /// TAA variant: writes the motion-vector target (`@location(4)`).
     velocity: bool,
+    /// TAA texture LOD bias. See [`ShaderCacheKeyGeometry::mip_bias`].
+    mip_bias: bool,
 }
 
 impl ShaderTemplateGeometryFragment {
@@ -100,6 +102,7 @@ impl ShaderTemplateGeometryFragment {
     pub fn new(cache_key: &ShaderCacheKeyGeometry) -> Self {
         Self {
             velocity: cache_key.velocity,
+            mip_bias: cache_key.mip_bias,
         }
     }
 }

@@ -51,6 +51,9 @@ pub struct ShaderTemplateMaterialPrepBindGroups {
     /// Depth convention (003) — read by the shared SSCS body in
     /// `shared_wgsl/shadow/bind_groups.wgsl`.
     pub reverse_z: bool,
+    /// TAA prep-pass velocity bindings. See
+    /// [`ShaderCacheKeyMaterialPrep::velocity`].
+    pub velocity: bool,
 }
 
 /// Compute body (`cs_prep`).
@@ -79,6 +82,9 @@ pub struct ShaderTemplateMaterialPrepCompute {
     /// flat edge-sample index maps to `(idx % W, idx / W)`. Must match the
     /// Rust-side allocation (`material_prep::buffers::EDGE_SHADOW_TEX_WIDTH`).
     pub edge_shadow_tex_width: u32,
+    /// TAA prep-pass velocity reconstruction. See
+    /// [`ShaderCacheKeyMaterialPrep::velocity`].
+    pub velocity: bool,
 }
 
 impl TryFrom<&ShaderCacheKeyMaterialPrep> for ShaderTemplateMaterialPrep {
@@ -101,6 +107,7 @@ impl TryFrom<&ShaderCacheKeyMaterialPrep> for ShaderTemplateMaterialPrep {
                 shadow_force_hard: false,
                 froxel_slice_count,
                 reverse_z: key.reverse_z,
+                velocity: key.velocity,
             },
             compute: ShaderTemplateMaterialPrepCompute {
                 multisampled_geometry,
@@ -112,6 +119,7 @@ impl TryFrom<&ShaderCacheKeyMaterialPrep> for ShaderTemplateMaterialPrep {
                 msaa_sample_count: key.msaa_sample_count.unwrap_or(0),
                 edge_shadow_tex_width:
                     crate::render_passes::material_prep::buffers::EDGE_SHADOW_TEX_WIDTH,
+                velocity: key.velocity,
             },
         })
     }

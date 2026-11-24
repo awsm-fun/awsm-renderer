@@ -32,6 +32,17 @@ fn dynamic_vertex() -> DynamicVertexShaderInfo {
 /// Every geometry-family variant the renderer can build, rendered, for the
 /// given AA targets: `(label, wgsl)`.
 pub(crate) fn rendered_variants(msaa: Option<u32>, velocity: bool) -> Vec<(String, String)> {
+    // TAA's geometry path: the velocity variant carries the mip bias too.
+    rendered_variants_with(msaa, velocity, velocity)
+}
+
+/// [`rendered_variants`] with the TAA texture-LOD-bias axis set separately
+/// (`mip_bias` without `velocity` = the prep-pass fallback's targets).
+pub(crate) fn rendered_variants_with(
+    msaa: Option<u32>,
+    velocity: bool,
+    mip_bias: bool,
+) -> Vec<(String, String)> {
     let mut out = Vec::new();
     for (instancing, storage) in [(false, true), (false, false), (true, false)] {
         let key = ShaderCacheKeyGeometry {
@@ -39,6 +50,7 @@ pub(crate) fn rendered_variants(msaa: Option<u32>, velocity: bool) -> Vec<(Strin
             meta_storage_array: storage,
             msaa_samples: msaa,
             velocity,
+            mip_bias,
             dynamic_vertex_shader: None,
         };
         let src = ShaderTemplateGeometry::try_from(&key)
@@ -53,6 +65,7 @@ pub(crate) fn rendered_variants(msaa: Option<u32>, velocity: bool) -> Vec<(Strin
             texture_pool_samplers_len: 2,
             msaa_samples: msaa,
             velocity,
+            mip_bias,
             shader_id: MaterialShaderId::PBR,
             base,
             dynamic_alpha: None,
@@ -71,6 +84,7 @@ pub(crate) fn rendered_variants(msaa: Option<u32>, velocity: bool) -> Vec<(Strin
             texture_pool_samplers_len: 2,
             msaa_samples: msaa,
             velocity,
+            mip_bias,
             instancing_transforms: instancing,
             meta_storage_array: false,
         };
@@ -89,6 +103,7 @@ pub(crate) fn rendered_variants(msaa: Option<u32>, velocity: bool) -> Vec<(Strin
         texture_pool_samplers_len: 2,
         msaa_samples: msaa,
         velocity,
+        mip_bias,
     };
     let src = ShaderTemplateGeometryMaskedCustomVertex::try_from(&key)
         .unwrap()

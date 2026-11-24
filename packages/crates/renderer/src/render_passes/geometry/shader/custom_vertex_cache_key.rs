@@ -45,6 +45,9 @@ pub struct ShaderCacheKeyGeometryCustomVertex {
     /// TAA variant (motion-vector target). See
     /// [`ShaderCacheKeyGeometry::velocity`](super::cache_key::ShaderCacheKeyGeometry::velocity).
     pub velocity: bool,
+    /// TAA texture LOD bias. See
+    /// [`ShaderCacheKeyGeometry::mip_bias`](super::cache_key::ShaderCacheKeyGeometry::mip_bias).
+    pub mip_bias: bool,
     /// Variant takes per-instance vertex attributes (instance transform
     /// matrix). Mirrors [`ShaderCacheKeyGeometry::instancing_transforms`].
     pub instancing_transforms: bool,

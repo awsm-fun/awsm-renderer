@@ -357,6 +357,8 @@ impl BindGroups {
                     functions_to_call.insert(FunctionToCall::GeometryTransformMaterials);
                     functions_to_call.insert(FunctionToCall::TransparentMain);
                     functions_to_call.insert(FunctionToCall::TransparentMeshMaterial);
+                    // TAA prep-pass fallback: cs_prep binds the transforms.
+                    functions_to_call.insert(FunctionToCall::MaterialPrep);
                 }
                 BindGroupCreate::MaterialResize => {
                     functions_to_call.insert(FunctionToCall::GeometryTransformMaterials);
@@ -378,6 +380,9 @@ impl BindGroups {
                 }
                 BindGroupCreate::MotionHistoryBuffers => {
                     functions_to_call.insert(FunctionToCall::GeometryTransformMaterials);
+                    // TAA prep-pass fallback: cs_prep binds the previous
+                    // transforms.
+                    functions_to_call.insert(FunctionToCall::MaterialPrep);
                 }
                 BindGroupCreate::GeometryMeshMetaResize => {
                     functions_to_call.insert(FunctionToCall::GeometryMeta);
@@ -899,12 +904,10 @@ impl BindGroups {
                     // Lazy pass: `None` until bloom is first enabled — its
                     // eventual construction marks `TextureViewRecreate`, so
                     // this arm runs against the live views right after.
-                    // In TAA mode bloom reads the resolve's `out` instead of
+                    // In TAA mode bloom reads the resolve's output (RCAS's
+                    // while sharpening is on) instead of
                     // `composite` (cheap JS-handle clone, as for SMAA below).
-                    let taa_out = render_passes
-                        .taa
-                        .as_ref()
-                        .map(|t| t.textures.out_view.clone());
+                    let taa_out = render_passes.taa.as_ref().map(|t| t.final_view().clone());
                     if let Some(bloom) = render_passes.bloom.as_mut() {
                         // Split-borrow: bind_groups (mut) vs texture/params (shared).
                         let crate::render_passes::bloom::render_pass::BloomRenderPass {
@@ -957,11 +960,17 @@ impl BindGroups {
                             params,
                             textures,
                             reactive_seed,
+                            rcas,
                             ..
                         } = taa;
                         bind_groups.recreate(&ctx, textures, &params.gpu_buffer)?;
                         if let Some(seed) = reactive_seed.as_mut() {
                             seed.recreate(&ctx)?;
+                        }
+                        if let (Some(rcas), Some(reactive)) =
+                            (rcas.as_mut(), ctx.render_texture_views.reactive.as_ref())
+                        {
+                            rcas.recreate(ctx.gpu, &textures.out_view, reactive)?;
                         }
                     }
                 }
@@ -977,12 +986,10 @@ impl BindGroups {
                         .volumetrics
                         .as_ref()
                         .map(|v| v.texture.integrated_sample_view.clone());
-                    // In TAA mode effects reads the resolve's `out` (post
+                    // In TAA mode effects reads the resolve's output (RCAS's
+                    // while sharpening is on; post
                     // size) instead of `composite`.
-                    let taa_out = render_passes
-                        .taa
-                        .as_ref()
-                        .map(|t| t.textures.out_view.clone());
+                    let taa_out = render_passes.taa.as_ref().map(|t| t.final_view().clone());
                     // Destructure so the atmosphere uniform and the bind groups
                     // borrow disjointly (same shape as the SSR arm above).
                     let crate::render_passes::effects::render_pass::EffectsRenderPass {

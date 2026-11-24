@@ -303,6 +303,11 @@ pub struct TaaRenderPass {
     /// The reactive seed draw (temporal-reactive materials), with the
     /// reactive variant only.
     pub reactive_seed: Option<super::reactive_seed::TaaReactiveSeed>,
+    /// RCAS sharpening after the resolve (03 §9): `Some` only while
+    /// `TaaConfig::sharpen > 0` (built and dropped by
+    /// `AwsmRenderer::sync_taa_rcas`). Bloom, effects and the HUD-after-TAA
+    /// pass then use its output instead of `textures.out`.
+    pub rcas: Option<super::rcas::TaaRcas>,
     /// Resolve dispatches per frame (`AwsmRenderer::set_taa_debug_repeat`).
     /// 1 normally; N > 1 only to measure the pass's cost.
     repeat: u32,
@@ -331,6 +336,7 @@ impl TaaRenderPass {
             params,
             textures,
             reactive_seed,
+            rcas: None,
             repeat: 1,
             bookkeeping: ResolveBookkeeping::new(),
         })
@@ -359,7 +365,20 @@ impl TaaRenderPass {
         if let Some(seed) = self.reactive_seed {
             seed.destroy();
         }
+        if let Some(rcas) = self.rcas {
+            rcas.destroy();
+        }
         self.textures.destroy();
+    }
+
+    /// The post-size image the frame continues from after the resolve: the
+    /// RCAS output while sharpening is on, else the resolve's `out`. Bloom,
+    /// effects and the HUD-after-TAA pass use this.
+    pub fn final_view(&self) -> &web_sys::GpuTextureView {
+        self.rcas
+            .as_ref()
+            .and_then(|rcas| rcas.out_view())
+            .unwrap_or(&self.textures.out_view)
     }
 
     /// Resolve, then save this frame's depth for the next resolve.
@@ -466,6 +485,7 @@ impl AwsmRenderer {
                 let pass = TaaRenderPass::new(&mut ctx, REACTIVE_MASK).await?;
                 self.render_passes.taa = Some(pass);
                 self.reset_temporal_history();
+                self.sync_taa_rcas().await?;
             }
             (false, true) => {
                 if let Some(pass) = self.render_passes.taa.take() {
@@ -480,6 +500,40 @@ impl AwsmRenderer {
                     }
                     pass.destroy();
                 }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Build the RCAS pass when TAA sharpening turns on (`sharpen > 0`) and
+    /// drop it when it turns off. Called by `set_anti_aliasing`, on both its
+    /// structural and its light path (a sharpen change alone is light: no
+    /// pipeline of the frame recompiles, only this pass's own). Either change
+    /// switches what bloom / effects / the HUD-after-TAA pass read, so the
+    /// view-dependent bind groups are rebuilt. Zero cost while sharpen is 0:
+    /// no pass, no texture.
+    pub(crate) async fn sync_taa_rcas(&mut self) -> Result<()> {
+        let want = self
+            .anti_aliasing
+            .taa
+            .as_ref()
+            .is_some_and(|taa| taa.sharpen.is_finite() && taa.sharpen > 0.0);
+        let Some(pass) = self.render_passes.taa.as_mut() else {
+            return Ok(());
+        };
+        match (want, pass.rcas.is_some()) {
+            (true, false) => {
+                pass.rcas = Some(super::rcas::TaaRcas::new(&self.gpu).await?);
+                // Its output is created (and the consumers rebound) by the
+                // next `prepare_taa_frame`.
+            }
+            (false, true) => {
+                if let Some(rcas) = pass.rcas.take() {
+                    rcas.destroy();
+                }
+                self.bind_groups
+                    .mark_create(BindGroupCreate::TextureViewRecreate);
             }
             _ => {}
         }
@@ -519,6 +573,15 @@ impl AwsmRenderer {
         {
             self.bind_groups.mark_create(BindGroupCreate::TaaResources);
         }
+        if let Some(rcas) = pass.rcas.as_mut() {
+            if rcas.ensure_size(&self.gpu, views.post_size)? {
+                // A new output: the RCAS group itself (rebuilt with the
+                // resolve's) and its consumers (bloom, effects).
+                self.bind_groups
+                    .mark_create(BindGroupCreate::TextureViewRecreate);
+            }
+            rcas.write_strength(&self.gpu, config.sharpen)?;
+        }
         let reset = self.taa.reset_pending || pass.bookkeeping.history_fresh();
         pass.repeat = self.taa.debug_repeat.max(1);
         let mut values = TaaParamsValues::new(
@@ -544,6 +607,43 @@ impl AwsmRenderer {
     /// this, not the per-pass stats, is how the pass is measured.
     pub fn set_taa_debug_repeat(&mut self, n: u32) {
         self.taa.debug_repeat = n.max(1);
+    }
+
+    /// Why this renderer replaced TAA by MSAA 4x, or `None` if it never had
+    /// to. TAA falls back when its pipelines fail to compile on the device
+    /// (a driver rejecting a TAA variant at a commit) or when
+    /// `set_anti_aliasing` could not build the TAA pass. Editors and players
+    /// show this instead of offering TAA again. Sticky for the renderer's
+    /// lifetime.
+    pub fn taa_fallback_reason(&self) -> Option<&str> {
+        self.taa.fallback_reason.as_deref()
+    }
+
+    /// Replace TAA by MSAA 4x (same mipmap setting) after `reason`, giving
+    /// back the reserved slots of the pipelines that failed so no later drain
+    /// compiles (and fails) them again. Only while TAA is on and only once.
+    /// The caller re-ensures the material pipelines for the new config (a
+    /// commit does).
+    pub(crate) async fn fall_back_from_taa(
+        &mut self,
+        reason: String,
+        failed_compute: Vec<crate::pipelines::compute_pipeline::ComputePipelineKey>,
+        failed_render: Vec<crate::pipelines::render_pipeline::RenderPipelineKey>,
+    ) -> Result<()> {
+        tracing::warn!("TAA unavailable, falling back to MSAA 4x: {reason}");
+        self.taa.fallback_reason = Some(reason);
+        self.pipelines.compute.release_reserved(failed_compute);
+        self.pipelines.render.release_reserved(failed_render);
+        let fallback = crate::anti_alias::AntiAliasing {
+            mipmap: self.anti_aliasing.mipmap,
+            ..crate::anti_alias::AntiAliasing::msaa4()
+        };
+        Box::pin(self.set_anti_aliasing(fallback)).await
+    }
+
+    /// Whether a failure with TAA on may still fall back to MSAA 4x.
+    pub(crate) fn taa_may_fall_back(&self) -> bool {
+        self.anti_aliasing.taa.is_some() && self.taa.fallback_reason.is_none()
     }
 }
 

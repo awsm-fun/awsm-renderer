@@ -216,8 +216,10 @@ impl AwsmRenderer {
         // mesh whose material carries a cutoff but whose masked variant isn't
         // compiled at the live MSAA needs this rebuild (else it silently
         // renders solid via the plain-geometry fallback forever).
-        let geometry_targets =
-            crate::render_passes::geometry::pipeline::GeometryTargets::from_aa(&self.anti_aliasing);
+        let geometry_targets = crate::render_passes::geometry::pipeline::GeometryTargets::from_aa(
+            &self.anti_aliasing,
+            &self.render_textures.formats,
+        );
         // The built-in families that have an alpha-tested material right now.
         // Only these get masked geometry / masked shadow variants below: the
         // masked pipelines are selected per mesh on `alpha_cutoff().is_some()`,

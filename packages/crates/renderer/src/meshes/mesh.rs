@@ -214,6 +214,7 @@ impl Mesh {
             .pipelines
             .get_render_pipeline_key(GeometryRenderPipelineKeyOpts {
                 anti_aliasing: ctx.anti_aliasing,
+                formats: &ctx.render_textures.formats,
                 instancing: self.instanced,
                 // Only non-instanced meshes branch on the meta-binding
                 // shape; the instanced path always uses

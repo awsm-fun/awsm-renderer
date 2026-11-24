@@ -41,6 +41,9 @@ impl TaaConfig {
     /// Lowest supported render scale.
     pub const MIN_RENDER_SCALE: f32 = 0.5;
 
+    /// The render scale's quantum (see [`Self::clamped_render_scale`]).
+    pub const RENDER_SCALE_STEP: f32 = 0.01;
+
     /// TAA at native resolution, no sharpening.
     pub fn native() -> Self {
         Self {
@@ -66,13 +69,19 @@ impl TaaConfig {
             .find(|p| (p.render_scale() - self.render_scale).abs() < 1e-3)
     }
 
-    /// `render_scale` clamped to the supported range (NaN becomes 1.0).
+    /// `render_scale` clamped to the supported range (NaN becomes 1.0) and
+    /// quantised to [`Self::RENDER_SCALE_STEP`]. Every render-size target is
+    /// rebuilt when the render size changes, so a resolution governor nudging
+    /// the scale by a hair must not rebuild them each frame: only a change of
+    /// at least one step reaches the frame sizes. The presets (0.67, 0.58,
+    /// 0.5) are exact steps.
     pub fn clamped_render_scale(&self) -> f32 {
-        if self.render_scale.is_finite() {
-            self.render_scale.clamp(Self::MIN_RENDER_SCALE, 1.0)
-        } else {
-            1.0
+        if !self.render_scale.is_finite() {
+            return 1.0;
         }
+        let steps = 1.0 / Self::RENDER_SCALE_STEP;
+        let clamped = self.render_scale.clamp(Self::MIN_RENDER_SCALE, 1.0);
+        ((clamped * steps).round() / steps).clamp(Self::MIN_RENDER_SCALE, 1.0)
     }
 
     /// Whether this config upscales (render size smaller than output size).
@@ -189,14 +198,14 @@ impl Default for TaaTuning {
             max_history_upscaling: 24.0,
             motion_alpha: 0.2,
             motion_alpha_speed: 8.0,
-            reactive_transparent: 0.8,
-            reactive_material: 0.6,
+            reactive_transparent: 0.3,
+            reactive_material: 0.2,
             reactive_ssr: 0.0,
             mip_bias_extra: 0.0,
             gamma_moving_speed: 2.0,
-            max_history_moving: 4.0,
+            max_history_moving: 2.0,
             max_history_moving_speed: 1.0,
-            motion_edge_alpha: 0.6,
+            motion_edge_alpha: 1.0,
             motion_edge_speed: 2.0,
         }
     }
@@ -297,6 +306,9 @@ pub struct TaaRuntime {
     /// Resolve dispatches per frame (`AwsmRenderer::set_taa_debug_repeat`,
     /// cost measurement). 0 (the default) and 1 both mean one dispatch.
     pub(crate) debug_repeat: u32,
+    /// Why TAA was replaced by MSAA 4x on this renderer, if it was (see
+    /// [`AwsmRenderer::taa_fallback_reason`]).
+    pub(crate) fallback_reason: Option<String>,
 }
 
 /// Number of jitter phases for a render width and an output width:
@@ -357,13 +369,35 @@ pub fn reconstruction_weight(d2: f32) -> f32 {
 
 /// Current-frame weight per unit of clip amount: a heavily clipped history
 /// is suspect, so the more of it the clip removed, the less it is trusted.
-pub const CLIP_ALPHA: f32 = 0.5;
+pub const CLIP_ALPHA: f32 = 1.0;
 
 /// How far the variance-clip box narrows on a fully reactive pixel.
-pub const REACTIVE_GAMMA_SCALE: f32 = 0.5;
+pub const REACTIVE_GAMMA_SCALE: f32 = 1.0;
 
 /// The exponent of [`reconstruction_weight`].
 pub const RECONSTRUCTION_SHARPNESS: f32 = 2.29;
+
+/// The texture LOD bias under TAA (03 §7): `log2(render / post)` (negative
+/// when upscaling: textures sampled at render resolution pick the mip the
+/// OUTPUT resolution needs) plus the tuning's `mip_bias_extra`. Uses the
+/// width ratio (both axes scale by the same render scale). Non-finite input
+/// gives 0.
+///
+/// Under TAA the value is in the camera uniform's `prev_position.w` (0
+/// without TAA). Built-in and custom materials get it without doing
+/// anything: the opaque path scales the stored UV gradients by `2^bias` in
+/// the geometry pass, the transparent pass samples with `textureSampleBias`
+/// in the texture-pool helpers. Custom WGSL that computes its own LOD (an
+/// explicit `textureSampleLevel`) should add `camera_raw.prev_position.w`.
+/// Alpha-test cutouts sample LOD 0 and need no bias.
+pub fn texture_lod_bias(render: (u32, u32), post: (u32, u32), extra: f32) -> f32 {
+    let bias = (render.0.max(1) as f32 / post.0.max(1) as f32).log2() + extra;
+    if bias.is_finite() {
+        bias
+    } else {
+        0.0
+    }
+}
 
 impl TaaRuntime {
     /// The resolve shader's `debug_view` value.
@@ -638,5 +672,39 @@ mod tests {
             ..TaaConfig::native()
         };
         assert_eq!(odd.clamped_render_scale(), 1.0);
+    }
+
+    #[test]
+    fn texture_lod_bias_follows_the_scale() {
+        assert_eq!(texture_lod_bias((1920, 1080), (1920, 1080), 0.0), 0.0);
+        assert_eq!(texture_lod_bias((960, 540), (1920, 1080), 0.0), -1.0);
+        assert!((texture_lod_bias((1286, 724), (1920, 1080), 0.0) - (-0.578)).abs() < 1e-2);
+        assert_eq!(texture_lod_bias((960, 540), (1920, 1080), 0.25), -0.75);
+        assert_eq!(texture_lod_bias((960, 540), (1920, 1080), f32::NAN), 0.0);
+    }
+
+    #[test]
+    fn render_scale_is_quantised_with_exact_presets() {
+        let at = |render_scale: f32| {
+            TaaConfig {
+                render_scale,
+                ..TaaConfig::native()
+            }
+            .clamped_render_scale()
+        };
+        for preset in TaaPreset::ALL {
+            assert_eq!(at(preset.render_scale()), preset.render_scale());
+        }
+        assert_eq!(at(1.0), 1.0);
+        // A governor's small nudges land on the same step.
+        assert_eq!(at(0.6712), 0.67);
+        assert_eq!(at(0.6688), 0.67);
+        assert_eq!(at(0.6741), 0.67);
+        assert_eq!(at(0.6762), 0.68);
+        // Clamped first, and the step never leaves the range.
+        assert_eq!(at(0.1), TaaConfig::MIN_RENDER_SCALE);
+        assert_eq!(at(1.7), 1.0);
+        assert_eq!(at(0.996), 1.0);
+        assert_eq!(at(f32::INFINITY), 1.0);
     }
 }

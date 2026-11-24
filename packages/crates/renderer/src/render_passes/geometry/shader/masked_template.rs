@@ -71,6 +71,9 @@ pub struct ShaderTemplateGeometryMaskedFragment {
     flipbook_cell_wgsl: String,
     /// TAA variant: writes the motion-vector target (`@location(4)`).
     velocity: bool,
+    /// TAA texture LOD bias. See
+    /// [`ShaderCacheKeyGeometry::mip_bias`](super::cache_key::ShaderCacheKeyGeometry::mip_bias).
+    mip_bias: bool,
 }
 
 impl ShaderTemplateGeometryMaskedFragment {
@@ -89,6 +92,7 @@ impl ShaderTemplateGeometryMaskedFragment {
         dynamic_alpha_wgsl: String,
         flipbook_cell_wgsl: String,
         velocity: bool,
+        mip_bias: bool,
     ) -> Self {
         Self {
             texture_pool_arrays_len,
@@ -101,6 +105,7 @@ impl ShaderTemplateGeometryMaskedFragment {
             dynamic_alpha_wgsl,
             flipbook_cell_wgsl,
             velocity,
+            mip_bias,
         }
     }
 }
@@ -117,6 +122,7 @@ impl TryFrom<&ShaderCacheKeyGeometryMasked> for ShaderTemplateGeometryMasked {
             meta_storage_array: false,
             msaa_samples: None,
             velocity: value.velocity,
+            mip_bias: value.mip_bias,
             // Masked geometry reuses the plain vertex; custom-vertex masked is a
             // CV2 follow-on, so the vertex stays non-custom here.
             dynamic_vertex_shader: None,
@@ -153,6 +159,7 @@ impl TryFrom<&ShaderCacheKeyGeometryMasked> for ShaderTemplateGeometryMasked {
                     String::new()
                 },
                 value.velocity,
+                value.mip_bias,
             ),
         })
     }

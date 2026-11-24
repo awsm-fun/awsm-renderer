@@ -38,6 +38,12 @@ taa-tuning-v2 = ["taa-phase2"]
 # `set_taa_debug_view_raw` (doc-hidden raw resolve views 10-13) for
 # `?mode=disocclusion` / `disocclusion-static`.
 taa-debug-raw = ["taa-phase2"]
+# Phase 4 (upscaling): `set_taa_render_scale` for `?mode=scale-change` /
+# `governor-hitch`, and `?scale=` everywhere.
+taa-phase4 = ["taa-tuning-v2"]
+# `set_taa_experimental_tuning` (doc-hidden: clip_alpha, reactive_gamma_scale)
+# as `?tune=clip_alpha:…,reactive_gamma_scale:…` (a2be12b1).
+taa-experimental = ["taa-tuning-v2"]
 
 [dependencies]
 awsm-renderer = { workspace = true }

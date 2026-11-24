@@ -21,7 +21,7 @@ fn apply_atmosphere(
     camera: Camera,
 ) -> vec3<f32> {
     let params = atmosphere_params;
-    let depth = load_depth(coords);
+    let depth = load_depth{% if taa_post %}_post{% endif %}(coords);
     let dir = atmosphere_view_ray(pixel_center, screen_dims_f32, camera);
 
     var dist: f32;

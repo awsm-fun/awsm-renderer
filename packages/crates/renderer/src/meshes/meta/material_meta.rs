@@ -74,6 +74,10 @@ pub const MATERIAL_MESH_META_RECEIVE_DECALS_OFFSET: usize = 18 * 4;
 /// `transforms::update_transforms` after `LightMeshBuckets::mark_shadow_receivers`.
 pub const MATERIAL_MESH_META_SHADOW_RECEIVER_GATE_OFFSET: usize = 19 * 4;
 
+/// Byte offset of the non-rigid flag (word 23; TAA prep-pass fallback),
+/// patched per frame by `MeshMeta::update_non_rigid_gates`.
+pub const MATERIAL_MESH_META_NON_RIGID_OFFSET: usize = 23 * 4;
+
 pub static MATERIAL_BUFFER_USAGE: LazyLock<BufferUsage> = LazyLock::new(|| {
     BufferUsage::new()
         .with_copy_dst()
@@ -96,6 +100,13 @@ pub struct MaterialMeshMeta<'a> {
     pub materials: &'a Materials,
     pub morphs: &'a Morphs,
     pub mesh: &'a Mesh,
+    /// The surface is moving with more than its node's world matrix right
+    /// now: a custom material's vertex hook, or a skinned / geometry-morphed
+    /// / instanced mesh that deformed within the last frames
+    /// (`MeshMeta::update_non_rigid_gates` patches it per frame). Only TAA's
+    /// prep-pass fallback reads it (03 §2.4: the seed marks such meshes
+    /// reactive; prep reconstructs their node's rigid motion only).
+    pub non_rigid: bool,
 }
 
 /// Calculate the offset (in floats) to TEXCOORD_0 within the vertex attribute data.
@@ -183,6 +194,7 @@ impl<'a> MaterialMeshMeta<'a> {
             materials,
             morphs,
             mesh,
+            non_rigid,
         } = self;
 
         let mut result = [0u8; MATERIAL_MESH_META_BYTE_SIZE];
@@ -291,11 +303,10 @@ impl<'a> MaterialMeshMeta<'a> {
         // seed (`taa_wgsl/reactive_seed.wgsl`, as a raw word); the shared
         // WGSL struct still calls it `_reserved2` so no other shader changes.
         push_u32(u32::from(materials.is_temporal_reactive(material_key)));
-        // Reserved trailing u32 (index 23). Formerly half of the per-mesh
-        // light slice of the old per-mesh lighting path; kept as inert tail
-        // padding so the populated region stays a vec4 multiple and
-        // `padding_4: array<vec4<u32>, _>` stays vec4-aligned.
-        push_u32(0);
+        // Index 23: non-rigid surface (see `MaterialMeshMeta::non_rigid`).
+        // Read only by the TAA reactive seed in the prep-pass fallback, as a
+        // raw word; the shared WGSL struct still calls it `_reserved3`.
+        push_u32(u32::from(non_rigid));
 
         Ok(result)
     }

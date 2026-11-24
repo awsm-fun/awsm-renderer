@@ -67,7 +67,10 @@ impl GeometryRenderPass {
     /// on the first `set_anti_aliasing` flip.
     pub async fn new(ctx: &mut RenderPassInitContext<'_>) -> Result<Self> {
         ctx.anti_aliasing.has_msaa_checked()?;
-        let targets = super::pipeline::GeometryTargets::from_aa(ctx.anti_aliasing);
+        let targets = super::pipeline::GeometryTargets::from_aa(
+            ctx.anti_aliasing,
+            ctx.render_texture_formats,
+        );
         let bind_groups = GeometryBindGroups::new(ctx).await?;
         let pipelines = GeometryPipelines::new(ctx, &bind_groups, targets).await?;
         let masked_bind_group = GeometryMaskedBindGroup::new(ctx).await?;
@@ -149,8 +152,19 @@ impl GeometryRenderPass {
         // the sky's from depth). The HUD pass loads it and writes the HUD's
         // own exact vectors over it (plan 04 deviation: exact evaluation
         // instead of a v = 0 variant; phase 3 makes the HUD reactive).
-        let velocity = ctx.render_texture_views.velocity.is_some();
-        if let Some(view) = ctx.render_texture_views.velocity.as_ref() {
+        // (Not with the prep-pass fallback: there the prep pass writes the
+        // velocity texture and the geometry pass keeps its 4 targets.)
+        let velocity = super::pipeline::GeometryTargets::from_aa(
+            ctx.anti_aliasing,
+            &ctx.render_textures.formats,
+        )
+        .velocity();
+        if let Some(view) = ctx
+            .render_texture_views
+            .velocity
+            .as_ref()
+            .filter(|_| velocity)
+        {
             color_attachments.push(ColorAttachment::new(
                 view,
                 if is_hud { LoadOp::Load } else { LoadOp::Clear },

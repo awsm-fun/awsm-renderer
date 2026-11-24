@@ -42,6 +42,11 @@ pub struct Skins {
     /// joint's matrix as bare IBM forever (mesh renders collapsed/shredded;
     /// the editor's mid-session skinned imports hit exactly this).
     pending_full_refresh: Vec<SkinKey>,
+    /// TAA prep-pass fallback only (03 §2.4): record which keys were written
+    /// this frame (`take_deformed`), so a mesh is flagged non-rigid only while
+    /// it deforms. Off (nothing recorded) otherwise.
+    track_deformed: bool,
+    deformed: Vec<SkinKey>,
     /// Weight-stream SHARING for per-instance skins (prefab clones): an
     /// instance skin inserted via [`Self::insert_instance`] reads its
     /// per-vertex joint/weight stream from another skin's slot instead of
@@ -119,6 +124,8 @@ impl Skins {
             matrices_gpu_dirty: true,
             joint_index_weights_gpu_dirty: true,
             pending_full_refresh: Vec::new(),
+            track_deformed: false,
+            deformed: Vec::new(),
             joint_weights_alias: SecondaryMap::new(),
             joint_weights_alias_refs: SecondaryMap::new(),
             matrices_gpu_buffer,
@@ -439,6 +446,9 @@ impl Skins {
             let Some(transform_keys) = self.skeleton_transforms.get(skin_key) else {
                 continue;
             };
+            if self.track_deformed {
+                self.deformed.push(skin_key);
+            }
             for (index, transform_key) in transform_keys.clone().iter().enumerate() {
                 let Ok(world_mat) = transforms.get_world(*transform_key).copied() else {
                     continue;
@@ -475,6 +485,7 @@ impl Skins {
                 skipped_skins += 1;
                 continue;
             }
+            let mut skin_deformed = false;
             for (index, transform_key) in transform_keys.iter().enumerate() {
                 if let Some(world_mat) = dirty_skin_joints.get(transform_key) {
                     matched += 1;
@@ -497,14 +508,25 @@ impl Skins {
                         )
                     };
 
+                    let track = self.track_deformed;
                     self.skin_matrices
                         .update_with_unchecked(skin_key, |_, matrices| {
                             let start = index * 16 * 4;
-                            matrices[start..start + (16 * 4)].copy_from_slice(bytes);
+                            let slot = &mut matrices[start..start + (16 * 4)];
+                            // TAA prep fallback: a rewrite of the same pose
+                            // (e.g. a paused clip) is not a deformation.
+                            if track && slot != bytes {
+                                skin_deformed = true;
+                            }
+                            slot.copy_from_slice(bytes);
                         });
 
                     self.matrices_gpu_dirty = true;
                 }
+            }
+
+            if skin_deformed && self.track_deformed {
+                self.deformed.push(skin_key);
             }
 
             //tracing::info!("{:#?}", u8_to_f32_vec(&self.skin_matrices.raw_slice()[self.skin_matrices.offset(skin_key).unwrap()..]).chunks(16).take(2).collect::<Vec<_>>());
@@ -644,6 +666,17 @@ impl Skins {
     pub(crate) fn set_motion_history(&mut self, on: bool) {
         self.matrices_history.set_enabled(on);
         self.skin_matrices.set_track_new_allocations(on);
+    }
+
+    /// See the `track_deformed` field (TAA prep-pass fallback).
+    pub(crate) fn set_track_deformed(&mut self, on: bool) {
+        self.track_deformed = on;
+        self.deformed.clear();
+    }
+
+    /// The skins whose joint matrices were written since the last call.
+    pub(crate) fn take_deformed(&mut self) -> Vec<SkinKey> {
+        std::mem::take(&mut self.deformed)
     }
 
     /// The joint-matrix history and the current buffer's byte size, for the

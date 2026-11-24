@@ -75,7 +75,17 @@ Features: `taa-hooks` (the `awsm_renderer::taa` hooks), `taa-phase1` (the
 | `trail-evidence` | Diagnostics for a failing trail (INFO): at `k=…`, the band split by age (frames since the tracked object left the pixel) and by cause (≤ 2 px from the silhouette; the object's measured shadow footprint), TAA / no-AA / MSAA vs the same reference; the worst pixel with its Rejection / HistoryLength / ReprojectionError / Velocity debug values; full-frame tiles under `phase2/evidence/`. |
 | `speeds` | Screen speed (px/frame) per scenario phase from the velocity readback. |
 | `reference-floor` | Static frame: the 64-phase reference vs the resolve's own convergence model (8 phases, per-frame normalisation, clamped borders), and the converged TAA frame vs both — the floor under the stop / trail thresholds. |
+| `disocclusion` | taa-motion `k=32,55`: the resolve's disocclusion test replayed on the CPU (`disocc_def=v1…v5` = the definitions of 4809e43a / 8298170a / 757ad193 / 8d87a418 / a2be12b1) from the depth + velocity readbacks, against the LIVE Rejection view; with `taa-debug-raw`, the raw views 10-13. |
+| `disocclusion-static` | Raw view 10 after 29 static frames, then the cube's old footprint on its first moving frames (`taa-debug-raw`). |
+| `static-rejection` | Static scenes (time frozen, jitter cycling): disoccluded px per frame in the live Rejection view, per-frame series, hit map + burst-frame mask (`phase2/static-rejection/`), the burst split by test (CPU replica) and its jitter pair. |
+| `rejection-motion` | taa-orbit under camera motion: per frame test-1 / test-2 flags (replica) and the shader's; pan error within 2 px of a parallax silhouette vs the rest. |
+| `phase3` | 05 §4.4: taa-transparent trail over band ∩ particle/glass/UV-flow content and the content's own trail (TAA / MSAA / no-AA, every frame); taa-hud HUD px vs TAA-off (mean < 1, every frame). |
+| `tune-sweep2` | Motion tuning by coordinate search from the defaults (`knobs=name:v|v;…`, `best=`, `configs=`): trail taa-motion / taa-reveal (literal, minus ring, ring, contact, rest), taa-orbit stop / pan / strafe motion flicker, taa-thin converged + flicker, taa-orbit flicker. Needs `refcache=`. |
+| `reactive-sweep` | reactive_transparent × reactive_material (× reactive_gamma_scale with `taa-experimental`) on taa-transparent: static flicker per content region, the 05 §4.4 trail per region, each region's own trail; `particles` flicker. |
+| `scale-change`, `mip-bias`, `governor-hitch` | Phase 4 (`taa-phase4`): see src/phase4.rs. `?scale=` sets the TAA render scale of every TAA session (references stay full resolution). |
 | `frame-cost` | GPU frame time from the timestamp queries (`profiling::gpu_frame_timing`) over `cost_frames` frames with the GPU drained per frame; `runs` interleaved rounds, mean + min/max per configuration; `repeat=1,4,8` measures the TAA resolve by repetition ((T(N) − T(1)) / (N − 1)) and TAA − none − resolve; use `size=1920x1435`. |
+
+`?tune=name:value,…` overrides TaaTuning fields (and, with `taa-experimental`, `clip_alpha` / `reactive_gamma_scale`) for every TAA session; the session re-applies its TAA config after the scene load (the loader applies the scene's authored AA) and refuses to open unless the renderer holds exactly that config. `?refcache=<name>` caches the 64-phase references in the store (they do not depend on TAA tuning).
 
 URL params: `scenes=a,b`, `aa=msaa,smaa,none,taa`, `size=WxH`,
 `frames=5,60`, `k=30,90`, `runs=2`, `warmup=8`, `phases=64`, `set=…`,

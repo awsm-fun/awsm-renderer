@@ -204,7 +204,18 @@ fn fs_main(input: FragmentInput) -> FragmentOutput {
     var out: FragmentOutput;
 
     // Convert raw camera uniform to friendly structure
-    let camera = camera_from_raw(camera_raw);
+    let camera = camera_from_raw(camera_raw);{% if hud_post %}
+    // TAA HUD after the resolve: drawn at OUTPUT size, so `frag_pos` is in
+    // output pixels, while the opaque image (transmission) and the light-cull
+    // tiles are render size. Re-derive the render-pixel position from the
+    // world position through the same unjittered projection the vertex used.
+    let hud_clip = camera.view_proj_unjittered * vec4<f32>(input.world_position, 1.0);
+    let hud_ndc = hud_clip.xy / hud_clip.w;
+    let hud_frag_pos = vec4<f32>(
+        vec2<f32>(hud_ndc.x * 0.5 + 0.5, 0.5 - hud_ndc.y * 0.5) * camera.viewport_size,
+        input.frag_pos.z,
+        input.frag_pos.w,
+    );{% endif +%}
     let frame_globals = frame_globals_from_raw(frame_globals_raw);
 
     // Handle double-sided materials: flip normal and tangent handedness for back faces
@@ -332,7 +343,7 @@ fn fs_main(input: FragmentInput) -> FragmentOutput {
             // Sample transmission background from opaque render
             let roughness = max(clamp(material_color.metallic_roughness.y, 0.0, 1.0), 0.04);
             let transmission_background = sample_transmission_background(
-                input.frag_pos,
+                {%+ if hud_post %}hud_frag_pos{% else %}input.frag_pos{% endif %},
                 input.world_position,
                 material_color.normal,
                 -surface_to_camera,  // view direction (towards surface)
@@ -355,7 +366,7 @@ fn fs_main(input: FragmentInput) -> FragmentOutput {
                 lights_info,
                 transmission_background,
                 (material_mesh_meta.receive_shadows & material_mesh_meta.shadow_receiver_gate),
-                input.frag_pos.xy,
+                {%+ if hud_post %}hud_frag_pos{% else %}input.frag_pos{% endif %}.xy,
             );
         } else {
             // Standard lighting without transmission.
@@ -365,7 +376,7 @@ fn fs_main(input: FragmentInput) -> FragmentOutput {
                 input.world_position,
                 lights_info,
                 (material_mesh_meta.receive_shadows & material_mesh_meta.shadow_receiver_gate),
-                input.frag_pos.xy,
+                {%+ if hud_post %}hud_frag_pos{% else %}input.frag_pos{% endif %}.xy,
             );
         }
 

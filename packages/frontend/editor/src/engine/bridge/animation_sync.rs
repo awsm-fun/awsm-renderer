@@ -165,6 +165,11 @@ async fn relower() {
         // clips by index into `clip_ids`, resolved below).
         let mut keys = Vec::with_capacity(groups.len());
         for (id, group) in groups {
+            // TAA: a material a clip animates is reactive (same rule as the
+            // player's loader).
+            if let Err(err) = r.mark_animated_materials_reactive(&group) {
+                tracing::warn!("animated material temporal: {err:?}");
+            }
             let key = r.animations.insert_clip(group);
             keys.push((id, key));
         }

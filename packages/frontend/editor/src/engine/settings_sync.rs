@@ -120,6 +120,7 @@ pub fn start() {
                 }
                 if let Err(e) = r.set_anti_aliasing(want).await {
                     tracing::warn!("set_anti_aliasing: {e}");
+                    TAA_UNAVAILABLE.with(|m| m.set(r.taa_fallback_reason().map(str::to_string)));
                     return;
                 }
                 if structural {
@@ -128,32 +129,18 @@ pub fn start() {
                         crate::engine::context::surface_commit_error(&e);
                     }
                 }
+                // A TAA pipeline that failed in the commit fell back to MSAA.
+                TAA_UNAVAILABLE.with(|m| m.set(r.taa_fallback_reason().map(str::to_string)));
             })
             .await;
     });
 
-    // TAA availability on this device (its motion-vector path), for the
-    // Post-processing panel and the `SetAntiAliasing` handler.
+    // TAA availability, for the Post-processing panel and the
+    // `SetAntiAliasing` handler. Every device has a motion-vector path (the
+    // prep-pass fallback covers the rest), so TAA is unavailable only after
+    // the renderer had to fall back from it (its pipelines failed here).
     spawn_local(async {
-        let reason = with_renderer_mut(|r| {
-            use awsm_renderer::anti_alias::{
-                TaaVelocityPath, TAA_COLOR_ATTACHMENT_BYTES_PER_SAMPLE,
-                TAA_GEOMETRY_STORAGE_BUFFERS,
-            };
-            (r.taa_velocity_path() != TaaVelocityPath::GeometryTarget).then(|| {
-                let limits = r.gpu.device.limits();
-                format!(
-                    "needs maxColorAttachmentBytesPerSample >= \
-                     {TAA_COLOR_ATTACHMENT_BYTES_PER_SAMPLE} (device: {}) and \
-                     maxStorageBuffersPerShaderStage >= {TAA_GEOMETRY_STORAGE_BUFFERS} \
-                     (device: {})",
-                    limits.max_color_attachment_bytes_per_sample(),
-                    limits.max_storage_buffers_per_shader_stage(),
-                )
-            })
-        })
-        .await;
-        TAA_UNAVAILABLE.with(|m| m.set(reason));
+        refresh_taa_unavailable().await;
     });
 
     // TAA debug view (transient view state).
@@ -303,6 +290,13 @@ thread_local! {
 /// Why TAA is unavailable on this device, or `None` when it is available.
 pub fn taa_unavailable_reason() -> Option<String> {
     TAA_UNAVAILABLE.with(|m| m.get_cloned())
+}
+
+/// Re-read [`taa_unavailable_reason`] from the renderer
+/// (`AwsmRenderer::taa_fallback_reason`).
+async fn refresh_taa_unavailable() {
+    let reason = with_renderer_mut(|r| r.taa_fallback_reason().map(str::to_string)).await;
+    TAA_UNAVAILABLE.with(|m| m.set(reason));
 }
 
 /// The renderer's debug view for the wire name.

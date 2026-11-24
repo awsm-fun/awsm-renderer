@@ -140,6 +140,8 @@ impl<Key: slotmap::Key, Info: MorphInfo> MorphData<Key, Info> {
             weights_uploader: crate::buffer::mapped_uploader::MappedUploader::new("Morph Weights"),
             values_uploader: crate::buffer::mapped_uploader::MappedUploader::new("Morph Values"),
             weights_history: BufferHistory::new("Morph Weights (previous frame)"),
+            track_deformed: false,
+            deformed: Vec::new(),
         })
     }
 
@@ -368,6 +370,8 @@ impl<Key: slotmap::Key, Info: MorphInfo> MorphData<Key, Info> {
         f: impl FnOnce(&mut [f32]),
     ) -> Result<()> {
         let len = self.get_info(key).map(|info| info.targets_len())?;
+        let track = self.track_deformed;
+        let mut changed = false;
 
         self.weights.update_with_unchecked(key, |_, slice_u8| {
             // Layout is [count: f32, weight_0, .. weight_{len-1}]. Reinterpret the
@@ -388,8 +392,19 @@ impl<Key: slotmap::Key, Info: MorphInfo> MorphData<Key, Info> {
             };
 
             // The first value is the count word; expose the `len` weights after it.
-            f(&mut weights_f32[1..])
+            if track {
+                // TAA prep fallback: only a weight that changed deforms (a
+                // driver re-writing the same weights each frame does not).
+                let before = weights_f32[1..].to_vec();
+                f(&mut weights_f32[1..]);
+                changed = before[..] != weights_f32[1..];
+            } else {
+                f(&mut weights_f32[1..])
+            }
         });
+        if changed {
+            self.deformed.push(key);
+        }
 
         self.weights_dirty = true;
 
@@ -526,6 +541,11 @@ pub struct MorphData<Key: slotmap::Key, Info> {
     /// morphs do not move vertices). Disabled, owning nothing, unless TAA is
     /// on.
     weights_history: BufferHistory,
+    /// TAA prep-pass fallback only (03 §2.4): record which keys were written
+    /// this frame (`take_deformed`), so a mesh is flagged non-rigid only while
+    /// it deforms. Off (nothing recorded) otherwise.
+    track_deformed: bool,
+    deformed: Vec<Key>,
 }
 
 impl<Key: slotmap::Key, Info> MorphData<Key, Info> {
@@ -533,6 +553,17 @@ impl<Key: slotmap::Key, Info> MorphData<Key, Info> {
     pub(crate) fn set_motion_history(&mut self, on: bool) {
         self.weights_history.set_enabled(on);
         self.weights.set_track_new_allocations(on);
+    }
+
+    /// See the `track_deformed` field (TAA prep-pass fallback).
+    pub(crate) fn set_track_deformed(&mut self, on: bool) {
+        self.track_deformed = on;
+        self.deformed.clear();
+    }
+
+    /// The keys whose weights were written since the last call.
+    pub(crate) fn take_deformed(&mut self) -> Vec<Key> {
+        std::mem::take(&mut self.deformed)
     }
 
     /// The weights history and the current buffer's byte size, for the

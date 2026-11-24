@@ -152,7 +152,7 @@ impl GeometryMaskedCustomVertexPipelines {
         masked_bind_group: &GeometryMaskedBindGroup,
         variant: &MaskedCustomVertexVariant,
     ) -> Result<()> {
-        let targets = GeometryTargets::from_aa(ctx.anti_aliasing);
+        let targets = GeometryTargets::from_aa(ctx.anti_aliasing, ctx.render_texture_formats);
         let msaa_samples = targets.msaa_samples();
         let layout_key = if targets.velocity() {
             self.velocity_pipeline_layout_key.ok_or(
@@ -173,6 +173,7 @@ impl GeometryMaskedCustomVertexPipelines {
             texture_pool_samplers_len: masked_bind_group.texture_pool_samplers_len,
             msaa_samples,
             velocity: targets.velocity(),
+            mip_bias: targets.mip_bias(),
         };
         ctx.shaders
             .ensure_keys(ctx.gpu, vec![shader_cache.clone().into()])

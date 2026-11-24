@@ -308,7 +308,11 @@ impl MotionHistoryBuffer {
                 .iter()
                 .zip(self.sizes)
                 .all(|(want, have)| *want <= have);
-        let placed = histories.iter().all(|h| h.region().is_some());
+        // A disabled history (the prep-pass fallback keeps only the
+        // transforms) gets no region and is never copied.
+        let placed = histories
+            .iter()
+            .all(|h| !h.enabled() || h.region().is_some());
         if fits && placed {
             return Ok(false);
         }
@@ -347,7 +351,7 @@ impl MotionHistoryBuffer {
             )?
         };
         for (i, history) in histories.into_iter().enumerate() {
-            if !fits || history.region().is_none() {
+            if history.enabled() && (!fits || history.region().is_none()) {
                 history.assign(HistoryRegion {
                     buffer: buffer.clone(),
                     base: bases[i],

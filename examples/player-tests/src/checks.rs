@@ -3272,6 +3272,7 @@ async fn mask_without_commit(origin: &str, msaa: bool) -> Result<String> {
 
     let targets = awsm_renderer::render_passes::geometry::pipeline::GeometryTargets::from_aa(
         &renderer.anti_aliasing,
+        &renderer.render_textures.formats,
     );
     let has_geometry_variant = |renderer: &AwsmRenderer| {
         renderer

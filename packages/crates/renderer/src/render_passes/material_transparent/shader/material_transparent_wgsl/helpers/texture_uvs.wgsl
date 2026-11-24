@@ -46,11 +46,13 @@ fn texture_pool_sample(info: TextureInfo, uv: vec2<f32>) -> vec4<f32> {
           {% for i in 0..texture_pool_samplers_len %}
               case {{ i }}u: {
                   // textureSample uses automatic derivatives - much simpler than compute!
-                  color = textureSample(
+                  color = textureSample{% if taa_mip_bias %}Bias{% endif %}(
                       tex,
                       pool_sampler_{{ i }},
                       uv,
-                      i32(info.layer_index)
+                      i32(info.layer_index){% if taa_mip_bias %},
+                      // TAA texture LOD bias (03 §7; camera `prev_position.w`).
+                      camera_raw.prev_position.w{% endif +%}
                   );
               }
           {% endfor %}
@@ -75,7 +77,7 @@ fn texture_pool_sample_nu(info: TextureInfo, uv: vec2<f32>) -> vec4<f32> {
     {% for i in 0..texture_pool_arrays_len %}
     {% for j in 0..texture_pool_samplers_len %}
     {
-        let s = textureSample(pool_tex_{{ i }}, pool_sampler_{{ j }}, transformed_uv, i32(info.layer_index));
+        let s = textureSample{% if taa_mip_bias %}Bias{% endif %}(pool_tex_{{ i }}, pool_sampler_{{ j }}, transformed_uv, i32(info.layer_index){% if taa_mip_bias %}, camera_raw.prev_position.w{% endif %});
         color = select(color, s, info.array_index == {{ i }}u && info.sampler_index == {{ j }}u);
     }
     {% endfor %}

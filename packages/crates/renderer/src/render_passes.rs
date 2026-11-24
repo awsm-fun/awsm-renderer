@@ -566,7 +566,10 @@ impl RenderPasses {
         // set_anti_aliasing flip.
         let multisampled_geometry = ctx.anti_aliasing.has_msaa_checked()?;
         shader_cache_keys.extend(GeometryPipelines::shader_cache_keys(
-            crate::render_passes::geometry::pipeline::GeometryTargets::from_aa(ctx.anti_aliasing),
+            crate::render_passes::geometry::pipeline::GeometryTargets::from_aa(
+                ctx.anti_aliasing,
+                ctx.render_texture_formats,
+            ),
         ));
         // Light culling: one module, two entry points, MSAA-agnostic.
         shader_cache_keys.extend(LightCullingPipelines::shader_cache_keys(
@@ -579,6 +582,8 @@ impl RenderPasses {
             multisampled_geometry,
             ctx.prep_config,
             ctx.features.reverse_z,
+            ctx.render_texture_formats
+                .taa_prep_velocity(ctx.anti_aliasing),
         ));
         if features.gpu_culling {
             shader_cache_keys.extend(HzbPipelines::shader_cache_keys(
@@ -687,7 +692,10 @@ impl RenderPasses {
         let geometry_descs = GeometryPipelines::build_descriptors(
             ctx,
             &bindings.geometry_bg,
-            crate::render_passes::geometry::pipeline::GeometryTargets::from_aa(ctx.anti_aliasing),
+            crate::render_passes::geometry::pipeline::GeometryTargets::from_aa(
+                ctx.anti_aliasing,
+                ctx.render_texture_formats,
+            ),
         )
         .await?;
         let geometry_range =

@@ -81,8 +81,10 @@ impl AwsmRenderer {
         if self.masked_lazy.inflight.is_some() || self.materials.masked_builtin().is_empty() {
             return Ok(());
         }
-        let geometry_targets =
-            crate::render_passes::geometry::pipeline::GeometryTargets::from_aa(&self.anti_aliasing);
+        let geometry_targets = crate::render_passes::geometry::pipeline::GeometryTargets::from_aa(
+            &self.anti_aliasing,
+            &self.render_textures.formats,
+        );
         let geometry_pool = &self.render_passes.geometry.masked_pipelines;
         let shadow_pool = &self.render_passes.shadow_masked.pipelines;
 

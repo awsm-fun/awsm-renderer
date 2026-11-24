@@ -51,6 +51,9 @@ pub struct ShaderCacheKeyGeometryMaskedCustomVertex {
     /// TAA variant (motion-vector target). See
     /// [`ShaderCacheKeyGeometry::velocity`](super::cache_key::ShaderCacheKeyGeometry::velocity).
     pub velocity: bool,
+    /// TAA texture LOD bias. See
+    /// [`ShaderCacheKeyGeometry::mip_bias`](super::cache_key::ShaderCacheKeyGeometry::mip_bias).
+    pub mip_bias: bool,
 }
 
 impl From<ShaderCacheKeyGeometryMaskedCustomVertex> for ShaderCacheKey {

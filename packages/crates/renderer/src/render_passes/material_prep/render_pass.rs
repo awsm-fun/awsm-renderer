@@ -49,6 +49,10 @@ use crate::{
 pub enum PrepPipelineSlot {
     /// `cs_prep` for one MSAA-geometry branch.
     Main { multisampled: bool },
+    /// `cs_prep` with TAA's motion-vector reconstruction (the prep-pass
+    /// fallback, 03 §2.4; single-sampled: TAA excludes MSAA). Replaces the
+    /// plain single-sampled `cs_prep` while that path is active.
+    MainVelocity,
     /// `cs_prep_edge` (multisampled main layout + edge group(3)). MSAA-only.
     Edge,
     /// `cs_blur_h` for one MSAA-geometry branch.
@@ -78,6 +82,8 @@ pub struct MaterialPrepPrewarmDescriptors {
 pub struct MaterialPrepPipelines {
     multisampled: Option<ComputePipelineKey>,
     singlesampled: Option<ComputePipelineKey>,
+    /// `cs_prep` + TAA velocity (`PrepPipelineSlot::MainVelocity`).
+    velocity: Option<ComputePipelineKey>,
     edge: Option<ComputePipelineKey>,
     blur_h_multisampled: Option<ComputePipelineKey>,
     blur_h_singlesampled: Option<ComputePipelineKey>,
@@ -97,18 +103,25 @@ impl MaterialPrepPipelines {
     /// `RenderPasses::describe_shaders`. One prep megashader module covers
     /// both `cs_prep` and `cs_prep_edge` (same cache key); the blur module is
     /// separate and only needed while denoise is on.
+    ///
+    /// `velocity`: TAA's prep-pass fallback is active
+    /// (`AntiAliasing::taa_prep_velocity`); its `cs_prep` reconstructs the
+    /// motion vectors.
     pub fn shader_cache_keys(
         multisampled_geometry: bool,
         prep_config: &crate::render_passes::material_prep::PrepPassConfig,
         reverse_z: bool,
+        velocity: bool,
     ) -> Vec<crate::shaders::ShaderCacheKey> {
         let msaa_sample_count = if multisampled_geometry { Some(4) } else { None };
+        let velocity = velocity && !multisampled_geometry;
         let mut keys: Vec<crate::shaders::ShaderCacheKey> = vec![ShaderCacheKeyMaterialPrep {
             msaa_sample_count,
             max_shadow_casters: prep_config.clamped_k(),
             sscs_enabled: prep_config.sscs_enabled,
             sscs_step_count: prep_config.sscs_step_count,
             reverse_z,
+            velocity,
         }
         .into()];
         if prep_config.denoise {
@@ -143,9 +156,20 @@ impl MaterialPrepPipelines {
         let mut pipeline_cache_keys = Vec::new();
         let mut slots = Vec::new();
 
-        pipeline_cache_keys.push(main_cache_key(ctx, bind_groups, multisampled_geometry).await?);
-        slots.push(PrepPipelineSlot::Main {
-            multisampled: multisampled_geometry,
+        // TAA's prep-pass fallback: the velocity `cs_prep` instead of the
+        // plain single-sampled one.
+        let velocity = !multisampled_geometry
+            && ctx
+                .render_texture_formats
+                .taa_prep_velocity(ctx.anti_aliasing);
+        pipeline_cache_keys
+            .push(main_cache_key(ctx, bind_groups, multisampled_geometry, velocity).await?);
+        slots.push(if velocity {
+            PrepPipelineSlot::MainVelocity
+        } else {
+            PrepPipelineSlot::Main {
+                multisampled: multisampled_geometry,
+            }
         });
 
         if multisampled_geometry && edge_resolve_enabled {
@@ -180,6 +204,7 @@ impl MaterialPrepPipelines {
             PrepPipelineSlot::Main {
                 multisampled: false,
             } => &mut self.singlesampled,
+            PrepPipelineSlot::MainVelocity => &mut self.velocity,
             PrepPipelineSlot::Edge => &mut self.edge,
             PrepPipelineSlot::BlurH { multisampled: true } => &mut self.blur_h_multisampled,
             PrepPipelineSlot::BlurH {
@@ -193,11 +218,12 @@ impl MaterialPrepPipelines {
     }
 
     /// Every slot, in a fixed order.
-    const ALL_SLOTS: [PrepPipelineSlot; 7] = [
+    const ALL_SLOTS: [PrepPipelineSlot; 8] = [
         PrepPipelineSlot::Main { multisampled: true },
         PrepPipelineSlot::Main {
             multisampled: false,
         },
+        PrepPipelineSlot::MainVelocity,
         PrepPipelineSlot::Edge,
         PrepPipelineSlot::BlurH { multisampled: true },
         PrepPipelineSlot::BlurH {
@@ -276,9 +302,12 @@ impl MaterialPrepPipelines {
         edge_resolve_enabled: bool,
         denoise: bool,
         denoise_radius: u32,
+        velocity: bool,
     ) -> bool {
         let main = if multisampled_geometry {
             self.multisampled.is_some()
+        } else if velocity {
+            self.velocity.is_some()
         } else {
             self.singlesampled.is_some()
         };
@@ -309,6 +338,9 @@ pub struct MaterialPrepRenderPass {
     /// the frames in between skip the blur with a single warn instead of
     /// erroring the whole frame.
     blur_warned: std::cell::Cell<bool>,
+    /// `cs_prep` dispatches per frame (`AwsmRenderer::set_debug_prep_repeat`):
+    /// 1 normally, N > 1 only to measure the pass by repetition.
+    debug_repeat: std::cell::Cell<u32>,
 }
 
 impl MaterialPrepRenderPass {
@@ -325,6 +357,7 @@ impl MaterialPrepRenderPass {
             pipelines,
             edge_shadow,
             blur_warned: std::cell::Cell::new(false),
+            debug_repeat: std::cell::Cell::new(1),
         }
     }
 
@@ -356,6 +389,8 @@ impl MaterialPrepRenderPass {
     pub fn render(&self, ctx: &RenderContext) -> Result<()> {
         let pipeline_key = if ctx.anti_aliasing.msaa_sample_count.is_some() {
             self.pipelines.multisampled
+        } else if ctx.render_texture_views.prep_velocity {
+            self.pipelines.velocity
         } else {
             self.pipelines.singlesampled
         };
@@ -382,7 +417,10 @@ impl MaterialPrepRenderPass {
 
         let workgroups_x = ctx.render_texture_views.render_size.0.div_ceil(8);
         let workgroups_y = ctx.render_texture_views.render_size.1.div_ceil(8);
-        compute_pass.dispatch_workgroups(workgroups_x, Some(workgroups_y), Some(1));
+        // `repeat > 1`: cost measurement only (same work, same output).
+        for _ in 0..self.debug_repeat.get().max(1) {
+            compute_pass.dispatch_workgroups(workgroups_x, Some(workgroups_y), Some(1));
+        }
 
         compute_pass.end();
         Ok(())
@@ -593,9 +631,12 @@ async fn main_cache_key(
     ctx: &mut RenderPassInitContext<'_>,
     bind_groups: &MaterialPrepBindGroups,
     multisampled_geometry: bool,
+    velocity: bool,
 ) -> Result<ComputePipelineCacheKey> {
     let bgl_key = if multisampled_geometry {
         bind_groups.multisampled_bind_group_layout_key
+    } else if velocity {
+        bind_groups.velocity_bind_group_layout_key
     } else {
         bind_groups.singlesampled_bind_group_layout_key
     };
@@ -618,6 +659,7 @@ async fn main_cache_key(
                 sscs_enabled: ctx.prep_config.sscs_enabled,
                 sscs_step_count: ctx.prep_config.sscs_step_count,
                 reverse_z: ctx.features.reverse_z,
+                velocity,
             },
         )
         .await?;
@@ -656,6 +698,7 @@ async fn edge_cache_key(
                 sscs_enabled: ctx.prep_config.sscs_enabled,
                 sscs_step_count: ctx.prep_config.sscs_step_count,
                 reverse_z: ctx.features.reverse_z,
+                velocity: false,
             },
         )
         .await?;
@@ -699,4 +742,35 @@ async fn blur_cache_key(
         )
         .await?;
     Ok(ComputePipelineCacheKey::new(shader_key, pipeline_layout_key).with_entry_point(entry_point))
+}
+
+impl crate::AwsmRenderer {
+    /// TAA prep-pass fallback (03 §2.4), once per frame before the meta
+    /// upload: flag the non-rigid meshes that deform now (their prep vector is
+    /// the node's rigid motion only), and unflag the ones at rest (their
+    /// vector is exact). No-op on every other path.
+    pub(crate) fn update_non_rigid_gates(&mut self) {
+        if !self
+            .render_textures
+            .formats
+            .taa_prep_velocity(&self.anti_aliasing)
+        {
+            return;
+        }
+        let deformed = crate::meshes::meta::DeformedThisFrame {
+            skins: self.meshes.skins.take_deformed(),
+            morphs: self.meshes.morphs.geometry.take_deformed(),
+            instances: self.instances.take_deformed(),
+        };
+        self.meshes.meta.update_non_rigid_gates(&deformed);
+    }
+
+    /// Cost measurement: dispatch `cs_prep` `n` times per frame (1 =
+    /// normal). The extra dispatches redo the same work into the same
+    /// targets, so `(T(n) - T(1)) / (n - 1)` is one prep pass.
+    pub fn set_debug_prep_repeat(&mut self, n: u32) {
+        if let Some(prep) = self.render_passes.material_prep.as_ref() {
+            prep.debug_repeat.set(n.max(1));
+        }
+    }
 }

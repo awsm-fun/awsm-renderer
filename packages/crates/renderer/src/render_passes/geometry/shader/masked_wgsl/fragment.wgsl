@@ -134,7 +134,17 @@ fn fs_main(input: FragmentInput) -> FragmentOutput {
         vec2<f32>(-BARY_DERIV_LIMIT), vec2<f32>(BARY_DERIV_LIMIT));
     let ddy = clamp(dpdy(input.barycentric_center),
         vec2<f32>(-BARY_DERIV_LIMIT), vec2<f32>(BARY_DERIV_LIMIT));
-    out.barycentric_derivatives = vec4<f32>(ddx.x, ddy.x, ddx.y, ddy.y);{% if velocity %}
+    out.barycentric_derivatives = vec4<f32>(ddx.x, ddy.x, ddx.y, ddy.y);{% if mip_bias %}
+    // TAA texture LOD bias (03 §7): the stored derivatives feed ONLY the
+    // shading's texture gradients, so scaling them by 2^bias (camera
+    // `prev_position.w` = log2(render / post) + mip_bias_extra) biases every
+    // gradient sample of every material, custom ones included, in one place.
+    // On both velocity paths (the prep-pass fallback has no velocity block).
+    out.barycentric_derivatives = clamp(
+        out.barycentric_derivatives * exp2(camera_raw.prev_position.w),
+        vec4<f32>(-BARY_DERIV_LIMIT),
+        vec4<f32>(BARY_DERIV_LIMIT),
+    );{% endif %}{% if velocity %}
     out.velocity = taa_motion_vector(input.clip_now, input.clip_prev);
     {% endif +%}
 

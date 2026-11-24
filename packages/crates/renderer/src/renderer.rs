@@ -723,8 +723,33 @@ impl AwsmRenderer {
                     _ => pending.into_result(),
                 };
             }
-            self.degrade_failed_post_processing(pending, composite_error)
-                .await?;
+            // A failure post-processing cannot absorb, with TAA on: run the
+            // scene with MSAA 4x instead of not at all (TAA's variants are
+            // the newest, least driver-tested ones). The next round drains
+            // what the switch reserves; a failure that survives it is
+            // reported as before.
+            let failed_keys = (
+                pending
+                    .failed_compute
+                    .iter()
+                    .map(|(key, _)| *key)
+                    .collect::<Vec<_>>(),
+                pending
+                    .failed_render
+                    .iter()
+                    .map(|(key, _)| *key)
+                    .collect::<Vec<_>>(),
+            );
+            if let Err(err) = self
+                .degrade_failed_post_processing(pending, composite_error)
+                .await
+            {
+                if !self.taa_may_fall_back() {
+                    return Err(err);
+                }
+                self.fall_back_from_taa(err.to_string(), failed_keys.0, failed_keys.1)
+                    .await?;
+            }
         }
         let eager_ids = std::mem::take(&mut self.eager_pass_ids);
         for id in &eager_ids {
@@ -1260,6 +1285,9 @@ impl AwsmRenderer {
                     multisampled,
                     &self.prep_config,
                     self.features.reverse_z,
+                    self.render_textures
+                        .formats
+                        .taa_prep_velocity(&self.anti_aliasing),
                 ),
             )
             .await?;
@@ -2523,6 +2551,12 @@ impl AwsmRendererBuilder {
         if let Some(depth_override) = render_texture_formats_depth_override {
             render_texture_formats.depth = depth_override;
         }
+        // TAA's motion-vector path is renderer state (03 §2.4): the device's
+        // at build (the debug override applies at the next
+        // `set_anti_aliasing`).
+        render_texture_formats.prep_velocity_path =
+            crate::anti_alias::velocity_path_for_device(&gpu)
+                == crate::anti_alias::TaaVelocityPath::PrepReconstruction;
 
         // tracing::info!("Max bind groups: {}", gpu.device.limits().max_bind_groups());
         // tracing::info!(
@@ -3234,16 +3268,12 @@ impl AwsmRendererBuilder {
         // batch (see `ComputePipelines::set_deferred`).
         _self.pipelines.set_deferred(true);
 
-        // TAA from the start: the device must support its motion-vector path,
-        // and the previous-frame buffers turn on (no-op without TAA).
-        if _self.anti_aliasing.taa.is_some()
-            && _self.taa_velocity_path() != crate::anti_alias::TaaVelocityPath::GeometryTarget
-        {
-            return Err(crate::error::AwsmError::TaaUnavailable(
-                "this device has no TAA motion-vector path (see taa_velocity_path)".to_string(),
-            ));
-        }
+        // TAA from the start: the previous-frame buffers turn on (no-op
+        // without TAA).
         _self.sync_motion_history();
+        // ...and its RCAS pass when the boot config sharpens (a preset other
+        // than native). No-op without TAA or at sharpen 0.
+        _self.sync_taa_rcas().await?;
 
         // Apply the configured registration ceiling (§2). Validated +
         // clamped in `with_bucket_config`, so this only sets the field; it
@@ -3932,12 +3962,17 @@ impl AwsmRenderer {
         }
         loop {
             let post_processing = self.post_processing.clone();
+            let anti_aliasing = self.anti_aliasing.clone();
             self.drain_reserved_pool().await?;
-            if self.post_processing == post_processing {
+            if self.post_processing == post_processing && self.anti_aliasing == anti_aliasing {
                 break;
             }
             self.reconcile_material_variants()?;
             self.prewarm_pipelines().await?;
+            // TAA fell back to MSAA 4x in the drain: the lines re-key too.
+            if self.anti_aliasing != anti_aliasing {
+                self.ensure_line_pipelines_compiled().await?;
+            }
         }
 
         // The default BRDF LUT a cold commit generates in the background

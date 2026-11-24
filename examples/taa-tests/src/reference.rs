@@ -324,6 +324,31 @@ pub fn resolve_frame_linear(frame: &Image, j: Vec2) -> Vec<[f32; 3]> {
     acc.mean_linear()
 }
 
+/// One frame's resolve-model reconstruction in the given accumulation space
+/// (Karis-weighted values when `karis`; average them, then `encode_space`).
+pub fn resolve_frame(frame: &Image, j: Vec2, karis: bool) -> Vec<[f32; 3]> {
+    let size = (frame.width, frame.height);
+    let space = if karis {
+        AccumSpace::Karis
+    } else {
+        AccumSpace::DisplayLinear
+    };
+    let mut acc = ReferenceAccumulator::resolve_model(size, size, space);
+    acc.add_frame(frame, j);
+    acc.mean_linear()
+}
+
+/// Display-encode a value of the accumulation space (Karis values are
+/// un-weighted first, as `ReferenceAccumulator::finish` does).
+pub fn encode_space(c: [f32; 3], karis: bool) -> [u8; 4] {
+    if karis {
+        let k = 1.0 / (1.0 - c[0].max(c[1]).max(c[2])).max(1e-6);
+        encode_linear([c[0] * k, c[1] * k, c[2] * k])
+    } else {
+        encode_linear(c)
+    }
+}
+
 /// Display-encode one linear colour.
 pub fn encode_linear(c: [f32; 3]) -> [u8; 4] {
     [

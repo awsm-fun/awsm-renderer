@@ -96,6 +96,14 @@ pub struct RenderTextureFormats {
     /// §5): the transparent pass's second target under TAA. R8unorm.
     pub reactive: TextureFormat,
 
+    /// TAA's motion vectors come from the prep pass on this renderer
+    /// (`TaaVelocityPath::PrepReconstruction`, 03 §2.4): the geometry pass
+    /// has no velocity target and the velocity texture is a prep storage
+    /// target. Renderer state, set from `AwsmRenderer::taa_velocity_path` by
+    /// the builder and `set_anti_aliasing`; read through
+    /// [`Self::taa_prep_velocity`].
+    pub prep_velocity_path: bool,
+
     // output from display pass is whatever current gpu texture format is
 
     // For depth testing and transparency
@@ -106,6 +114,11 @@ pub struct RenderTextureFormats {
 impl RenderTextureFormats {
     /// Chooses default render texture formats for the device.
     pub async fn new(_device: &web_sys::GpuDevice) -> Self {
+        Self::defaults()
+    }
+
+    /// The device-independent defaults (what [`Self::new`] returns).
+    pub(crate) fn defaults() -> Self {
         Self {
             visiblity_data: TextureFormat::Rgba16uint,
             // RGBA16uint: RG = bary.xy as u16 fixed-point (* 65535), BA =
@@ -118,8 +131,16 @@ impl RenderTextureFormats {
             color: TextureFormat::Rgba16float, // HDR format for bloom/tonemapping
             reflection_descriptor: TextureFormat::Rgba8unorm, // SSR reflectivity + spread factors
             reactive: TextureFormat::R8unorm,  // TAA reactive mask (0..1)
+            prep_velocity_path: false,
             depth: TextureFormat::Depth32float, // More precision for thin/close surfaces
         }
+    }
+}
+
+impl RenderTextureFormats {
+    /// TAA is on and its motion vectors come from the prep-pass fallback.
+    pub fn taa_prep_velocity(&self, anti_aliasing: &crate::anti_alias::AntiAliasing) -> bool {
+        anti_aliasing.taa.is_some() && self.prep_velocity_path
     }
 }
 
@@ -253,7 +274,12 @@ impl RenderTextures {
         let anti_aliasing_changed = match self.inner.as_ref() {
             // Structural only: a change inside `taa: Some(..)` (tuning,
             // sharpening, render scale) needs no new targets.
-            Some(inner) => !inner.anti_aliasing.same_structure(&anti_aliasing),
+            // The motion-vector path (renderer state) is structural too: the
+            // velocity target's format and usage follow it.
+            Some(inner) => {
+                !inner.anti_aliasing.same_structure(&anti_aliasing)
+                    || inner.prep_velocity != self.formats.taa_prep_velocity(&anti_aliasing)
+            }
             None => false,
         };
 
@@ -371,6 +397,15 @@ impl RenderTextures {
         ))
     }
 
+    /// `(render, post)` size of the textures as they are now (the last
+    /// frame's, unless a `views()` call rebuilt them since), or `None` before
+    /// the first frame. What a readback of these textures has to map into.
+    pub(crate) fn current_sizes(&self) -> Option<((u32, u32), (u32, u32))> {
+        self.inner
+            .as_ref()
+            .map(|inner| (inner.render_size, inner.post_size))
+    }
+
     /// The render preamble calls this once it has rebuilt everything that
     /// references the render textures (the `TextureViewRecreate` bind groups,
     /// the opaque mipgen cache) for the current `inner`. Until then every
@@ -418,6 +453,9 @@ pub struct RenderTextureViews {
     /// ignore it): the world transparent pass's second target, MAX blended.
     /// `None` unless TAA is on.
     pub reactive: Option<web_sys::GpuTextureView>,
+    /// TAA's motion vectors come from the prep pass (the `velocity` view is
+    /// its storage target; `RenderTextureFormats::taa_prep_velocity`).
+    pub prep_velocity: bool,
 
     // Output from opaque pass
     pub opaque: web_sys::GpuTextureView,
@@ -541,6 +579,7 @@ impl RenderTextureViews {
             barycentric_derivatives: inner.barycentric_derivatives_view.clone(),
             velocity: inner.velocity_view.clone(),
             reactive: inner.reactive_view.clone(),
+            prep_velocity: inner.prep_velocity,
             opaque: inner.opaque_storage_view.clone(),
             opaque_storage: inner.opaque_storage_view.clone(),
             opaque_full: inner.opaque_full_view.clone(),
@@ -637,6 +676,8 @@ pub struct RenderTexturesInner {
     /// TAA reactive mask. `None` unless `anti_aliasing.taa` is set.
     pub reactive: Option<web_sys::GpuTexture>,
     pub reactive_view: Option<web_sys::GpuTextureView>,
+    /// See [`RenderTextureViews::prep_velocity`].
+    pub prep_velocity: bool,
 
     pub opaque: web_sys::GpuTexture,
     pub opaque_clearer: TextureClearer,
@@ -876,16 +917,27 @@ impl RenderTexturesInner {
         // TAA motion vectors: geometry-pass target, render size, single-sampled
         // (TAA turns MSAA off). COPY_SRC for the harness readback
         // (`debug_read_velocity`). Zero cost when TAA is off: not allocated.
+        // With the prep-pass fallback (03 §2.4) the prep compute pass writes
+        // it instead: a storage texture, `rg32float` (`rg16float` is not a
+        // core storage format). The resolve reads either the same way.
         let velocity = if anti_aliasing.taa.is_some() {
+            let prep = render_texture_formats.taa_prep_velocity(&anti_aliasing);
             Some(
                 gpu.create_texture(
                     &TextureDescriptor::new(
-                        crate::render_passes::geometry::pipeline::VELOCITY_FORMAT,
+                        if prep {
+                            crate::render_passes::material_prep::PREP_VELOCITY_FORMAT
+                        } else {
+                            crate::render_passes::geometry::pipeline::VELOCITY_FORMAT
+                        },
                         Extent3d::new(render_w, Some(render_h), Some(1)),
-                        TextureUsage::new()
-                            .with_render_attachment()
-                            .with_texture_binding()
-                            .with_copy_src(),
+                        if prep {
+                            TextureUsage::new().with_storage_binding()
+                        } else {
+                            TextureUsage::new().with_render_attachment()
+                        }
+                        .with_texture_binding()
+                        .with_copy_src(),
                     )
                     .with_label("Velocity")
                     .into(),
@@ -1630,6 +1682,7 @@ impl RenderTexturesInner {
 
             reactive,
             reactive_view,
+            prep_velocity: render_texture_formats.taa_prep_velocity(&anti_aliasing),
 
             opaque,
             opaque_storage_view,
@@ -1865,7 +1918,7 @@ impl crate::AwsmRenderer {
             TexelCopyBufferInfo, TexelCopyTextureInfo,
         };
 
-        let submitted = (|| -> crate::error::Result<(web_sys::GpuBuffer, u32, u32, u32)> {
+        let submitted = (|| -> crate::error::Result<(web_sys::GpuBuffer, u32, u32, u32, u32)> {
             let unavailable = |what: &str| {
                 crate::error::AwsmError::from(AwsmRenderTextureError::DebugReadback(format!(
                     "{what}: TAA must be on and a frame rendered"
@@ -1892,6 +1945,8 @@ impl crate::AwsmRenderer {
             // rg16float and depth32float are 4 bytes per pixel, r8unorm 1.
             let texel_bytes = match target {
                 DebugReadTarget::Reactive => 1,
+                // The prep-pass fallback's velocity is rg32float.
+                DebugReadTarget::Velocity if inner.prep_velocity => 8,
                 _ => 4,
             };
             let bytes_per_row = (render_w * texel_bytes).div_ceil(256) * 256;
@@ -1913,15 +1968,12 @@ impl crate::AwsmRenderer {
                 &Extent3d::new(render_w, Some(render_h), Some(1)).into(),
             )?;
             self.gpu.submit_commands(&encoder.finish());
-            Ok((buffer, render_w, render_h, bytes_per_row))
+            Ok((buffer, render_w, render_h, bytes_per_row, texel_bytes))
         })();
 
         Box::pin(async move {
-            let (buffer, width, height, bytes_per_row) = submitted?;
-            let texel_bytes = match target {
-                DebugReadTarget::Reactive => 1,
-                _ => 4,
-            };
+            let (buffer, width, height, bytes_per_row, texel_bytes) = submitted?;
+            let texel_bytes = texel_bytes as usize;
             let bytes = awsm_renderer_core::buffers::extract_buffer_vec(&buffer, None).await?;
             buffer.destroy();
             let mut out = Vec::with_capacity((width * height * 2) as usize);
@@ -1929,6 +1981,11 @@ impl crate::AwsmRenderer {
                 let start = row * bytes_per_row as usize;
                 let row_bytes = &bytes[start..start + width as usize * texel_bytes];
                 match target {
+                    DebugReadTarget::Velocity if texel_bytes == 8 => {
+                        for word in row_bytes.chunks_exact(4) {
+                            out.push(f32::from_le_bytes([word[0], word[1], word[2], word[3]]));
+                        }
+                    }
                     DebugReadTarget::Velocity => {
                         for half in row_bytes.chunks_exact(2) {
                             out.push(f16_to_f32(u16::from_le_bytes([half[0], half[1]])));

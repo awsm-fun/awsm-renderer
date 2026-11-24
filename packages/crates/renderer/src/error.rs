@@ -86,6 +86,9 @@ pub enum AwsmError {
     #[error("TAA is not available on this device: {0}")]
     TaaUnavailable(String),
 
+    #[error("TAA is not enabled: set_anti_aliasing(AntiAliasing::taa(..)) first")]
+    TaaNotEnabled,
+
     #[error("Unregistered Cull Mode: {0:?}")]
     UnsupportedCullMode(CullMode),
 

@@ -298,6 +298,9 @@ impl AwsmRenderer {
             .pending_snapshot
             .take();
         if let Some(snapshot) = pending_snapshot {
+            // (Under TAA upscaling the counts were already scaled to output
+            // pixels when the readback was requested: see
+            // `coverage_area_scale`.)
             self.coverage.ingest(snapshot, self.frame_index);
         }
 
@@ -422,6 +425,9 @@ impl AwsmRenderer {
             &self.coverage,
             self.default_cheap_material_pixel_threshold,
         )?;
+        // TAA prep-pass fallback: flag the meshes deforming now (meta patch,
+        // same upload). No-op otherwise.
+        self.update_non_rigid_gates();
 
         // (Variant reconcile + scene-pipeline compile used to run here every
         // frame — the reactive `reconcile_material_variants()` →
@@ -593,12 +599,19 @@ impl AwsmRenderer {
                 // The jitter phase advances once per rendered frame.
                 self.taa.frame_index = self.taa.frame_index.wrapping_add(1);
             }
-            let reactive_factors = self.anti_aliasing.taa.as_ref().map(|taa| {
-                [
-                    taa.tuning.reactive_transparent,
-                    taa.tuning.reactive_material,
-                ]
-            });
+            let taa_factors =
+                self.anti_aliasing
+                    .taa
+                    .as_ref()
+                    .map(|taa| crate::camera::TaaCameraFactors {
+                        reactive_transparent: taa.tuning.reactive_transparent,
+                        reactive_material: taa.tuning.reactive_material,
+                        mip_bias: crate::taa::texture_lod_bias(
+                            frame_sizes.render,
+                            frame_sizes.post,
+                            taa.tuning.mip_bias_extra,
+                        ),
+                    });
             // TAA with a HUD: the HUD geometry pass rasterises with an
             // unjittered twin of the camera (03 §5.4). Requested while a HUD
             // has ever existed (sticky, like `hud_depth`); never without TAA.
@@ -613,7 +626,7 @@ impl AwsmRenderer {
                 render_w as f32,
                 render_h as f32,
                 self.features.depth(),
-                reactive_factors,
+                taa_factors,
                 hud_camera,
             );
         }
@@ -1308,7 +1321,7 @@ impl AwsmRenderer {
                 if let Some(cam) = self.camera.last_matrices.as_ref() {
                     let proj_yy = cam.projection.y_axis.y.abs();
                     if proj_yy > 1e-6 {
-                        if let Ok((_, vh)) = self.render_size() {
+                        if let Ok(vh) = self.lod_viewport_height() {
                             // Cut + compaction for EVERY resident cluster mesh; returns
                             // the diagnostics readback kick (first resident mesh, on
                             // cadence) for the async consumer further below.
@@ -1887,9 +1900,19 @@ impl AwsmRenderer {
             .taa
             .as_ref()
             .map(|taa| taa.tuning.reactive_ssr)
-            .filter(|k| *k > 0.0 && ctx.post_processing.ssr.enabled);
+            // The SSR pass must exist too: `ssr.enabled` flips before the
+            // lazy pass (and the opaque variants that write the reflection
+            // descriptor) are built, and until then the descriptor holds
+            // nothing of this frame.
+            .filter(|k| {
+                *k > 0.0 && ctx.post_processing.ssr.enabled && self.render_passes.ssr.is_some()
+            });
         let reactive_seed = if ctx.anti_aliasing.taa.is_some()
-            && (self.materials.has_temporal_reactive() || hud_in_scene || k_ssr.is_some())
+            && (self.materials.has_temporal_reactive()
+                || hud_in_scene
+                || k_ssr.is_some()
+                // Prep-pass fallback (03 §2.4): non-rigid meshes are reactive.
+                || (ctx.render_textures.formats.taa_prep_velocity(ctx.anti_aliasing) && self.meshes.meta.has_non_rigid()))
         {
             self.render_passes
                 .taa
@@ -1977,6 +2000,9 @@ impl AwsmRenderer {
             if let Some(taa) = self.render_passes.taa.as_ref() {
                 taa.params
                     .set_reactive_valid(&self.gpu, ctx.reactive_written.get())?;
+                if let Some(rcas) = taa.rcas.as_ref() {
+                    rcas.set_reactive_valid(&self.gpu, ctx.reactive_written.get())?;
+                }
             }
         }
 
@@ -2041,6 +2067,11 @@ impl AwsmRenderer {
                 let _maybe_span_guard =
                     crate::profiling::cpu_scope(&self.logging, "TAA RenderPass", true);
                 taa.render(&ctx)?;
+                // RCAS sharpening (only while `sharpen > 0`), before the HUD
+                // is drawn over the result.
+                if let Some(rcas) = taa.rcas.as_ref() {
+                    rcas.render(&ctx)?;
+                }
             }
         }
 
@@ -2215,6 +2246,8 @@ impl AwsmRenderer {
         {
             let readback_buffer = coverage_buffers.readback_buffer.clone();
             let readback_size_bytes = coverage_buffers.capacity.saturating_mul(4);
+            // This frame's render-to-output area factor (TAA upscaling).
+            let area_scale = self.coverage_area_scale(&frame_sizes);
             let state = std::sync::Arc::clone(&self.coverage_readback_state);
             state.lock().unwrap().inflight = true;
             wasm_bindgen_futures::spawn_local(async move {
@@ -2232,6 +2265,10 @@ impl AwsmRenderer {
                                 return None;
                             }
                             let count = u32::from_le_bytes(bytes[base..base + 4].try_into().ok()?);
+                            let count = match area_scale {
+                                Some(scale) => (count as f64 * scale).round() as u32,
+                                None => count,
+                            };
                             Some((mesh_key, count))
                         })
                         .collect(),
@@ -3136,8 +3173,10 @@ impl<'a> RenderContext<'a> {
             .map_err(Into::into)
     }
 
-    /// TAA: begins the HUD's lit pass after the resolve: `taa_out` (post
-    /// size, loaded) with the post-size HUD depth (cleared). Only called
+    /// TAA: begins the HUD's lit pass after the resolve: the resolved image
+    /// (`taa_out`, or RCAS's output while sharpening is on, so the HUD is
+    /// never sharpened; post size, loaded) with the post-size HUD depth
+    /// (cleared). Only called
     /// under TAA with HUD renderables.
     pub(crate) fn begin_hud_post_pass_timed(
         &'a self,
@@ -3158,7 +3197,7 @@ impl<'a> RenderContext<'a> {
                 &RenderPassDescriptor {
                     label,
                     color_attachments: vec![ColorAttachment::new(
-                        &taa.textures.out_view,
+                        taa.final_view(),
                         LoadOp::Load,
                         StoreOp::Store,
                     )],
@@ -3271,8 +3310,8 @@ impl AwsmRenderer {
             return;
         }
         let tan_half_fov_y = 1.0 / proj_yy;
-        let viewport_h = match self.render_size() {
-            Ok((_, h)) => h as f32,
+        let viewport_h = match self.lod_viewport_height() {
+            Ok(h) => h as f32,
             Err(_) => return,
         };
         // Disjoint inline field borrows: gpu (shared) vs meshes + render_passes (mut).
@@ -3291,6 +3330,37 @@ impl AwsmRenderer {
                 tracing::warn!("cluster paging stream_paging failed: {e:?}");
             }
         }
+    }
+
+    /// The viewport height the LOD screen-space error is measured in: the
+    /// render height without TAA (as always), the OUTPUT (post) height under
+    /// TAA. Upscaling renders fewer pixels but the viewer sees the output, so
+    /// LOD must not coarsen with the render scale, and a resolution governor
+    /// changing the scale must not make LOD pop.
+    pub(crate) fn lod_viewport_height(&self) -> Result<u32> {
+        let sizes = self.frame_sizes()?;
+        Ok(if self.anti_aliasing.taa.is_some() {
+            sizes.post.1
+        } else {
+            sizes.render.1
+        })
+    }
+
+    /// `(post area / render area)` of the frame `sizes` describe, under TAA
+    /// upscaling: the factor that turns that frame's render-pixel coverage
+    /// counts into output pixels (the consumers' thresholds are about what
+    /// the viewer sees, so a mesh keeps its coverage, and its LOD, when a
+    /// resolution governor changes the render scale). Taken with the readback
+    /// REQUEST, so a snapshot that resolves frames later is scaled by its own
+    /// frame's sizes, not by the scale in force when it lands. `None` without
+    /// TAA or at native resolution (counts unchanged).
+    fn coverage_area_scale(&self, sizes: &crate::size::FrameSizes) -> Option<f64> {
+        self.anti_aliasing.taa.as_ref()?;
+        if sizes.render == sizes.post {
+            return None;
+        }
+        let area = |s: (u32, u32)| s.0.max(1) as f64 * s.1.max(1) as f64;
+        Some(area(sizes.post) / area(sizes.render))
     }
 
     /// Per-frame discrete-LOD level selection (visibility-swap). For each
@@ -3314,8 +3384,8 @@ impl AwsmRenderer {
             return;
         }
         let tan_half_fov_y = 1.0 / proj_yy;
-        let viewport_h = match self.render_size() {
-            Ok((_, h)) => h as f32,
+        let viewport_h = match self.lod_viewport_height() {
+            Ok(h) => h as f32,
             Err(_) => return,
         };
 

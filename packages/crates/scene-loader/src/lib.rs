@@ -1516,9 +1516,13 @@ async fn load_scene_for_player_inner(
         let mipmap = aa.mipmap;
         if let Err(err) = renderer.set_anti_aliasing(aa).await {
             if wants_taa {
-                // A device without TAA's motion-vector path
-                // (`AwsmError::TaaUnavailable`): show the scene with MSAA 4×,
-                // the closest non-temporal equivalent, rather than unsmoothed.
+                // TAA could not be set up here, for ANY reason (the renderer
+                // already parked itself on MSAA 4x when the TAA pass failed to
+                // build; see `AwsmRenderer::taa_fallback_reason`): show the
+                // scene with MSAA 4×, the closest non-temporal equivalent,
+                // rather than unsmoothed or not at all. A TAA pipeline that
+                // fails later, in the commit below, falls back the same way
+                // inside `commit_load`.
                 tracing::warn!("TAA unavailable, falling back to MSAA 4x: {err}");
                 let fallback = awsm_renderer::anti_alias::AntiAliasing {
                     mipmap,

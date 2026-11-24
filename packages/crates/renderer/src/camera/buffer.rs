@@ -45,6 +45,10 @@ pub struct CameraBuffer {
     /// k_material)` (03 §5). `[0, 0]` without TAA, so the uniform stays what
     /// it always was.
     reactive_factors: [f32; 2],
+    /// TAA texture LOD bias (03 §7), packed into `prev_position.w`:
+    /// `log2(render / post) + mip_bias_extra`. `0` without TAA, so the
+    /// uniform stays what it always was.
+    mip_bias: f32,
     /// TAA with a HUD (03 §5.4): the same uniform with the UNJITTERED
     /// projection, bound by the HUD geometry pass so the HUD rasterises
     /// without jitter (the resolve passes HUD pixels through). `None` unless
@@ -59,6 +63,19 @@ pub struct CameraBuffer {
     /// misconfiguration, so it must not spam once per frame.
     warned_convention: bool,
     uploader: crate::buffer::mapped_uploader::MappedUploader,
+}
+
+/// What TAA adds to the camera uniform (see [`CameraBuffer::prepare_frame`]).
+/// `Default` (all zero) is the uniform without TAA.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub(crate) struct TaaCameraFactors {
+    /// `TaaTuning::reactive_transparent` (`dof_params.z`).
+    pub reactive_transparent: f32,
+    /// `TaaTuning::reactive_material` (`dof_params.w`).
+    pub reactive_material: f32,
+    /// Texture LOD bias (`prev_position.w`): `log2(render / post) +
+    /// mip_bias_extra`.
+    pub mip_bias: f32,
 }
 
 impl CameraBuffer {
@@ -77,7 +94,8 @@ impl CameraBuffer {
     //  prev_view_projection (mat4)  64 bytes  (M3 SSR temporal reprojection)
     //  view_projection_unjittered (mat4) 64 bytes  (TAA motion vectors)
     //  jitter (vec4: xy = this frame, zw = previous frame; render pixels) 16 bytes
-    //  prev_position (vec4, w=unused) 16 bytes  (TAA: billboards' previous facing)
+    //  prev_position (vec4, w = TAA texture LOD bias, 0 without TAA) 16 bytes
+    //                (TAA: billboards' previous facing)
     // Total = 656 bytes (all members 16-byte aligned, no implicit gaps)
     //
     // The last three are END-APPENDED for TAA, the same way
@@ -126,6 +144,7 @@ impl CameraBuffer {
             jumped: false,
             raw_is_jittered: false,
             reactive_factors: [0.0; 2],
+            mip_bias: 0.0,
             hud_gpu_buffer: None,
             hud_raw: None,
             hud_dirty: false,
@@ -241,8 +260,9 @@ impl CameraBuffer {
     /// `render_width` / `render_height` are the render size `R`: the jitter
     /// is in render pixels.
     ///
-    /// `reactive_factors`: TAA's `(k_transparent, k_material)`, packed into
-    /// `dof_params.zw` (`None` = TAA off = zeros).
+    /// `taa_factors`: TAA's reactive factors (packed into `dof_params.zw`)
+    /// and texture LOD bias (packed into `prev_position.w`); `None` = TAA
+    /// off = zeros.
     ///
     /// `hud`: also pack the unjittered HUD twin (TAA with a HUD; see
     /// [`Self::hud_gpu_buffer`]).
@@ -254,12 +274,15 @@ impl CameraBuffer {
         render_width: f32,
         render_height: f32,
         convention: crate::depth_convention::DepthConvention,
-        reactive_factors: Option<[f32; 2]>,
+        taa_factors: Option<TaaCameraFactors>,
         hud: bool,
     ) {
-        let reactive_factors = reactive_factors.unwrap_or([0.0; 2]);
-        let factors_changed = reactive_factors != self.reactive_factors;
+        let factors = taa_factors.unwrap_or_default();
+        let reactive_factors = [factors.reactive_transparent, factors.reactive_material];
+        let factors_changed =
+            reactive_factors != self.reactive_factors || factors.mip_bias != self.mip_bias;
         self.reactive_factors = reactive_factors;
+        self.mip_bias = factors.mip_bias;
         let Some(matrices) = self.last_matrices.clone() else {
             return;
         };
@@ -474,7 +497,7 @@ impl CameraBuffer {
         write_f32_slice(
             &mut self.raw_data,
             &mut offset,
-            &prev_position.extend(0.0).to_array(),
+            &prev_position.extend(self.mip_bias).to_array(),
         );
 
         debug_assert_eq!(offset, Self::BYTE_SIZE, "Buffer layout mismatch!");

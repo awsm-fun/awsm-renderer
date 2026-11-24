@@ -824,10 +824,13 @@ impl Transforms {
             return Ok(());
         }
         let transforms_size = self.buffer.raw_slice().len();
+        // A disabled history (prep-pass fallback) takes the minimal region.
+        let skins_size = if skins.0.enabled() { skins.1 } else { 0 };
+        let morphs_size = if morphs.0.enabled() { morphs.1 } else { 0 };
         if self.motion_buffer.sync(
             gpu,
             [&mut self.history, skins.0, morphs.0],
-            [transforms_size, skins.1, morphs.1],
+            [transforms_size, skins_size, morphs_size],
         )? {
             bind_groups.mark_create(BindGroupCreate::MotionHistoryBuffers);
         }

@@ -188,6 +188,7 @@ impl AwsmRenderer {
             let geometry_targets =
                 crate::render_passes::geometry::pipeline::GeometryTargets::from_aa(
                     &self.anti_aliasing,
+                    &self.render_textures.formats,
                 );
             let is_masked =
                 !mesh.instanced && self.materials.alpha_cutoff(routing_material).is_some();
@@ -266,6 +267,7 @@ impl AwsmRenderer {
                     .get_render_pipeline_key(
                         crate::render_passes::geometry::pipeline::GeometryRenderPipelineKeyOpts {
                             anti_aliasing: &self.anti_aliasing,
+                            formats: &self.render_textures.formats,
                             instancing: mesh.instanced,
                             cull_mode,
                             // Mirrors the runtime branch in

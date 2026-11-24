@@ -481,7 +481,7 @@ fn pure_mask(prev: &VFrame, cur: &VFrame) -> Mask {
 
 /// Pixels of `cur_plain` that change when the no-vector content is hidden,
 /// dilated by 1 px.
-fn content_mask(plain: &Image, hidden: &Image) -> Mask {
+pub fn content_mask(plain: &Image, hidden: &Image) -> Mask {
     let mut m = Mask::new(plain.width, plain.height, false);
     for (i, (a, b)) in plain
         .rgba
@@ -495,7 +495,7 @@ fn content_mask(plain: &Image, hidden: &Image) -> Mask {
 }
 
 /// Names (beyond emitters and lines) of no-vector content per scene.
-fn no_vector_names(scene: &str) -> &'static [&'static str] {
+pub fn no_vector_names(scene: &str) -> &'static [&'static str] {
     match scene {
         "taa-transparent" => &["glass", "water"],
         _ => &[],
@@ -1312,11 +1312,17 @@ async fn fresh_frame(p: &Params, scene: &str, aa: Aa, k: u32) -> Result<Image> {
         warmup: p.warmup,
     })
     .await?;
-    if aa == Aa::Taa {
-        s.renderer.set_taa_debug_view(TaaDebugView::FreezeJitter);
-    }
     s.play_to(k - 1).await?;
-    let (_, img) = s.render_next_captured().await?;
+    let (_, mut img) = s.render_next_captured().await?;
+    if aa == Aa::Taa {
+        // A resolve's output depends on its history: compare converged
+        // states (time frozen at k, 40 frames, the jitter cycling).
+        for _ in 0..39 {
+            s.render_frozen(None)?;
+            gpu_idle(&s.renderer).await;
+        }
+        img = s.render_frozen_captured(None).await?;
+    }
     s.destroy();
     Ok(img)
 }
@@ -1369,13 +1375,11 @@ async fn aa_toggle_scene(p: &Params, scene: &str, r: &mut Report) -> Result<()> 
             .commit_load(|_| {})
             .await
             .map_err(|e| anyhow!("commit_load after set_anti_aliasing {}: {e}", aa.name()))?;
-        if aa == Aa::Taa {
-            s.renderer.set_taa_debug_view(TaaDebugView::FreezeJitter);
-        }
         s.settle_compiles(20_000).await?;
         // Re-render the same instant a few times so lazily compiled
-        // pipelines land, then capture.
-        for _ in 0..4 {
+        // pipelines land; with TAA, 40 frames so the history converges.
+        let holds = if aa == Aa::Taa { 39 } else { 4 };
+        for _ in 0..holds {
             s.render_frozen(None)?;
             gpu_idle(&s.renderer).await;
             s.settle_compiles(20_000).await?;
@@ -1384,11 +1388,19 @@ async fn aa_toggle_scene(p: &Params, scene: &str, r: &mut Report) -> Result<()> 
         let fresh = fresh_frame(p, scene, aa, k).await?;
         let st = abs_error(&img, &fresh, None);
         let in_hook = abs_error(&img, &fresh, mask.as_ref());
+        let (ok, rule) = if aa == Aa::Taa {
+            (
+                st.mean < 0.5 && st.p99 < 4,
+                "converged (40 frozen frames each): whole mean < 0.5, p99 < 4 (the flicker tolerance)",
+            )
+        } else {
+            (st.max == 0, "bit-exact")
+        };
         r.emit(
             &format!("aa-toggle:{scene}:step{}-{}", i + 1, aa.name()),
-            in_hook.max <= 2 && st.mean < 0.5,
+            ok,
             &format!(
-                "toggled vs fresh {} session at k{k}: whole {st}; hook hull {in_hook} (thresholds hull max ≤ 2, whole mean < 0.5)",
+                "toggled vs fresh {} session at k{k}: whole {st}; hook hull {in_hook} ({rule})",
                 aa.name()
             ),
         );

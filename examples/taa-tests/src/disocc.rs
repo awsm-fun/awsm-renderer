@@ -26,7 +26,8 @@ use awsm_renderer::taa::TaaDebugView;
 use glam::{Mat4, Vec2, Vec4};
 
 use crate::gates::tracked_coverage;
-use crate::metrics::{Image, Mask};
+use crate::metrics::{abs_error, Image, Mask};
+use crate::modes::reference_cached;
 use crate::report::{set_hud, Report};
 use crate::session::{gpu_idle, Aa, Session, SessionOpts};
 use crate::Params;
@@ -43,16 +44,16 @@ fn opts(p: &Params, scene: &str, aa: Aa) -> SessionOpts {
 
 const THRESHOLD: f32 = 0.05;
 
-struct DFrame {
+pub(crate) struct DFrame {
     depth: Vec<f32>,
     vel: Vec<Vec2>,
     jitter: Vec2,
     vp: Mat4,
     inv_proj: Mat4,
-    hull: Mask,
+    pub(crate) hull: Mask,
 }
 
-async fn read_frame(s: &Session) -> Result<DFrame> {
+pub(crate) async fn read_frame(s: &Session) -> Result<DFrame> {
     let vf = s.renderer.debug_read_velocity();
     let df = s.renderer.debug_read_depth();
     let (_, _, v) = vf.await.map_err(|e| anyhow!("velocity: {e}"))?;
@@ -79,17 +80,84 @@ fn view_distance(depth: f32, inv_proj: &Mat4) -> f32 {
     -v.z / v.w
 }
 
-/// The CPU replica: (disoccluded mask, d_prev / d_expected per pixel).
-fn replicate(prev: &DFrame, cur: &DFrame, w: u32, h: u32) -> (Mask, Vec<f32>) {
+/// Which disocclusion definition the build under test has (`?disocc_def=`):
+/// 1 = the nearest-surface ratio test only (5c325654 … 4809e43a); 2 = plus
+/// the pixel's own-surface test with the slope-aware slack, previous depth =
+/// NEAREST of the 2x2 (8298170a); 3 (default) = the same with the FARTHEST
+/// of the 2x2 for the own-surface test (757ad193); 4 = and, for a dilated
+/// pixel, test 2 only with relative motion |v − v_own|·O > 0.25 px
+/// (8d87a418); 5 (default) = and in that dilated + relative-motion case the
+/// footprint's NEAREST depth decides (a2be12b1).
+pub(crate) fn definition() -> u32 {
+    match crate::url_value("disocc_def").as_deref() {
+        Some("v1") => 1,
+        Some("v2") => 2,
+        Some("v3") => 3,
+        Some("v4") => 4,
+        _ => 5,
+    }
+}
+
+/// The CPU replica of resolve.wgsl's disocclusion test (§4.3 / §4.5 / §4.7):
+/// (disoccluded mask, test-1 d_prev / d_expected per pixel, test-1 mask,
+/// test-2 mask).
+/// With `v2`, test 2 (the pixel's own surface) is ORed in.
+pub(crate) fn replicate(
+    prev: &DFrame,
+    cur: &DFrame,
+    w: u32,
+    h: u32,
+    def: u32,
+) -> (Mask, Vec<f32>, Mask, Mask) {
     let size = Vec2::new(w as f32, h as f32);
     let (wi, hi) = (w as i64, h as i64);
     let inv_vp = cur.vp.inverse();
     let mut m = Mask::new(w, h, false);
+    let mut m1 = Mask::new(w, h, false);
+    let mut m2 = Mask::new(w, h, false);
     let mut ratio = vec![1.0f32; (w * h) as usize];
+    let at = |f: &DFrame, x: i64, y: i64| {
+        f.depth[(y.clamp(0, hi - 1) * wi + x.clamp(0, wi - 1)) as usize]
+    };
+    // (nearest, farthest) raw depth of the previous 2x2 footprint.
+    let prev_footprint = |uv: Vec2| -> (f32, f32) {
+        let pos = uv * size + prev.jitter - 0.5;
+        let (x0, y0) = (pos.x.floor() as i64, pos.y.floor() as i64);
+        let (mut near, mut far) = (-1.0f32, f32::INFINITY);
+        for (ox, oy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+            let d = at(prev, x0 + ox, y0 + oy);
+            near = near.max(d);
+            far = far.min(d);
+        }
+        (near, far)
+    };
+    let prev_nearest = |uv: Vec2| prev_footprint(uv).0;
+    let prev_own = |uv: Vec2| {
+        if def >= 3 {
+            prev_footprint(uv).1
+        } else {
+            prev_footprint(uv).0
+        }
+    };
+    // Where the point seen at uv with raw depth z was last frame if it did
+    // not move: (previous uv, previous view distance).
+    let static_reprojection = |uv: Vec2, z: f32| -> (Vec2, f32) {
+        let ndc = Vec2::new(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0)
+            + Vec2::new(2.0 * cur.jitter.x, -2.0 * cur.jitter.y) / size;
+        let wh = inv_vp * Vec4::new(ndc.x, ndc.y, z, 1.0);
+        let pc = prev.vp * Vec4::new(wh.x / wh.w, wh.y / wh.w, wh.z / wh.w, 1.0);
+        let pn = pc.truncate() / pc.w;
+        (
+            Vec2::new(pn.x * 0.5 + 0.5, 0.5 - pn.y * 0.5),
+            view_distance(pn.z, &prev.inv_proj),
+        )
+    };
     for y in 0..hi {
         for x in 0..wi {
-            // Nearest of the 3×3 (reverse-Z: max raw depth).
-            let (mut nd, mut np) = (-1.0f32, (x, y));
+            // Nearest of the 3×3 (reverse-Z: max raw depth), starting from
+            // the centre so ties keep the centre (the shader's init).
+            let z_own = at(cur, x, y);
+            let (mut nd, mut np) = (z_own, (x, y));
             for dy in -1..=1i64 {
                 for dx in -1..=1i64 {
                     let (px, py) = ((x + dx).clamp(0, wi - 1), (y + dy).clamp(0, hi - 1));
@@ -100,34 +168,59 @@ fn replicate(prev: &DFrame, cur: &DFrame, w: u32, h: u32) -> (Mask, Vec<f32>) {
                     }
                 }
             }
-            if nd <= 0.0 {
-                continue; // sky: the shader's d_expected is 1e30, never disoccluded
-            }
-            let v = cur.vel[(np.1 * wi + np.0) as usize];
-            let uv_q = (Vec2::new(x as f32, y as f32) + 0.5) / size;
-            let uv_hist = uv_q - v;
-            if uv_hist.x < 0.0 || uv_hist.y < 0.0 || uv_hist.x > 1.0 || uv_hist.y > 1.0 {
-                continue;
-            }
-            let pos = uv_hist * size + prev.jitter - 0.5;
-            let (x0, y0) = (pos.x.floor() as i64, pos.y.floor() as i64);
-            let mut pd = -1.0f32;
-            for (ox, oy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
-                let (px, py) = ((x0 + ox).clamp(0, wi - 1), (y0 + oy).clamp(0, hi - 1));
-                pd = pd.max(prev.depth[(py * wi + px) as usize]);
-            }
-            let ndc = Vec2::new(uv_q.x * 2.0 - 1.0, 1.0 - uv_q.y * 2.0)
-                + Vec2::new(2.0 * cur.jitter.x, -2.0 * cur.jitter.y) / size;
-            let wh = inv_vp * Vec4::new(ndc.x, ndc.y, nd, 1.0);
-            let pc = prev.vp * Vec4::new(wh.x / wh.w, wh.y / wh.w, wh.z / wh.w, 1.0);
-            let d_expected = view_distance(pc.z / pc.w, &prev.inv_proj);
-            let d_prev = view_distance(pd, &prev.inv_proj);
             let i = (y * wi + x) as usize;
+            let uv_q = (Vec2::new(x as f32, y as f32) + 0.5) / size;
+            let sky = nd <= 0.0;
+            let v = if sky {
+                Vec2::ZERO
+            } else {
+                cur.vel[(np.1 * wi + np.0) as usize]
+            };
+            let uv_hist = uv_q - v;
+            // Test 1: the surface whose vector the pixel uses.
+            let d_expected = if sky {
+                1.0e30
+            } else {
+                static_reprojection(uv_q, nd).1
+            };
+            let d_prev = view_distance(prev_nearest(uv_hist), &prev.inv_proj);
             ratio[i] = d_prev / d_expected;
-            m.bits[i] = d_prev < d_expected * (1.0 - THRESHOLD);
+            let t1 = d_prev < d_expected * (1.0 - THRESHOLD);
+            m1.bits[i] = t1;
+            let mut dis = t1;
+            // Test 2: the pixel's own surface.
+            if def >= 2 && z_own > 0.0 {
+                let dilated = np != (x, y);
+                let v_own = if dilated { cur.vel[i] } else { v };
+                let (own_uv, own_z) = static_reprojection(uv_q, z_own);
+                let uv_hist_own = uv_q - v_own;
+                let is_static = ((uv_hist_own - own_uv) * size).length() < 0.1;
+                let d_own = view_distance(z_own, &cur.inv_proj);
+                let mut slope = 0.0f32;
+                for (ox, oy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+                    slope = slope
+                        .max((view_distance(at(cur, x + ox, y + oy), &cur.inv_proj) - d_own).abs());
+                }
+                let slack_static = THRESHOLD.min(2.0 * slope / d_own.max(1.0e-6) + 0.002);
+                let slack = if is_static { slack_static } else { THRESHOLD };
+                let relative_motion = ((v - v_own) * size).length() > 0.25;
+                let fp_uv = if dilated { uv_hist_own } else { uv_hist };
+                let raw = if def >= 5 && dilated && relative_motion {
+                    prev_footprint(fp_uv).0
+                } else {
+                    prev_own(fp_uv)
+                };
+                let d_prev_own = view_distance(raw, &prev.inv_proj);
+                let gate = def < 4 || !dilated || relative_motion;
+                if gate && d_prev_own < own_z * (1.0 - slack) {
+                    dis = true;
+                    m2.bits[i] = true;
+                }
+            }
+            m.bits[i] = dis;
         }
     }
-    (m, ratio)
+    (m, ratio, m1, m2)
 }
 
 fn green_mask(img: &Image) -> Mask {
@@ -284,7 +377,8 @@ async fn disocclusion(p: &Params, scene: &str, ks: &[u32], r: &mut Report) -> Re
             let pf = prev.as_ref().ok_or_else(|| anyhow!("no k−1 readback"))?;
             let cf = cur.as_ref().ok_or_else(|| anyhow!("no k readback"))?;
             let rej_img = rej_img.ok_or_else(|| anyhow!("no Rejection capture"))?;
-            let (expected, ratio) = replicate(pf, cf, w, h);
+            let def = definition();
+            let (expected, ratio, test1, _) = replicate(pf, cf, w, h, def);
             let shader = green_mask(&rej_img);
             let both = expected.and(&shader);
             // The age-1 strip: covered by the object at k−1, not at k.
@@ -307,7 +401,10 @@ async fn disocclusion(p: &Params, scene: &str, ks: &[u32], r: &mut Report) -> Re
             r.info(
                 &format!("disocclusion:{scene}:k{k}"),
                 &format!(
-                    "jitter k−1 ({:+.3},{:+.3}) k ({:+.3},{:+.3}); CPU replica disoccluded {} px (in the age-1 strip of {} px: {}); shader G (live Rejection) {} px (in the strip: {}); both {} px; CPU-only {} px; shader-only {} px; CPU d_prev/d_expected on the strip: mean {:.3}",
+                    "definition v{}; test 1 alone {} px (strip {}); jitter k−1 ({:+.3},{:+.3}) k ({:+.3},{:+.3}); CPU replica disoccluded {} px (in the age-1 strip of {} px: {}); shader G (live Rejection) {} px (in the strip: {}); both {} px; CPU-only {} px; shader-only {} px; CPU d_prev/d_expected on the strip: mean {:.3}",
+                    def,
+                    test1.count(),
+                    test1.and(&strip).count(),
                     pf.jitter.x,
                     pf.jitter.y,
                     cf.jitter.x,
@@ -434,5 +531,308 @@ async fn disocclusion_static(p: &Params, r: &mut Report) -> Result<()> {
         prev_hull = Some(hull);
     }
     s.destroy();
+    Ok(())
+}
+
+/// `?mode=static-rejection&scenes=…`: false disocclusions on a static scene.
+/// Time frozen at k0 (camera and scene still, the jitter cycles), 40 frames
+/// to converge, then 30 frames of the LIVE Rejection view: the number of
+/// pixels flagged disoccluded (G) per frame must be ~0.
+pub async fn static_rejection_mode(p: &Params, r: &mut Report) {
+    let scenes: Vec<String> = if p.scenes_given {
+        p.scenes.clone()
+    } else {
+        [
+            "taa-motion",
+            "taa-orbit",
+            "taa-skin",
+            "taa-reveal",
+            "taa-thin",
+            "taa-transparent",
+            "taa-hud",
+            "taa-cut",
+            "taa-vertex-hook",
+            "taa-cluster",
+            "anim-skinned",
+            "anim-morph",
+            "prefab-skinned-morph",
+            "instancing-stress",
+            "lod-classic",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect()
+    };
+    for scene in &scenes {
+        let res: Result<String> = async {
+            let mut s = Session::open(opts(p, scene, Aa::Taa)).await?;
+            s.renderer.set_taa_debug_view(TaaDebugView::Rejection);
+            s.play_to(0).await?;
+            for _ in 0..40 {
+                s.render_frozen(None)?;
+                gpu_idle(&s.renderer).await;
+            }
+            let (w, h) = p.size;
+            let mut counts = Vec::new();
+            let mut hits = vec![0u16; (w * h) as usize];
+            let base = s.render_frozen_captured(None).await?;
+            let mut jit = vec![s.renderer.camera.jitter_px()];
+            let mut burst: Option<Image> = None;
+            let mut burst_split = String::new();
+            let mut prev_df = Some(read_frame(&s).await?);
+            for _ in 0..30 {
+                let img = s.render_frozen_captured(None).await?;
+                jit.push(s.renderer.camera.jitter_px());
+                let df = read_frame(&s).await?;
+                let g = green_mask(&img);
+                if g.count() > counts.iter().copied().max().unwrap_or(0) {
+                    burst = Some(mask_image(&g, &base, [0, 255, 0, 255]));
+                    if let Some(pf) = &prev_df {
+                        let (all, _, t1, t2) = replicate(pf, &df, w, h, definition());
+                        let only1 = t1.and(&t2.not()).count();
+                        let only2 = t2.and(&t1.not()).count();
+                        let both = t1.and(&t2).count();
+                        burst_split = format!(
+                            "; burst frame, CPU replica (def v{}): {} px (test 1 only {only1}, test 2 only {only2}, both {both}); shader {} px; overlap {}",
+                            definition(),
+                            all.count(),
+                            g.count(),
+                            all.and(&g).count()
+                        );
+                    }
+                }
+                prev_df = Some(df);
+                counts.push(g.count());
+                for (i, b) in g.bits.iter().enumerate() {
+                    if *b {
+                        hits[i] += 1;
+                    }
+                }
+                set_hud(&format!("taa-tests: static-rejection {scene}"));
+            }
+            s.destroy();
+            // Hit map: how often each pixel was flagged (red, brighter =
+            // more often) over the darkened Rejection frame.
+            let mut map = base.clone();
+            for (i, px) in map.rgba.chunks_exact_mut(4).enumerate() {
+                if hits[i] > 0 {
+                    let v = (80 + hits[i] as u32 * 175 / 30).min(255) as u8;
+                    px.copy_from_slice(&[v, 0, 0, 255]);
+                } else {
+                    for c in px.iter_mut().take(3) {
+                        *c /= 4;
+                    }
+                }
+            }
+            crate::store::put(&p.store, &format!("phase2/static-rejection/{scene}.png"), &map).await?;
+            if let Some(b) = &burst {
+                crate::store::put(&p.store, &format!("phase2/static-rejection/{scene}-burst.png"), b)
+                    .await?;
+            }
+            let total: usize = counts.iter().sum();
+            let max = counts.iter().max().copied().unwrap_or(0);
+            let bi = counts.iter().position(|c| *c == max).unwrap_or(0);
+            let jit_note = format!(
+                "; burst frame jitter k−1 ({:+.3},{:+.3}) → k ({:+.3},{:+.3}); jitter sequence {:?}",
+                jit[bi].x,
+                jit[bi].y,
+                jit[bi + 1].x,
+                jit[bi + 1].y,
+                jit.iter().take(9).map(|j| format!("({:+.3},{:+.3})", j.x, j.y)).collect::<Vec<_>>()
+            );
+            let distinct = hits.iter().filter(|c| **c > 0).count();
+            let always = hits.iter().filter(|c| **c >= 30).count();
+            Ok(format!(
+                "after 40 static frames, 30 frames of the live Rejection view: disoccluded (G) px per frame mean {:.1}, max {max}; {distinct} distinct px ever flagged, {always} flagged on all 30 frames; per frame {:?}{jit_note}{burst_split}",
+                total as f64 / counts.len().max(1) as f64,
+                counts
+            ))
+        }
+        .await;
+        match res {
+            Ok(d) => r.info(&format!("static-rejection:{scene}"), &d),
+            Err(e) => r.emit(
+                &format!("static-rejection:{scene}"),
+                false,
+                &format!("error: {e:#}"),
+            ),
+        }
+    }
+}
+
+/// `?mode=rejection-motion` (taa-orbit by default): under camera motion, per
+/// frame of the orbit and strafe phases, the pixels flagged disoccluded by
+/// test 1 only / test 2 only / both (CPU replica, `disocc_def`) and by the
+/// shader (LIVE Rejection view); and on every strafe frame the TAA error vs
+/// the 64-phase reference split into "within 2 px of a parallax silhouette"
+/// (3×3 depth jump > 5 % in the current frame, grown by 2 px) and the rest.
+pub async fn rejection_motion_mode(p: &Params, r: &mut Report) {
+    let scene = if p.scenes_given {
+        p.scenes
+            .first()
+            .cloned()
+            .unwrap_or_else(|| "taa-orbit".into())
+    } else {
+        "taa-orbit".into()
+    };
+    if let Err(e) = rejection_motion(p, &scene, r).await {
+        r.emit(
+            &format!("rejection-motion:{scene}"),
+            false,
+            &format!("error: {e:#}"),
+        );
+    }
+}
+
+fn depth_edges(f: &DFrame, w: u32, h: u32) -> Mask {
+    let (wi, hi) = (w as i64, h as i64);
+    let mut m = Mask::new(w, h, false);
+    for y in 0..hi {
+        for x in 0..wi {
+            let c = f.depth[(y * wi + x) as usize];
+            let dc = view_distance(c, &f.inv_proj);
+            let mut edge = false;
+            for (ox, oy) in [
+                (-1, 0),
+                (1, 0),
+                (0, -1),
+                (0, 1),
+                (-1, -1),
+                (1, 1),
+                (-1, 1),
+                (1, -1),
+            ] {
+                let (nx, ny) = ((x + ox).clamp(0, wi - 1), (y + oy).clamp(0, hi - 1));
+                let dn = view_distance(f.depth[(ny * wi + nx) as usize], &f.inv_proj);
+                if (dn - dc).abs() > 0.05 * dn.min(dc) {
+                    edge = true;
+                    break;
+                }
+            }
+            m.bits[(y * wi + x) as usize] = edge;
+        }
+    }
+    m
+}
+
+async fn rejection_motion(p: &Params, scene: &str, r: &mut Report) -> Result<()> {
+    let (w, h) = p.size;
+    let mut t = Session::open(opts(p, scene, Aa::Taa)).await?;
+    let mut rej = Session::open(opts(p, scene, Aa::Taa)).await?;
+    rej.renderer.set_taa_debug_view(TaaDebugView::Rejection);
+    let mut rs = Session::open(opts(p, scene, Aa::None)).await?;
+    for s in [&t, &rej, &rs] {
+        s.assert_lockstep_safe()?;
+    }
+    let phases = t.scenario.phases.clone();
+    let (strafe_a, strafe_b) = t.scenario.phase_range("strafe").unwrap_or((u32::MAX, 0));
+    let last = phases
+        .iter()
+        .filter(|(n, _, _)| *n == "orbit" || *n == "strafe")
+        .map(|(_, _, b)| *b)
+        .max()
+        .unwrap_or(0);
+    let first = phases
+        .iter()
+        .filter(|(n, _, _)| *n == "orbit" || *n == "strafe")
+        .map(|(_, a, _)| *a)
+        .min()
+        .unwrap_or(0);
+    let def = definition();
+    let mut prev: Option<DFrame> = None;
+    // per phase: (frames, Σ t1-only, Σ t2-only, Σ both, Σ shader, max t2)
+    let mut acc: std::collections::BTreeMap<&str, (u32, usize, usize, usize, usize, usize)> =
+        Default::default();
+    let (mut near_w, mut rest_w, mut near_sum, mut rest_sum, mut nf) =
+        ((0.0f64, 0u32), (0.0f64, 0u32), 0.0f64, 0.0f64, 0u32);
+    while t.next_k < last {
+        let k = t.next_k;
+        let active = k + 1 >= first;
+        let (_, img) = t.render_next_captured().await?;
+        let rimg = if k >= first {
+            Some(rej.render_next_captured().await?.1)
+        } else {
+            rej.render_next()?;
+            gpu_idle(&rej.renderer).await;
+            None
+        };
+        rs.render_next()?;
+        let cur = if active {
+            Some(read_frame(&t).await?)
+        } else {
+            None
+        };
+        if let (Some(pf), Some(cf), Some(ri)) = (&prev, &cur, &rimg) {
+            let (_, _, t1, t2) = replicate(pf, cf, w, h, def);
+            let shader = green_mask(ri).count();
+            let phase = phases
+                .iter()
+                .find(|(_, a, b)| k >= *a && k < *b)
+                .map(|(n, _, _)| *n)
+                .unwrap_or("?");
+            let e = acc.entry(phase).or_default();
+            let (o1, o2, b) = (
+                t1.and(&t2.not()).count(),
+                t2.and(&t1.not()).count(),
+                t1.and(&t2).count(),
+            );
+            e.0 += 1;
+            e.1 += o1;
+            e.2 += o2;
+            e.3 += b;
+            e.4 += shader;
+            e.5 = e.5.max(o2 + b);
+            if k >= strafe_a && k < strafe_b {
+                let reference = reference_cached(&mut rs, p).await?;
+                let near = depth_edges(cf, w, h).dilate(2);
+                let sn = abs_error(&img, &reference, Some(&near));
+                let sr = abs_error(&img, &reference, Some(&near.not()));
+                nf += 1;
+                near_sum += sn.mean;
+                rest_sum += sr.mean;
+                if sn.mean > near_w.0 {
+                    near_w = (sn.mean, k);
+                }
+                if sr.mean > rest_w.0 {
+                    rest_w = (sr.mean, k);
+                }
+            } else {
+                gpu_idle(&rs.renderer).await;
+            }
+        } else {
+            gpu_idle(&rs.renderer).await;
+        }
+        prev = cur;
+        set_hud(&format!("taa-tests: rejection-motion {scene} k{k}"));
+    }
+    t.destroy();
+    rej.destroy();
+    rs.destroy();
+    let rows: Vec<String> = acc
+        .iter()
+        .map(|(ph, (n, o1, o2, b, sh, m2))| {
+            let n = (*n).max(1) as f64;
+            format!(
+                "{ph}: per frame test 1 only {:.0}, test 2 only {:.0}, both {:.0} (test 2 max {m2}); shader {:.0}",
+                *o1 as f64 / n,
+                *o2 as f64 / n,
+                *b as f64 / n,
+                *sh as f64 / n
+            )
+        })
+        .collect();
+    r.info(
+        &format!("rejection-motion:{scene}"),
+        &format!(
+            "(replica def v{def})\n    {}\n    strafe k{strafe_a}..{strafe_b}, TAA vs reference: within 2 px of a parallax silhouette avg mean {:.3}, worst {:.3}@k{} | rest avg {:.3}, worst {:.3}@k{}",
+            rows.join("\n    "),
+            near_sum / nf.max(1) as f64,
+            near_w.0,
+            near_w.1,
+            rest_sum / nf.max(1) as f64,
+            rest_w.0,
+            rest_w.1
+        ),
+    );
     Ok(())
 }

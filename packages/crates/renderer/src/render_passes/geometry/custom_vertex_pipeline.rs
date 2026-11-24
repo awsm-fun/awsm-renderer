@@ -168,7 +168,7 @@ impl GeometryCustomVertexPipelines {
         masked_bind_group: &GeometryMaskedBindGroup,
         variant: &CustomVertexVariant,
     ) -> Result<()> {
-        let targets = GeometryTargets::from_aa(ctx.anti_aliasing);
+        let targets = GeometryTargets::from_aa(ctx.anti_aliasing, ctx.render_texture_formats);
         let msaa_samples = targets.msaa_samples();
         let layout_key = if targets.velocity() {
             self.velocity_pipeline_layout_key.ok_or(
@@ -187,6 +187,7 @@ impl GeometryCustomVertexPipelines {
             texture_pool_samplers_len: masked_bind_group.texture_pool_samplers_len,
             msaa_samples,
             velocity: targets.velocity(),
+            mip_bias: targets.mip_bias(),
             instancing_transforms: variant.instancing_transforms,
             // The reused masked bind groups declare the uniform meta binding, so
             // the assembled module is only consistent with the uniform-meta shape.

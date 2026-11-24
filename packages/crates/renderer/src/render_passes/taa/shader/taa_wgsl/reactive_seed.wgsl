@@ -18,7 +18,9 @@
 // `reactive_seed.rs::seed_instance`): bits 0-1 say whether `hud_depth` holds
 // this frame's HUD: 0 = no HUD (the binding is a placeholder), 1 = HUD with
 // clear depth 1.0 (forward Z), 2 = HUD with clear depth 0.0 (reverse Z);
-// bits 2.. are k_ssr in 1/1024 steps (`ssr` variant only).
+// bits 2-12 are k_ssr in 1/1024 steps (`ssr` variant only); bit 16 marks
+// non-rigid meshes (TAA's prep-pass fallback, 03 §2.4: their vectors are the
+// node's rigid motion only, so they get `NON_RIGID_REACTIVE`).
 //
 // Colour target 0 is attached by the pass; the pipeline blends it to keep
 // the destination.
@@ -41,6 +43,9 @@
 // Word indices inside one `MaterialMeshMeta` (material_mesh_meta.wgsl).
 const META_IS_HUD: u32 = 16u;
 const META_TEMPORAL_REACTIVE: u32 = 22u;
+const META_NON_RIGID: u32 = 23u;
+const NON_RIGID_BIT: u32 = 65536u;
+const NON_RIGID_REACTIVE: f32 = 0.5;
 
 struct SeedVertex {
     @builtin(position) position: vec4<f32>,
@@ -81,8 +86,12 @@ fn frag_main(input: SeedVertex) -> SeedOutput {
     let temporal = material_mesh_meta_words[base + META_TEMPORAL_REACTIVE] != 0u
         && material_mesh_meta_words[base + META_IS_HUD] == 0u;
     var reactive = select(0.0, camera_raw.dof_params.w, temporal);
+    if ((input.hud_mode & NON_RIGID_BIT) != 0u
+        && material_mesh_meta_words[base + META_NON_RIGID] != 0u) {
+        reactive = max(reactive, NON_RIGID_REACTIVE);
+    }
 {% if ssr %}
-    let k_ssr = f32(input.hud_mode >> 2u) / 1024.0;
+    let k_ssr = f32((input.hud_mode >> 2u) & 2047u) / 1024.0;
     let desc = textureLoad(reflection_descriptor_tex, coords, 0).rgb;
     reactive = max(reactive, max(desc.r, max(desc.g, desc.b)) * k_ssr);
 {% endif %}

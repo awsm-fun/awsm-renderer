@@ -204,7 +204,7 @@ impl GeometryMaskedPipelines {
         masked_bind_group: &GeometryMaskedBindGroup,
         variants: &[MaskedVariant],
     ) -> Vec<crate::shaders::ShaderCacheKey> {
-        let targets = GeometryTargets::from_aa(ctx.anti_aliasing);
+        let targets = GeometryTargets::from_aa(ctx.anti_aliasing, ctx.render_texture_formats);
         variants
             .iter()
             .map(|variant| {
@@ -216,6 +216,7 @@ impl GeometryMaskedPipelines {
                     dynamic_alpha: variant.dynamic_alpha.clone(),
                     msaa_samples: targets.msaa_samples(),
                     velocity: targets.velocity(),
+                    mip_bias: targets.mip_bias(),
                 }
                 .into()
             })
@@ -231,7 +232,7 @@ impl GeometryMaskedPipelines {
         variants: &[MaskedVariant],
         shader_keys: &[crate::shaders::ShaderKey],
     ) -> Result<(Vec<RenderPipelineCacheKey>, Vec<MaskedPipelineKeyId>)> {
-        let targets = GeometryTargets::from_aa(ctx.anti_aliasing);
+        let targets = GeometryTargets::from_aa(ctx.anti_aliasing, ctx.render_texture_formats);
         let msaa_samples = targets.msaa_samples();
         let layout_key = if targets.velocity() {
             self.velocity_pipeline_layout_key.ok_or(
@@ -337,7 +338,7 @@ pub(crate) fn resolve_velocity_layout_key(
     masked_bind_group: &GeometryMaskedBindGroup,
     geometry_bind_groups: &GeometryBindGroups,
 ) -> Result<Option<PipelineLayoutKey>> {
-    if GeometryTargets::from_aa(ctx.anti_aliasing).velocity() {
+    if GeometryTargets::from_aa(ctx.anti_aliasing, ctx.render_texture_formats).velocity() {
         resolve_layout_key(
             ctx,
             masked_bind_group,

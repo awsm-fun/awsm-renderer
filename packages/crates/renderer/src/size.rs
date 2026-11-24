@@ -145,6 +145,34 @@ mod tests {
         assert_eq!((n.render, n.post), ((1920, 1435), (1920, 1435)));
     }
 
+    #[test]
+    fn frame_sizes_at_the_taa_presets() {
+        use crate::taa::{TaaConfig, TaaPreset};
+        for surface in [(1920u32, 1080u32), (1920, 1435), (2560, 1440), (705, 333)] {
+            for preset in TaaPreset::ALL {
+                let scale = TaaConfig::preset(preset).clamped_render_scale();
+                let s = FrameSizes::new(surface, scale, true);
+                assert_eq!(s.post, surface, "{preset:?} {surface:?}");
+                assert_eq!(
+                    s.render,
+                    (
+                        scale_extent(surface.0, scale),
+                        scale_extent(surface.1, scale)
+                    ),
+                    "{preset:?} {surface:?}"
+                );
+                // Each side is within half a pixel of the exact scale, so the
+                // render aspect differs from the surface's by under a pixel
+                // (the camera projects with the surface aspect under TAA).
+                for (r, o) in [(s.render.0, surface.0), (s.render.1, surface.1)] {
+                    assert!((r as f64 - o as f64 * scale as f64).abs() <= 0.5);
+                }
+            }
+        }
+        // Performance at 1920 x 1080 is exactly half.
+        assert_eq!(FrameSizes::new((1920, 1080), 0.5, true).render, (960, 540));
+    }
+
     /// Every render-texture consumer reads the render size or the post size
     /// explicitly (taa-upscaling plan, phase 0). The compiler does most of the
     /// work: `RenderTextureViews` has no plain `width`/`height`, only

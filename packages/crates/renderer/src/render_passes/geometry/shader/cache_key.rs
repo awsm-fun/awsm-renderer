@@ -54,6 +54,11 @@ pub struct ShaderCacheKeyGeometry {
     /// frame's inputs and the fragment writes a fifth `rg16float` target, the
     /// motion vector (03 §2.2). `false` renders exactly the pre-TAA shader.
     pub velocity: bool,
+    /// TAA (03 §7): scale the stored barycentric derivatives (the shading's
+    /// texture gradients) by `2^bias` (camera `prev_position.w`). Set whenever
+    /// TAA is on, on BOTH velocity paths (the prep-pass fallback has no
+    /// `velocity`). `false` renders exactly the pre-TAA shader.
+    pub mip_bias: bool,
     /// `Some` → this is a per-material **custom-vertex** geometry pipeline: the
     /// vertex shader compiles the material's `custom_displace_vertex` hook (and
     /// the draw binds the material uniform/texture groups + a UV0 attribute).

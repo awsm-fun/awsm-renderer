@@ -25,6 +25,11 @@ pub struct ShaderCacheKeyMaterialPrep {
     pub sscs_step_count: u32,
     /// Depth convention (003).
     pub reverse_z: bool,
+    /// TAA's prep-pass fallback (`TaaVelocityPath::PrepReconstruction`, 03
+    /// §2.4): `cs_prep` also reconstructs the motion vector from depth and
+    /// the mesh's previous world matrix. Single-sampled only (TAA excludes
+    /// MSAA). `false` renders exactly the pre-TAA shader.
+    pub velocity: bool,
 }
 
 impl From<ShaderCacheKeyMaterialPrep> for ShaderCacheKey {

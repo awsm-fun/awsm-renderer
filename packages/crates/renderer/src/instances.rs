@@ -113,6 +113,11 @@ pub struct Instances {
     /// `gpu_transform_buffer`), bound as a second per-instance vertex buffer.
     /// Disabled, owning nothing, unless TAA is on.
     transform_history: BufferHistory,
+    /// TAA prep-pass fallback only (03 §2.4): record which keys were written
+    /// this frame (`take_deformed`), so a mesh is flagged non-rigid only while
+    /// it deforms. Off (nothing recorded) otherwise.
+    track_deformed: bool,
+    deformed: Vec<TransformKey>,
 }
 
 impl Instances {
@@ -152,6 +157,8 @@ impl Instances {
                 "Instance Attributes",
             ),
             transform_history: BufferHistory::new("Instance Transforms (previous frame)"),
+            track_deformed: false,
+            deformed: Vec::new(),
         })
     }
 
@@ -167,6 +174,7 @@ impl Instances {
 
     /// Inserts instance transforms for a key.
     pub fn transform_insert(&mut self, key: TransformKey, transforms: &[Transform]) -> Result<()> {
+        self.note_deformed(key);
         // Do the fallible GPU buffer update first so the CPU-side maps are not
         // left with a partially-inserted entry on failure.
         let bytes = Self::transforms_to_bytes(transforms);
@@ -209,6 +217,7 @@ impl Instances {
         if self.transform_count.get(key).copied() != Some(transforms.len()) {
             return self.transform_insert(key, transforms);
         }
+        self.note_deformed(key);
         self.transform_buffer
             .update_with_unchecked(key, |_, bytes| {
                 for (i, transform) in transforms.iter().enumerate() {
@@ -246,6 +255,7 @@ impl Instances {
     /// bounds derived from it are one frame stale, same trade-off as the
     /// node-transform arena path.
     pub fn transform_write_all_bytes(&mut self, key: TransformKey, bytes: &[u8]) -> Result<()> {
+        self.note_deformed(key);
         let count = self.transform_count.get(key).copied().unwrap_or(0);
         let expected = count * INSTANCE_TRANSFORM_BYTE_SIZE;
         if bytes.len() != expected {
@@ -283,6 +293,7 @@ impl Instances {
 
     /// Updates a single instance transform.
     pub fn transform_update(&mut self, key: TransformKey, index: usize, transform: &Transform) {
+        self.note_deformed(key);
         if let Some(list) = self.cpu_transforms.get_mut(key) {
             list[index] = transform.clone();
         }
@@ -314,6 +325,7 @@ impl Instances {
         if transforms.is_empty() {
             return Ok(self.transform_instance_count(key).unwrap_or(0));
         }
+        self.note_deformed(key);
 
         let allocated_bytes = self.transform_buffer.allocated_size(key);
         let (start_index, len, can_append) = {
@@ -716,6 +728,23 @@ impl Instances {
     pub(crate) fn set_motion_history(&mut self, on: bool) {
         self.transform_history.set_enabled(on);
         self.transform_buffer.set_track_new_allocations(on);
+    }
+
+    /// See the `track_deformed` field (TAA prep-pass fallback).
+    pub(crate) fn set_track_deformed(&mut self, on: bool) {
+        self.track_deformed = on;
+        self.deformed.clear();
+    }
+
+    /// The instance-transform keys written since the last call.
+    pub(crate) fn take_deformed(&mut self) -> Vec<TransformKey> {
+        std::mem::take(&mut self.deformed)
+    }
+
+    fn note_deformed(&mut self, key: TransformKey) {
+        if self.track_deformed {
+            self.deformed.push(key);
+        }
     }
 
     /// Last frame's instance-transform vertex buffer (TAA on and allocated),

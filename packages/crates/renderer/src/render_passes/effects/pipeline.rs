@@ -157,6 +157,7 @@ impl EffectsPipelines {
                     atmosphere: atmosphere_phase(post_processing),
                     multisampled_geometry,
                     reverse_z,
+                    taa_post: anti_aliasing.taa.is_some(),
                 })
             })
             .collect())

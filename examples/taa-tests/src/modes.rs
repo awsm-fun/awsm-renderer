@@ -244,25 +244,39 @@ pub async fn reference_cached(s: &mut Session, p: &Params) -> Result<Image> {
         .next_k
         .checked_sub(1)
         .ok_or_else(|| anyhow!("reference before any frame"))?;
-    let path = p.refcache.as_ref().map(|name| {
-        format!(
-            "refcache/{name}/{}-{}x{}-k{k:03}-p{}.png",
-            s.opts.scene.replace('@', "_"),
-            s.opts.size.0,
-            s.opts.size.1,
-            p.phases
-        )
-    });
+    let scene = s.opts.scene.clone();
+    let path = ref_cache_path(p, &scene, k, p.karis);
     if let Some(path) = &path {
         if let Some(img) = store::get(&p.store, path).await? {
             return Ok(img);
         }
     }
-    let (img, _) = build_reference(s, p.phases, false).await?;
-    if let Some(path) = &path {
-        store::put(&p.store, path, &img).await?;
+    // Build both accumulation spaces at once and cache both.
+    let (lin, kar) = build_reference(s, p.phases, true).await?;
+    let kar = kar.ok_or_else(|| anyhow!("no Karis reference"))?;
+    if p.refcache.is_some() {
+        for (karis, img) in [(false, &lin), (true, &kar)] {
+            if let Some(path) = ref_cache_path(p, &scene, k, karis) {
+                store::put(&p.store, &path, img).await?;
+            }
+        }
     }
-    Ok(img)
+    Ok(if p.karis { kar } else { lin })
+}
+
+/// The store path of a cached reference (`None` without `?refcache=`).
+/// Display-linear keeps the original name; Karis adds `-karis`.
+pub fn ref_cache_path(p: &Params, scene: &str, k: u32, karis: bool) -> Option<String> {
+    p.refcache.as_ref().map(|name| {
+        format!(
+            "refcache/{name}/{}-{}x{}-k{k:03}-p{}{}.png",
+            scene.replace('@', "_"),
+            p.size.0,
+            p.size.1,
+            p.phases,
+            if karis { "-karis" } else { "" }
+        )
+    })
 }
 
 pub async fn build_reference(

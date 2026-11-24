@@ -81,11 +81,12 @@ pub struct MaterialDef {
     #[serde(default)]
     pub extensions: PbrExtensions,
     /// How TAA treats this material's colour over time. `None` (the default)
-    /// = auto: `Reactive` when any texture slot has a UV `flow` or the
-    /// shading is `FlipBook`, else `Stable`. Set `Reactive` for colour that
-    /// changes on a still surface by other means (animated emissive driven by
-    /// an animation track); `Stable` to opt a flowing texture out. No effect
-    /// without TAA.
+    /// = auto: `Reactive` when any texture slot has a UV `flow`, the shading
+    /// is `FlipBook`, or an animation clip drives one of its factors, texture
+    /// transforms or uniforms; else `Stable`. Set `Reactive` for colour an
+    /// APP changes at runtime (per-frame uniform or factor writes the scene
+    /// cannot see); `Stable` to opt a flowing or animated material out. No
+    /// effect without TAA.
     #[serde(default)]
     pub temporal: Option<MaterialTemporal>,
 }

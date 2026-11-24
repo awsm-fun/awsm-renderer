@@ -18,6 +18,11 @@
 //!   8 camera_raw            — uniform (Stage 3b — unproject + view_z + sscs).
 //!   9 shadow_visibility_out — storage texture array (rgba8unorm, write) — the
 //!     packed per-pixel shadow-visibility output.
+//!   TAA prep-pass fallback only (the `velocity` layout, single-sampled):
+//!   10 prep_transforms      — storage RO, the node transforms.
+//!   11 prep_prev_state      — storage RO, last frame's (shared previous-frame
+//!     buffer; transforms region at 0).
+//!   12 velocity_out         — storage texture (rg32float, write).
 //!
 //! group(1) — lights (mirror material_opaque's light group):
 //!   0 lights_info (Uniform), 1 lights (Uniform), 2 lights_storage
@@ -53,6 +58,9 @@ use crate::render_passes::RenderPassInitContext;
 pub struct MaterialPrepBindGroups {
     pub multisampled_bind_group_layout_key: BindGroupLayoutKey,
     pub singlesampled_bind_group_layout_key: BindGroupLayoutKey,
+    /// Single-sampled group(0) plus the TAA velocity bindings (10-12): the
+    /// prep-pass fallback's `cs_prep`.
+    pub velocity_bind_group_layout_key: BindGroupLayoutKey,
     pub lights_bind_group_layout_key: BindGroupLayoutKey,
     pub shadows_bind_group_layout_key: BindGroupLayoutKey,
     /// group(3) for `cs_prep_edge` (MSAA only): edge_data (RO storage) +
@@ -84,8 +92,11 @@ impl MaterialPrepBindGroups {
     /// bind groups themselves are built lazily via [`Self::recreate`] when the
     /// renderer's recreate events fire.
     pub async fn new(ctx: &mut RenderPassInitContext<'_>) -> Result<Self> {
-        let multisampled_bind_group_layout_key = create_main_bind_group_layout_key(ctx, true)?;
-        let singlesampled_bind_group_layout_key = create_main_bind_group_layout_key(ctx, false)?;
+        let multisampled_bind_group_layout_key =
+            create_main_bind_group_layout_key(ctx, true, false)?;
+        let singlesampled_bind_group_layout_key =
+            create_main_bind_group_layout_key(ctx, false, false)?;
+        let velocity_bind_group_layout_key = create_main_bind_group_layout_key(ctx, false, true)?;
         let lights_bind_group_layout_key = create_lights_bind_group_layout_key(ctx)?;
         let shadows_bind_group_layout_key = ctx.bind_group_layouts.get_key(
             ctx.gpu,
@@ -111,6 +122,7 @@ impl MaterialPrepBindGroups {
         Ok(Self {
             multisampled_bind_group_layout_key,
             singlesampled_bind_group_layout_key,
+            velocity_bind_group_layout_key,
             lights_bind_group_layout_key,
             shadows_bind_group_layout_key,
             edge_bind_group_layout_key,
@@ -316,8 +328,11 @@ impl MaterialPrepBindGroups {
 
     fn recreate_main(&mut self, ctx: &BindGroupRecreateContext<'_>) -> Result<()> {
         let msaa = ctx.anti_aliasing.msaa_sample_count.is_some();
+        let velocity = !msaa && ctx.render_texture_views.prep_velocity;
         let layout_key = if msaa {
             self.multisampled_bind_group_layout_key
+        } else if velocity {
+            self.velocity_bind_group_layout_key
         } else {
             self.singlesampled_bind_group_layout_key
         };
@@ -345,7 +360,7 @@ impl MaterialPrepBindGroups {
                 AwsmBindGroupError::NotFound("Material Prep - shadow_visibility_out".to_string())
             })?;
 
-        let entries = vec![
+        let mut entries = vec![
             // 0 visibility_data_tex.
             BindGroupEntry::new(
                 0,
@@ -401,6 +416,30 @@ impl MaterialPrepBindGroups {
                 BindGroupResource::TextureView(Cow::Borrowed(shadow_visibility_out)),
             ),
         ];
+        if velocity {
+            let velocity_out = ctx.render_texture_views.velocity.as_ref().ok_or_else(|| {
+                AwsmBindGroupError::NotFound("Material Prep - velocity_out".to_string())
+            })?;
+            entries.push(BindGroupEntry::new(
+                10,
+                BindGroupResource::Buffer(BufferBinding::new(&ctx.transforms.gpu_buffer)),
+            ));
+            // Before the first frame allocates the previous-frame buffer the
+            // current one stands in (that frame's vectors are not used: the
+            // history starts fresh). `MotionHistoryBuffers` rebinds it.
+            entries.push(BindGroupEntry::new(
+                11,
+                BindGroupResource::Buffer(BufferBinding::new(
+                    ctx.transforms
+                        .prev_gpu_buffer()
+                        .unwrap_or(&ctx.transforms.gpu_buffer),
+                )),
+            ));
+            entries.push(BindGroupEntry::new(
+                12,
+                BindGroupResource::TextureView(Cow::Borrowed(velocity_out)),
+            ));
+        }
 
         let descriptor = BindGroupDescriptor::new(
             ctx.bind_group_layouts.get(layout_key)?,
@@ -466,6 +505,7 @@ impl MaterialPrepBindGroups {
 fn create_main_bind_group_layout_key(
     ctx: &mut RenderPassInitContext<'_>,
     multisampled_geometry: bool,
+    velocity: bool,
 ) -> Result<BindGroupLayoutKey> {
     let compute = |resource: BindGroupLayoutResource| BindGroupLayoutCacheKeyEntry {
         resource,
@@ -474,7 +514,7 @@ fn create_main_bind_group_layout_key(
         visibility_compute: true,
     };
 
-    let entries = vec![
+    let mut entries = vec![
         // 0 visibility_data_tex — uint texture; MSAA variant is multisampled.
         compute(BindGroupLayoutResource::Texture(
             TextureBindingLayout::new()
@@ -535,6 +575,22 @@ fn create_main_bind_group_layout_key(
                 .with_access(StorageTextureAccess::WriteOnly),
         )),
     ];
+    if velocity {
+        // 10 prep_transforms, 11 prep_prev_state — storage RO.
+        for _ in 0..2 {
+            entries.push(compute(BindGroupLayoutResource::Buffer(
+                BufferBindingLayout::new().with_binding_type(BufferBindingType::ReadOnlyStorage),
+            )));
+        }
+        // 12 velocity_out — storage texture (rg32float, write).
+        entries.push(compute(BindGroupLayoutResource::StorageTexture(
+            StorageTextureBindingLayout::new(
+                crate::render_passes::material_prep::PREP_VELOCITY_FORMAT,
+            )
+            .with_view_dimension(TextureViewDimension::N2d)
+            .with_access(StorageTextureAccess::WriteOnly),
+        )));
+    }
 
     Ok(ctx
         .bind_group_layouts

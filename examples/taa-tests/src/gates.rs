@@ -117,6 +117,15 @@ impl Pair {
         let refs = Session::open(opts(p, scene, Aa::None)).await?;
         test.assert_lockstep_safe()?;
         refs.assert_lockstep_safe()?;
+        // Ghosting / convergence gates run with the sharpening off (05 §4.5).
+        if let Some(taa) = &test.renderer.anti_aliasing.taa {
+            if taa.sharpen != 0.0 {
+                return Err(anyhow!(
+                    "TAA sharpen is {} (must be 0 in the gates)",
+                    taa.sharpen
+                ));
+            }
+        }
         Ok(Pair { test, refs })
     }
 
@@ -443,8 +452,35 @@ async fn stop(p: &Params, scene: &str, r: &mut Report) -> Result<()> {
         let reference = reference_cached(&mut pair.refs, p).await?;
         (test, reference, k_stop)
     };
+    // Convergence-relative (INFO): the converged error at the same view (32
+    // more still frames), so "+8" reads against what TAA converges to there.
+    let converged = if scripted.is_some() {
+        for _ in 0..31 {
+            pair.step().await?;
+        }
+        let (k, img, refc, _) = pair.step_with_reference(p).await?;
+        Some((k, abs_error(&img, &refc, None)))
+    } else {
+        for _ in 0..31 {
+            pair.test.render_frozen(None)?;
+            gpu_idle(&pair.test.renderer).await;
+        }
+        let img = pair.test.render_frozen_captured(None).await?;
+        Some((k_stop, abs_error(&img, &reference, None)))
+    };
     pair.destroy();
     let s = abs_error(&test, &reference, None);
+    if let Some((kc, c)) = &converged {
+        r.info(
+            &format!("stop-relative:{scene}"),
+            &format!(
+                "+8 mean {:.4} minus converged mean {:.4} (k{kc}, 32 frames later, same view) = {:+.4}",
+                s.mean,
+                c.mean,
+                s.mean - c.mean
+            ),
+        );
+    }
     let ok = s.mean < thr(p, 1.0);
     r.emit(
         &format!("stop:{scene}"),

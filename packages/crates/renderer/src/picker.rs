@@ -207,12 +207,28 @@ impl AwsmRenderer {
         if !self.features.picking {
             return Ok(PickResult::Disabled);
         }
-        // Callers pass swap-chain (canvas backing-buffer) coordinates; the
-        // pick id-buffer lives at render resolution — map through
-        // `render_scale` (identity at 1.0).
-        let x = crate::size::scale_extent(x.max(0) as u32, self.render_scale) as i32;
-        let y = crate::size::scale_extent(y.max(0) as u32, self.render_scale) as i32;
         self.ensure_picker_compiled().await?;
+        // Callers pass swap-chain (canvas backing-buffer) coordinates; the
+        // pick id-buffer lives at render resolution. Without TAA: map through
+        // the supersampling `render_scale` (identity at 1.0), as always. With
+        // TAA: through the size of the buffer as it IS (the last frame's
+        // render / output size), so a render-scale step that has not been
+        // rendered yet cannot shift the pick.
+        let (scale, render) = match self.render_textures.current_sizes() {
+            Some((render, post)) if self.anti_aliasing.taa.is_some() => (
+                (
+                    render.0 as f32 / post.0.max(1) as f32,
+                    render.1 as f32 / post.1.max(1) as f32,
+                ),
+                render,
+            ),
+            _ => {
+                let s = self.scene_scale();
+                ((s, s), self.render_size()?)
+            }
+        };
+        let x = pick_coord(x, scale.0, render.0);
+        let y = pick_coord(y, scale.1, render.1);
         let Some(picker) = self.picker.as_ref() else {
             return Ok(PickResult::Disabled);
         };
@@ -606,5 +622,51 @@ impl From<&ShaderCacheKeyPicker> for ShaderTemplatePicker {
         ShaderTemplatePicker {
             multisampled_geometry: key.multisampled_geometry,
         }
+    }
+}
+
+/// A swap-chain coordinate mapped into the render-size pick buffer.
+///
+/// Supersampling (scale >= 1) keeps the 0.45 mapping. Below 1 (TAA
+/// upscaling) the render pixel is the one containing the surface pixel's
+/// centre, so the last surface pixel maps to the last render pixel rather
+/// than rounding one past it (clamped to `render_extent`, which rounds the
+/// surface size).
+fn pick_coord(surface_coord: i32, scene_scale: f32, render_extent: u32) -> i32 {
+    let c = surface_coord.max(0) as u32;
+    if scene_scale >= 1.0 {
+        crate::size::scale_extent(c, scene_scale) as i32
+    } else {
+        let p = ((c as f64 + 0.5) * scene_scale as f64).floor() as i32;
+        p.min(render_extent.max(1) as i32 - 1)
+    }
+}
+
+#[cfg(test)]
+mod pick_coord_tests {
+    use super::pick_coord;
+
+    #[test]
+    fn maps_surface_coords_into_the_render_size() {
+        // Scale 1.0 (native, TAA or not) keeps the 0.45 mapping exactly:
+        // identity, except that `scale_extent` floors at 1 (x = 0 -> 1, as
+        // in 0.45).
+        let w = |s: f32| crate::size::scale_extent(1920, s);
+        assert_eq!(pick_coord(1, 1.0, w(1.0)), 1);
+        assert_eq!(pick_coord(1919, 1.0, w(1.0)), 1919);
+        assert_eq!(
+            pick_coord(0, 1.0, w(1.0)),
+            crate::size::scale_extent(0, 1.0) as i32
+        );
+        // TAA upscaling: a 1920-wide surface renders 1286 px at 0.67, 960 at
+        // 0.5; the last surface pixel lands on the last render pixel.
+        assert_eq!(pick_coord(960, 0.5, w(0.5)), 480);
+        assert_eq!(pick_coord(961, 0.5, w(0.5)), 480);
+        assert_eq!(pick_coord(1919, 0.5, w(0.5)), 959);
+        assert_eq!(pick_coord(1919, 0.67, w(0.67)), w(0.67) as i32 - 1);
+        assert_eq!(pick_coord(1000, 0.67, w(0.67)), 670);
+        // Supersampling: the 0.45 mapping.
+        assert_eq!(pick_coord(100, 2.0, w(2.0)), 200);
+        assert_eq!(pick_coord(-5, 0.5, w(0.5)), 0);
     }
 }

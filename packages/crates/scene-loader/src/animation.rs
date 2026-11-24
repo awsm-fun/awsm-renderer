@@ -146,6 +146,12 @@ pub fn load_animations(
     let mut clip_keys: Vec<(AssetId, AnimationClipKey)> = Vec::with_capacity(groups.len());
     let mut loaded: Vec<AnimationClipKey> = Vec::with_capacity(groups.len());
     for (id, group) in groups {
+        // TAA: a material a clip animates (a factor, a texture transform, a
+        // uniform) changes colour on a still surface: resolve it reactive
+        // unless the scene set its `temporal` explicitly.
+        if let Err(err) = renderer.mark_animated_materials_reactive(&group) {
+            tracing::warn!("animated material temporal: {err:?}");
+        }
         let key = renderer.animations.insert_clip(group);
         clip_keys.push((id, key));
         loaded.push(key);

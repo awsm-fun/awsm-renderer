@@ -65,6 +65,8 @@ pub struct ShaderTemplateEffectsCompute {
     pub atmosphere_volumetric: bool,
     /// Depth convention (003) — read by the DoF include (`helpers/dof.wgsl`).
     pub reverse_z: bool,
+    /// See [`ShaderCacheKeyEffects::taa_post`].
+    pub taa_post: bool,
     pub debug: ShaderTemplateEffectsDebug,
 }
 
@@ -81,6 +83,7 @@ impl ShaderTemplateEffectsCompute {
             atmosphere: cache_key.atmosphere == AtmospherePhase::Analytic,
             atmosphere_volumetric: cache_key.atmosphere == AtmospherePhase::Volumetric,
             reverse_z: cache_key.reverse_z,
+            taa_post: cache_key.taa_post,
             debug: ShaderTemplateEffectsDebug::new(),
         }
     }

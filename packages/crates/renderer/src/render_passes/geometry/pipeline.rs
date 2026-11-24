@@ -128,12 +128,25 @@ pub enum GeometryTargets {
     /// TAA: four single-sampled targets plus the `rg16float` motion vector,
     /// and the previous-frame vertex evaluation.
     Velocity,
+    /// TAA with the prep-pass fallback (03 §2.4): the four single-sampled
+    /// targets (the prep pass writes the vectors), plus the texture LOD bias.
+    TaaPrep,
 }
 
 impl GeometryTargets {
-    /// The targets the given AA mode renders the geometry pass into.
-    pub fn from_aa(anti_aliasing: &AntiAliasing) -> Self {
-        if anti_aliasing.taa.is_some() {
+    /// The targets the given AA mode renders the geometry pass into. TAA with
+    /// the prep-pass fallback (03 §2.4) keeps the plain 4-target layout: the
+    /// prep pass writes the vectors.
+    ///
+    /// `formats` carries the renderer's motion-vector path
+    /// ([`RenderTextureFormats::taa_prep_velocity`]).
+    pub fn from_aa(
+        anti_aliasing: &AntiAliasing,
+        formats: &crate::render_textures::RenderTextureFormats,
+    ) -> Self {
+        if formats.taa_prep_velocity(anti_aliasing) {
+            Self::TaaPrep
+        } else if anti_aliasing.taa.is_some() {
             Self::Velocity
         } else if anti_aliasing.msaa_sample_count == Some(4) {
             Self::Msaa4
@@ -146,13 +159,19 @@ impl GeometryTargets {
     pub fn msaa_samples(self) -> Option<u32> {
         match self {
             Self::Msaa4 => Some(4),
-            Self::Single | Self::Velocity => None,
+            Self::Single | Self::Velocity | Self::TaaPrep => None,
         }
     }
 
     /// Whether the pipelines write the motion-vector target.
     pub fn velocity(self) -> bool {
         matches!(self, Self::Velocity)
+    }
+
+    /// Whether the pipelines apply TAA's texture LOD bias (TAA on, either
+    /// velocity path).
+    pub fn mip_bias(self) -> bool {
+        matches!(self, Self::Velocity | Self::TaaPrep)
     }
 
     /// The colour targets of the geometry pass, in attachment order.
@@ -260,6 +279,7 @@ impl GeometryPipelines {
                 no_anti_alias: None,
                 msaa_4_anti_alias: None,
                 velocity: None,
+                taa_prep: None,
             },
         };
         empty.merge_resolved(&descs, pipeline_keys)?;
@@ -279,6 +299,7 @@ impl GeometryPipelines {
                     meta_storage_array,
                     msaa_samples,
                     velocity: targets.velocity(),
+                    mip_bias: targets.mip_bias(),
                     // The shared fast geometry pipelines — never custom-vertex.
                     dynamic_vertex_shader: None,
                 }
@@ -292,12 +313,16 @@ impl GeometryPipelines {
     /// Level1 for the requested anti-aliasing state. Used by
     /// `set_anti_aliasing` to skip the recompile when toggling back
     /// to a previously-active branch.
-    pub fn has_branch_for(&self, anti_aliasing: &AntiAliasing) -> bool {
+    pub fn has_branch_for(
+        &self,
+        anti_aliasing: &AntiAliasing,
+        formats: &crate::render_textures::RenderTextureFormats,
+    ) -> bool {
         if anti_aliasing.has_msaa_checked().is_err() {
             return false;
         }
         self.render_pipeline_keys
-            .branch(GeometryTargets::from_aa(anti_aliasing))
+            .branch(GeometryTargets::from_aa(anti_aliasing, formats))
             .is_some()
     }
 
@@ -390,6 +415,7 @@ impl GeometryPipelines {
                 meta_storage_array,
                 msaa_samples,
                 velocity: targets.velocity(),
+                mip_bias: targets.mip_bias(),
                 // The shared fast geometry pipelines — never custom-vertex.
                 dynamic_vertex_shader: None,
             };
@@ -502,6 +528,9 @@ impl GeometryPipelines {
         let velocity = by_targets
             .remove(&GeometryTargets::Velocity)
             .map(|e| build_level1(&e));
+        let taa_prep = by_targets
+            .remove(&GeometryTargets::TaaPrep)
+            .map(|e| build_level1(&e));
 
         Ok(Self {
             pipeline_layout_key_storage: descs.pipeline_layout_key_storage,
@@ -510,6 +539,7 @@ impl GeometryPipelines {
                 no_anti_alias,
                 msaa_4_anti_alias,
                 velocity,
+                taa_prep,
             },
         })
     }
@@ -526,12 +556,13 @@ impl GeometryPipelines {
         opts: GeometryRenderPipelineKeyOpts<'_>,
     ) -> Result<RenderPipelineKey> {
         opts.anti_aliasing.has_msaa_checked()?;
-        let targets = GeometryTargets::from_aa(opts.anti_aliasing);
+        let targets = GeometryTargets::from_aa(opts.anti_aliasing, opts.formats);
         let level = self.render_pipeline_keys.branch(targets).as_ref().ok_or(
             AwsmError::PipelineVariantNotCompiled(match targets {
                 GeometryTargets::Single => "geometry: no_anti_alias branch not yet compiled",
                 GeometryTargets::Msaa4 => "geometry: msaa_4 branch not yet compiled",
                 GeometryTargets::Velocity => "geometry: TAA velocity branch not yet compiled",
+                GeometryTargets::TaaPrep => "geometry: TAA (prep velocity) branch not yet compiled",
             }),
         )?;
         let level = if opts.instancing {
@@ -590,6 +621,8 @@ fn build_level1(
 
 pub struct GeometryRenderPipelineKeyOpts<'a> {
     pub anti_aliasing: &'a AntiAliasing,
+    /// The renderer's motion-vector path (see [`GeometryTargets::from_aa`]).
+    pub formats: &'a crate::render_textures::RenderTextureFormats,
     pub instancing: bool,
     pub cull_mode: CullMode,
     pub meta_storage_array: bool,
@@ -605,6 +638,9 @@ pub struct GeometryRenderPipelineKeys {
     /// TAA branch (single-sampled + motion-vector target). `None` until TAA
     /// is first switched on.
     pub velocity: Option<GeometryRenderPipelineKeysLevel1>,
+    /// TAA with the prep-pass fallback (single-sampled, texture LOD bias, no
+    /// motion-vector target). `None` until used.
+    pub taa_prep: Option<GeometryRenderPipelineKeysLevel1>,
 }
 
 impl GeometryRenderPipelineKeys {
@@ -613,6 +649,7 @@ impl GeometryRenderPipelineKeys {
             GeometryTargets::Single => &self.no_anti_alias,
             GeometryTargets::Msaa4 => &self.msaa_4_anti_alias,
             GeometryTargets::Velocity => &self.velocity,
+            GeometryTargets::TaaPrep => &self.taa_prep,
         }
     }
 
@@ -624,6 +661,7 @@ impl GeometryRenderPipelineKeys {
             GeometryTargets::Single => &mut self.no_anti_alias,
             GeometryTargets::Msaa4 => &mut self.msaa_4_anti_alias,
             GeometryTargets::Velocity => &mut self.velocity,
+            GeometryTargets::TaaPrep => &mut self.taa_prep,
         }
     }
 }

@@ -87,10 +87,11 @@ const DEBUG_VIEWS: [(&str, TaaDebugView); 4] = [
 const ORACLE_CAP: usize = 16;
 
 async fn trail_evidence(p: &Params, scene: &str, ks: &[u32], r: &mut Report) -> Result<()> {
-    use crate::reference::{encode_linear, resolve_frame_linear};
+    use crate::reference::{encode_space, resolve_frame};
     let mut t = Session::open(opts(p, scene, Aa::Taa)).await?;
     let mut rs = Session::open(opts(p, scene, Aa::None)).await?;
     let mut ms = Session::open(opts(p, scene, Aa::Msaa)).await?;
+    let mut sm = Session::open(opts(p, scene, Aa::Smaa)).await?;
     let mut hs = Session::open(opts(p, scene, Aa::None)).await?;
     // The oracle's input: TAA-off frames jittered exactly like the TAA
     // session's frame (its packed jitter, read after it renders).
@@ -122,16 +123,33 @@ async fn trail_evidence(p: &Params, scene: &str, ks: &[u32], r: &mut Report) -> 
     let mut ring: std::collections::VecDeque<(u32, Vec<[f32; 3]>)> = Default::default();
     let last = *ks.iter().max().unwrap_or(&0);
     let mut jitter_check: Option<String> = None;
+    let mut prev_df: Option<crate::disocc::DFrame> = None;
+    let mut uncover_ratio = vec![f32::NAN; n];
     while t.next_k <= last {
         let k = t.next_k;
         let target = ks.contains(&k);
         let (_, test) = t.render_next_captured().await?;
         let j = t.renderer.camera.jitter_px();
+        // The disocclusion test's own ratio on each pixel's uncovering frame
+        // (CPU replica of the resolve, see disocc.rs): "contact" pixels are
+        // those with d_prev / d_expected in [0.95, 1.0), which the 5 % ratio
+        // cannot flag.
+        let df = crate::disocc::read_frame(&t).await?;
+        if let Some(pf) = &prev_df {
+            let (_, ratio, _, _) =
+                crate::disocc::replicate(pf, &df, w, h, crate::disocc::definition());
+            for i in 0..n {
+                if pf.hull.bits[i] && !df.hull.bits[i] {
+                    uncover_ratio[i] = ratio[i];
+                }
+            }
+        }
+        prev_df = Some(df);
         let (_, plain) = rs.render_next_captured().await?;
         let (_, hidden_img) = hs.render_next_captured().await?;
         os.render_next_jittered(Some(j))?;
         let ojit = finish_capture_now(&mut os).await?;
-        ring.push_back((k, resolve_frame_linear(&ojit, j)));
+        ring.push_back((k, resolve_frame(&ojit, j, p.karis)));
         if ring.len() > ORACLE_CAP {
             ring.pop_front();
         }
@@ -140,6 +158,13 @@ async fn trail_evidence(p: &Params, scene: &str, ks: &[u32], r: &mut Report) -> 
         } else {
             ms.render_next()?;
             gpu_idle(&ms.renderer).await;
+            None
+        };
+        let smaa = if target {
+            Some(sm.render_next_captured().await?.1)
+        } else {
+            sm.render_next()?;
+            gpu_idle(&sm.renderer).await;
             None
         };
         let mut dimgs: Vec<(&str, Option<Image>)> = Vec::new();
@@ -163,6 +188,7 @@ async fn trail_evidence(p: &Params, scene: &str, ks: &[u32], r: &mut Report) -> 
         if target {
             let reference = reference_cached(&mut rs, p).await?;
             let msaa = msaa.unwrap_or_else(|| plain.clone());
+            let smaa = smaa.unwrap_or_else(|| plain.clone());
             let get = |name: &str| -> Image {
                 dimgs
                     .iter()
@@ -230,7 +256,7 @@ async fn trail_evidence(p: &Params, scene: &str, ks: &[u32], r: &mut Report) -> 
                     }
                 }
                 let c = [acc[0] / cnt, acc[1] / cnt, acc[2] / cnt];
-                let px = encode_linear(c);
+                let px = encode_space(c, p.karis);
                 oracle.rgba[i * 4..i * 4 + 4].copy_from_slice(&px);
             }
             // Jitter / oracle self-check once: on static pixels far from the
@@ -256,11 +282,10 @@ async fn trail_evidence(p: &Params, scene: &str, ks: &[u32], r: &mut Report) -> 
                         }
                     }
                     let m = ring.len() as f32;
-                    full.rgba[i * 4..i * 4 + 4].copy_from_slice(&encode_linear([
-                        acc[0] / m,
-                        acc[1] / m,
-                        acc[2] / m,
-                    ]));
+                    full.rgba[i * 4..i * 4 + 4].copy_from_slice(&encode_space(
+                        [acc[0] / m, acc[1] / m, acc[2] / m],
+                        p.karis,
+                    ));
                 }
                 let msg = format!(
                     "16-frame oracle on pixels > 40 px from the object, off its shadow, and not covered by it within 16 frames: {} (the resolve-model floor is ~0.1 on taa-motion; a wrong jitter sign or pixel-centre convention would show here as edge errors)",
@@ -295,25 +320,31 @@ async fn trail_evidence(p: &Params, scene: &str, ks: &[u32], r: &mut Report) -> 
                 ),
             );
             // Oracle vs TAA / no-AA / MSAA on the static band pixels.
-            let mut lines = vec![format!(
-                "static band ({} px): ORACLE {} | TAA {} | no-AA {} | MSAA {}",
-                stat.count(),
-                st(&oracle, &reference, &stat),
-                st(&test, &reference, &stat),
-                st(&plain, &reference, &stat),
-                st(&msaa, &reference, &stat)
-            )];
+            let mut contact = Mask::new(w, h, false);
+            for i in 0..n {
+                let q = uncover_ratio[i];
+                contact.bits[i] = stat.bits[i] && (0.95..1.0).contains(&q);
+            }
+            let mut lines = Vec::new();
             for (label, m) in [
+                ("static band (literal)", stat.clone()),
                 ("static band minus the 1.5 px ring", stat.and(&ring15.not())),
-                ("static band, 1.5 px ring", stat.and(&ring15)),
+                ("static band, 1.5 px ring alone", stat.and(&ring15)),
+                (
+                    "CONTACT px (d_prev/d_expected in [0.95, 1.0) on the uncovering frame)",
+                    contact.clone(),
+                ),
+                ("the rest (not contact)", stat.and(&contact.not())),
+                ("contact, minus the 1.5 px ring", contact.and(&ring15.not())),
             ] {
                 lines.push(format!(
-                    "{label} ({} px): ORACLE {} | TAA {} | no-AA {} | MSAA {}",
+                    "{label} ({} px): ORACLE {} | TAA {} | MSAA {} | SMAA {} | no-AA {}",
                     m.count(),
                     st(&oracle, &reference, &m),
                     st(&test, &reference, &m),
-                    st(&plain, &reference, &m),
-                    st(&msaa, &reference, &m)
+                    st(&msaa, &reference, &m),
+                    st(&smaa, &reference, &m),
+                    st(&plain, &reference, &m)
                 ));
             }
             for a in 1..=WINDOW {
@@ -325,11 +356,12 @@ async fn trail_evidence(p: &Params, scene: &str, ks: &[u32], r: &mut Report) -> 
                     continue;
                 }
                 lines.push(format!(
-                    "age {a:2}: ORACLE {} | TAA {} | no-AA {} | MSAA {}",
+                    "age {a:2}: ORACLE {} | TAA {} | MSAA {} | SMAA {} | no-AA {}",
                     st(&oracle, &reference, &m),
                     st(&test, &reference, &m),
-                    st(&plain, &reference, &m),
-                    st(&msaa, &reference, &m)
+                    st(&msaa, &reference, &m),
+                    st(&smaa, &reference, &m),
+                    st(&plain, &reference, &m)
                 ));
             }
             r.info(
@@ -469,6 +501,7 @@ async fn trail_evidence(p: &Params, scene: &str, ks: &[u32], r: &mut Report) -> 
     t.destroy();
     rs.destroy();
     ms.destroy();
+    sm.destroy();
     hs.destroy();
     os.destroy();
     for (_, d) in dv {

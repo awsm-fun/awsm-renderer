@@ -573,6 +573,11 @@ pub fn sanitize_wgsl_name(name: &str) -> String {
 #[derive(Default)]
 pub struct DynamicMaterials {
     registrations: HashMap<MaterialShaderId, MaterialRegistration>,
+    /// The registrations whose WGSL reads the frame clock (see
+    /// [`reads_frame_clock`]): what `MaterialTemporal::Auto` resolves to
+    /// `Reactive` for (TAA). Scanned ONCE per registration, never per
+    /// material insert or update.
+    frame_clock_readers: std::collections::HashSet<MaterialShaderId>,
     /// First-party feature-set variants (the specialize-only design).
     /// A PBR/Toon material derives its [`awsm_renderer_materials::pbr::PbrFeatures`]
     /// mask and resolves it here to a per-feature-set bucket `shader_id`,
@@ -648,6 +653,7 @@ impl DynamicMaterials {
         // registry is empty — the slice itself is correct.
         Self {
             registrations: HashMap::new(),
+            frame_clock_readers: std::collections::HashSet::new(),
             first_party_variants: HashMap::new(),
             fp_variant_meta: HashMap::new(),
             next_dynamic_id: MaterialShaderId::DYNAMIC_START,
@@ -823,6 +829,13 @@ impl DynamicMaterials {
     /// Returns the registration record for a previously-registered id.
     pub fn get(&self, shader_id: MaterialShaderId) -> Option<&MaterialRegistration> {
         self.registrations.get(&shader_id)
+    }
+
+    /// Whether the registration's WGSL reads the frame clock (TAA: its
+    /// instances' colour can change on a still surface). Cached at register
+    /// time; `false` for an unknown id.
+    pub fn reads_frame_clock(&self, shader_id: MaterialShaderId) -> bool {
+        self.frame_clock_readers.contains(&shader_id)
     }
 
     /// Overwrite ONE uniform's authored default on a registration in place.
@@ -1003,6 +1016,7 @@ impl DynamicMaterials {
             texture_pool_samplers_len: 1,
             msaa_samples: None,
             velocity: false,
+            mip_bias: false,
             instancing_transforms: false,
             meta_storage_array: false,
         };
@@ -1168,6 +1182,7 @@ impl DynamicMaterials {
             texture_pool_samplers_len: 1,
             msaa_samples: None,
             velocity: false,
+            mip_bias: false,
         };
         let template = match ShaderTemplateGeometryMaskedCustomVertex::try_from(&key) {
             Ok(t) => t,
@@ -1378,6 +1393,9 @@ impl DynamicMaterials {
         }
         let id = MaterialShaderId::from_dynamic_raw(self.next_dynamic_id);
         self.next_dynamic_id = self.next_dynamic_id.saturating_add(1);
+        if reads_frame_clock(&registration) {
+            self.frame_clock_readers.insert(id);
+        }
         self.registrations.insert(id, registration);
         // Refresh the bucket-entries + dispatch-hash caches so the
         // next render frame's hot-path probe sees the new entry
@@ -1397,12 +1415,25 @@ impl DynamicMaterials {
         self.registrations
             .remove(&shader_id)
             .ok_or(AwsmDynamicMaterialError::UnknownShaderId(shader_id))?;
+        self.frame_clock_readers.remove(&shader_id);
         // Refresh caches even on the empty-after-removal case so the
         // dispatch_hash collapses back to the `0` sentinel that
         // first-party-only builds compile against.
         self.refresh_caches();
         Ok(())
     }
+}
+
+/// Whether a registration's WGSL reads the frame clock: the `frame_globals`
+/// uniform directly, or the `globals` member the vertex hook's input carries
+/// (`input.globals.time`). A heuristic on the source text (a comment that
+/// names it counts too); authors override it per material or registration
+/// with `MaterialTemporal`.
+pub(crate) fn reads_frame_clock(registration: &MaterialRegistration) -> bool {
+    let reads = |wgsl: &str| wgsl.contains("frame_globals") || wgsl.contains("globals.");
+    reads(&registration.wgsl_fragment)
+        || registration.wgsl_vertex.as_deref().is_some_and(reads)
+        || registration.alpha_wgsl.as_deref().is_some_and(reads)
 }
 
 /// Runtime registration payload for a custom material.

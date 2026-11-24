@@ -125,13 +125,13 @@ Gate: 05 §4 transparent / particle / UV-flow / HUD tests pass.
 
 ## Phase 4: upscaling
 
-- [ ] `TaaConfig::render_scale < 1`: scene at render size, TAA writes post
+- [x] `TaaConfig::render_scale < 1`: scene at render size, TAA writes post
       size, the reconstruction kernel and confidence (03 §4.2, §4.8),
       `N_max` 24, `N = ceil(8 / s²)`.
-- [ ] `load_depth_post` for haze and DoF; DoF's CoC at post size.
-- [ ] Mip bias `log2(s) + extra`; settle `extra` with the moiré scene.
-- [ ] Optional RCAS pass.
-- [ ] Presets: Quality 0.67, Balanced 0.58, Performance 0.5.
+- [x] `load_depth_post` for haze and DoF; DoF's CoC at post size.
+- [x] Mip bias `log2(s) + extra`; settle `extra` with the moiré scene.
+- [x] Optional RCAS pass.
+- [x] Presets: Quality 0.67, Balanced 0.58, Performance 0.5.
 
 Gate: 05 §4 tests at 0.67 and 0.5; 05 §5 frame-time targets.
 
@@ -263,6 +263,68 @@ Phase 3:
   reactive write is capped at 0.99.
 - Content drawn through the public transparent-pass hook writes no reactive
   value (documented on the method).
+
+Phase 2, after the gates were measured:
+
+- Disocclusion has a second test, on the pixel's **own** surface (its own
+  depth and vector). The test of 03 §4.7 looks only at the surface whose
+  vector the pixel uses (the nearest of its 3×3). A pixel beside a moving
+  object takes the object's vector, so that test compares the object with
+  itself (141 of 141 such pixels unflagged on one `taa-motion` frame), and an
+  object resting on the surface behind it is inside the 5% slack near the
+  contact line. For a surface that did not move the expected previous
+  distance is exact, so the slack there is the surface's depth slope across
+  a pixel. Away from nearer surfaces the test takes the **farthest** depth of
+  the previous 2×2 (was the surface visible anywhere in it); beside a nearer
+  surface it fires only if that surface moves relative to the pixel's own,
+  and then takes the nearest. The first version took the nearest everywhere
+  and flagged a one-pixel outline around every static object (`taa-thin`
+  flicker 0.27 → 0.81); with the rules above the static false-flag counts
+  and flicker equal the build without the test.
+- The pre-existing test still fires in a burst once per jitter cycle on
+  static edges, at the largest jitter step: the 3×3 and the previous 2×2 are
+  point samples at different sub-pixel positions. It passes the flicker gate
+  at that level and was left alone.
+- Shipped tuning differs from 03 §10: history cap under motion 2 (new),
+  motion-boundary weight 1.0 (new), clip weight 1.0 per unit of clip amount
+  (03 §4.8 has 0.5), reactive transparents 0.3 (0.8), reactive materials 0.2
+  (0.6). Each came from a sweep recorded in `docs/TAA.md`.
+
+Phase 4:
+
+- The mip bias reaches opaque materials by scaling the barycentric
+  derivatives the geometry pass stores (a `mip_bias` geometry variant, on in
+  every TAA path), not through a new opaque shader axis: those derivatives
+  feed only the shading's texture gradients, so custom materials get it too.
+  The bias rides in the camera uniform's `prev_position.w`. Alpha-cutoff
+  sampling is at LOD 0 and needs none.
+- `render_scale` is quantised to 0.01. `set_taa_render_scale` is the
+  governor entry point (light path, no history reset).
+- A render-scale step rebuilds every render-size target and restarts the
+  volumetric froxel history and SSR's temporal history (03 §6 hoped
+  volumetrics would not care: its grid is aligned to the light-culling tiles
+  at render size). TAA history, bloom and the sharpening target are kept.
+- Under TAA, LOD screen error and coverage counts are measured in output
+  pixels, so a scale step does not pop LOD.
+- RCAS runs before the HUD-after-resolve pass and skips HUD pass-through
+  pixels, so no HUD is sharpened. HUD meshes shaded by the opaque pass are
+  rasterised at render size and are soft below scale 1.
+- TAA pipelines that fail to compile fall back to MSAA 4× once, with the
+  reason readable (`taa_fallback_reason`).
+
+Phase 5:
+
+- The fallback's velocity texture is `rg32float`: `rg16float` is not a core
+  storage format. Which path a device uses is renderer state
+  (`taa_velocity_path`), not part of `TaaConfig`.
+- `inverse(M)` is the transpose of the stored normal matrix (exact for any
+  affine transform). Measured against a per-pixel inverse by repeat-N:
+  1.118 ms against 1.142 ms for the prep pass at 1920×1435, equal within
+  noise.
+- On the fallback, skinned, morphed and instanced meshes are reactive (0.5)
+  only while they deform (2-frame linger); custom vertex hooks always.
+  Instanced meshes get no per-instance vector on this path.
+- Every device now has a velocity path, so `TaaUnavailable` is not raised.
 
 ## Things to keep out of v1
 

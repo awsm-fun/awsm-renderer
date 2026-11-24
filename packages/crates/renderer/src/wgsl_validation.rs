@@ -165,6 +165,7 @@ fn sscs_enabled_shaders_validate() {
                 sscs_enabled: true,
                 sscs_step_count: step_count,
                 reverse_z: false,
+                velocity: false,
             })
             .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
             .into_source()
@@ -214,6 +215,7 @@ fn reverse_z_shadow_shaders_validate() {
             sscs_enabled: true,
             sscs_step_count: 16,
             reverse_z: true,
+            velocity: false,
         })
         .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
         .into_source()
@@ -248,6 +250,7 @@ fn reverse_z_shadow_shaders_validate() {
         sscs_enabled: false,
         sscs_step_count: 16,
         reverse_z: false,
+        velocity: false,
     })
     .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
     .into_source()
@@ -1054,6 +1057,7 @@ fn material_prep_shader_validates() {
             sscs_enabled: false,
             sscs_step_count: 16,
             reverse_z: false,
+            velocity: false,
         })
         .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
         .into_source()
@@ -1336,6 +1340,46 @@ fn taa_reactive_transparent_and_line_shaders_validate() {
         assert_eq!(src.contains("@location(1) reactive: f32"), reactive);
         assert_eq!(src.contains("k_transparent"), reactive);
     }
+}
+
+/// The line shader keeps its own mirror of `CameraRaw` and reads TAA's
+/// `k_transparent` as `_padding_end[1].z`. Pin that `_padding_end[1]` sits at
+/// the byte offset of the shared struct's `dof_params`, so a camera layout
+/// change cannot silently feed the lines a different field.
+#[test]
+fn line_shader_camera_mirror_reads_dof_params() {
+    use crate::render_passes::lines::{shader::template::ShaderTemplateLine, ShaderCacheKeyLine};
+    fn member_offset(module: &naga::Module, ty_name: &str, member: &str) -> u32 {
+        let (_, ty) = module
+            .types
+            .iter()
+            .find(|(_, t)| t.name.as_deref() == Some(ty_name))
+            .unwrap_or_else(|| panic!("no struct {ty_name}"));
+        match &ty.inner {
+            naga::TypeInner::Struct { members, .. } => {
+                members
+                    .iter()
+                    .find(|m| m.name.as_deref() == Some(member))
+                    .unwrap_or_else(|| panic!("{ty_name} has no {member}"))
+                    .offset
+            }
+            other => panic!("{ty_name} is not a struct: {other:?}"),
+        }
+    }
+    let shared_src = include_str!("render_passes/shared/shared_wgsl/camera.wgsl");
+    let shared = naga::front::wgsl::parse_str(shared_src).expect("camera.wgsl parses");
+    let line_src = ShaderTemplateLine::try_from(&ShaderCacheKeyLine { reactive: true })
+        .unwrap()
+        .into_source()
+        .unwrap();
+    let line = naga::front::wgsl::parse_str(&line_src).expect("line shader parses");
+    assert!(line_src.contains("_padding_end[1].z"));
+    // `_padding_end: array<vec4<f32>, 2>`: element 1 is 16 bytes in.
+    assert_eq!(
+        member_offset(&line, "CameraRaw", "_padding_end") + 16,
+        member_offset(&shared, "CameraRaw", "dof_params"),
+        "the line shader's `_padding_end[1]` must be `CameraRaw.dof_params`"
+    );
 }
 
 #[test]
@@ -2602,6 +2646,7 @@ fn effects_key(
         dof,
         atmosphere,
         reverse_z,
+        taa_post: false,
     }
 }
 
@@ -2631,18 +2676,83 @@ fn effects_variants_are_valid_wgsl() {
                              bloom={bloom_phase:?} msaa={msaa} reverse_z={reverse_z}"
                         );
                         for smaa_anti_alias in [false, true] {
-                            let label = format!("{label} smaa={smaa_anti_alias}");
-                            let key = ShaderCacheKeyEffects {
-                                smaa_anti_alias,
-                                ..effects_key(atmosphere, dof, bloom_phase, msaa, reverse_z)
+                            // TAA excludes MSAA and SMAA.
+                            let taa_posts: &[bool] = if msaa || smaa_anti_alias {
+                                &[false]
+                            } else {
+                                &[false, true]
                             };
-                            let src = render_effects(&key, &label);
-                            naga_validate(&src, &label);
-                            assert!(src.contains("fn main("), "{label}: no `main`");
-                            assert_eq!(src.contains("fn dof_prepare("), dof, "{label}");
+                            for &taa_post in taa_posts {
+                                let label =
+                                    format!("{label} smaa={smaa_anti_alias} taa_post={taa_post}");
+                                let key = ShaderCacheKeyEffects {
+                                    smaa_anti_alias,
+                                    taa_post,
+                                    ..effects_key(atmosphere, dof, bloom_phase, msaa, reverse_z)
+                                };
+                                let src = render_effects(&key, &label);
+                                naga_validate(&src, &label);
+                                assert!(src.contains("fn main("), "{label}: no `main`");
+                                assert_eq!(src.contains("fn dof_prepare("), dof, "{label}");
+                                let reads_depth = dof || atmosphere != AtmospherePhase::None;
+                                assert_eq!(
+                                    src.contains("load_depth_post("),
+                                    taa_post && reads_depth,
+                                    "{label}: the post-size depth read exists exactly under TAA"
+                                );
+                            }
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+/// `load_depth_post` (TAA, effects at output size): the 2x2 render texels it
+/// reads must be the ones whose unjittered sample positions bracket the
+/// output pixel's centre, at every scale and jitter. A CPU mirror of the
+/// WGSL's index maths, pinned to the WGSL text so the two cannot drift.
+#[test]
+fn load_depth_post_reads_the_texels_around_the_output_pixel() {
+    let src = render_effects(
+        &ShaderCacheKeyEffects {
+            taa_post: true,
+            ..effects_key(
+                AtmospherePhase::Analytic,
+                true,
+                BloomPhase::None,
+                false,
+                true,
+            )
+        },
+        "effects taa_post",
+    );
+    assert!(src.contains(
+        "let pos = (vec2<f32>(q) + 0.5) * vec2<f32>(render) / post + camera_raw.jitter.xy - 0.5;"
+    ));
+    assert!(
+        src.contains("return max(max(d00, d10), max(d01, d11));"),
+        "reverse-Z keeps the nearest"
+    );
+    // Mirror (one axis; the other is the same formula).
+    let first_texel = |q: u32, render: u32, post: u32, jitter: f32| -> i32 {
+        ((q as f32 + 0.5) * render as f32 / post as f32 + jitter - 0.5).floor() as i32
+    };
+    for (render, post) in [(1920u32, 1920u32), (1286, 1920), (1114, 1920), (960, 1920)] {
+        for jitter in [-0.5f32, -0.37, -0.1, 0.0, 0.21, 0.49] {
+            for q in [1u32, 7, 333, post / 2, post - 2] {
+                let p0 = first_texel(q, render, post, jitter);
+                // Render texel p holds the scene at unjittered p + 0.5 - j.
+                let centre = (q as f32 + 0.5) * render as f32 / post as f32;
+                let lo = p0 as f32 + 0.5 - jitter;
+                let hi = lo + 1.0;
+                assert!(
+                    lo <= centre + 1e-4 && centre <= hi + 1e-4,
+                    "render {render} post {post} jitter {jitter} q {q}: texels {p0}..={} \
+                     sample {lo}..{hi} do not bracket {centre}",
+                    p0 + 1
+                );
             }
         }
     }
@@ -3204,6 +3314,45 @@ fn taa_geometry_variants_validate() {
             src.contains("velocity: vec2<f32>"),
             "{label}: no velocity output"
         );
+    }
+}
+
+/// TAA's texture LOD bias (03 §7) is in every TAA geometry variant on BOTH
+/// velocity paths: with the motion-vector target (geometry path) and without
+/// it (the prep-pass fallback, `GeometryTargets::TaaPrep`). TAA-off variants
+/// never scale the derivatives. And the fallback key is the one that gets it.
+#[test]
+fn taa_mip_bias_is_in_every_taa_geometry_variant() {
+    use crate::anti_alias::AntiAliasing;
+    use crate::render_passes::geometry::pipeline::GeometryTargets;
+    use crate::render_passes::geometry::shader::variant_tests::rendered_variants_with;
+    const SCALE: &str = "exp2(camera_raw.prev_position.w)";
+    for (velocity, mip_bias) in [(true, true), (false, true), (false, false)] {
+        for (label, src) in rendered_variants_with(None, velocity, mip_bias) {
+            let label = format!("{label} velocity={velocity} mip_bias={mip_bias}");
+            naga_validate(&src, &label);
+            assert_eq!(src.contains(SCALE), mip_bias, "{label}");
+            assert_eq!(src.contains("out.velocity"), velocity, "{label}");
+        }
+    }
+    let taa = AntiAliasing::taa(crate::taa::TaaConfig::native());
+    let geometry_path = crate::render_textures::RenderTextureFormats::defaults();
+    let mut fallback_path = crate::render_textures::RenderTextureFormats::defaults();
+    fallback_path.prep_velocity_path = true;
+    let targets = GeometryTargets::from_aa(&taa, &fallback_path);
+    assert_eq!(targets, GeometryTargets::TaaPrep);
+    assert!(targets.mip_bias() && !targets.velocity());
+    assert_eq!(targets.msaa_samples(), None);
+    let geometry = GeometryTargets::from_aa(&taa, &geometry_path);
+    assert!(geometry.mip_bias() && geometry.velocity());
+    for off in [
+        AntiAliasing::none(),
+        AntiAliasing::msaa4(),
+        AntiAliasing::smaa(),
+    ] {
+        // The renderer's path flag is irrelevant without TAA.
+        assert!(!GeometryTargets::from_aa(&off, &geometry_path).mip_bias());
+        assert!(!GeometryTargets::from_aa(&off, &fallback_path).mip_bias());
     }
 }
 
