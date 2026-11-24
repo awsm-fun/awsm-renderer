@@ -209,6 +209,12 @@ async fn ghost_track(p: &Params, scene: &str, r: &mut Report) -> Result<()> {
     let mut band_px_frames = 0u64;
     // Per region, every pixel: (px-frames, sum of TAA / MSAA / no-AA error).
     let mut region_err = [(0u64, 0f64, 0f64, 0f64); 3];
+    // Per region, the still pixels (where the oracle exists): (px-frames,
+    // sum of TAA / MSAA / no-AA / ORACLE error), for `ghost-region`.
+    let mut region_err_o = [(0u64, 0f64, 0f64, 0f64, 0f64); 3];
+    // Running sum of the oracle ring per pixel: the oracle of a pixel last
+    // covered ORACLE_CAP or more frames ago is the whole ring's mean.
+    let mut ring_sum: Vec<[f64; 3]> = vec![[0.0; 3]; n];
     while pair.test.next_k < frames {
         let k = pair.test.next_k;
         let (_, test, reference, plain) = pair.step_with_reference(p).await?;
@@ -231,8 +237,21 @@ async fn ghost_track(p: &Params, scene: &str, r: &mut Report) -> Result<()> {
             crate::session::finish_capture(rb, os.opts.size).await?
         };
         oring.push_back((k, crate::reference::resolve_frame(&ojit, j, p.karis)));
+        if let Some((_, f)) = oring.back() {
+            for (s, c) in ring_sum.iter_mut().zip(f) {
+                for ch in 0..3 {
+                    s[ch] += c[ch] as f64;
+                }
+            }
+        }
         if oring.len() > ORACLE_CAP {
-            oring.pop_front();
+            if let Some((_, f)) = oring.pop_front() {
+                for (s, c) in ring_sum.iter_mut().zip(&f) {
+                    for ch in 0..3 {
+                        s[ch] -= c[ch] as f64;
+                    }
+                }
+            }
         }
         let now = match probe.as_mut() {
             Some(pr) => pr.step().await?,
@@ -287,8 +306,18 @@ async fn ghost_track(p: &Params, scene: &str, r: &mut Report) -> Result<()> {
                         .unwrap_or(ORACLE_CAP)
                         .min(ORACLE_CAP)
                 };
-                let need_oracle = dump || (!moving && et > THRESHOLDS[1]);
-                let oc = if need_oracle {
+                // Every still pixel gets its oracle (`ghost-region` compares
+                // region means against it); a moving pixel only in a dump.
+                let need_oracle = dump || !moving;
+                let whole_ring = age >= oring.len();
+                let oc = if need_oracle && whole_ring {
+                    let c = oring.len() as f64;
+                    let s = ring_sum[i];
+                    Some(crate::reference::encode_space(
+                        [(s[0] / c) as f32, (s[1] / c) as f32, (s[2] / c) as f32],
+                        p.karis,
+                    ))
+                } else if need_oracle {
                     let first = (k + 1).saturating_sub(age as u32);
                     let mut acc = [0.0f32; 3];
                     let mut cnt = 0.0f32;
@@ -348,6 +377,14 @@ async fn ghost_track(p: &Params, scene: &str, r: &mut Report) -> Result<()> {
                 re.1 += et as f64;
                 re.2 += em as f64;
                 re.3 += en as f64;
+                if !moving && eo >= 0 {
+                    let ro = &mut region_err_o[region];
+                    ro.0 += 1;
+                    ro.1 += et as f64;
+                    ro.2 += em as f64;
+                    ro.3 += en as f64;
+                    ro.4 += eo as f64;
+                }
                 if let Some(ci) = class_img.as_mut() {
                     let col = match c16 {
                         Some(Class::Ghost) => [255, 0, 0, 255],
@@ -497,6 +534,39 @@ async fn ghost_track(p: &Params, scene: &str, r: &mut Report) -> Result<()> {
                 .join("; ")
         ),
     );
+    // `ghost-region:<scene>:<region>` (round 3, the user's "(b) and (c) no
+    // worse than MSAA 4x's or the oracle's"): TAA's mean error over the
+    // region's still pixel-frames (where the oracle exists) against the
+    // larger of MSAA's and the oracle's on the same pixel-frames. A verdict
+    // on the trail band and static elsewhere; INFO on the moving objects
+    // (the oracle cannot reproject there: TAA / MSAA / no-AA over every
+    // pixel-frame) and where the region's ghost verdict is INFO.
+    for (ri, key) in ["trail", "object", "static"].iter().enumerate() {
+        let name = format!("ghost-region:{scene}:{key}");
+        let (n, t, m, a) = region_err[ri];
+        let d = n.max(1) as f64;
+        let all = format!(
+            "{}: every pixel-frame ({n}): TAA {:.3} / MSAA 4x {:.3} / no-AA {:.3}",
+            REGIONS[ri],
+            t / d,
+            m / d,
+            a / d
+        );
+        let (no, to, mo, ao, oo) = region_err_o[ri];
+        let dd = no.max(1) as f64;
+        let (to, mo, ao, oo) = (to / dd, mo / dd, ao / dd, oo / dd);
+        let still = format!(
+            "; still pixel-frames with an oracle ({no}): TAA {to:.3} / MSAA 4x {mo:.3} / no-AA {ao:.3} / ORACLE {oo:.3}; TAA <= max(MSAA 4x, ORACLE) = {:.3}",
+            mo.max(oo)
+        );
+        if ri == 1 {
+            r.info(&name, &format!("{all}{still}"));
+        } else if let Some(why) = verdict_is_info(scene, ri) {
+            r.info(&name, &format!("{all}{still} [INFO: {why}]"));
+        } else {
+            r.emit(&name, no == 0 || to <= mo.max(oo), &format!("{all}{still}"));
+        }
+    }
     Ok(())
 }
 
