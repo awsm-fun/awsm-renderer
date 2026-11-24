@@ -433,6 +433,14 @@ impl LineRenderer {
         let reactive = ctx.render_texture_views.reactive.is_some();
         let viewport_w = ctx.render_texture_views.render_size.0 as f32;
         let viewport_h = ctx.render_texture_views.render_size.1 as f32;
+        // TAA: lines' reactive weight (0 without TAA: the uniform's last
+        // word was padding before, and stays 0 then).
+        let k_reactive = ctx
+            .anti_aliasing
+            .taa
+            .as_ref()
+            .map(|taa| taa.tuning.reactive_lines)
+            .unwrap_or(0.0);
         let mut current_variant: Option<LineVariantKey> = None;
 
         for entry in self.entries.values() {
@@ -443,6 +451,7 @@ impl LineRenderer {
             uniform_bytes[0..4].copy_from_slice(&entry.width_px.to_le_bytes());
             uniform_bytes[4..8].copy_from_slice(&viewport_w.to_le_bytes());
             uniform_bytes[8..12].copy_from_slice(&viewport_h.to_le_bytes());
+            uniform_bytes[12..16].copy_from_slice(&k_reactive.to_le_bytes());
             entry.uniform_uploader.lock().unwrap().write_dirty_ranges(
                 ctx.gpu,
                 &entry.uniform_buffer,

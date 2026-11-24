@@ -1065,6 +1065,8 @@ pub fn taa_settings_to_renderer(
             motion_alpha_speed: pos(t.motion_alpha_speed, d.motion_alpha_speed),
             reactive_transparent: pos(t.reactive_transparent, d.reactive_transparent),
             reactive_particles: pos(t.reactive_particles, d.reactive_particles),
+            reactive_lines: pos(t.reactive_lines, d.reactive_lines),
+            edge_release: pos(t.edge_release, d.edge_release),
             reactive_material: pos(t.reactive_material, d.reactive_material),
             reactive_ssr: pos(t.reactive_ssr, d.reactive_ssr),
             mip_bias_extra: fin(t.mip_bias_extra, d.mip_bias_extra),

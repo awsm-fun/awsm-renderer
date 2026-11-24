@@ -1847,6 +1847,18 @@ fn anti_aliasing_section() -> Dom {
                 ..Default::default()
             },
         ))
+        .child(knob("TAA reactive (lines)", t.reactive_lines, 0.05, |v| {
+            TaaTuningPatch {
+                reactive_lines: Some(v),
+                ..Default::default()
+            }
+        }))
+        .child(knob("TAA edge release", t.edge_release, 0.25, |v| {
+            TaaTuningPatch {
+                edge_release: Some(v),
+                ..Default::default()
+            }
+        }))
         .child(knob("TAA reactive (SSR)", t.reactive_ssr, 0.05, |v| {
             TaaTuningPatch {
                 reactive_ssr: Some(v),

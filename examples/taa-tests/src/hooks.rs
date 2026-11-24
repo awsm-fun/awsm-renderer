@@ -104,6 +104,10 @@ fn apply_tune(t: &mut TaaTuning, name: &str, v: f32) -> Result<(), String> {
         "reactive_transparent" => t.reactive_transparent = v,
         #[cfg(feature = "taa-disocclusion")]
         "reactive_particles" => t.reactive_particles = v,
+        #[cfg(feature = "taa-disocclusion")]
+        "reactive_lines" => t.reactive_lines = v,
+        #[cfg(feature = "taa-disocclusion")]
+        "edge_release" => t.edge_release = v,
         "reactive_material" => t.reactive_material = v,
         "mip_bias_extra" => t.mip_bias_extra = v,
         #[cfg(feature = "taa-tuning-v2")]

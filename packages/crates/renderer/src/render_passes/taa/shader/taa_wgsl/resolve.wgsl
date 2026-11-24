@@ -65,7 +65,8 @@ struct TaaParams {
     // The display's exposure multiplier (exp2 of the scene's EV), so the
     // working space below is the display's (G11).
     exposure: f32,
-    _pad0: f32,
+    // `TaaTuning::edge_release` (the id variant reads it; 0 = off).
+    edge_release: f32,
     _pad1: f32,
     // The unjittered view-projection of the frame BEFORE last (the camera
     // buffer's `prev_view_projection` is last frame's): a static surface's
@@ -698,6 +699,9 @@ fn cs_main(
     // ANYWHERE in the 2x2 it came from. Taking the nearest would flag pixels
     // near a static silhouette whenever the jitter moved the footprint
     // across it.
+    {% if id_test %}
+    var mix_changed = false;
+    {% endif %}
     if (!is_sky(z_own)) {
         var v_own = v;
         if (dilated) {
@@ -823,6 +827,36 @@ fn cs_main(
             diag_id = hidden;
             {% endif %}
         }
+        // `edge_release` (off by default): an object that was in the 2x2 this
+        // pixel's history comes from has left the current 3x3, so the mix
+        // the history holds no longer exists (a resting edge released by a
+        // sub-pixel move, which no motion shows). A still image cannot trip
+        // it through the footprint geometry (the 2x2 lies inside the 3x3),
+        // but a thin wire one jitter phase's sample hit and no current
+        // sample hits can: that costs still-image flicker, hence off.
+        if (params.edge_release > 0.0) {
+            let mdims = vec2<i32>(textureDimensions(prev_visibility_tex));
+            let m0 = vec2<i32>(floor(uv_hist_own * vec2<f32>(mdims) + camera_raw.jitter.zw - 0.5));
+            {% for fy in 0..2 %}
+            {% for fx in 0..2 %}
+            {
+                let c = clamp(m0 + vec2<i32>({{ fx }}, {{ fy }}), vec2<i32>(0), mdims - 1);
+                if (!is_sky(textureLoad(prev_depth_tex, c, 0))) {
+                    let fid = mesh_id(textureLoad(prev_visibility_tex, c, 0));
+                    var present = false;
+                    {% for dy in 0..3 %}
+                    {% for dx in 0..3 %}
+                    present = present || tile_id[u32((base.y + {{ dy }} - 1) * TILE + base.x + {{ dx }} - 1)] == fid;
+                    {% endfor %}
+                    {% endfor %}
+                    if (!present) {
+                        mix_changed = true;
+                    }
+                }
+            }
+            {% endfor %}
+            {% endfor %}
+        }
         {% endif %}
         if (hidden) {
             disoccluded = true;
@@ -885,6 +919,11 @@ fn cs_main(
     alpha = max(alpha, reactive * params.reactive_valid);
     // What the boosts (motion boundary, speed, reactive) leave of the
     // history, before the clip (whose shortening `n_next` already applies).
+    {% if id_test %}
+    if (mix_changed) {
+        alpha = max(alpha, params.edge_release);
+    }
+    {% endif %}
     let alpha_kept = alpha;
     alpha = max(alpha, clip_amount * params.clip_alpha);
     if (params.upscaling > 0.5) {

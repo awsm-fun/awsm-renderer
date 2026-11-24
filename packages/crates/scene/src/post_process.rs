@@ -211,6 +211,9 @@ pub struct TaaTuningSettings {
     /// Reactive value on every pixel a particle emitter covers (particles are
     /// fully reactive by default: they move and change too fast for history).
     pub reactive_particles: f32,
+    /// Reactive value written by lines per unit of alpha (lines have no
+    /// motion vectors; raise it to 1.0 when lines are animated).
+    pub reactive_lines: f32,
     /// Extra reactivity from SSR reflectivity.
     pub reactive_ssr: f32,
     /// Added to `log2(render_scale)` for the texture LOD bias.
@@ -227,6 +230,11 @@ pub struct TaaTuningSettings {
     /// Relative speed (output px / frame) between the nearest and farthest
     /// surface of the 3×3 at which `motion_edge_alpha` is reached.
     pub motion_edge_speed: f32,
+    /// At the `depth_motion_and_id` disocclusion level: current-frame weight
+    /// of a pixel whose history held an object now absent from its 3×3 (a
+    /// resting edge released by a sub-pixel move). 0 = off; 1.0 removes that
+    /// last ghost at some still-image flicker on thin wires.
+    pub edge_release: f32,
 }
 
 impl Default for TaaTuningSettings {
@@ -243,12 +251,14 @@ impl Default for TaaTuningSettings {
             reactive_transparent: 0.3,
             reactive_material: 0.2,
             reactive_particles: 1.0,
+            reactive_lines: 0.3,
             reactive_ssr: 0.0,
             mip_bias_extra: 0.0,
             max_history_moving: 2.0,
             max_history_moving_speed: 1.0,
             motion_edge_alpha: 1.0,
             motion_edge_speed: 0.5,
+            edge_release: 0.0,
         }
     }
 }

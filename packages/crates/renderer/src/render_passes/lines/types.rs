@@ -17,7 +17,8 @@ pub(super) struct GpuLineSegment {
 
 pub(super) const SEGMENT_BYTES: usize = std::mem::size_of::<GpuLineSegment>();
 
-/// 16 bytes — `width_px`, `viewport_w`, `viewport_h`, `_pad`.
+/// 16 bytes — `width_px`, `viewport_w`, `viewport_h`, `k_reactive` (TAA's
+/// `reactive_lines`; 0 without TAA).
 pub(super) const LINE_UNIFORM_BYTES: usize = 16;
 
 /// Per-line GPU state.

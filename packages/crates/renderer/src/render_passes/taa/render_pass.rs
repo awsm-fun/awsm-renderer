@@ -92,6 +92,8 @@ pub struct TaaParamsValues {
     /// The display's exposure multiplier, `exp2(post_processing.exposure)`:
     /// the resolve's working space is what the display shows.
     pub exposure: f32,
+    /// `TaaTuning::edge_release` (the id level only; 0 = off).
+    pub edge_release: f32,
     /// The unjittered view-projection of the frame before last (column
     /// major): a static surface's own motion vector LAST frame, for the
     /// resolve's contact test.
@@ -140,6 +142,7 @@ impl TaaParamsValues {
             motion_edge_speed: tuning.motion_edge_speed,
             clip_alpha: crate::taa::CLIP_ALPHA,
             exposure: 1.0,
+            edge_release: tuning.edge_release,
             prev_prev_view_projection: glam::Mat4::IDENTITY.to_cols_array(),
         }
     }
@@ -170,8 +173,8 @@ impl TaaParamsValues {
             self.motion_edge_speed,
             self.clip_alpha,
             self.exposure,
-            // `_pad0`, `_pad1`: the matrix below is 16-byte aligned.
-            0.0,
+            self.edge_release,
+            // `_pad1`: the matrix below is 16-byte aligned.
             0.0,
         ];
         let mut out = [0u8; TaaParams::BYTE_SIZE];
@@ -899,7 +902,8 @@ mod tests {
         let f = |i: usize| f32::from_ne_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap());
         let t = &config.tuning;
         assert_eq!(bytes.len(), 160);
-        assert_eq!((f(22), f(23)), (0.0, 0.0), "padding before the matrix");
+        assert_eq!(f(22), v.edge_release, "edge_release");
+        assert_eq!(f(23), 0.0, "padding before the matrix");
         assert_eq!(
             f(24),
             1.0,
@@ -991,7 +995,7 @@ mod tests {
                 "motion_edge_speed",
                 "clip_alpha",
                 "exposure",
-                "_pad0",
+                "edge_release",
                 "_pad1",
                 "prev_prev_view_projection",
             ]

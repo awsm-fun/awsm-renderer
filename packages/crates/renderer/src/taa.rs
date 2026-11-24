@@ -215,6 +215,19 @@ pub struct TaaTuning {
     /// alpha (a soft sprite's low-alpha skirt would otherwise keep its stale
     /// colour for many frames). `docs/TAA.md` §3.6.
     pub reactive_particles: f32,
+    /// Reactive value per unit of alpha written by lines (`docs/TAA.md`
+    /// §3.6). Lines have no motion vectors; an app that animates lines
+    /// raises it (1.0 = a moving line keeps no history, at the cost of
+    /// aliased line edges).
+    pub reactive_lines: f32,
+    /// At `TaaDisocclusion::DepthMotionAndId`: the current-frame weight of a
+    /// pixel whose history came from a 2x2 that held an object now absent
+    /// from its 3x3 (a resting edge released by a sub-pixel move). 0 = off
+    /// (default); 1.0 removes the last measured trail event but raises
+    /// still-image flicker on thin wires and small instances a sample missed
+    /// (`taa-thin` 0.301 -> 0.323, `instancing-stress` 0.105 -> 0.151).
+    /// `docs/TAA.md` §2.4.
+    pub edge_release: f32,
     /// Reactive value written for materials flagged `temporal: reactive`.
     pub reactive_material: f32,
     /// Extra reactivity from SSR reflectivity. 0 unless mirrors trail.
@@ -257,6 +270,8 @@ impl Default for TaaTuning {
             motion_alpha_speed: 8.0,
             reactive_transparent: 0.3,
             reactive_particles: 1.0,
+            reactive_lines: 0.3,
+            edge_release: 0.0,
             reactive_material: 0.2,
             reactive_ssr: 0.0,
             mip_bias_extra: 0.0,

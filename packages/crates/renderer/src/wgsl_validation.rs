@@ -1342,10 +1342,11 @@ fn taa_reactive_transparent_and_line_shaders_validate() {
     }
 }
 
-/// The line shader keeps its own mirror of `CameraRaw` and reads TAA's
-/// `k_transparent` as `_padding_end[1].z`. Pin that `_padding_end[1]` sits at
-/// the byte offset of the shared struct's `dof_params`, so a camera layout
-/// change cannot silently feed the lines a different field.
+/// The line shader keeps its own mirror of `CameraRaw` (its view and
+/// projection). Pin that its `_padding_end` still sits where the shared
+/// struct's `dof_params` does, so the mirror stays a prefix of the real
+/// layout. TAA's line weight comes from the line uniform (`k_reactive`,
+/// `TaaTuning::reactive_lines`), not from the camera.
 #[test]
 fn line_shader_camera_mirror_reads_dof_params() {
     use crate::render_passes::lines::{shader::template::ShaderTemplateLine, ShaderCacheKeyLine};
@@ -1373,7 +1374,8 @@ fn line_shader_camera_mirror_reads_dof_params() {
         .into_source()
         .unwrap();
     let line = naga::front::wgsl::parse_str(&line_src).expect("line shader parses");
-    assert!(line_src.contains("_padding_end[1].z"));
+    assert!(line_src.contains("out.k_transparent = line_uniform.k_reactive;"));
+    assert!(!line_src.contains("_padding_end[1].z"));
     // `_padding_end: array<vec4<f32>, 2>`: element 1 is 16 bytes in.
     assert_eq!(
         member_offset(&line, "CameraRaw", "_padding_end") + 16,
@@ -3717,6 +3719,10 @@ fn taa_resolve_shader_validates() {
                     ("var prev_visibility_tex", id),
                     ("tile_id", id),
                     ("fn mesh_id(", id),
+                    // `TaaTuning::edge_release`: only the id level reads it,
+                    // behind a uniform branch (off by default).
+                    ("if (params.edge_release > 0.0)", id),
+                    ("alpha = max(alpha, params.edge_release);", id),
                 ] {
                     assert_eq!(
                         src.contains(needle),

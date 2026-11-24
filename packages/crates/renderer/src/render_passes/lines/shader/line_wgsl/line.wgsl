@@ -31,7 +31,9 @@ struct LineUniform {
     width_px: f32,
     viewport_w: f32,
     viewport_h: f32,
-    _pad: f32,
+    // TAA: the reactive value per unit of alpha (`TaaTuning::reactive_lines`;
+    // 0 without TAA, read only by the reactive variant).
+    k_reactive: f32,
 };
 
 @group(0) @binding(2) var<uniform> line_uniform: LineUniform;
@@ -39,9 +41,8 @@ struct LineUniform {
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) color: vec4<f32>,{% if reactive %}
-    // TAA: k_transparent (camera dof_params.z, which this struct mirror sees
-    // as `_padding_end[1]`), passed down because the camera is bound to the
-    // vertex stage only.
+    // TAA: the lines' reactive weight (`line_uniform.k_reactive`), passed
+    // down because the uniforms are bound to the vertex stage only.
     @location(1) @interpolate(flat) k_transparent: f32,
 {% endif +%}
 };
@@ -100,7 +101,7 @@ fn vert_main(
     var out: VertexOutput;
     out.clip_position = clip_pos;
     out.color = color;{% if reactive %}
-    out.k_transparent = camera_raw._padding_end[1].z;
+    out.k_transparent = line_uniform.k_reactive;
 {% endif +%}
     return out;
 }
