@@ -110,11 +110,7 @@ impl TaaParamsValues {
             gamma_moving: tuning.gamma_moving,
             gamma_moving_speed: tuning.gamma_moving_speed,
             disocclusion_threshold: tuning.disocclusion_threshold,
-            max_history: if upscaling {
-                tuning.max_history_upscaling
-            } else {
-                tuning.max_history_native
-            },
+            max_history: crate::taa::history_cap(tuning, render_size, post_size),
             motion_alpha: tuning.motion_alpha,
             motion_alpha_speed: tuning.motion_alpha_speed,
             upscaling,
@@ -735,7 +731,11 @@ mod tests {
         let f = |i: usize| f32::from_ne_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap());
         assert_eq!((f(0), f(1)), (1286.0, 961.0), "render_size");
         assert_eq!((f(2), f(3)), (1920.0, 1435.0), "post_size");
-        assert_eq!(f(8), up.tuning.max_history_upscaling);
+        assert_eq!(
+            f(8),
+            crate::taa::history_cap(&up.tuning, (1286, 961), (1920, 1435))
+        );
+        assert!(f(8) > 35.0 && f(8) < 36.5, "{}", f(8));
         assert_eq!(f(11), 1.0);
         assert_eq!(f(12), 0.0);
 

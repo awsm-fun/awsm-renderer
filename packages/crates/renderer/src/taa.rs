@@ -152,7 +152,8 @@ pub struct TaaTuning {
     pub disocclusion_threshold: f32,
     /// History-length cap at native resolution.
     pub max_history_native: f32,
-    /// History-length cap when upscaling.
+    /// Upper bound of the history-length cap when upscaling (the cap itself
+    /// is the native one scaled by the pixel ratio, see [`history_cap`]).
     pub max_history_upscaling: f32,
     /// Minimum current-frame weight at `motion_alpha_speed` output pixels per
     /// frame of motion (ramps linearly from 0).
@@ -195,7 +196,7 @@ impl Default for TaaTuning {
             gamma_moving: 0.75,
             disocclusion_threshold: 0.05,
             max_history_native: 16.0,
-            max_history_upscaling: 24.0,
+            max_history_upscaling: 64.0,
             motion_alpha: 0.2,
             motion_alpha_speed: 8.0,
             reactive_transparent: 0.3,
@@ -365,6 +366,23 @@ pub fn jittered_projection(projection: Mat4, jitter_px: Vec2, render_size: Vec2)
 /// `RECONSTRUCTION_SHARPNESS` is the single source for both.
 pub fn reconstruction_weight(d2: f32) -> f32 {
     (-RECONSTRUCTION_SHARPNESS * d2).exp()
+}
+
+/// The history-length cap (N_max) for a render and an output size.
+///
+/// Native: `max_history_native`. Upscaling: the native cap divided by the
+/// pixel ratio, so the history holds as many render samples per output
+/// pixel as it does at native resolution (16 frames at native is 36 at 0.67
+/// and 64 at 0.5), up to `max_history_upscaling`. A fixed 24 left the fine
+/// detail of an upscaled still image flickering: each frame brings fewer
+/// samples per output pixel, so the same memory averages fewer of them.
+pub fn history_cap(tuning: &TaaTuning, render_size: (u32, u32), post_size: (u32, u32)) -> f32 {
+    if render_size == post_size {
+        return tuning.max_history_native;
+    }
+    let ratio = (post_size.0.max(1) as f32 * post_size.1.max(1) as f32)
+        / (render_size.0.max(1) as f32 * render_size.1.max(1) as f32);
+    (tuning.max_history_native * ratio.max(1.0)).min(tuning.max_history_upscaling)
 }
 
 /// Current-frame weight per unit of clip amount: a heavily clipped history

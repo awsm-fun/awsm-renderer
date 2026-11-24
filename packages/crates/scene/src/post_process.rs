@@ -179,7 +179,7 @@ impl Default for TaaTuningSettings {
             gamma_moving_speed: 2.0,
             disocclusion_threshold: 0.05,
             max_history_native: 16.0,
-            max_history_upscaling: 24.0,
+            max_history_upscaling: 64.0,
             motion_alpha: 0.2,
             motion_alpha_speed: 8.0,
             reactive_transparent: 0.3,
