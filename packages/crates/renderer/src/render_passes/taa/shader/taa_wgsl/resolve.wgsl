@@ -57,8 +57,8 @@ struct TaaParams {
     motion_edge_speed: f32,
     // Current weight per unit of clip amount.
     clip_alpha: f32,
-    // Clip-box scale on a fully reactive pixel.
-    reactive_gamma_scale: f32,
+    // Keeps the struct a multiple of 8 bytes (88).
+    _pad: f32,
 };
 
 @group(0) @binding(0) var<uniform> camera_raw: CameraRaw;
@@ -148,12 +148,17 @@ fn nearer(a: f32, b: f32) -> bool {
 }
 
 // Positive view distance of a raw depth. Sky is "infinitely far".
-fn view_distance(depth: f32, inv_proj: mat4x4<f32>) -> f32 {
+//
+// The camera is read straight from the uniform throughout (no
+// `camera_from_raw` copy): the copy holds an array (`frustum_rays`) and every
+// matrix, and the resolve needs a handful of fields.
+fn view_distance(depth: f32) -> f32 {
     if (is_sky(depth)) {
         return 1.0e30;
     }
-    let v = inv_proj * vec4<f32>(0.0, 0.0, depth, 1.0);
-    return -v.z / v.w;
+    // inv_proj * (0, 0, depth, 1): only the z and w rows of columns 2 and 3.
+    let m = camera_raw.inv_proj;
+    return -(m[2].z * depth + m[3].z) / (m[2].w * depth + m[3].w);
 }
 
 // Last frame's depth around unjittered position `uv`: x = the nearest and
@@ -182,16 +187,17 @@ fn prev_depth_footprint(uv: vec2<f32>, prev_jitter: vec2<f32>) -> vec2<f32> {
 // last frame IF IT DID NOT MOVE: xy = its previous uv, z = its previous view
 // distance. The jitter does not touch z, so the jittered inverse and the
 // unjittered previous matrix agree on depth.
-fn static_reprojection(uv: vec2<f32>, depth: f32, cam: Camera) -> vec3<f32> {
+fn static_reprojection(uv: vec2<f32>, depth: f32) -> vec3<f32> {
+    let jitter = camera_raw.jitter.xy;
     let ndc = vec2<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0)
-        + vec2<f32>(2.0 * cam.jitter.x, -2.0 * cam.jitter.y) / cam.viewport_size;
-    let world_h = cam.inv_view_proj * vec4<f32>(ndc, depth, 1.0);
-    let prev_clip = cam.prev_view_proj * vec4<f32>(world_h.xyz / world_h.w, 1.0);
+        + vec2<f32>(2.0 * jitter.x, -2.0 * jitter.y) / camera_raw.viewport.zw;
+    let world_h = camera_raw.inv_view_proj * vec4<f32>(ndc, depth, 1.0);
+    let prev_clip = camera_raw.prev_view_projection * vec4<f32>(world_h.xyz / world_h.w, 1.0);
     let prev_ndc = prev_clip.xyz / prev_clip.w;
     return vec3<f32>(
         prev_ndc.x * 0.5 + 0.5,
         0.5 - prev_ndc.y * 0.5,
-        view_distance(prev_ndc.z, cam.inv_proj),
+        view_distance(prev_ndc.z),
     );
 }
 
@@ -243,11 +249,10 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (q.x >= post_dims.x || q.y >= post_dims.y) {
         return;
     }
-    let cam = camera_from_raw(camera_raw);
     let render_dims = vec2<i32>(textureDimensions(color_tex));
     let R = vec2<f32>(render_dims);
     let O = vec2<f32>(post_dims);
-    let jitter = cam.jitter;
+    let jitter = camera_raw.jitter.xy;
 
     // ---- 4.1 Where this output pixel falls in the render image ----------
     let uv_q = (vec2<f32>(q) + 0.5) / O;
@@ -276,6 +281,10 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var z_up = nearest_depth;
     var z_down = nearest_depth;
     var reactive = 0.0;
+    {% if reactive %}
+    // The centre's mask value (the HUD test below reuses it at native).
+    var r_centre = 0.0;
+    {% endif %}
     // Samples that count: all 9, minus opaque-path HUD pixels in the
     // reactive variant (the HUD is not part of the world's neighbourhood).
     var kept = 0.0;
@@ -290,6 +299,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // box (a HUD-coloured fringe that the history would then keep).
         let r = textureLoad(reactive_tex, p, 0).r;
         let keep = select(1.0, 0.0, params.reactive_valid > 0.5 && r >= HUD_REACTIVE);
+        {% if dx == 1 && dy == 1 %}r_centre = r;{% endif %}
         reactive = max(reactive, r * keep);
         {% else %}
         let keep = 1.0;
@@ -342,7 +352,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (sky) {
         // No geometry anywhere in the 3x3: the vector is the camera's
         // rotation only.
-        v = taa_sky_velocity(uv_q, cam);
+        v = taa_sky_velocity(uv_q, camera_from_raw(camera_raw));
     }
     let speed_px = length(v * O);
 
@@ -352,9 +362,13 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // and its history holds the average coverage of the last frames (the
     // clip cannot help: both surfaces' colours are inside the box). A static
     // silhouette has no relative motion and keeps its full history.
-    var v_far = textureLoad(velocity_tex, farthest_p, 0).xy;
+    // (A flat 3x3 has one surface: the nearest's vector is the farthest's.)
+    var v_far = v;
+    if (any(farthest_p != nearest_p)) {
+        v_far = textureLoad(velocity_tex, farthest_p, 0).xy;
+    }
     if (is_sky(farthest_depth)) {
-        v_far = taa_sky_velocity(uv_q, cam);
+        v_far = taa_sky_velocity(uv_q, camera_from_raw(camera_raw));
     }
     let edge_motion = clamp(
         length((v - v_far) * O) / max(params.motion_edge_speed, 1.0e-4),
@@ -381,12 +395,24 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Test 1: the surface whose vector the pixel uses (the nearest of the
     // 3x3). Both sides are the nearest depth of their footprint, so a static
     // silhouette does not trip it.
+    //
+    // Undilated, the nearest IS the pixel's own surface (same depth), so
+    // test 2's reprojection serves both.
+    let dilated = any(nearest_p != p0);
+    var own = vec3<f32>(0.0, 0.0, 1.0e30);
+    if (!is_sky(z_own)) {
+        own = static_reprojection(uv_q, z_own);
+    }
     var d_expected = 1.0e30;
     if (!sky) {
-        d_expected = static_reprojection(uv_q, nearest_depth, cam).z;
+        if (dilated) {
+            d_expected = static_reprojection(uv_q, nearest_depth).z;
+        } else {
+            d_expected = own.z;
+        }
     }
-    let prev_footprint = prev_depth_footprint(uv_hist, cam.prev_jitter);
-    let d_prev = view_distance(prev_footprint.x, cam.inv_proj);
+    let prev_footprint = prev_depth_footprint(uv_hist, camera_raw.jitter.zw);
+    let d_prev = view_distance(prev_footprint.x);
     var disoccluded = d_prev < d_expected * (1.0 - params.disocclusion_threshold);
 
     // Test 2: the pixel's OWN surface, with its own depth and its own vector.
@@ -404,31 +430,29 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // ANYWHERE in the 2x2 it came from. Taking the nearest would flag pixels
     // near a static silhouette whenever the jitter moved the footprint
     // across it.
-    let dilated = any(nearest_p != p0);
     if (!is_sky(z_own)) {
         var v_own = v;
         if (dilated) {
             v_own = textureLoad(velocity_tex, p0, 0).xy;
         }
-        let own = static_reprojection(uv_q, z_own, cam);
         let uv_hist_own = uv_q - v_own;
         let is_static = length((uv_hist_own - own.xy) * O) < 0.1;
-        let d_own = view_distance(z_own, cam.inv_proj);
+        let d_own = view_distance(z_own);
         let slope = max(
-            max(abs(view_distance(z_left, cam.inv_proj) - d_own), abs(view_distance(z_right, cam.inv_proj) - d_own)),
-            max(abs(view_distance(z_up, cam.inv_proj) - d_own), abs(view_distance(z_down, cam.inv_proj) - d_own)),
+            max(abs(view_distance(z_left) - d_own), abs(view_distance(z_right) - d_own)),
+            max(abs(view_distance(z_up) - d_own), abs(view_distance(z_down) - d_own)),
         );
         // Twice the steepest one-pixel step (the footprint's samples are up
         // to a pixel away), plus a floor for depth precision. Never looser
         // than the general threshold.
         let slack_static = min(params.disocclusion_threshold, 2.0 * slope / max(d_own, 1.0e-6) + 0.002);
         let slack_own = select(params.disocclusion_threshold, slack_static, is_static);
-        var d_prev_own = view_distance(prev_footprint.y, cam.inv_proj);
+        var d_prev_own = view_distance(prev_footprint.y);
         if (dilated) {
             // Beside a nearer surface that moves relative to this one, the
             // NEAREST of the footprint: the edge really did sweep across,
             // so any sample of the thing in front means it was there.
-            d_prev_own = view_distance(prev_depth_footprint(uv_hist_own, cam.prev_jitter).x, cam.inv_proj);
+            d_prev_own = view_distance(prev_depth_footprint(uv_hist_own, camera_raw.jitter.zw).x);
         }
         // A pixel beside a nearer surface (dilated) only counts when that
         // surface moves relative to its own. Without relative motion the
@@ -453,18 +477,12 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         params.gamma_moving,
         clamp(speed_px / max(params.gamma_moving_speed, 1.0e-4), 0.0, 1.0),
     );
-    // Reactive pixels show colour that does not follow their vector, so
-    // their history is fetched from the wrong place whenever they move. A
-    // tighter box removes it faster there, which lets the reactive weight
-    // itself stay low enough that still glass and water do not shimmer.
-    let gamma_reactive = gamma
-        * mix(1.0, params.reactive_gamma_scale, clamp(reactive * params.reactive_valid, 0.0, 1.0));
     let history_y = rgb_to_ycocg(history_rgb);
     let to_history = history_y - mean;
     // The floor is a few steps of the rgba16float history's quantisation
     // (2.4e-4 just below 1.0): below it a flat area would read its own
     // rounding as a clipped history and forget everything.
-    let box_extent = max(gamma_reactive * sigma, vec3<f32>(1.5e-3));
+    let box_extent = max(gamma * sigma, vec3<f32>(1.5e-3));
     let over = abs(to_history) / box_extent;
     let clip_scale = max(max(over.x, max(over.y, over.z)), 1.0);
     let history_clipped = max(ycocg_to_rgb(mean + to_history / clip_scale), vec3<f32>(0.0));
@@ -512,8 +530,12 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let h10 = vec2<i32>(h11.x, h00.y);
     let h01 = vec2<i32>(h00.x, h11.y);
     let hud_nearest = select(h00, h11, hud_f >= vec2<f32>(0.5));
-    let is_hud = params.reactive_valid > 0.5
-        && textureLoad(reactive_tex, hud_nearest, 0).r >= HUD_REACTIVE;
+    // At native resolution the nearest is the centre tap, already loaded.
+    var r_hud = r_centre;
+    if (any(hud_nearest != p0)) {
+        r_hud = textureLoad(reactive_tex, hud_nearest, 0).r;
+    }
+    let is_hud = params.reactive_valid > 0.5 && r_hud >= HUD_REACTIVE;
     if (is_hud) {
         let top = mix(
             tonemap(sanitize(textureLoad(color_tex, h00, 0).rgb)),

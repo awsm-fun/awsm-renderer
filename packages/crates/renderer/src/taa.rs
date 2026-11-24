@@ -302,7 +302,8 @@ pub struct TaaRuntime {
     /// Diagnostic views beyond [`TaaDebugView`] (ids 10+ in the resolve
     /// shader), for the test harness. Overrides `debug_view` when set.
     pub(crate) debug_view_raw: Option<u32>,
-    /// Harness overrides of [`CLIP_ALPHA`] and [`REACTIVE_GAMMA_SCALE`].
+    /// Harness override of [`CLIP_ALPHA`] (the second value is no longer
+    /// used: see `set_taa_experimental_tuning`).
     pub(crate) experimental: Option<[f32; 2]>,
     /// Resolve dispatches per frame (`AwsmRenderer::set_taa_debug_repeat`,
     /// cost measurement). 0 (the default) and 1 both mean one dispatch.
@@ -406,9 +407,6 @@ pub const STILL_GAMMA_UPSCALE: f32 = 0.8;
 /// is suspect, so the more of it the clip removed, the less it is trusted.
 pub const CLIP_ALPHA: f32 = 1.0;
 
-/// How far the variance-clip box narrows on a fully reactive pixel.
-pub const REACTIVE_GAMMA_SCALE: f32 = 1.0;
-
 /// The exponent of [`reconstruction_weight`].
 pub const RECONSTRUCTION_SHARPNESS: f32 = 2.29;
 
@@ -454,8 +452,10 @@ impl AwsmRenderer {
         self.taa.debug_view_raw = id;
     }
 
-    /// Harness diagnostics: overrides [`CLIP_ALPHA`] and
-    /// [`REACTIVE_GAMMA_SCALE`] for tuning sweeps. `None` restores them.
+    /// Harness diagnostics: overrides [`CLIP_ALPHA`] for tuning sweeps.
+    /// `None` restores it. The second value was the reactive clip-box scale,
+    /// removed once tuning settled on 1.0 (no narrowing); it is ignored, and
+    /// stays in the signature only until the harness drops the knob.
     #[doc(hidden)]
     pub fn set_taa_experimental_tuning(&mut self, values: Option<[f32; 2]>) {
         self.taa.experimental = values;

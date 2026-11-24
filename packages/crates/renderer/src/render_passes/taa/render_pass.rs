@@ -85,8 +85,6 @@ pub struct TaaParamsValues {
     pub motion_edge_speed: f32,
     /// Current weight per unit of clip amount (03 §4.8: 0.5).
     pub clip_alpha: f32,
-    /// Clip-box scale on a fully reactive pixel.
-    pub reactive_gamma_scale: f32,
 }
 
 impl TaaParamsValues {
@@ -123,7 +121,6 @@ impl TaaParamsValues {
             motion_edge_alpha: tuning.motion_edge_alpha,
             motion_edge_speed: tuning.motion_edge_speed,
             clip_alpha: crate::taa::CLIP_ALPHA,
-            reactive_gamma_scale: crate::taa::REACTIVE_GAMMA_SCALE,
         }
     }
 
@@ -152,7 +149,8 @@ impl TaaParamsValues {
             self.motion_edge_alpha,
             self.motion_edge_speed,
             self.clip_alpha,
-            self.reactive_gamma_scale,
+            // `_pad`: the struct stays a multiple of 8 bytes.
+            0.0,
         ];
         let mut out = [0u8; TaaParams::BYTE_SIZE];
         for (i, f) in floats.iter().enumerate() {
@@ -588,9 +586,8 @@ impl AwsmRenderer {
             reset,
         );
         values.reactive_valid = pass.params.reactive_valid();
-        if let Some([clip_alpha, reactive_gamma_scale]) = self.taa.experimental {
+        if let Some([clip_alpha, _]) = self.taa.experimental {
             values.clip_alpha = clip_alpha;
-            values.reactive_gamma_scale = reactive_gamma_scale;
         }
         pass.params.write(&self.gpu, &values)?;
         Ok(())
@@ -603,6 +600,22 @@ impl AwsmRenderer {
     /// this, not the per-pass stats, is how the pass is measured.
     pub fn set_taa_debug_repeat(&mut self, n: u32) {
         self.taa.debug_repeat = n.max(1);
+    }
+
+    /// Cost measurement: draw the TAA reactive seed `n` times per frame
+    /// (at least 1; 1 is normal). Repeated draws change nothing (MAX blend,
+    /// colour untouched), so the seed's cost is the slope of the pass that
+    /// draws it. Applies to the live TAA pass; a rebuilt pass starts at 1.
+    #[doc(hidden)]
+    pub fn set_taa_debug_seed_repeat(&self, n: u32) {
+        if let Some(seed) = self
+            .render_passes
+            .taa
+            .as_ref()
+            .and_then(|taa| taa.reactive_seed.as_ref())
+        {
+            seed.set_debug_repeat(n);
+        }
     }
 
     /// Why this renderer replaced TAA by MSAA 4x, or `None` if it never had
@@ -705,7 +718,7 @@ mod tests {
         let t = &config.tuning;
         assert_eq!(bytes.len(), 88);
         assert_eq!(f(20), crate::taa::CLIP_ALPHA);
-        assert_eq!(f(21), crate::taa::REACTIVE_GAMMA_SCALE);
+        assert_eq!(f(21), 0.0, "padding");
         assert_eq!(f(16), t.max_history_moving);
         assert_eq!(f(17), t.max_history_moving_speed);
         assert_eq!(f(18), t.motion_edge_alpha);
@@ -731,6 +744,7 @@ mod tests {
         let f = |i: usize| f32::from_ne_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap());
         assert_eq!((f(0), f(1)), (1286.0, 961.0), "render_size");
         assert_eq!((f(2), f(3)), (1920.0, 1435.0), "post_size");
+        // 16 native frames x (1920 / 1286)^2 render samples per output pixel.
         assert_eq!(
             f(8),
             crate::taa::history_cap(&up.tuning, (1286, 961), (1920, 1435))
@@ -783,7 +797,7 @@ mod tests {
                 "motion_edge_alpha",
                 "motion_edge_speed",
                 "clip_alpha",
-                "reactive_gamma_scale",
+                "_pad",
             ]
         );
     }

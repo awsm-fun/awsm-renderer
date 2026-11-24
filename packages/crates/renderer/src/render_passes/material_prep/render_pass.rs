@@ -768,6 +768,7 @@ impl crate::AwsmRenderer {
     /// Cost measurement: dispatch `cs_prep` `n` times per frame (1 =
     /// normal). The extra dispatches redo the same work into the same
     /// targets, so `(T(n) - T(1)) / (n - 1)` is one prep pass.
+    #[doc(hidden)]
     pub fn set_debug_prep_repeat(&mut self, n: u32) {
         if let Some(prep) = self.render_passes.material_prep.as_ref() {
             prep.debug_repeat.set(n.max(1));

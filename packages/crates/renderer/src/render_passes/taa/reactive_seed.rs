@@ -61,6 +61,10 @@ pub struct TaaReactiveSeed {
     /// Bound at 3 while no `hud_depth` exists.
     placeholder_depth: web_sys::GpuTexture,
     placeholder_depth_view: web_sys::GpuTextureView,
+    /// Cost measurement only (`AwsmRenderer::set_taa_debug_seed_repeat`):
+    /// draws per frame, 1 normally. The mask blends with MAX and the colour
+    /// target is left untouched, so repeated draws change nothing.
+    debug_repeat: std::cell::Cell<u32>,
 }
 
 impl TaaReactiveSeed {
@@ -89,6 +93,7 @@ impl TaaReactiveSeed {
             ssr,
             placeholder_depth,
             placeholder_depth_view,
+            debug_repeat: std::cell::Cell::new(1),
         })
     }
 
@@ -211,20 +216,29 @@ impl TaaReactiveSeed {
             .ok_or_else(|| AwsmBindGroupError::NotFound("TAA Reactive Seed".to_string()))?;
         render_pass.set_pipeline(ctx.pipelines.render.get(variant.pipeline)?);
         render_pass.set_bind_group(0, bind_group, None)?;
-        render_pass.draw_with_instance_count_and_first_vertex_and_first_instance(
-            3,
-            1,
-            0,
-            seed_instance(
-                hud,
-                ctx.features.depth().clear_value() == 0.0,
-                k_ssr,
-                ctx.render_textures
-                    .formats
-                    .taa_prep_velocity(ctx.anti_aliasing),
-            ),
+        let first_instance = seed_instance(
+            hud,
+            ctx.features.depth().clear_value() == 0.0,
+            k_ssr,
+            ctx.render_textures
+                .formats
+                .taa_prep_velocity(ctx.anti_aliasing),
         );
+        for _ in 0..self.debug_repeat.get().max(1) {
+            render_pass.draw_with_instance_count_and_first_vertex_and_first_instance(
+                3,
+                1,
+                0,
+                first_instance,
+            );
+        }
         Ok(())
+    }
+
+    /// See the `debug_repeat` field.
+    #[doc(hidden)]
+    pub fn set_debug_repeat(&self, n: u32) {
+        self.debug_repeat.set(n.max(1));
     }
 
     /// Release the placeholder texture (TAA turned off).
