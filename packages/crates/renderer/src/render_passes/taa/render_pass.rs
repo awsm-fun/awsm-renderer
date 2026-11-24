@@ -106,7 +106,7 @@ impl TaaParamsValues {
         Self {
             render_size,
             post_size,
-            gamma_still: tuning.gamma_still,
+            gamma_still: crate::taa::still_gamma(tuning, render_size, post_size),
             gamma_moving: tuning.gamma_moving,
             gamma_moving_speed: tuning.gamma_moving_speed,
             disocclusion_threshold: tuning.disocclusion_threshold,
@@ -712,7 +712,7 @@ mod tests {
         assert_eq!(f(19), t.motion_edge_speed);
         assert_eq!((f(0), f(1)), (1920.0, 1435.0), "render_size");
         assert_eq!((f(2), f(3)), (1920.0, 1435.0), "post_size");
-        assert_eq!(f(4), t.gamma_still);
+        assert_eq!(f(4), t.gamma_still, "native: the still box as tuned");
         assert_eq!(f(5), t.gamma_moving);
         assert_eq!(f(6), t.gamma_moving_speed);
         assert_eq!(f(7), t.disocclusion_threshold);

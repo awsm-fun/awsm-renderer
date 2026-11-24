@@ -385,6 +385,23 @@ pub fn history_cap(tuning: &TaaTuning, render_size: (u32, u32), post_size: (u32,
     (tuning.max_history_native * ratio.max(1.0)).min(tuning.max_history_upscaling)
 }
 
+/// The still clip-box half-width (γ) for a render and an output size.
+///
+/// Native: `gamma_still`. Upscaling widens it by 0.8 per unit of
+/// (output / render − 1): 1.25 becomes 1.74 at 0.67 and 2.25 at 0.5. A
+/// feature smaller than a render pixel is seen by only some jitter phases,
+/// and the native box clips it back out on the frames that miss it: at 0.67
+/// one isolated feature in six was gone from a still image, one in twenty
+/// with the wider box, and still-image flicker dropped too. The price is on
+/// the strip a moving object leaves (about 12% more error at 0.67).
+pub fn still_gamma(tuning: &TaaTuning, render_size: (u32, u32), post_size: (u32, u32)) -> f32 {
+    let ratio = post_size.0.max(1) as f32 / render_size.0.max(1) as f32;
+    tuning.gamma_still * (1.0 + STILL_GAMMA_UPSCALE * (ratio - 1.0).max(0.0))
+}
+
+/// How much [`still_gamma`] widens per unit of (output / render − 1).
+pub const STILL_GAMMA_UPSCALE: f32 = 0.8;
+
 /// Current-frame weight per unit of clip amount: a heavily clipped history
 /// is suspect, so the more of it the clip removed, the less it is trusted.
 pub const CLIP_ALPHA: f32 = 1.0;
