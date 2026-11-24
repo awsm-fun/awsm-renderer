@@ -8,8 +8,9 @@
 //! - age: frames since the object last covered it (1, 2, 3-4, 5+);
 //! - what the resolve did, from LIVE raw debug views (sessions in lockstep):
 //!   D = disoccluded (test 1 / test 2 from raw view 14), F = kept history
-//!   but alpha >= 0.99 (raw view 15: from the motion-edge term, the clip
-//!   term, or other), H = blended with history (alpha < 0.99);
+//!   but alpha >= 0.985 (raw view 15: from the motion-edge term, the clip
+//!   term, or other; 0.985 so that a fully reactive pixel, 0.988 in the
+//!   r8unorm mask, counts), H = blended with history (alpha < 0.985);
 //! - dilated (raw view 14 R).
 //!
 //! Per cell over all evaluated frames: pixel count, mean TAA error and mean

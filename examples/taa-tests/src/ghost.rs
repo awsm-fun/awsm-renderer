@@ -6,10 +6,11 @@
 //! read, i.e. stale history that survives? For each pixel with a visible
 //! TAA error (> T against the 64-phase reference; T = 16 and T = 8 both
 //! reported), with C = the larger of the comparators' errors there:
-//! - (a) GHOST: TAA used history there (alpha < 0.99, from the resolve's
+//! - (a) GHOST: TAA used history there (alpha < 0.985, from the resolve's
 //!   own raw view 15 in a lockstep session) and its error exceeds C + T;
-//! - (b) CURRENT-FRAME: the pixel shows this frame only (alpha >= 0.99:
-//!   reset, disoccluded, motion boundary, clip) and its error exceeds C + T:
+//! - (b) CURRENT-FRAME: the pixel shows this frame only (alpha >= 0.985:
+//!   reset, disoccluded, motion boundary, clip, fully reactive) and its
+//!   error exceeds C + T:
 //!   the single-frame reconstruction (kernel bleed, aliasing), not history;
 //! - (c) ORACLE-LEVEL: within T of the perfect-information ORACLE's error
 //!   (the oracle is as bad there);
@@ -167,8 +168,12 @@ async fn ghost_track(p: &Params, scene: &str, r: &mut Report) -> Result<()> {
     let frames = pair.test.scenario.frames;
     let mut ms = Session::open(opts(p, scene, Aa::Msaa)).await?;
     let mut os = Session::open(opts(p, scene, Aa::None)).await?;
-    // The resolve's own alpha, from raw view 15 (R = final alpha >= 0.99) of
-    // a TAA session in lockstep with the one under test.
+    // The resolve's own alpha, from raw view 15 (R = final alpha >= 0.985)
+    // of a TAA session in lockstep with the one under test. The cut was 0.99
+    // until round 3's final record: the reactive mask is r8unorm and caps
+    // every value at 0.99 (1.0 means HUD), so a fully reactive pixel (a
+    // particle, `reactive_particles` 1.0) reads 252/255 = 0.988 and was
+    // counted as kept history although it shows this frame only.
     let mut alpha_s = Session::open(opts(p, scene, Aa::Taa)).await?;
     alpha_s.renderer.set_taa_debug_view_raw(Some(15));
     crate::session::wait_taa_debug_variant(&alpha_s.renderer).await;

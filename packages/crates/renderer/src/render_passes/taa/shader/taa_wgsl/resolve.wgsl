@@ -1084,10 +1084,14 @@ fn cs_main(
             // Diagnostics: R = the object-id test fired (id variant only).
             out_color = vec3<f32>(select(0.0, 1.0, diag_id), 0.0, 0.0);
         } else if (view == 15u) {
-            // Diagnostics: R = final alpha >= 0.99, G = motion-edge term >= 0.99,
-            // B = clip term >= 0.99.
+            // Diagnostics: R = final alpha >= 0.985 ("this frame only"),
+            // G = motion-edge term >= 0.99, B = clip term >= 0.99. The R cut
+            // is 0.985, not 0.99: the reactive mask is r8unorm and every
+            // reactive value is capped at 0.99 (1.0 means HUD), so a fully
+            // reactive pixel reads 252/255 = 0.988 and must count as "this
+            // frame only".
             out_color = vec3<f32>(
-                select(0.0, 1.0, alpha >= 0.99),
+                select(0.0, 1.0, alpha >= 0.985),
                 select(0.0, 1.0, params.motion_edge_alpha * edge_motion >= 0.99),
                 select(0.0, 1.0, clip_amount * params.clip_alpha >= 0.99),
             );
