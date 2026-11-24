@@ -35,7 +35,7 @@ thread_local! {
 }
 
 struct PreviewCtx {
-    renderer: Arc<xutex::AsyncMutex<AwsmRenderer>>,
+    renderer: Arc<crate::engine::context::AsyncLock<AwsmRenderer>>,
     camera: Arc<Mutex<Camera>>,
     mesh: MeshKeyCell,
     /// The preview renderer's id for the current material (for unregister on edit).
@@ -87,7 +87,7 @@ async fn build(canvas: web_sys::HtmlCanvasElement) -> Result<(), String> {
     canvas.set_height(h);
 
     let renderer = build_renderer(canvas.clone()).await?;
-    let renderer = Arc::new(xutex::AsyncMutex::new(renderer));
+    let renderer = Arc::new(crate::engine::context::AsyncLock::new(renderer));
     // Same depth-convention source as the preview renderer's features — the
     // camera only uses it for its clip-plane policy (matrices come from the
     // renderer, aspect included).
