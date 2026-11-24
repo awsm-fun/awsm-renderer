@@ -3667,15 +3667,19 @@ fn taa_resolve_shader_validates() {
     // The TAA resolve must naga-validate for every variant (reverse_z ×
     // reactive). Beyond validity, pin what keeps it from ghosting (01 G2-G7,
     // 03 §4) and the Apple GPU rules it was written to (02).
+    use crate::post_process::ToneMapping;
     use crate::render_passes::taa::shader::{
         cache_key::ShaderCacheKeyTaa, template::ShaderTemplateTaa,
     };
-    use crate::post_process::ToneMapping;
     for (reverse_z, reactive, tonemapping, debug_views) in [false, true].into_iter().flat_map(|z| {
         [false, true].into_iter().flat_map(move |r| {
-            [ToneMapping::None, ToneMapping::KhronosNeutralPbr, ToneMapping::Aces]
-                .into_iter()
-                .flat_map(move |t| [false, true].into_iter().map(move |d| (z, r, t, d)))
+            [
+                ToneMapping::None,
+                ToneMapping::KhronosNeutralPbr,
+                ToneMapping::Aces,
+            ]
+            .into_iter()
+            .flat_map(move |t| [false, true].into_iter().map(move |d| (z, r, t, d)))
         })
     }) {
         {
@@ -3735,7 +3739,9 @@ fn taa_resolve_shader_validates() {
             // there before the moments, the clip and the blend.
             assert!(
                 src.contains("let c = to_work(sanitize(textureLoad(color_tex, p, 0).rgb));")
-                    && src.contains("tile[i] = vec4<f32>(rgb_to_ycocg(c), textureLoad(depth_tex, p, 0));"),
+                    && src.contains(
+                        "tile[i] = vec4<f32>(rgb_to_ycocg(c), textureLoad(depth_tex, p, 0));"
+                    ),
                 "{label}: the current 3×3 must be in the working space before the moments"
             );
             assert!(
@@ -3745,11 +3751,18 @@ fn taa_resolve_shader_validates() {
             // The working space is the display's own curve for this
             // tonemapper.
             let curve = match tonemapping {
-                ToneMapping::KhronosNeutralPbr => "let new_peak = 1.0 - KN_D * KN_D / (peak + KN_D - KN_START);",
-                ToneMapping::Aces => "return x * (ACES_A * x + ACES_B) / (x * (ACES_C * x + ACES_D) + ACES_E);",
+                ToneMapping::KhronosNeutralPbr => {
+                    "let new_peak = 1.0 - KN_D * KN_D / (peak + KN_D - KN_START);"
+                }
+                ToneMapping::Aces => {
+                    "return x * (ACES_A * x + ACES_B) / (x * (ACES_C * x + ACES_D) + ACES_E);"
+                }
                 ToneMapping::None => "return tonemap(c);",
             };
-            assert!(src.contains(curve), "{label}: working space is not the display curve");
+            assert!(
+                src.contains(curve),
+                "{label}: working space is not the display curve"
+            );
             // The debug views exist only in their variant (their branch costs
             // the production resolve ~0.12 ms even when never taken).
             assert_eq!(
@@ -3765,10 +3778,18 @@ fn taa_resolve_shader_validates() {
             // The 3x3 comes from a workgroup tile: an array in WORKGROUP
             // memory (allowed), filled before a barrier that every invocation
             // reaches (the out-of-image return comes after it).
-            assert!(src.contains("var<workgroup> tile: array<vec4<f32>, 100>;"), "{label}: shared tile");
+            assert!(
+                src.contains("var<workgroup> tile: array<vec4<f32>, 100>;"),
+                "{label}: shared tile"
+            );
             let barrier = src.find("workgroupBarrier();").expect("barrier");
-            let bounds = src.find("if (q.x >= post_dims.x || q.y >= post_dims.y) {").expect("bounds check");
-            assert!(barrier < bounds, "{label}: the bounds-check return must follow the barrier");
+            let bounds = src
+                .find("if (q.x >= post_dims.x || q.y >= post_dims.y) {")
+                .expect("bounds check");
+            assert!(
+                barrier < bounds,
+                "{label}: the bounds-check return must follow the barrier"
+            );
             // G4 — Catmull-Rom history (5 bilinear taps), never plain bilinear.
             assert_eq!(
                 src.matches("textureSampleLevel(history_prev_tex").count(),
@@ -3974,7 +3995,11 @@ fn taa_working_space_curves_invert() {
             y.map(|v| (v - g * np) / (1.0 - g) * (peak / np.max(1e-6)))
         };
         let m = min3(c).max(0.0);
-        let offset = if m < 0.04 { (m / 6.25).sqrt() - m } else { 0.04 };
+        let offset = if m < 0.04 {
+            (m / 6.25).sqrt() - m
+        } else {
+            0.04
+        };
         c.map(|v| (v + offset).max(0.0))
     }
     const A: f32 = 2.51;
@@ -4027,7 +4052,19 @@ fn taa_working_space_curves_invert() {
         }
     }
     // A thousandth of an 8-bit display level.
-    assert!(worst.0 < 4e-6, "Khronos neutral round trip, display space: {}", worst.0);
-    assert!(worst.1 < 4e-6, "ACES round trip, display space: {}", worst.1);
-    assert!(worst.2 < 1e-5, "Khronos neutral below the knee, HDR: {}", worst.2);
+    assert!(
+        worst.0 < 4e-6,
+        "Khronos neutral round trip, display space: {}",
+        worst.0
+    );
+    assert!(
+        worst.1 < 4e-6,
+        "ACES round trip, display space: {}",
+        worst.1
+    );
+    assert!(
+        worst.2 < 1e-5,
+        "Khronos neutral below the knee, HDR: {}",
+        worst.2
+    );
 }

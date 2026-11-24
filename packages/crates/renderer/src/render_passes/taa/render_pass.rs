@@ -666,14 +666,11 @@ impl AwsmRenderer {
                 .mark_create(BindGroupCreate::TextureViewRecreate);
             pass.bookkeeping.mark_history_fresh();
         }
-        if pass
-            .textures
-            .ensure_render_size(
-                &self.gpu,
-                views.render_size,
-                velocity_format(views.prep_velocity),
-            )?
-        {
+        if pass.textures.ensure_render_size(
+            &self.gpu,
+            views.render_size,
+            velocity_format(views.prep_velocity),
+        )? {
             self.bind_groups.mark_create(BindGroupCreate::TaaResources);
         }
         if let Some(rcas) = pass.rcas.as_mut() {
@@ -846,7 +843,11 @@ mod tests {
         let t = &config.tuning;
         assert_eq!(bytes.len(), 160);
         assert_eq!((f(22), f(23)), (0.0, 0.0), "padding before the matrix");
-        assert_eq!(f(24), 1.0, "prev_prev_view_projection (identity by default)");
+        assert_eq!(
+            f(24),
+            1.0,
+            "prev_prev_view_projection (identity by default)"
+        );
         assert_eq!(f(25), 0.0);
         assert_eq!(f(20), crate::taa::CLIP_ALPHA);
         assert_eq!(f(21), 1.0, "exposure (EV 0)");

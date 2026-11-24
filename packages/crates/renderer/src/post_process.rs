@@ -369,8 +369,8 @@ impl AwsmRenderer {
             || (ssr_pass_rebuild_needed && self.render_passes.ssr.is_some());
         // The TAA resolve averages in the display's working space, so its
         // shader is keyed on the tonemapper (exposure is a live uniform).
-        let taa_resolve_rebuild_needed = self.post_processing.tonemapping != pp.tonemapping
-            && self.render_passes.taa.is_some();
+        let taa_resolve_rebuild_needed =
+            self.post_processing.tonemapping != pp.tonemapping && self.render_passes.taa.is_some();
         self.post_processing = pp;
 
         if taa_resolve_rebuild_needed {

@@ -37,9 +37,9 @@ mod phase3;
 mod phase4;
 #[cfg(feature = "taa-phase1")]
 mod reactive;
+mod report;
 #[cfg(feature = "taa-phase1")]
 mod ringdiag;
-mod report;
 mod session;
 mod store;
 #[cfg(feature = "taa-tuning-v2")]

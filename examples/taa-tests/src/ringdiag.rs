@@ -67,7 +67,16 @@ const ESTIMATORS: [(i32, f32); 7] = [
 ];
 
 #[allow(clippy::too_many_arguments)]
-fn estimate(frame: &[[f32; 3]], w: u32, h: u32, x: u32, y: u32, j: Vec2, rad: i32, sharp: f32) -> [f32; 3] {
+fn estimate(
+    frame: &[[f32; 3]],
+    w: u32,
+    h: u32,
+    x: u32,
+    y: u32,
+    j: Vec2,
+    rad: i32,
+    sharp: f32,
+) -> [f32; 3] {
     let mut acc = [0.0f32; 3];
     let mut ws = 0.0f32;
     for dy in -rad..=rad {
@@ -98,7 +107,11 @@ pub async fn trail_diag_mode(p: &Params, r: &mut Report) {
     };
     for scene in &scenes {
         if let Err(e) = trail_diag(p, scene, r).await {
-            r.emit(&format!("trail-diag:{scene}"), false, &format!("error: {e:#}"));
+            r.emit(
+                &format!("trail-diag:{scene}"),
+                false,
+                &format!("error: {e:#}"),
+            );
         }
     }
 }
@@ -245,9 +258,17 @@ async fn trail_diag(p: &Params, scene: &str, r: &mut Report) -> Result<()> {
                 let edge = a15[1] > 127;
                 let clip = a15[2] > 127;
                 let what = if t1 || t2 {
-                    format!("D{}{}", if t1 { "1" } else { "" }, if t2 { "2" } else { "" })
+                    format!(
+                        "D{}{}",
+                        if t1 { "1" } else { "" },
+                        if t2 { "2" } else { "" }
+                    )
                 } else if full {
-                    format!("F{}{}", if edge { "e" } else { "" }, if clip { "c" } else { "" })
+                    format!(
+                        "F{}{}",
+                        if edge { "e" } else { "" },
+                        if clip { "c" } else { "" }
+                    )
                 } else {
                     "H".to_string()
                 };
@@ -287,7 +308,11 @@ async fn trail_diag(p: &Params, scene: &str, r: &mut Report) -> Result<()> {
                 let rg = if ring15.bits[i] { "ring" } else { "rest" };
                 if let Some(o) = overlay.as_mut() {
                     let col = if age == 1 && !(t1 || t2) && !full {
-                        if ring15.bits[i] { [255, 0, 0, 255] } else { [255, 255, 0, 255] }
+                        if ring15.bits[i] {
+                            [255, 0, 0, 255]
+                        } else {
+                            [255, 255, 0, 255]
+                        }
                     } else if age == 1 && (t1 || t2) {
                         [0, 200, 0, 255]
                     } else if age == 1 {
@@ -347,16 +372,26 @@ async fn trail_diag(p: &Params, scene: &str, r: &mut Report) -> Result<()> {
                 far_acc.2 += fo;
             }
             if let Some(o) = overlay {
-                crate::store::put(&p.store, &format!("r2/diag/{scene}-k{k:03}-cells.png"), &o).await?;
-                crate::store::put(&p.store, &format!("r2/diag/{scene}-k{k:03}-taa.png"), &test).await?;
-                crate::store::put(&p.store, &format!("r2/diag/{scene}-k{k:03}-ref.png"), &reference).await?;
+                crate::store::put(&p.store, &format!("r2/diag/{scene}-k{k:03}-cells.png"), &o)
+                    .await?;
+                crate::store::put(&p.store, &format!("r2/diag/{scene}-k{k:03}-taa.png"), &test)
+                    .await?;
+                crate::store::put(
+                    &p.store,
+                    &format!("r2/diag/{scene}-k{k:03}-ref.png"),
+                    &reference,
+                )
+                .await?;
             }
             if fb_n > 0 {
                 let ex = (fb_t - fb_o) / fb_n as f64;
                 if ex > worst_excess.0 {
                     worst_excess = (ex, k);
                 }
-                let fes: Vec<String> = fe.iter().map(|v| format!("{:.2}", v / fb_n as f64)).collect();
+                let fes: Vec<String> = fe
+                    .iter()
+                    .map(|v| format!("{:.2}", v / fb_n as f64))
+                    .collect();
                 frame_lines.push(format!(
                     "k{k}: band {fb_n} TAA {:.2} ORACLE {:.2} | ring {fr_n} TAA {:.2} ORACLE {:.2} | oracle with age-1 estimators [{}] | ages 1/2/3-4/5-16/17+: {:?}",
                     fb_t / fb_n as f64,
@@ -468,7 +503,11 @@ pub async fn flag_count_mode(p: &Params, r: &mut Report) {
         .unwrap_or_else(|| vec![14, 16]);
     for scene in &scenes {
         if let Err(e) = flag_count(p, scene, &views, r).await {
-            r.emit(&format!("flag-count:{scene}"), false, &format!("error: {e:#}"));
+            r.emit(
+                &format!("flag-count:{scene}"),
+                false,
+                &format!("error: {e:#}"),
+            );
         }
     }
 }
@@ -483,7 +522,10 @@ async fn flag_count(p: &Params, scene: &str, views: &[u32], r: &mut Report) -> R
         sessions.push((*id, s));
     }
     let last = p.ks.iter().copied().max().unwrap_or(0);
-    let frames = sessions.first().map(|(_, s)| s.scenario.frames).unwrap_or(0);
+    let frames = sessions
+        .first()
+        .map(|(_, s)| s.scenario.frames)
+        .unwrap_or(0);
     let mut lines = Vec::new();
     for k in 0..=last.min(frames.saturating_sub(1)) {
         let target = p.ks.contains(&k);
@@ -501,7 +543,12 @@ async fn flag_count(p: &Params, scene: &str, views: &[u32], r: &mut Report) -> R
                 }
                 parts.push(format!("view{id} {c:?}"));
                 if p.keep {
-                    crate::store::put(&p.store, &format!("r2/flags/{scene}-k{k:03}-view{id}.png"), &img).await?;
+                    crate::store::put(
+                        &p.store,
+                        &format!("r2/flags/{scene}-k{k:03}-view{id}.png"),
+                        &img,
+                    )
+                    .await?;
                 }
             } else {
                 s.render_next()?;

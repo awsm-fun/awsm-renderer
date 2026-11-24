@@ -21,7 +21,8 @@ use crate::render_passes::RenderPassInitContext;
 use crate::shaders::{ShaderCacheKey, Shaders};
 
 /// A compile in flight: its result, written by the spawned future.
-type PendingPipeline = Rc<RefCell<Option<std::result::Result<web_sys::GpuComputePipeline, String>>>>;
+type PendingPipeline =
+    Rc<RefCell<Option<std::result::Result<web_sys::GpuComputePipeline, String>>>>;
 
 pub struct TaaPipelines {
     pub resolve: ComputePipelineKey,

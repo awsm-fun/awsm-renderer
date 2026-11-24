@@ -91,12 +91,8 @@ impl TaaTextures {
         let post_size = clamp_size(post_size);
         let (history, history_views) = create_history(gpu, post_size)?;
         let (out, out_view) = create_out(gpu, post_size)?;
-        let prev_depth = PrevTargets::new(
-            gpu,
-            depth_format,
-            velocity_format,
-            clamp_size(render_size),
-        )?;
+        let prev_depth =
+            PrevTargets::new(gpu, depth_format, velocity_format, clamp_size(render_size))?;
         Ok(Self {
             history,
             history_views,

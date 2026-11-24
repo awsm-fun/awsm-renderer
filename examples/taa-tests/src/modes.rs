@@ -505,11 +505,7 @@ pub async fn frame_cost(p: &Params, r: &mut Report) {
             // The resolve by repetition at any render scale (its cost is
             // per OUTPUT pixel, but what it reads is render-size).
             let plain = *aa == Aa::Taa && *sharpen == 0.0 && !fallback;
-            let reps: Vec<u32> = if plain {
-                p.repeats.clone()
-            } else {
-                vec![1]
-            };
+            let reps: Vec<u32> = if plain { p.repeats.clone() } else { vec![1] };
             for n in reps {
                 configs.push(CostCfg {
                     scene: scene.clone(),
