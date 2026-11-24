@@ -240,7 +240,9 @@ pub struct TaaTuning {
     /// History-length cap for a pixel moving at `max_history_moving_speed`
     /// or faster. History resampled every frame under motion softens a
     /// little each time; a short memory keeps that from building up, and
-    /// lets the image sharpen again within a few frames of stopping.
+    /// lets the image sharpen again within a few frames of stopping. 1.0
+    /// (round 3; was 2.0): closer to the reference in motion on every
+    /// measured scene and steadier frame to frame (`docs/TAA.md` §2.4).
     pub max_history_moving: f32,
     /// The speed (output px / frame) at which the cap has dropped from the
     /// still value to `max_history_moving`.
@@ -276,7 +278,7 @@ impl Default for TaaTuning {
             reactive_ssr: 0.0,
             mip_bias_extra: 0.0,
             gamma_moving_speed: 2.0,
-            max_history_moving: 2.0,
+            max_history_moving: 1.0,
             max_history_moving_speed: 1.0,
             motion_edge_alpha: 1.0,
             motion_edge_speed: 0.5,

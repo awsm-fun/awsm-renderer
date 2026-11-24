@@ -254,7 +254,7 @@ impl Default for TaaTuningSettings {
             reactive_lines: 0.3,
             reactive_ssr: 0.0,
             mip_bias_extra: 0.0,
-            max_history_moving: 2.0,
+            max_history_moving: 1.0,
             max_history_moving_speed: 1.0,
             motion_edge_alpha: 1.0,
             motion_edge_speed: 0.5,
