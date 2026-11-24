@@ -196,6 +196,10 @@ impl Session {
             }
             #[cfg(feature = "taa-experimental")]
             renderer.set_taa_experimental_tuning(crate::hooks::experimental());
+            // `?particles_alpha`: particles write an alpha-scaled reactive
+            // value (the comparison for `reactive_particles`).
+            #[cfg(feature = "taa-disocclusion")]
+            renderer.set_taa_particles_alpha_scaled(crate::url_value("particles_alpha").is_some());
             // Phase 5: `?fallback` forces the prep-velocity reconstruction
             // path (the 32 B/sample fallback) on a device that has the
             // geometry path.

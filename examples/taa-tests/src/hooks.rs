@@ -102,6 +102,8 @@ fn apply_tune(t: &mut TaaTuning, name: &str, v: f32) -> Result<(), String> {
         "motion_alpha" => t.motion_alpha = v,
         "motion_alpha_speed" => t.motion_alpha_speed = v,
         "reactive_transparent" => t.reactive_transparent = v,
+        #[cfg(feature = "taa-disocclusion")]
+        "reactive_particles" => t.reactive_particles = v,
         "reactive_material" => t.reactive_material = v,
         "mip_bias_extra" => t.mip_bias_extra = v,
         #[cfg(feature = "taa-tuning-v2")]
@@ -139,6 +141,17 @@ pub fn taa_native() -> awsm_renderer::anti_alias::AntiAliasing {
     let mut cfg = TaaConfig::native();
     cfg.render_scale = scale();
     cfg.sharpen = SHARPEN.with(|c| c.get());
+    // `?disocc=depth|motion|id`: the disocclusion level (default: the
+    // renderer's).
+    #[cfg(feature = "taa-disocclusion")]
+    if let Some(level) = crate::url_value("disocc") {
+        use awsm_renderer::taa::TaaDisocclusion;
+        cfg.disocclusion = match level.as_str() {
+            "depth" => TaaDisocclusion::Depth,
+            "motion" => TaaDisocclusion::DepthAndMotion,
+            _ => TaaDisocclusion::DepthMotionAndId,
+        };
+    }
     TUNE.with(|c| {
         for (k, v) in c.borrow().iter() {
             // Validated in `set_tune` (experimental knobs are applied on the

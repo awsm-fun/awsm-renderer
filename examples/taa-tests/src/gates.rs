@@ -24,7 +24,7 @@ use crate::report::{set_hud, Report};
 use crate::session::{gpu_idle, Aa, Session, SessionOpts};
 use crate::Params;
 
-fn opts(p: &Params, scene: &str, aa: Aa) -> SessionOpts {
+pub(crate) fn opts(p: &Params, scene: &str, aa: Aa) -> SessionOpts {
     SessionOpts {
         scene: scene.to_string(),
         aa,
@@ -89,7 +89,7 @@ pub fn tracked_hull(s: &Session) -> Option<Vec<Vec2>> {
 /// Coverage of "the moving objects" at the frame just rendered: the tracked
 /// box's exact hull when the scene has one, else every pixel whose motion
 /// vector (read back from the TAA session) exceeds 0.05 px/frame.
-async fn moving_coverage(s: &Session) -> Result<Mask> {
+pub(crate) async fn moving_coverage(s: &Session) -> Result<Mask> {
     if let Some(m) = tracked_coverage(s) {
         return Ok(m);
     }
@@ -120,13 +120,13 @@ async fn moving_coverage(s: &Session) -> Result<Mask> {
 }
 
 /// Lockstep pair: the session under test and a TAA-off reference session.
-struct Pair {
-    test: Session,
+pub(crate) struct Pair {
+    pub(crate) test: Session,
     refs: Session,
 }
 
 impl Pair {
-    async fn open(p: &Params, scene: &str) -> Result<Pair> {
+    pub(crate) async fn open(p: &Params, scene: &str) -> Result<Pair> {
         let test = Session::open(opts(p, scene, test_aa(p))).await?;
         let refs = Session::open(opts(p, scene, Aa::None)).await?;
         test.assert_lockstep_safe()?;
@@ -155,14 +155,17 @@ impl Pair {
     /// Render frame `next_k` in both; capture the test frame; build the
     /// reference (display-linear) for it. Returns (k, test, reference, plain
     /// TAA-off frame).
-    async fn step_with_reference(&mut self, p: &Params) -> Result<(u32, Image, Image, Image)> {
+    pub(crate) async fn step_with_reference(
+        &mut self,
+        p: &Params,
+    ) -> Result<(u32, Image, Image, Image)> {
         let (k, test) = self.test.render_next_captured().await?;
         let (_, plain) = self.refs.render_next_captured().await?;
         let lin = reference_cached(&mut self.refs, p).await?;
         Ok((k, test, lin, plain))
     }
 
-    fn destroy(self) {
+    pub(crate) fn destroy(self) {
         self.test.destroy();
         self.refs.destroy();
     }

@@ -24,6 +24,8 @@ mod disocc;
 mod evidence;
 #[cfg(feature = "taa-hooks")]
 mod gates;
+#[cfg(feature = "taa-debug-raw")]
+mod ghost;
 #[cfg(feature = "taa-hooks")]
 mod hooks;
 mod modes;
@@ -285,6 +287,8 @@ pub fn boot() -> Result<(), JsValue> {
             "trail-evidence" => evidence::trail_evidence_mode(&p, &mut r).await,
             #[cfg(feature = "taa-phase1")]
             "trail-diag" => ringdiag::trail_diag_mode(&p, &mut r).await,
+            #[cfg(feature = "taa-debug-raw")]
+            "ghost-track" => ghost::ghost_track_mode(&p, &mut r).await,
             #[cfg(feature = "taa-phase1")]
             "flag-count" => ringdiag::flag_count_mode(&p, &mut r).await,
             #[cfg(feature = "taa-phase1")]
