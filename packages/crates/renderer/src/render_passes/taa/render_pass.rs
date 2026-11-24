@@ -117,7 +117,14 @@ impl TaaParamsValues {
             upscaling,
             reset,
             debug_view,
-            kernel_sharpness: crate::taa::RECONSTRUCTION_SHARPNESS,
+            // The reconstruction kernel is the reference's: exp(-k d^2) with
+            // d in OUTPUT pixels. The shader measures d in render pixels, so
+            // k scales with the squared pixel ratio (1 at native). A kernel
+            // one RENDER pixel wide blurs an upscaled image by the pixel
+            // ratio: at 0.67 the converged `taa-thin` read 3.48 against the
+            // reference, 1.24 with the kernel in output pixels.
+            kernel_sharpness: crate::taa::RECONSTRUCTION_SHARPNESS
+                * (post_size.0 as f32 / render_size.0.max(1) as f32).powi(2),
             reactive_valid: false,
             max_history_moving: tuning.max_history_moving,
             max_history_moving_speed: tuning.max_history_moving_speed,
@@ -792,6 +799,10 @@ mod tests {
             crate::taa::history_cap(&up.tuning, (1286, 961), (1920, 1435))
         );
         assert!(f(8) > 35.0 && f(8) < 36.5, "{}", f(8));
+        // The kernel is the reference's, in output pixels: its exponent
+        // scales with the squared pixel ratio.
+        let ratio = 1920.0f32 / 1286.0;
+        assert!((f(14) - crate::taa::RECONSTRUCTION_SHARPNESS * ratio * ratio).abs() < 1e-4);
         assert_eq!(f(11), 1.0);
         assert_eq!(f(12), 0.0);
 
