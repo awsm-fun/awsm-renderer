@@ -15,6 +15,24 @@ struct FragmentInput {
     {% endfor %}
 }
 
+{% if reactive %}
+// TAA's reactive value for a transparent fragment of coverage `alpha`:
+// `alpha * k_transparent` (camera `dof_params.z`) for glass, water, lines and
+// the like; for a particle mesh (`Mesh::taa_particles`, bit 1 of mesh-meta
+// word 22) `k_particles` (camera `position.w`) on every covered pixel, since
+// nothing reprojects a particle and a soft sprite's low-alpha skirt would
+// otherwise keep a stale colour (a negative `position.w` is the harness's
+// alpha-scaled comparison). Below 1.0 always.
+fn taa_reactive(alpha: f32) -> f32 {
+    if ((material_mesh_meta._reserved2 & 2u) != 0u) {
+        let k = camera_raw.position.w;
+        let covered = select(0.0, 1.0, alpha > 1.0 / 255.0);
+        return min(select(abs(k) * alpha, k * covered, k >= 0.0), 0.99);
+    }
+    return min(alpha * camera_raw.dof_params.z, 0.99);
+}
+{% endif %}
+
 struct FragmentOutput {
     // Rgba16float
     @location(0) color: vec4<f32>,{% if reactive %}
@@ -313,9 +331,9 @@ fn fs_main(input: FragmentInput) -> FragmentOutput {
         );
         let dyn_out = custom_shade_transparent_dynamic(dyn_input);
         out.color = dyn_out.color;{% if reactive %}
-        // TAA: alpha * k_transparent (camera dof_params.z under TAA), below
-        // 1.0 (exactly 1.0 means "HUD pixel, pass through" to the resolve).
-        out.reactive = min(dyn_out.color.a * camera_raw.dof_params.z, 0.99);
+        // TAA: see `taa_reactive` (below 1.0: exactly 1.0 means "HUD
+        // pixel, pass through" to the resolve).
+        out.reactive = taa_reactive(dyn_out.color.a);
 {% endif +%}
         return out;
     {% else %}
@@ -394,9 +412,9 @@ fn fs_main(input: FragmentInput) -> FragmentOutput {
     // Output final color with alpha
     let premult_rgb = color * base_alpha;
     out.color = vec4<f32>(premult_rgb, base_alpha);{% if reactive %}
-    // TAA: alpha * k_transparent (camera dof_params.z under TAA), below 1.0
-    // (exactly 1.0 means "HUD pixel, pass through" to the resolve).
-    out.reactive = min(base_alpha * camera_raw.dof_params.z, 0.99);
+    // TAA: see `taa_reactive` (below 1.0: exactly 1.0 means "HUD pixel,
+    // pass through" to the resolve).
+    out.reactive = taa_reactive(base_alpha);
 {% endif +%}
 
     return out;

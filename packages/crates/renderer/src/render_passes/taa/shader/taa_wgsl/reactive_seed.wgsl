@@ -83,7 +83,7 @@ fn frag_main(input: SeedVertex) -> SeedOutput {
         discard;
     }
     let base = join32(vis.z, vis.w) / 4u;
-    let temporal = material_mesh_meta_words[base + META_TEMPORAL_REACTIVE] != 0u
+    let temporal = (material_mesh_meta_words[base + META_TEMPORAL_REACTIVE] & 1u) != 0u
         && material_mesh_meta_words[base + META_IS_HUD] == 0u;
     var reactive = select(0.0, camera_raw.dof_params.w, temporal);
     if ((input.hud_mode & NON_RIGID_BIT) != 0u

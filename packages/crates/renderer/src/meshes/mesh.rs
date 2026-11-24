@@ -106,6 +106,12 @@ pub struct Mesh {
     /// volume test for non-receiving meshes — useful for sky-domes,
     /// HUD-like geometry, or surfaces the artist wants kept clean.
     pub receive_decals: bool,
+    /// A particle mesh (TAA): its covered pixels take
+    /// `TaaTuning::reactive_particles` in the reactive mask, since nothing
+    /// reprojects a particle. Default `false`; the scene loader sets it on
+    /// every emitter (`AwsmRenderer::set_mesh_taa_particles`). Inert
+    /// without TAA.
+    pub taa_particles: bool,
     /// Whether this mesh was built with VISIBILITY geometry (the exploded
     /// per-pixel stream the geometry/opaque + shadow passes draw from).
     ///
@@ -162,6 +168,7 @@ impl Mesh {
             cheap_material_key: None,
             cheap_material_pixel_threshold: None,
             receive_decals: true,
+            taa_particles: false,
             // Placeholders only — `Meshes::insert` derives both from the
             // geometry data actually provided, overwriting whatever is set here.
             // A constructor can't know the mesh's real geometry shape, so it

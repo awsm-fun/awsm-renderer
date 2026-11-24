@@ -531,6 +531,28 @@ impl AwsmRenderer {
 
     /// Sets the per-mesh camera-facing billboard mode and refreshes geometry
     /// meta so the next frame's vertex shader picks up the new mode.
+    /// Mark a mesh as particles for TAA (see [`crate::meshes::mesh::Mesh::taa_particles`]):
+    /// its covered pixels take `TaaTuning::reactive_particles` in the
+    /// reactive mask. The scene loader sets it on every emitter; apps that
+    /// build particle meshes themselves call it once. Inert without TAA.
+    pub fn set_mesh_taa_particles(
+        &mut self,
+        mesh_key: MeshKey,
+        particles: bool,
+    ) -> crate::error::Result<()> {
+        if let Ok(mesh) = self.meshes.get_mut(mesh_key) {
+            if mesh.taa_particles == particles {
+                return Ok(());
+            }
+            mesh.taa_particles = particles;
+        } else {
+            return Err(AwsmMeshError::MeshNotFound(mesh_key).into());
+        }
+        self.meshes
+            .refresh_meta_for_mesh_public(mesh_key, &self.materials, &self.transforms)?;
+        Ok(())
+    }
+
     pub fn set_mesh_billboard_mode(
         &mut self,
         mesh_key: MeshKey,

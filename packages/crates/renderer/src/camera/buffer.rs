@@ -45,6 +45,11 @@ pub struct CameraBuffer {
     /// k_material)` (03 §5). `[0, 0]` without TAA, so the uniform stays what
     /// it always was.
     reactive_factors: [f32; 2],
+    /// TAA reactive weight of particle meshes, packed into `position.w`:
+    /// positive = every covered pixel takes it, negative (harness
+    /// diagnostics) = scaled by alpha. `0` without TAA, so the uniform stays
+    /// what it always was.
+    reactive_particles: f32,
     /// TAA texture LOD bias (03 §7), packed into `prev_position.w`:
     /// `log2(render / post) + mip_bias_extra`. `0` without TAA, so the
     /// uniform stays what it always was.
@@ -73,6 +78,9 @@ pub(crate) struct TaaCameraFactors {
     pub reactive_transparent: f32,
     /// `TaaTuning::reactive_material` (`dof_params.w`).
     pub reactive_material: f32,
+    /// `TaaTuning::reactive_particles` (`position.w`; negative = alpha-scaled,
+    /// harness diagnostics only).
+    pub reactive_particles: f32,
     /// Texture LOD bias (`prev_position.w`): `log2(render / post) +
     /// mip_bias_extra`.
     pub mip_bias: f32,
@@ -144,6 +152,7 @@ impl CameraBuffer {
             jumped: false,
             raw_is_jittered: false,
             reactive_factors: [0.0; 2],
+            reactive_particles: 0.0,
             mip_bias: 0.0,
             hud_gpu_buffer: None,
             hud_raw: None,
@@ -279,9 +288,11 @@ impl CameraBuffer {
     ) {
         let factors = taa_factors.unwrap_or_default();
         let reactive_factors = [factors.reactive_transparent, factors.reactive_material];
-        let factors_changed =
-            reactive_factors != self.reactive_factors || factors.mip_bias != self.mip_bias;
+        let factors_changed = reactive_factors != self.reactive_factors
+            || factors.reactive_particles != self.reactive_particles
+            || factors.mip_bias != self.mip_bias;
         self.reactive_factors = reactive_factors;
+        self.reactive_particles = factors.reactive_particles;
         self.mip_bias = factors.mip_bias;
         let Some(matrices) = self.last_matrices.clone() else {
             return;
@@ -447,7 +458,11 @@ impl CameraBuffer {
         let inv_view_cols = inv_view.to_cols_array();
         write_f32_slice(&mut self.raw_data, &mut offset, &inv_view_cols);
         // Write position as vec4 (xyz + unused w component)
-        let position = camera_matrices.position_world.extend(0.0).to_array();
+        // `.w`: TAA's particle reactive weight (0 without TAA).
+        let position = camera_matrices
+            .position_world
+            .extend(self.reactive_particles)
+            .to_array();
         write_f32_slice(&mut self.raw_data, &mut offset, &position);
         // The 16-byte `frame_count_and_padding` slot that used to sit
         // here is removed — see `BYTE_SIZE`'s rationale. frustum_rays

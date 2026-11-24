@@ -206,8 +206,15 @@ pub struct TaaTuning {
     pub motion_alpha: f32,
     /// The speed (output px / frame) at which `motion_alpha` is reached.
     pub motion_alpha_speed: f32,
-    /// Reactive value written by the transparent pass per unit of alpha.
+    /// Reactive value written by the transparent pass per unit of alpha
+    /// (glass, water, lines and other transparent surfaces; not particles).
     pub reactive_transparent: f32,
+    /// Reactive value of particle meshes (`AwsmRenderer::set_mesh_taa_particles`,
+    /// set by the scene loader for every emitter). Nothing reprojects a
+    /// particle, so a covered pixel takes this weight whatever the sprite's
+    /// alpha (a soft sprite's low-alpha skirt would otherwise keep its stale
+    /// colour for many frames). `docs/TAA.md` §3.6.
+    pub reactive_particles: f32,
     /// Reactive value written for materials flagged `temporal: reactive`.
     pub reactive_material: f32,
     /// Extra reactivity from SSR reflectivity. 0 unless mirrors trail.
@@ -249,6 +256,7 @@ impl Default for TaaTuning {
             motion_alpha: 0.2,
             motion_alpha_speed: 8.0,
             reactive_transparent: 0.3,
+            reactive_particles: 1.0,
             reactive_material: 0.2,
             reactive_ssr: 0.0,
             mip_bias_extra: 0.0,
@@ -354,6 +362,9 @@ pub struct TaaRuntime {
     /// Harness override of [`CLIP_ALPHA`] (the second value is no longer
     /// used: see `set_taa_experimental_tuning`).
     pub(crate) experimental: Option<[f32; 2]>,
+    /// Harness diagnostics: particles write `alpha * reactive_particles`
+    /// (alpha-scaled) instead of the weight on every covered pixel.
+    pub(crate) particles_alpha_scaled: bool,
     /// Resolve dispatches per frame (`AwsmRenderer::set_taa_debug_repeat`,
     /// cost measurement). 0 (the default) and 1 both mean one dispatch.
     pub(crate) debug_repeat: u32,
@@ -545,6 +556,14 @@ impl AwsmRenderer {
     #[doc(hidden)]
     pub fn set_taa_experimental_tuning(&mut self, values: Option<[f32; 2]>) {
         self.taa.experimental = values;
+    }
+
+    /// Harness diagnostics: particles write an alpha-scaled reactive value
+    /// (`alpha * reactive_particles`) instead of the weight on every covered
+    /// pixel, to compare the two.
+    #[doc(hidden)]
+    pub fn set_taa_particles_alpha_scaled(&mut self, on: bool) {
+        self.taa.particles_alpha_scaled = on;
     }
 
     /// Forget all temporal history (TAA, and the jitter cycle restarts).

@@ -1064,6 +1064,8 @@ pub fn taa_settings_to_renderer(
             motion_alpha: pos(t.motion_alpha, d.motion_alpha),
             motion_alpha_speed: pos(t.motion_alpha_speed, d.motion_alpha_speed),
             reactive_transparent: pos(t.reactive_transparent, d.reactive_transparent),
+            // Not in the scene schema yet: the renderer's default.
+            reactive_particles: d.reactive_particles,
             reactive_material: pos(t.reactive_material, d.reactive_material),
             // TODO(fb, review 17): `t.reactive_particles` once
             // `TaaTuning::reactive_particles` lands (senior's patch):

@@ -298,11 +298,16 @@ impl<'a> MaterialMeshMeta<'a> {
         // Formerly `_reserved1`.
         let alpha_cutoff = materials.alpha_cutoff(material_key).unwrap_or(0.0);
         push_u32(alpha_cutoff.to_bits());
-        // Index 22: the material is temporally reactive (TAA, plan 03 §5.2;
-        // `Materials::is_temporal_reactive`). Read only by the TAA reactive
-        // seed (`taa_wgsl/reactive_seed.wgsl`, as a raw word); the shared
-        // WGSL struct still calls it `_reserved2` so no other shader changes.
-        push_u32(u32::from(materials.is_temporal_reactive(material_key)));
+        // Index 22, TAA flags: bit 0 = the material is temporally reactive
+        // (plan 03 §5.2; `Materials::is_temporal_reactive`), read by the TAA
+        // reactive seed (`taa_wgsl/reactive_seed.wgsl`, as a raw word); bit 1
+        // = a particle mesh (`Mesh::taa_particles`), read by the transparent
+        // pass's reactive output. The shared WGSL struct still calls it
+        // `_reserved2`.
+        push_u32(
+            u32::from(materials.is_temporal_reactive(material_key))
+                | (u32::from(mesh.taa_particles) << 1),
+        );
         // Index 23: non-rigid surface (see `MaterialMeshMeta::non_rigid`).
         // Read only by the TAA reactive seed in the prep-pass fallback, as a
         // raw word; the shared WGSL struct still calls it `_reserved3`.

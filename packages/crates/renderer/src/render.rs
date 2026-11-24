@@ -606,6 +606,11 @@ impl AwsmRenderer {
                     .map(|taa| crate::camera::TaaCameraFactors {
                         reactive_transparent: taa.tuning.reactive_transparent,
                         reactive_material: taa.tuning.reactive_material,
+                        reactive_particles: if self.taa.particles_alpha_scaled {
+                            -taa.tuning.reactive_particles.abs()
+                        } else {
+                            taa.tuning.reactive_particles.abs()
+                        },
                         mip_bias: crate::taa::texture_lod_bias(
                             frame_sizes.render,
                             frame_sizes.post,
