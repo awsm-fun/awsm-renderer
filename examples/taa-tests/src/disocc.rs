@@ -338,10 +338,12 @@ async fn disocclusion(p: &Params, scene: &str, ks: &[u32], r: &mut Report) -> Re
     let mut t = Session::open(opts(p, scene, Aa::Taa)).await?;
     let mut rej = Session::open(opts(p, scene, Aa::Taa)).await?;
     rej.renderer.set_taa_debug_view(TaaDebugView::Rejection);
+    crate::session::wait_taa_debug_variant(&rej.renderer).await;
     let mut raws: Vec<(u32, Session)> = Vec::new();
     for id in RAW_VIEWS {
         let mut s = Session::open(opts(p, scene, Aa::Taa)).await?;
         set_raw(&mut s, id);
+        crate::session::wait_taa_debug_variant(&s.renderer).await;
         raws.push((id, s));
     }
     let last = *ks.iter().max().unwrap_or(&0);
@@ -490,6 +492,7 @@ async fn disocclusion_static(p: &Params, r: &mut Report) -> Result<()> {
     let scene = "taa-motion";
     let mut s = Session::open(opts(p, scene, Aa::Taa)).await?;
     set_raw(&mut s, 10);
+    crate::session::wait_taa_debug_variant(&s.renderer).await;
     let mut prev_hull: Option<Mask> = None;
     while s.next_k <= 33 {
         let (k, img) = s.render_next_captured().await?;
@@ -567,6 +570,7 @@ pub async fn static_rejection_mode(p: &Params, r: &mut Report) {
         let res: Result<String> = async {
             let mut s = Session::open(opts(p, scene, Aa::Taa)).await?;
             s.renderer.set_taa_debug_view(TaaDebugView::Rejection);
+            crate::session::wait_taa_debug_variant(&s.renderer).await;
             s.play_to(0).await?;
             for _ in 0..40 {
                 s.render_frozen(None)?;
@@ -720,6 +724,7 @@ async fn rejection_motion(p: &Params, scene: &str, r: &mut Report) -> Result<()>
     let mut t = Session::open(opts(p, scene, Aa::Taa)).await?;
     let mut rej = Session::open(opts(p, scene, Aa::Taa)).await?;
     rej.renderer.set_taa_debug_view(TaaDebugView::Rejection);
+    crate::session::wait_taa_debug_variant(&rej.renderer).await;
     let mut rs = Session::open(opts(p, scene, Aa::None)).await?;
     for s in [&t, &rej, &rs] {
         s.assert_lockstep_safe()?;

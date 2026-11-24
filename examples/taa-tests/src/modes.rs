@@ -502,9 +502,10 @@ pub async fn frame_cost(p: &Params, r: &mut Report) {
     let mut configs: Vec<CostCfg> = Vec::new();
     for scene in &p.scenes {
         for (aa, scale, sharpen, fallback) in &variants {
-            let native_plain =
-                *aa == Aa::Taa && (*scale - 1.0).abs() < 1e-6 && *sharpen == 0.0 && !fallback;
-            let reps: Vec<u32> = if native_plain {
+            // The resolve by repetition at any render scale (its cost is
+            // per OUTPUT pixel, but what it reads is render-size).
+            let plain = *aa == Aa::Taa && *sharpen == 0.0 && !fallback;
+            let reps: Vec<u32> = if plain {
                 p.repeats.clone()
             } else {
                 vec![1]

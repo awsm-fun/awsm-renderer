@@ -102,6 +102,7 @@ async fn trail_evidence(p: &Params, scene: &str, ks: &[u32], r: &mut Report) -> 
     for (name, view) in DEBUG_VIEWS {
         let mut d = Session::open(opts(p, scene, Aa::Taa)).await?;
         d.renderer.set_taa_debug_view(view);
+        crate::session::wait_taa_debug_variant(&d.renderer).await;
         dv.push((name, d));
     }
     for sess in [&t, &rs, &ms, &hs, &os] {
@@ -528,6 +529,7 @@ pub async fn speeds_mode(p: &Params, r: &mut Report) {
 async fn speeds(p: &Params, scene: &str, r: &mut Report) -> Result<()> {
     let mut s = Session::open(opts(p, scene, Aa::Taa)).await?;
     s.renderer.set_taa_debug_view(TaaDebugView::FreezeJitter);
+    crate::session::wait_taa_debug_variant(&s.renderer).await;
     let frames = s.scenario.frames;
     let phases = s.scenario.phases.clone();
     let tracked = s.scenario.tracked.is_some();

@@ -257,6 +257,7 @@ async fn evidence(p: &Params, gate: &str, scene: &str, k: u32, r: &mut Report) -
     {
         let mut s = Session::open(opts(p, scene, Aa::Taa)).await?;
         s.renderer.set_taa_debug_view(TaaDebugView::FreezeJitter);
+        crate::session::wait_taa_debug_variant(&s.renderer).await;
         if k > 0 {
             s.play_to(k - 1).await?;
         }
@@ -277,6 +278,7 @@ async fn evidence(p: &Params, gate: &str, scene: &str, k: u32, r: &mut Report) -
             s.play_to(k - 1).await?;
         }
         s.renderer.set_taa_debug_view(view);
+        crate::session::wait_taa_debug_variant(&s.renderer).await;
         let (_, img) = s.render_next_captured().await?;
         crate::store::put(&p.store, &format!("{base}-{name}.png"), &img).await?;
         s.destroy();
@@ -299,6 +301,7 @@ async fn freeze_jitter_error(
 ) -> Result<ErrorStats> {
     let mut s = Session::open(opts(p, scene, Aa::Taa)).await?;
     s.renderer.set_taa_debug_view(TaaDebugView::FreezeJitter);
+    crate::session::wait_taa_debug_variant(&s.renderer).await;
     let mut rs = Session::open(opts(p, scene, Aa::None)).await?;
     if k > 0 {
         s.play_to(k - 1).await?;
@@ -314,6 +317,171 @@ async fn freeze_jitter_error(
 
 /// 05 §4.2 trail: error vs the reference inside the trail band (covered within
 /// the last 0.5 s, not now): mean < 2 and max < 16 at every evaluated frame.
+/// The trail band of every evaluated frame against methods without history
+/// (MSAA 4x, no-AA) and the perfect-information ORACLE (INFO lines).
+#[derive(Default)]
+struct TrailCompare {
+    frames: u32,
+    /// Frames whose TAA band max exceeds max(MSAA, no-AA) band max.
+    max_over: Vec<(u32, u8, u8, u8, u8)>,
+    worst_taa_max: (u8, u32, u8, u8, u8),
+    /// Frames with TAA band mean >= 2 although the ORACLE's is < 2.
+    mean_over_oracle: Vec<(u32, f64, f64)>,
+    /// Frames with TAA band mean >= 2 and the ORACLE's too.
+    mean_oracle_floor: Vec<(u32, f64, f64)>,
+    ghost_total: u64,
+    ghost_frames: u32,
+    ghost_worst: (u64, u32),
+    band_total: u64,
+}
+
+impl TrailCompare {
+    #[allow(clippy::too_many_arguments)]
+    fn add(
+        &mut self,
+        p: &Params,
+        k: u32,
+        band: &Mask,
+        history: &[Mask],
+        oring: &std::collections::VecDeque<(u32, Vec<[f32; 3]>)>,
+        test: &Image,
+        reference: &Image,
+        plain: &Image,
+        msaa: &Image,
+    ) {
+        let w = test.width;
+        let (mut mt, mut mm, mut mn, mut mo) = (0u8, 0u8, 0u8, 0u8);
+        let (mut st, mut so, mut cnt) = (0f64, 0f64, 0u64);
+        let mut ghosts = 0u64;
+        for (i, b) in band.bits.iter().enumerate() {
+            if !*b {
+                continue;
+            }
+            let (x, y) = (i as u32 % w, i as u32 / w);
+            // Frames since the object last covered the pixel (history holds
+            // frames k-1, k-2, ...).
+            let age = history
+                .iter()
+                .rev()
+                .position(|m| m.bits[i])
+                .map(|a| a as u32 + 1)
+                .unwrap_or(1);
+            let first = k + 1 - age.min(16);
+            let mut acc = [0.0f32; 3];
+            let mut n = 0.0f32;
+            for (fk, f) in oring.iter() {
+                if *fk >= first {
+                    for (a, c) in acc.iter_mut().zip(f[i]) {
+                        *a += c;
+                    }
+                    n += 1.0;
+                }
+            }
+            let rp = reference.get(x, y);
+            let eo = if n > 0.0 {
+                metrics::pixel_error(
+                    crate::reference::encode_space([acc[0] / n, acc[1] / n, acc[2] / n], p.karis),
+                    rp,
+                )
+            } else {
+                0
+            };
+            let et = metrics::pixel_error(test.get(x, y), rp);
+            let en = metrics::pixel_error(plain.get(x, y), rp);
+            let em = metrics::pixel_error(msaa.get(x, y), rp);
+            mt = mt.max(et);
+            mm = mm.max(em);
+            mn = mn.max(en);
+            mo = mo.max(eo);
+            st += et as f64;
+            so += eo as f64;
+            cnt += 1;
+            if et as i32 > (en.max(eo) as i32) + 16 {
+                ghosts += 1;
+            }
+        }
+        if cnt == 0 {
+            return;
+        }
+        self.frames += 1;
+        self.band_total += cnt;
+        if mt > mm.max(mn) {
+            self.max_over.push((k, mt, mm, mn, mo));
+        }
+        if mt > self.worst_taa_max.0 {
+            self.worst_taa_max = (mt, k, mm, mn, mo);
+        }
+        let (tm, om) = (st / cnt as f64, so / cnt as f64);
+        if tm >= 2.0 * p.relax {
+            if om < 2.0 * p.relax {
+                self.mean_over_oracle.push((k, tm, om));
+            } else {
+                self.mean_oracle_floor.push((k, tm, om));
+            }
+        }
+        self.ghost_total += ghosts;
+        if ghosts > 0 {
+            self.ghost_frames += 1;
+        }
+        if ghosts > self.ghost_worst.0 {
+            self.ghost_worst = (ghosts, k);
+        }
+    }
+
+    fn report(&self, r: &mut Report, scene: &str) {
+        let list = |v: &[(u32, f64, f64)]| -> String {
+            v.iter()
+                .map(|(k, t, o)| format!("k{k} {t:.2}/{o:.2}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let w = self.worst_taa_max;
+        r.info(
+            &format!("trail-max-compare:{scene}"),
+            &format!(
+                "{} frames; TAA band max > max(MSAA, no-AA) band max on {} frames{}; worst TAA max {} @k{} (MSAA {}, no-AA {}, ORACLE {} on that frame)",
+                self.frames,
+                self.max_over.len(),
+                if self.max_over.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        " [{}]",
+                        self.max_over
+                            .iter()
+                            .take(40)
+                            .map(|(k, t, m, n, o)| format!("k{k} {t}/{m}/{n}/{o}"))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                },
+                w.0,
+                w.1,
+                w.2,
+                w.3,
+                w.4
+            ),
+        );
+        r.info(
+            &format!("trail-mean-vs-oracle:{scene}"),
+            &format!(
+                "frames with TAA band mean >= 2 while the ORACLE's is < 2 (must be empty): {} [{}]; frames where both are >= 2 (the oracle floor, TAA/ORACLE): {} [{}]",
+                self.mean_over_oracle.len(),
+                list(&self.mean_over_oracle),
+                self.mean_oracle_floor.len(),
+                list(&self.mean_oracle_floor)
+            ),
+        );
+        r.info(
+            &format!("trail-ghosts:{scene}"),
+            &format!(
+                "band px where TAA's error exceeds max(no-AA, ORACLE) error + 16: {} of {} px-frames, on {} of {} frames, worst {} px @k{}",
+                self.ghost_total, self.band_total, self.ghost_frames, self.frames, self.ghost_worst.0, self.ghost_worst.1
+            ),
+        );
+    }
+}
+
 async fn trail(p: &Params, scene: &str, r: &mut Report) -> Result<()> {
     let mut pair = Pair::open(p, scene).await?;
     let frames = pair.test.scenario.frames;
@@ -338,6 +506,19 @@ async fn trail(p: &Params, scene: &str, r: &mut Report) -> Result<()> {
     };
     let mut vhistory: Vec<Mask> = Vec::new();
     let mut worst_vband = Worst::default();
+    // Beside TAA on the same band: MSAA 4x and no-AA (methods without
+    // history: they cannot ghost) and the perfect-information ORACLE (per
+    // pixel, the resolve-model mean of TAA-off frames jittered exactly like
+    // TAA's, from the first frame after the object left the pixel, capped
+    // at 16). The restated max gate (05) compares TAA's band max with
+    // max(MSAA, no-AA) on the same frame; the mean gate (< 2 every frame)
+    // is judged against the ORACLE's mean here only as a diagnosis.
+    let mut ms = Session::open(opts(p, scene, Aa::Msaa)).await?;
+    let mut os = Session::open(opts(p, scene, Aa::None)).await?;
+    ms.assert_lockstep_safe()?;
+    os.assert_lockstep_safe()?;
+    let mut oring: std::collections::VecDeque<(u32, Vec<[f32; 3]>)> = Default::default();
+    let mut cmp = TrailCompare::default();
     while pair.test.next_k < frames {
         let k = pair.test.next_k;
         // Only frames whose band can be non-empty need a reference.
@@ -352,7 +533,18 @@ async fn trail(p: &Params, scene: &str, r: &mut Report) -> Result<()> {
         let probed: Option<Mask> = None;
         let by_probe = probed.is_some();
         let now = if evaluate {
-            let (_, test, reference, _) = pair.step_with_reference(p).await?;
+            let (_, test, reference, plain) = pair.step_with_reference(p).await?;
+            let msaa = ms.render_next_captured().await?.1;
+            let j = pair.test.renderer.camera.jitter_px();
+            os.render_next_jittered(Some(j))?;
+            let ojit = {
+                let rb = os.begin_capture()?;
+                crate::session::finish_capture(rb, os.opts.size).await?
+            };
+            oring.push_back((k, crate::reference::resolve_frame(&ojit, j, p.karis)));
+            if oring.len() > 16 {
+                oring.pop_front();
+            }
             let vnow = moving_coverage(&pair.test).await?;
             if by_probe {
                 let recent: Vec<&Mask> = vhistory.iter().rev().take(window).collect();
@@ -388,6 +580,9 @@ async fn trail(p: &Params, scene: &str, r: &mut Report) -> Result<()> {
                 if worst.worst_mean.1 == k {
                     worst_band = Some(band.clone());
                 }
+                cmp.add(
+                    p, k, &band, &history, &oring, &test, &reference, &plain, &msaa,
+                );
                 if p.keep && (!ok || k % 30 == 0) {
                     let mut overlay = test.clone();
                     for (i, b) in band.bits.iter().enumerate() {
@@ -404,6 +599,18 @@ async fn trail(p: &Params, scene: &str, r: &mut Report) -> Result<()> {
             now
         } else {
             pair.step().await?;
+            ms.render_next()?;
+            let j = pair.test.renderer.camera.jitter_px();
+            os.render_next_jittered(Some(j))?;
+            let ojit = {
+                let rb = os.begin_capture()?;
+                crate::session::finish_capture(rb, os.opts.size).await?
+            };
+            gpu_idle(&ms.renderer).await;
+            oring.push_back((k, crate::reference::resolve_frame(&ojit, j, p.karis)));
+            if oring.len() > 16 {
+                oring.pop_front();
+            }
             let vnow = moving_coverage(&pair.test).await?;
             if by_probe {
                 vhistory.push(vnow.clone());
@@ -420,6 +627,9 @@ async fn trail(p: &Params, scene: &str, r: &mut Report) -> Result<()> {
         set_hud(&format!("taa-tests: trail {scene} k{k}/{frames}"));
     }
     pair.destroy();
+    ms.destroy();
+    os.destroy();
+    cmp.report(r, scene);
     #[cfg(feature = "taa-phase1")]
     if let Some(pr) = probe.take() {
         r.info(

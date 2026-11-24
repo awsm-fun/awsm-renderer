@@ -730,6 +730,22 @@ pub async fn gpu_idle(renderer: &AwsmRenderer) {
     let _ = JsFuture::from(renderer.gpu.device.queue().on_submitted_work_done()).await;
 }
 
+/// After selecting a TAA debug view: wait until the resolve variant with the
+/// debug views is ready (it compiles on first selection; until then the view
+/// would silently show the normal image). Immediate for `FreezeJitter` and
+/// `None` (id 0) and on renderers without the lazy variant.
+pub async fn wait_taa_debug_variant(renderer: &AwsmRenderer) {
+    #[cfg(feature = "taa-debug-variant")]
+    for _ in 0..4000 {
+        if renderer.taa_debug_variant_ready() {
+            return;
+        }
+        sleep_ms(5).await;
+    }
+    #[cfg(not(feature = "taa-debug-variant"))]
+    let _ = renderer;
+}
+
 pub async fn sleep_ms(ms: i32) {
     let p = js_sys::Promise::new(&mut |resolve, _| {
         if let Some(w) = web_sys::window() {

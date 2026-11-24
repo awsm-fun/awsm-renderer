@@ -37,6 +37,8 @@ mod phase3;
 mod phase4;
 #[cfg(feature = "taa-phase1")]
 mod reactive;
+#[cfg(feature = "taa-phase1")]
+mod ringdiag;
 mod report;
 mod session;
 mod store;
@@ -281,6 +283,10 @@ pub fn boot() -> Result<(), JsValue> {
             "history-burst" => velocity::history_burst_mode(&p, &mut r).await,
             #[cfg(feature = "taa-phase1")]
             "trail-evidence" => evidence::trail_evidence_mode(&p, &mut r).await,
+            #[cfg(feature = "taa-phase1")]
+            "trail-diag" => ringdiag::trail_diag_mode(&p, &mut r).await,
+            #[cfg(feature = "taa-phase1")]
+            "flag-count" => ringdiag::flag_count_mode(&p, &mut r).await,
             #[cfg(feature = "taa-phase1")]
             "speeds" => evidence::speeds_mode(&p, &mut r).await,
             #[cfg(feature = "taa-phase1")]

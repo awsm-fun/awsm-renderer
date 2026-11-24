@@ -368,6 +368,7 @@ pub async fn upscale_sweep_mode(p: &Params, r: &mut Report) {
             let mut t = Session::open(opts(p, "taa-thin", Aa::Taa)).await?;
             let mut cf = Session::open(opts(p, "taa-thin", Aa::Taa)).await?;
             cf.renderer.set_taa_debug_view(awsm_renderer::taa::TaaDebugView::Confidence);
+            crate::session::wait_taa_debug_variant(&cf.renderer).await;
             let mut rs = Session::open(opts(p, "taa-thin", Aa::None)).await?;
             t.play_to(31).await?;
             cf.play_to(31).await?;
