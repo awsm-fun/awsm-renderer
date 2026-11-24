@@ -914,8 +914,10 @@ Cost at 1920x1435 (busy window, median of 3 runs), forced fallback minus
 geometry target: `taa-skin` +0.096 ms with the overlay against +0.179 ms
 without it (the reactive seed it replaces cost more), `kitchen-sink` +0.013
 against −0.078, `instancing-stress` (no overlay draw) +0.075 against +0.080.
-The overlay pass alone by repeat-N is pending (a first attempt ran its N=1
-windows at a lower GPU clock and is discarded).
+The overlay's draws by repeat-N (N = 1 against 32): 0.007 ms on `taa-skin`,
+0.016 on `taa-vertex-hook`, 0.022 on `prefab-skinned-morph`, 0.015 on
+`kitchen-sink`. That leaves out the pass's own setup (a read-only depth
+attachment); the fallback-minus-native figures above bound the total.
 
 `inverse(M)` as the transpose of the normal matrix against a per-pixel
 inverse: prep pass 1.118 ms against 1.142 ms at 1920x1435 (repeat-N), equal
