@@ -3733,7 +3733,8 @@ fn taa_resolve_shader_validates() {
             // the display shows): the current 3×3 and the history are moved
             // there before the moments, the clip and the blend.
             assert!(
-                src.contains("let t = to_work(sanitize(textureLoad(color_tex, p, 0).rgb));"),
+                src.contains("let c = to_work(sanitize(textureLoad(color_tex, p, 0).rgb));")
+                    && src.contains("tile[i] = vec4<f32>(rgb_to_ycocg(c), textureLoad(depth_tex, p, 0));"),
                 "{label}: the current 3×3 must be in the working space before the moments"
             );
             assert!(
@@ -3750,9 +3751,16 @@ fn taa_resolve_shader_validates() {
             assert!(src.contains(curve), "{label}: working space is not the display curve");
             // G2 — jitter removed where the current frame is sampled.
             assert!(
-                src.contains("let d = vec2<f32>(p) + 0.5 - jitter - r_pos;"),
+                src.contains("let dxy1 = vec2<f32>(p0) + 0.5 - jitter - r_pos;"),
                 "{label}: reconstruction must place each sample at p + 0.5 - j"
             );
+            // The 3x3 comes from a workgroup tile: an array in WORKGROUP
+            // memory (allowed), filled before a barrier that every invocation
+            // reaches (the out-of-image return comes after it).
+            assert!(src.contains("var<workgroup> tile: array<vec4<f32>, 100>;"), "{label}: shared tile");
+            let barrier = src.find("workgroupBarrier();").expect("barrier");
+            let bounds = src.find("if (q.x >= post_dims.x || q.y >= post_dims.y) {").expect("bounds check");
+            assert!(barrier < bounds, "{label}: the bounds-check return must follow the barrier");
             // G4 — Catmull-Rom history (5 bilinear taps), never plain bilinear.
             assert_eq!(
                 src.matches("textureSampleLevel(history_prev_tex").count(),
@@ -3804,8 +3812,7 @@ fn taa_resolve_shader_validates() {
                 );
             }
             assert_eq!(
-                src.matches("// This sample really sits at p + 0.5 - j")
-                    .count(),
+                src.matches("// One tap of the unrolled 3x3").count(),
                 9,
                 "{label}: the 3×3 neighbourhood must be unrolled into 9 blocks"
             );

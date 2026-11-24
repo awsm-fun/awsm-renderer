@@ -404,34 +404,95 @@ fn heat(x: f32) -> vec3<f32> {
     );
 }
 
+// ---- The 3x3 neighbourhoods of a workgroup, shared -----------------------
+// An 8x8 block of output pixels reads at most a 10x10 block of render
+// pixels (render size <= post size: TAA never supersamples), and each of
+// those is in up to nine 3x3 neighbourhoods. Every render pixel of the block
+// is loaded and moved to the working space ONCE, by one invocation, into
+// workgroup memory: YCoCg of the working-space colour (the reconstruction
+// and the clip box are both linear in it) and the raw depth.
+const TILE: i32 = 10;
+const TILE_TEXELS: u32 = 100u;
+var<workgroup> tile: array<vec4<f32>, 100>;
+{% if reactive %}
+var<workgroup> tile_reactive: array<f32, 100>;
+{% endif %}
+
+fn tile_index(p: vec2<i32>, origin: vec2<i32>) -> u32 {
+    let t = p - origin;
+    return u32(t.y * TILE + t.x);
+}
+
+fn load_tile_texel(i: u32, origin: vec2<i32>, p_max: vec2<i32>) {
+    let t = vec2<i32>(i32(i % u32(TILE)), i32(i / u32(TILE)));
+    let p = clamp(origin + t, vec2<i32>(0), p_max);
+    let c = to_work(sanitize(textureLoad(color_tex, p, 0).rgb));
+    tile[i] = vec4<f32>(rgb_to_ycocg(c), textureLoad(depth_tex, p, 0));
+    {% if reactive %}
+    tile_reactive[i] = textureLoad(reactive_tex, p, 0).r;
+    {% endif %}
+}
+
 @compute @workgroup_size(8, 8, 1)
-fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn cs_main(
+    @builtin(global_invocation_id) gid: vec3<u32>,
+    @builtin(workgroup_id) wid: vec3<u32>,
+    @builtin(local_invocation_index) lid: u32,
+) {
     let post_dims = vec2<i32>(textureDimensions(out_tex));
+    let render_dims = vec2<i32>(textureDimensions(color_tex));
+    let R = vec2<f32>(render_dims);
+    let O = vec2<f32>(post_dims);
+    let p_max = render_dims - 1;
+    let jitter = camera_raw.jitter.xy;
+
+    // The render pixel the workgroup's first output pixel lands in (the same
+    // expression as p0 below, so the two agree bit for bit), less the border.
+    let q_first = vec2<i32>(wid.xy) * 8;
+    let tile_origin = vec2<i32>(floor((vec2<f32>(q_first) + 0.5) / O * R)) - 1;
+    // 100 texels, 64 invocations: two rounds (no loop: Apple GPU rules).
+    load_tile_texel(lid, tile_origin, p_max);
+    if (lid + 64u < TILE_TEXELS) {
+        load_tile_texel(lid + 64u, tile_origin, p_max);
+    }
+    workgroupBarrier();
+
     let q = vec2<i32>(gid.xy);
     if (q.x >= post_dims.x || q.y >= post_dims.y) {
         return;
     }
-    let render_dims = vec2<i32>(textureDimensions(color_tex));
-    let R = vec2<f32>(render_dims);
-    let O = vec2<f32>(post_dims);
-    let jitter = camera_raw.jitter.xy;
 
     // ---- 4.1 Where this output pixel falls in the render image ----------
     let uv_q = (vec2<f32>(q) + 0.5) / O;
     let r_pos = uv_q * R;
-    let p0 = clamp(vec2<i32>(floor(r_pos)), vec2<i32>(0), render_dims - 1);
-    let p_max = render_dims - 1;
+    let p0 = clamp(vec2<i32>(floor(r_pos)), vec2<i32>(0), p_max);
+    // Its 3x3 in the tile: the clamped image position of every tap is what
+    // the tile holds at the unclamped one.
+    let base = vec2<i32>(floor(r_pos)) - tile_origin;
+
+    // The kernel is separable: exp(-k (dx^2 + dy^2)) = exp(-k dx^2) exp(-k dy^2).
+    // A sample sits at p + 0.5 - j (G2: the jitter is removed here, where the
+    // current frame is sampled, never in the vector).
+    let dxy0 = vec2<f32>(clamp(p0 - 1, vec2<i32>(0), p_max)) + 0.5 - jitter - r_pos;
+    let dxy1 = vec2<f32>(p0) + 0.5 - jitter - r_pos;
+    let dxy2 = vec2<f32>(clamp(p0 + 1, vec2<i32>(0), p_max)) + 0.5 - jitter - r_pos;
+    let k = params.kernel_sharpness;
+    let w0 = exp(-k * dxy0 * dxy0);
+    let w1 = exp(-k * dxy1 * dxy1);
+    let w2 = exp(-k * dxy2 * dxy2);
 
     // ---- 4.2 / 4.3 / 4.6 One pass over the 3x3 render pixels ------------
-    // Accumulates the reconstructed current colour, the unweighted YCoCg
-    // moments for the clip box, the nearest depth (whose motion vector the
-    // pixel uses: dilation, G3) and the largest reactive value.
-    var current = vec3<f32>(0.0);
+    // Accumulates the reconstructed current colour (in YCoCg), the
+    // unweighted YCoCg moments for the clip box, the nearest depth (whose
+    // motion vector the pixel uses: dilation, G3) and the largest reactive
+    // value.
+    var current_y = vec3<f32>(0.0);
     var weight_sum = 0.0;
     var confidence = 0.0;
     var m1 = vec3<f32>(0.0);
     var m2 = vec3<f32>(0.0);
-    var nearest_depth = textureLoad(depth_tex, p0, 0);
+    let centre = tile[u32(base.y * TILE + base.x)];
+    var nearest_depth = centre.w;
     var nearest_p = p0;
     var farthest_depth = nearest_depth;
     var farthest_p = p0;
@@ -453,32 +514,31 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     {% for dy in 0..3 %}
     {% for dx in 0..3 %}
     {
+        // One tap of the unrolled 3x3 (weight w{{ dx }}.x * w{{ dy }}.y).
         let p = clamp(p0 + vec2<i32>({{ dx }} - 1, {{ dy }} - 1), vec2<i32>(0), p_max);
+        let ti = u32((base.y + {{ dy }} - 1) * TILE + base.x + {{ dx }} - 1);
         {% if reactive %}
         // A mask value of exactly 1 marks a HUD pixel (see HUD_REACTIVE). It
         // must not reach its neighbours in any way: not through the reactive
         // max (an aliased halo), not through the reconstruction or the clip
         // box (a HUD-coloured fringe that the history would then keep).
-        let r = textureLoad(reactive_tex, p, 0).r;
+        let r = tile_reactive[ti];
         let keep = select(1.0, 0.0, params.reactive_valid > 0.5 && r >= HUD_REACTIVE);
         {% if dx == 1 && dy == 1 %}r_centre = r;{% endif %}
         reactive = max(reactive, r * keep);
         {% else %}
         let keep = 1.0;
         {% endif %}
-        let t = to_work(sanitize(textureLoad(color_tex, p, 0).rgb));
-        // This sample really sits at p + 0.5 - j (G2: the jitter is removed
-        // here, where the current frame is sampled, never in the vector).
-        let d = vec2<f32>(p) + 0.5 - jitter - r_pos;
-        let w = exp(-params.kernel_sharpness * dot(d, d)) * keep;
-        current += t * w;
+        let s = tile[ti];
+        let y = s.xyz;
+        let w = w{{ dx }}.x * w{{ dy }}.y * keep;
+        current_y += y * w;
         weight_sum += w;
         confidence = max(confidence, w);
-        let y = rgb_to_ycocg(t);
         m1 += y * keep;
         m2 += y * y * keep;
         kept += keep;
-        let z = textureLoad(depth_tex, p, 0);
+        let z = s.w;
         {% if dx == 0 && dy == 1 %}z_left = z;{% endif %}
         {% if dx == 2 && dy == 1 %}z_right = z;{% endif %}
         {% if dx == 1 && dy == 0 %}z_up = z;{% endif %}
@@ -500,13 +560,13 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // No sample kept: every pixel of the 3x3 is HUD, and the pass-through
     // below replaces the result. Keep the arithmetic finite until then.
     if (weight_sum <= 0.0) {
-        current = to_work(sanitize(textureLoad(color_tex, p0, 0).rgb));
+        current_y = centre.xyz;
         weight_sum = 1.0;
-        m1 = rgb_to_ycocg(current);
+        m1 = centre.xyz;
         m2 = m1 * m1;
         kept = 1.0;
     }
-    current = current / weight_sum;
+    var current = max(ycocg_to_rgb(current_y / weight_sum), vec3<f32>(0.0));
 
     // ---- 4.3 Motion vector of the nearest pixel (G1, G3) ----------------
     var v = textureLoad(velocity_tex, nearest_p, 0).xy;
