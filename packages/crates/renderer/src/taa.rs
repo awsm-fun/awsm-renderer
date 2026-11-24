@@ -446,7 +446,11 @@ impl AwsmRenderer {
     /// 10 = previous depth / expected previous depth (0.5 = equal, darker =
     /// something nearer was there), 11 = history length before this frame's
     /// update, 12 = current-frame weight (alpha), 13 = motion-boundary
-    /// factor. `None` returns to [`Self::set_taa_debug_view`]'s view.
+    /// factor, 14 = R dilated / G disocclusion test 1 / B test 2, 15 = R
+    /// alpha >= 0.99 / G motion-boundary term / B clip term, 16 = test 2's
+    /// parts: R depth / G MIXED / B COVERED. Like every view, they need the
+    /// debug variant ([`Self::taa_debug_variant_ready`]). `None` returns to
+    /// [`Self::set_taa_debug_view`]'s view.
     #[doc(hidden)]
     pub fn set_taa_debug_view_raw(&mut self, id: Option<u32>) {
         self.taa.debug_view_raw = id;

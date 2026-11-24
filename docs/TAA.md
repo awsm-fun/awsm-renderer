@@ -48,6 +48,14 @@ mean absolute error in 0-255 display units, lower is better):
 | SMAA | 5.269 | | | |
 | None | 6.078 | | | |
 
+> **TODO (final verification):** this table and the Dreidel table below are
+> round 1's (Karis reference, round-1 resolve). Round 2 (display-linear
+> reference): TAA `taa-thin` converged 0.559 / 1.243 / 1.769 / 2.668 at
+> native / 0.67 / 0.58 / 0.5, MSAA 5.525; SMAA and no AA to re-measure. The
+> cost cells of the mode table (TAA native "resolve 1.03-1.17 ms" is now
+> 1.23-1.39) and the dropout cells (5.0% / 31.8% / 73% are now 4.3% / 7.3% /
+> 14.5%) are round 1's too, and so are the numbers in the bullets below.
+
 The same measurement in the real game (Dreidel Derby at 1920x1435, a frozen
 frame after 32 frames; §7.7):
 
@@ -183,7 +191,9 @@ output pixels per frame.
 
 Two values are constants, not tuning: the clip weight (`CLIP_ALPHA`, 1.0 per
 unit of clip amount) and the reconstruction kernel's exponent
-(`RECONSTRUCTION_SHARPNESS`, 2.29), which the reference capture shares.
+(`RECONSTRUCTION_SHARPNESS`, 2.29 per output pixel squared), which the
+reference capture shares. Below scale 1 the resolve scales it to render
+pixels (§3.7).
 
 ### 2.5 Render scale at runtime
 
@@ -206,8 +216,8 @@ On the next frame, only if the quantised scale changed:
   groups that view them, the HZB pyramid, the light-culling and froxel grids.
   The old textures are destroyed a few frames later, so memory briefly holds
   both sizes. Nothing compiles.
-- **Kept**: the TAA history (output size; the previous depth is carried
-  across), bloom and the effects targets, LOD and coverage LOD (measured in
+- **Kept**: the TAA history (output size; the previous depth and velocity
+  are carried across), bloom and the effects targets, LOD and coverage LOD (measured in
   output pixels, so nothing pops), the jitter cycle (its phase count follows
   the new ratio).
 - **Restarted**: SSR's temporal accumulation (re-converges in about ten
@@ -270,6 +280,14 @@ Views that need TAA data show the normal image when TAA is off.
 | `HistoryOnly` | Only the clipped history side of the blend |
 | `CurrentOnly` | Only this frame's reconstruction |
 
+The views live in a separate variant of the resolve, so the production
+resolve carries no view code (the view branch cost about 0.12 ms at
+1920x1435 even when no view was selected). The variant compiles the first
+time a view is selected; until it is ready, or if it fails to compile, the
+normal image shows. `taa_debug_variant_ready()` is true once it is in use (and
+whenever no view is selected or TAA is off); a test that reads a view waits
+for it. `FreezeJitter` needs no variant.
+
 When a ghost appears, look in this order: `FreezeJitter` (gone? jitter is
 leaking into the vectors), `Velocity` and `ReprojectionError` under the ghost
 (a wrong or undilated vector), `Rejection` (should it have been clipped or
@@ -312,7 +330,11 @@ Not for per-frame use (each allocates and syncs).
 | `set_taa_debug_repeat(n)` | Dispatch the resolve `n` times a frame, for cost measurement: `(T(n) − T(1)) / (n − 1)` |
 | `set_jitter_override(Some(JitterOverride::Fixed(j)))` | Force a camera jitter even with TAA off (the reference capture uses it) |
 
-Hidden harness hooks: `set_taa_debug_view_raw` (internal views 10-13),
+Hidden harness hooks: `set_taa_debug_view_raw` (internal views: 10 previous
+depth against expected, 11 history length before this frame, 12 current
+weight `alpha`, 13 motion-boundary factor, 14 R dilated / G test 1 / B
+test 2, 15 R `alpha` ≥ 0.99 / G motion-boundary term / B clip term, 16 test 2's
+parts R depth / G MIXED / B COVERED; they use the debug variant, §2.8),
 `set_taa_experimental_tuning` (overrides `CLIP_ALPHA`),
 `set_taa_debug_seed_repeat`, `set_taa_debug_overlay_repeat` (the fallback's
 velocity overlay drawn `n` times), `set_taa_debug_overlay_check(true)` +
@@ -412,8 +434,15 @@ separate buffers needed 12 in the largest variant. The region bases and
   range gets `prev = current` (G10): an object that appears has zero motion,
   never a stale vector from a recycled slot. A relocated instancer block gets
   one frame of zero motion.
-- The previous depth (a depth-format copy, bound as `texture_depth_2d`) is
-  copied right after the resolve, its only reader.
+- The previous depth (a depth-format copy, bound as `texture_depth_2d`) and
+  the previous velocity (a copy of the velocity target, same format) are
+  copied right after the resolve, their only reader. On the fallback path
+  that is after the velocity overlay (§3.10), so both paths keep the same
+  vectors. The pair has one size; it is reallocated together on a render-size
+  or velocity-format change and keeps last frame's data until the first copy
+  at the new size.
+- The TAA pass keeps the last two unjittered view-projections for the
+  resolve's motion test (§3.5, step 5).
 - On the 32-byte fallback all of it is kept when the velocity overlay exists
   (§3.10); without the overlay only the transforms are.
 - With TAA off none of this exists and nothing is copied.
@@ -423,45 +452,116 @@ separate buffers needed 12 in the largest variant. The region bases and
 One compute pass at post size (8x8 workgroups, one invocation per output
 pixel), after the SSR composite and before bloom, effects and display.
 Inputs: the render-size composite (lit HDR), depth, velocity, reactive mask,
-previous depth, previous history, the camera uniform. Outputs: this frame's
-history (`rgba16float`, post size, colour in the tonemapped working space, `.a`
-= history length `n`) and `taa_out` (linear HDR, post size). Every 3x3 loop is
+last frame's depth and velocity (§3.4), last frame's history, the camera
+uniform. Outputs: this frame's history (`rgba16float`, post size, `.a` =
+history length `n`) and `taa_out` (linear HDR, post size). Every 3x3 is
 unrolled at template time; no `switch`, no per-invocation arrays (the Apple
 GPU rules).
+
+**Two colour spaces (G11).** Everything that averages (the reconstruction,
+the clip box, the blend) works in the display's own space, `W =
+D(exposure · c)`, where `D` is the curve the display pass applies:
+
+- Khronos PBR Neutral, exactly as the display applies it, with its exact
+  inverse;
+- ACES (Narkowicz) without its final clamp to 1: the rational is monotonic,
+  so it inverts, and highlights above white stay distinct for bloom;
+- with `ToneMapping::None`, the Karis map `c / (1 + max(c))` of the exposed
+  colour (the display's clip at white has no inverse).
+
+The tonemapper is a template axis of the resolve: changing it with TAA on
+rebuilds only the resolve pipeline and keeps the history. Exposure is a
+uniform.
+
+The history is **stored** in the Karis map of unexposed linear HDR, as
+before: it does not depend on exposure or the tonemapper, and keeps `f16`
+precision for highlights. It is fetched, un-mapped and moved to `W`; the
+result is moved back, Karis-mapped, rounded to `f16` (`taa_round_f16`; a
+truncating store would darken the history every frame) and stored.
+
+Why: tonemapping after averaging scene-linear colour (or Karis-weighted
+colour) is not what the eye sees, and every high-contrast edge converges to
+a biased colour. Far from any motion, the converged error was 0.570 with
+Karis weights against the oracle's 0.095, and is 0.145 in the display's
+space.
 
 For output pixel `q`:
 
 1. **Where it lands.** `r_pos = (q + 0.5) / O · R`, `p0 = floor(r_pos)`.
-2. **Current colour.** For the 3x3 render pixels around `p0`: tonemap
-   (`c / (1 + max(c))`, the Karis weighting, G11), weight by
-   `exp(−2.29 · d²)` where `d` is the distance from `r_pos` to where the sample
-   really is (`p + 0.5 − j`), accumulate the weighted colour and the
-   unweighted YCoCg moments. `confidence` = the largest weight (1 when a
-   sample landed on the pixel centre).
-3. **Dilated vector (G3).** The vector of the nearest-depth pixel of the 3x3.
-   The vector of the farthest is kept too, for the motion-boundary test.
+2. **Current colour, from a tile.** The workgroup first loads the 10x10
+   render texels its 64 pixels' 3x3s touch into workgroup memory (`W` colour
+   as YCoCg and depth, plus the reactive value in the reactive variant), in
+   two rounds, followed by a barrier that every invocation reaches before
+   out-of-bounds pixels return. Each texel is read and converted once,
+   instead of up to nine times. For the 3x3 around `p0`, the weight is
+   `exp(−k · d²)`, where `d` is the distance from `r_pos` to where the sample
+   really is (`p + 0.5 − j`). The kernel is separable, so 6 `exp` per pixel.
+   `k = 2.29 · (O / R)²` (§3.7). The pass accumulates the weighted colour
+   (YCoCg in `W`) and the unweighted YCoCg moments. `confidence` = the
+   largest weight. Opaque-path HUD pixels (§3.8) take no part.
+3. **Dilated vector (G3).** The vector of the nearest-depth pixel of the
+   3x3. The vector of the farthest is kept too, for the motion-boundary
+   term. With sky everywhere in the 3x3, the vector is the camera's rotation.
 4. **History fetch (G4).** `uv_hist = uv_q − v`. Off screen: reset this
    pixel. Otherwise a 5-tap Catmull-Rom fetch (clamped to ≥ 0), `n` from the
    nearest texel.
-5. **Disocclusion (G6).** Last frame's linear depth at `uv_hist` (2x2
-   footprint) against the expected previous distance of this surface point;
-   flagged when something nearer was there, with relative slack
-   `disocclusion_threshold`. Both distances are previous-frame distances,
-   so a fast dolly does not trip it. A second test on the pixel's **own**
-   surface: a pixel beside a moving object takes the object's vector, so the
-   first test would compare the object with itself. For a surface that did
-   not move, the expected distance is exact and the slack is the surface's
-   depth slope across a pixel. Away from nearer surfaces this test takes the
-   farthest depth of the previous 2x2 (was the surface visible anywhere in
-   it); beside a nearer surface it fires only when that surface moves relative
-   to the pixel's own, and then takes the nearest. Errors fall on the safe
-   side: a false reveal costs one frame of aliasing, a missed one a ghost.
-6. **Variance clip (G5).** `mean ± γ·σ` of the plain current 3x3 in YCoCg of
-   the tonemapped colour; the history is clipped along the line to the mean
-   (never a per-channel clamp). `γ` goes from `gamma_still` to `gamma_moving`
-   with speed. The box has a floor of 1.5e-3, a few steps of the history's
-   `rgba16float` quantisation. `clip_amount` = how much of the history was
-   cut. The clip is unconditional; a test pins it.
+5. **Disocclusion (G6).** Both tests compare two previous-frame distances:
+   where the surface point was last frame (through last frame's
+   view-projection) against what last frame's depth buffer holds where its
+   history is fetched, so a fast dolly does not trip them. A test fires only
+   when something nearer was there. Errors fall on the safe side: a false
+   reveal costs one frame of aliasing, a missed one a ghost.
+   - **Test 1**, the surface whose vector the pixel uses: the nearest depth
+     of the previous 2x2 footprint against its expected distance, relative
+     slack `disocclusion_threshold`.
+   - **Test 2**, the pixel's **own** surface, with its own depth and vector.
+     Test 1 alone has two blind spots on the strip a moving object has just
+     left. A pixel beside the object takes the object's vector, so test 1
+     compares the object with itself. And an object resting on the surface
+     behind it is within the slack of that surface near the contact line.
+     For a surface that did not move (its vector is its static reprojection,
+     within 0.1 px), the expected distance is exact, and the slack shrinks to
+     twice the surface's depth slope across a pixel, plus 0.002.
+     - *Beside a nearer surface that moves relative to this one* (dilated,
+       vectors differ by more than 0.25 px): the nearest depth of the own
+       footprint.
+     - *Not dilated*: the farthest depth of the footprint. Was this surface
+       visible anywhere in it? A static edge or a wire that the jitter moves
+       across the footprint is not a reveal.
+     - *Dilated without relative motion* (beside a static nearer surface, or
+       on a slope): no depth test. The jitter sweeps such edges across the
+       footprint every cycle, and resetting there makes thin geometry
+       shimmer.
+     - **Motion test**, for a static own surface where depth did not fire:
+       last frame's vectors (§3.4) at the nearest and the farthest texel of
+       the footprint. It flags *MIXED* when the two differ by more than
+       `max(0.25 px, 25%` of the pixel's own speed`)`: two surfaces moving
+       differently shared the footprint, so its history is a blend of them.
+       It flags *COVERED* when every texel was nearer than this surface and
+       the farthest one moved unlike this surface did last frame. That
+       motion is the surface's static motion through the last two unjittered
+       view-projections; comparing against this frame's motion instead
+       fires on the whole screen when the camera starts or turns. Sky
+       texels, and texels without a vector (cleared to 0, or the `(2, 2)`
+       "behind last camera" marker), take no part. The motion test is what
+       catches the contact line under a moving object, where depth cannot
+       tell the two surfaces apart: on `taa-motion`, the missed first-frame
+       ring pixels drop from 7,548 to 1,791. Under camera motion test 2
+       fires on 1-px lines along parallax silhouettes, about half of them by
+       motion (about 1,100 pixels a frame in all on the `taa-orbit` strafe at
+       960x720). In a still scene it fires nowhere.
+6. **Variance clip (G5).** `mean ± γ·σ` of the plain current 3x3 in YCoCg
+   of `W`; the history is clipped along the line to the mean (never a
+   per-channel clamp). `γ` goes from `gamma_still` to `gamma_moving` with
+   speed. `clip_amount` = how much of the history was cut. The clip is
+   unconditional; a test pins it.
+   The box has a floor: `max(1.5e-3, three f16 steps of the stored history at
+   the box mean, measured in W)`. The history is quantised in the stored
+   space, and without the floor a flat area reads its own rounding as a
+   clipped history and forgets it. Under Khronos at exposure 1, the
+   three-step term is above 1.5e-3 for grey between HDR ~0.6 and ~0.85 (up to
+   2.1e-3, just below the curve's shoulder) and on bright saturated colours
+   (up to ~1e-2). Elsewhere it is below 1.5e-3.
 7. **Blend weight (G7).** History cap: the native or upscaling cap (§3.7),
    shortened towards `max_history_moving` with speed. Then
 
@@ -474,7 +574,7 @@ For output pixel `q`:
    alpha  = max(alpha, clip_amount · CLIP_ALPHA)
    alpha *= mix(0.3, 1, confidence)      // upscaling only
    alpha  = 1 on reset, off screen, disoccluded
-   result = mix(history_clipped, current, alpha)
+   result = mix(history_clipped, current, alpha)               // in W
    n_next = min(n + 1, cap) · (1 − clip_amount)                // 1 on reset
    ```
 
@@ -484,8 +584,10 @@ For output pixel `q`:
    speed-dependent cap exists because history resampled every frame softens
    a little each time; with a 16-frame memory, 60% of that softness was still
    there 8 frames after the camera stopped.
-8. **Outputs.** History = `(result, n_next)`, `taa_out = untonemap(result)`.
-   A non-finite result writes the current colour with `n = 0`.
+8. **Outputs.** `taa_out = W⁻¹(result)`; history = (the Karis map of
+   `taa_out`, rounded to `f16`, `n_next`). A non-finite result (NaN, or more
+   than 0.1% above the curve's maximum) writes the current colour with
+   `n = 0`.
 
 Reset frames (§2.7) write the current colour with `n = 1` everywhere.
 
@@ -512,8 +614,11 @@ trust, 1 = ignore. The resolve takes the max over the same 3x3.
 ### 3.7 Upscaling
 
 - The scene renders at `R = O · render_scale`; the resolve reconstructs `O`.
-  Kernel distances are in render pixels, so the kernel does not change with
-  scale.
+  The reconstruction kernel is the reference's, `exp(−2.29 · d²)` with `d` in
+  output pixels, so in render pixels it is narrower below scale 1:
+  `k = 2.29 · (O / R)²`. A kernel one render pixel wide blurred the upscaled
+  image by 1 / scale: converged `taa-thin` read 2.68 at 0.67 and 5.46 at 0.5
+  with it, against 1.24 and 2.67 now (MSAA at native: 5.53).
 - **History cap** = `max_history_native` × (output pixels / render pixels), up
   to `max_history_upscaling`: 35.6 frames at 0.67, 64 at 0.5. The history
   then holds about as many render samples per output pixel as at native. A
@@ -522,11 +627,15 @@ trust, 1 = ignore. The resolve takes the max over the same 3x3.
   native, 1.74 at 0.67, 2.25 at 0.5. A feature smaller than a render pixel is
   seen only by some jitter phases, and the native box clipped it out on the
   frames that missed it: at 0.67 one isolated feature in six disappeared from a
-  still image, one in twenty with the wider box. The cost is about 12% more
-  error on the strip a moving object leaves.
+  still image, one in twenty with the wider box (render-pixel kernel). With
+  both the wider box and the output-pixel kernel: 4.3% at 0.67, 7.3% at 0.58,
+  14.5% at 0.5. The cost is about 12% more error on the strip a moving object
+  leaves.
 - **Confidence**: with no render sample near the output pixel this frame, the
-  current weight is scaled down (`mix(0.3, 1, confidence)`). Measured, it is
-  near 1 on 95% of the image and barely modulates.
+  current weight is scaled down (`mix(0.3, 1, confidence)`). Measured with
+  the render-pixel kernel, it was near 1 on 95% of the image and barely
+  modulated. **TODO (final verification):** re-measure with the output-pixel
+  kernel, which is narrower and so lowers `confidence`.
 - **Texture LOD bias** `log2(render_scale) + mip_bias_extra` (§3.9).
 
 ### 3.8 HUD
@@ -651,12 +760,13 @@ pixel for pixel on the six baseline scenes (36/36). The camera uniform is 96
 bytes larger in every mode.
 
 Memory with TAA on (from the formats; at 1920x1435 output and native scale,
-2.76 M pixels): velocity 4 B/px, reactive 1 B/px, previous depth 4 B/px at
-render size; two history textures and `taa_out` at 8 B/px each at post size;
+2.76 M pixels): velocity 4 B/px, reactive 1 B/px, previous depth 4 B/px,
+previous velocity 4 B/px at render size; two history textures and `taa_out` at 8 B/px each at post size;
 previous-state copies at the size of the current buffers (112 B per
 transform). On the fallback path the velocity texture is 8 B/px; its
 velocity overlay allocates nothing of its own (bind groups and pipelines
-only) and exists only on that path.
+only) and exists only on that path. The previous velocity follows the
+velocity format (8 B/px on the fallback path).
 
 ## 4. The ghosting rules
 
@@ -667,15 +777,15 @@ earlier forward-renderer TAA (removed in `c42b6805`) broke most of these.
 |---|---|---|---|---|
 | G1 | Wrong motion vectors | A vector is the same surface point's screen motion, including camera, object, instance, skin, morph and vertex-hook motion | geometry pass second vertex evaluation, `prev_state` | device: analytic vectors within 0.02 px and supersampled reprojection error per scene; `taa_prev_functions_mirror_current`, `taa_motion_vector_divides_per_fragment`; motion-history byte-exact self-check |
 | G2 | Jitter in the vectors | Unjittered matrices on both ends; jitter removed where the current frame is sampled | camera uniform, resolve step 2 | `taa_resolve_shader_validates` (sample at `p + 0.5 − j`); jitter unit tests in `taa.rs`; device G2 vector rows |
-| G3 | Edge pixels with background velocity | Dilate: nearest-depth vector of the 3x3 | resolve step 3 | `taa_resolve_shader_validates` (depth convention); trail tests |
+| G3 | Edge pixels with background velocity | Dilate: nearest-depth vector of the 3x3 (opaque-path HUD pixels excluded) | resolve step 3 | `taa_resolve_shader_validates` (depth convention, the tile's depth); trail tests |
 | G4 | Blurry history accumulates | 5-tap Catmull-Rom, never plain bilinear | resolve step 4 | `taa_resolve_shader_validates` (5 taps); stop and pan tests |
-| G5 | Clip box too big | Variance clip in YCoCg of tonemapped colour, clip to mean, unconditional | resolve step 6 | `taa_resolve_shader_validates` (clip lines at top level of `cs_main`); flicker and trail tests |
-| G6 | Revealed background keeps old foreground | Depth disocclusion test, plus the own-surface test | resolve step 5 | trail tests, static false-flag counts (§7.2) |
+| G5 | Clip box too big | Variance clip in YCoCg of the working-space colour, clip to mean, unconditional; floor at the stored history's quantisation | resolve step 6 | `taa_resolve_shader_validates` (clip lines and the floor at top level of `cs_main`); flicker and trail tests |
+| G6 | Revealed background keeps old foreground | Depth disocclusion test; the own-surface test by depth, and by last frame's motion where depth cannot tell (contact lines) | resolve step 5, previous velocity copy (§3.4) | trail tests (oracle and ghost lines), static false-flag counts (§7.2), `?mode=flag-count` |
 | G7 | Memory too long | `1/(n+1)` with a cap (16 native, scaled when upscaling, shortened with speed) | resolve step 7 | stop, trail and flicker tests; `history_cap` unit tests |
 | G8 | Things with no correct vector | Reactive mask: transparents, particles, lines, reactive materials, HUD | transparent pass target, seed draw | `taa_reactive_transparent_and_line_shaders_validate`, `taa_reactive_seed_validates_and_reads_the_right_meta_words`; phase-3 tests |
 | G9 | History reused across a cut | Resets on cuts, loads, size and AA changes, camera-jump guard | `reset_temporal_history`, renderer-side resets | cut tests (flagged and unflagged); `jump_guard` unit test |
 | G10 | Objects appearing or teleporting | No valid previous value means prev = current | frame-start fix-ups, `reset_motion_history` | history burst / density / reset device tests; `fresh_ranges_*` unit tests |
-| G11 | Blending in linear HDR | Blend and clip in tonemapped space | resolve steps 2, 6 | `taa_resolve_shader_validates` |
+| G11 | Averaging in the wrong space | Reconstruct, clip and blend in the display's own space (the tonemapper's curve after exposure); store the history in the Karis map | resolve steps 2, 4, 6-8 | `taa_resolve_shader_validates` (the tile and the history converted with `to_work` before the moments; the curve per tonemapper), `taa_working_space_curves_invert` |
 | G12 | Sharpening the errors | Sharpening separate, optional, off in ghosting tests | RCAS pass | `rcas_shader_validates_and_keeps_the_apple_rules`, RCAS unit tests |
 
 Two things look like ghosting but are not: blur when nothing moves (jitter,
@@ -718,30 +828,34 @@ measure flicker too).
 
 ## 6. Known limits
 
-- **Trails at the silhouette of a moving object.** On the first frame a pixel
-  is uncovered, no history method can know its colour: even an oracle with
-  perfect disocclusion has maxima of 18-39 at that age on the test scenes
-  (§7.2). TAA's band error outside a 1.5 px ring around the silhouette is
-  close to 2 (1.999 on `taa-motion`); inside the ring it is 12-16. The 05
-  bound "max < 16 at every frame" is not reachable by any 1-sample-per-pixel
-  temporal method on a high-contrast checker.
-- **Contact pixels.** Where a moving object touches a surface, the two depths
-  are within the disocclusion slack: worst max 127 on `taa-motion` against
-  the oracle's 16.
+- **The first frame a pixel is uncovered.** No history method can know its
+  colour. On `taa-motion` the trail band is made only of such pixels on two
+  frames (k31 and k211). There even an oracle with perfect disocclusion
+  knowledge reads a band mean of 3.81 and 2.17, so 05's "mean < 2 at every
+  frame" fails there for any 1-sample-per-pixel temporal method. TAA reads
+  3.79 at k31. Every other frame of `taa-motion`, and every frame of
+  `taa-reveal` and `taa-skin`, is below 2 (§7.2).
+- **The maximum on a moving silhouette.** Within 1.5 px of the silhouette the
+  band mean is 9.2 on `taa-motion` (1.70 outside it). On some frames the band
+  maximum is above the larger of MSAA 4x's and no-AA's, which is 05's
+  restated bound: 16 of 208 frames on `taa-motion` (worst max 89), 4 of 178
+  on `taa-reveal`, 42 of 179 on `taa-skin`. 05's original "max < 16" is not
+  reachable: the oracle reads 18-39 on first-frame pixels.
+- **Contact lines on a moving surface.** Where an object rests on a surface,
+  depth cannot separate the two. The motion test (§3.5) catches the contact
+  line when the surface under the object is static; on a surface that itself
+  moves (an object riding a moving platform) only the depth tests run.
+  Ghosts that remain, of every kind: on `taa-motion`, 341 of 3.58 M band
+  pixel-frames are worse than both no AA and the oracle by more than 16.
 - **Transparent and particle trails.** Particles, glass, UV-flow water and
   lines over a moving background trail for every AA mode, TAA included
   (§7.2); the reactive weight 0.3 trades some of that for still-image
-  stability of glass and water. At 0.67 these trails are about twice the
-  native ones (band over the content 23.63 against 12.68; the content's own
-  trail 18.43 against 5.83), and still-image flicker over that scene reaches
-  p99 4, the bound.
-- **Skinned meshes** trail at the silhouette more than rigid ones (worst
-  band mean 7.4 on `taa-skin`, 1.4 outside the ring) and their converged
-  image is worse than MSAA's (0.341 against 0.168): a walking character's
-  silhouette changes shape every frame.
-- **Upscaled thin detail.** At 0.67 about 5% of isolated sub-render-pixel
-  features drop out of a still image, at 0.58 about 32%, at 0.5 about 73%;
-  thin text and wires look softer than native.
+  stability of glass and water. Native: band over the content 11.85, the
+  content's own trail 3.84 (worst frames). **TODO (final verification):** the
+  0.67 numbers (round 1: 23.63 and 18.43, still-image flicker p99 4).
+- **Upscaled thin detail.** Isolated features smaller than a render pixel
+  still drop out of a still image sometimes: 4.3% at 0.67, 7.3% at 0.58,
+  14.5% at 0.5.
 - **Opaque-path HUD below scale 1** is rasterised at render size and soft
   (§3.8): at 0.67 its pixels differ from a TAA-off render by 0.755 on average
   (worst frame 0.887, max 127), against 0.068 at native. Transparent-pipeline
@@ -757,13 +871,16 @@ measure flicker too).
   more aliased, most visibly at upscaled scales on high-contrast silhouettes.
   In Dreidel Derby every dreidel body is such a material, and the bodies hold
   most of TAA's remaining mid-round error (§7.7). Remedy: `temporal: stable`
-  on materials whose time dependence is subtle.
-- **Bright emissive highlights.** On the Dreidel Derby title screen about 30%
-  of TAA's error sits on the menorah's candle flames and brass highlights;
-  there TAA native is only narrowly better than MSAA and worse than SMAA and
-  no AA (§7.7).
-- **The resolve costs 1.03-1.17 ms** at 1920x1435 output, about 1.8x the
-  0.6 ms the plan targeted (§7.6).
+  on materials whose time dependence is subtle. **TODO (final
+  verification):** re-check the Dreidel Derby claim against the final §7.7.
+- **The resolve costs 1.23 ms** (`kitchen-sink`) to **1.39 ms**
+  (`taa-thin`) at 1920x1435 output, 1.18-1.35 ms at 0.67: about 2x the
+  0.6 ms the plan targeted (§7.6). Where it goes, measured by removing each
+  part (`kitchen-sink`, `taa-thin`): disocclusion 0.31-0.42 ms (two static
+  reprojections, up to 8 footprint loads, about 10 depth linearisations, the
+  motion test about 0.06); Catmull-Rom history 0.19; the clip-box floor's
+  curve and inverse 0.07-0.09; the display curve elsewhere 0.01-0.03; the
+  rest (tile loads, 3x3, clip, blend, two stores) about 0.6.
 - **The 32-byte fallback** on a device with fewer than 10 storage buffers per
   stage loses vertex-hook motion (those meshes are reactive instead), and
   below 7 also skin, morph and per-instance motion (§3.10). With 10 or more
@@ -792,6 +909,11 @@ to `3c975597`); phase 4 from `19acddee`; phase 5 from `3c975597`; Balanced
 0.58, phase 3 at 0.67, frame cost and Dreidel Derby from `0d878578` (its TAA
 frames are bit-identical to `3430bf4b`, 30/30).
 
+> **TODO (final verification):** every table in this section predates the
+> round-2 resolve (`c1932dfc`..`47ade2cc`: working space, output-pixel
+> kernel, motion test, tile, debug variant) and is to be replaced from the
+> final runs, display-linear reference deciding, Karis beside it.
+
 ### 7.1 The reference, and which space decides
 
 A reference frame for frame `k`: freeze time at `k`, render 64 jittered frames
@@ -803,10 +925,14 @@ Two averaging spaces were tried. Averaging in display-linear space, the
 converged TAA image at the `taa-orbit` stop view sits at 1.185 from the
 reference: the stop test (< 1) could not pass against it even with a perfect
 history. Averaging with the resolve's own Karis weights (tonemapped space)
-puts the same image at 0.819. **Decision:** the Karis-space reference decides
-("what a perfect TAA converges to with the resolve's weights"), and the
-linear-space result is reported next to it. The only verdict that differs is
-the `taa-orbit` stop test (Karis 0.773 PASS, linear 1.080 FAIL).
+puts the same image at 0.819. Round 1 let the Karis-space reference decide
+("what a perfect TAA converges to with the resolve's weights"). The gap was
+the resolve's, not the reference's: averaging Karis-weighted colour biases
+high-contrast edges. Since round 2 the resolve averages in the display's
+space (§3.5), and the `taa-orbit` stop view reads 0.344 against the
+display-linear reference. **Decision (round 2):** the display-linear
+reference decides, which is 05's literal reading and now also the resolve's
+own space; the Karis-weighted result is reported next to it.
 
 The reference's own floor (64 reference phases against an 8-phase resolve
 model): 0.450 on `taa-thin`, 0.114 on `taa-motion`.

@@ -769,13 +769,14 @@ fn cs_main(
     );
     let history_y = rgb_to_ycocg(history_rgb);
     let to_history = history_y - mean;
-    // The floor: a few steps of the STORED history's rgba16float
-    // quantisation, in working-space units, or a flat area reads its own
-    // rounding as a clipped history and forgets everything. 1.5e-3 covers it
-    // up to an HDR value of about 9 (the display curve's slope is <= 1, so
-    // a stored step is at most ~8e-4 there); above, a stored step grows to
-    // 3e-3 near white, so the floor follows three steps of the stored value
-    // at the box mean.
+    // The floor: three steps of the STORED history's rgba16float
+    // quantisation at the box mean, in working-space units, and at least
+    // 1.5e-3, or a flat area reads its own rounding as a clipped history and
+    // forgets everything. The three-step term depends on the colour: under
+    // Khronos at exposure 1 it passes 1.5e-3 for grey between HDR ~0.6 and
+    // ~0.85 (up to 2.1e-3 just below the shoulder, where the curve is still
+    // linear and the Karis step is already coarse) and on bright saturated
+    // colours (up to ~1e-2, through the desaturation); elsewhere it is below.
     let mean_linear = from_work(max(ycocg_to_rgb(mean), vec3<f32>(0.0)));
     let mean_peak = max(max3(mean_linear), 1.0e-6);
     let t_peak = max3(tonemap(mean_linear));
