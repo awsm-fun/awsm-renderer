@@ -2363,6 +2363,12 @@ impl Meshes {
     }
 
     /// Returns the resource key for a mesh.
+    /// The mesh is wired to its GPU geometry resource (and has mesh meta). A
+    /// mesh bound during a load is not until the commit's `resolve_geometry`.
+    pub fn is_wired(&self, mesh_key: MeshKey) -> bool {
+        self.mesh_to_resource.contains_key(mesh_key)
+    }
+
     pub fn resource_key(&self, mesh_key: MeshKey) -> Result<MeshResourceKey> {
         self.mesh_to_resource
             .get(mesh_key)

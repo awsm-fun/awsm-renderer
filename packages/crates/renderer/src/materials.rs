@@ -136,47 +136,57 @@ impl AwsmRenderer {
     /// with each clip before inserting it (the scene loader and the editor
     /// do). Sticky: removing the clip later leaves the materials reactive.
     /// No effect without TAA beyond the flag.
+    ///
+    /// Every target is marked before any mesh meta is rewritten, so a mesh
+    /// that cannot be refreshed never leaves a later target unmarked. During
+    /// a load the meshes are bound but not yet wired to their geometry; their
+    /// meta is written at the commit, from the class set here.
     pub fn mark_animated_materials_reactive(
         &mut self,
         group: &crate::animation::AnimationClipGroup,
     ) -> crate::error::Result<()> {
         use crate::animation::AnimationTarget;
-        for channel in &group.channels {
-            match channel.target {
+        let targets: Vec<AnimatedMaterialTarget> = group
+            .channels
+            .iter()
+            .filter_map(|channel| match channel.target {
                 AnimationTarget::BuiltinParam { material, .. }
                 | AnimationTarget::TextureUv { material, .. }
-                | AnimationTarget::Uniform { material, .. }
-                    if self.materials.temporal(material) == MaterialTemporal::Auto =>
-                {
-                    self.set_material_temporal(material, MaterialTemporal::Reactive)?;
+                | AnimationTarget::Uniform { material, .. } => {
+                    Some(AnimatedMaterialTarget::Material(material))
                 }
-                AnimationTarget::SharedUniform { shader, .. }
-                    if self.materials.custom_temporal(shader) == MaterialTemporal::Auto =>
-                {
-                    self.set_custom_material_temporal(shader, MaterialTemporal::Reactive)?;
+                AnimationTarget::SharedUniform { shader, .. } => {
+                    Some(AnimatedMaterialTarget::Shader(shader))
                 }
-                _ => {}
-            }
-        }
-        Ok(())
+                _ => None,
+            })
+            .collect();
+        mark_targets_reactive(self, &targets)
     }
 
-    /// Rewrites the mesh meta of every mesh using one of `materials`.
+    /// Rewrites the mesh meta of every mesh using one of `materials`. A mesh
+    /// not yet wired to its geometry (bound during a load) is skipped: its
+    /// meta is written when the commit wires it, from the materials' current
+    /// class. Any other failure does not stop the rest; the first is
+    /// returned.
     fn refresh_temporal_meta(&mut self, materials: &[MaterialKey]) -> crate::error::Result<()> {
-        let users: Vec<crate::meshes::MeshKey> = self
+        let users: Vec<(crate::meshes::MeshKey, bool)> = self
             .meshes
             .iter()
             .filter(|(_, mesh)| materials.contains(&mesh.material_key))
-            .map(|(mesh_key, _)| mesh_key)
+            .map(|(mesh_key, _)| (mesh_key, self.meshes.is_wired(mesh_key)))
             .collect();
-        for mesh_key in users {
-            self.meshes.refresh_meta_for_mesh_public(
-                mesh_key,
-                &self.materials,
-                &self.transforms,
-            )?;
+        let (not_wired, first_err) = refresh_each(users, |mesh_key| {
+            self.meshes
+                .refresh_meta_for_mesh_public(mesh_key, &self.materials, &self.transforms)
+        });
+        if not_wired > 0 {
+            tracing::debug!(
+                "material temporal: {not_wired} mesh(es) not wired to their geometry yet; \
+                 their meta is written at the commit"
+            );
         }
-        Ok(())
+        first_err.map_or(Ok(()), |err| Err(err.into()))
     }
 
     /// Removes a material and frees its slot in the materials storage
@@ -1304,6 +1314,187 @@ fn resolve_temporal_reactive(
             },
             _ => false,
         },
+    }
+}
+
+/// A material an animation clip drives, or a custom material whose uniform
+/// it drives for every instance (`SharedUniform`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AnimatedMaterialTarget {
+    Material(MaterialKey),
+    Shader(MaterialShaderId),
+}
+
+/// What [`mark_targets_reactive`] needs from the renderer (a trait so the
+/// order of marking and refreshing is testable without a GPU).
+pub(crate) trait TemporalMarkingHost {
+    /// The target's temporal setting is `Auto` (not set explicitly).
+    fn temporal_is_auto(&self, target: AnimatedMaterialTarget) -> bool;
+    /// Sets the target reactive; returns the materials whose class changed.
+    fn mark_reactive(&mut self, target: AnimatedMaterialTarget) -> Vec<MaterialKey>;
+    /// Rewrites the mesh meta of the meshes using `changed`.
+    fn refresh(&mut self, changed: &[MaterialKey]) -> crate::error::Result<()>;
+}
+
+/// Marks EVERY `Auto` target reactive, then refreshes the mesh meta once.
+pub(crate) fn mark_targets_reactive(
+    host: &mut impl TemporalMarkingHost,
+    targets: &[AnimatedMaterialTarget],
+) -> crate::error::Result<()> {
+    let mut changed: Vec<MaterialKey> = Vec::new();
+    for &target in targets {
+        if host.temporal_is_auto(target) {
+            for key in host.mark_reactive(target) {
+                if !changed.contains(&key) {
+                    changed.push(key);
+                }
+            }
+        }
+    }
+    if changed.is_empty() {
+        return Ok(());
+    }
+    host.refresh(&changed)
+}
+
+/// Refreshes each `(mesh, wired)` that is wired; skips (and counts) the
+/// rest; a failure does not stop the others. Returns (skipped, first error).
+pub(crate) fn refresh_each<K: Copy, E>(
+    users: Vec<(K, bool)>,
+    mut refresh: impl FnMut(K) -> std::result::Result<(), E>,
+) -> (usize, Option<E>) {
+    let mut not_wired = 0;
+    let mut first_err = None;
+    for (key, wired) in users {
+        if !wired {
+            not_wired += 1;
+            continue;
+        }
+        if let Err(err) = refresh(key) {
+            first_err.get_or_insert(err);
+        }
+    }
+    (not_wired, first_err)
+}
+
+impl TemporalMarkingHost for AwsmRenderer {
+    fn temporal_is_auto(&self, target: AnimatedMaterialTarget) -> bool {
+        match target {
+            AnimatedMaterialTarget::Material(key) => {
+                self.materials.temporal(key) == MaterialTemporal::Auto
+            }
+            AnimatedMaterialTarget::Shader(shader) => {
+                self.materials.custom_temporal(shader) == MaterialTemporal::Auto
+            }
+        }
+    }
+
+    fn mark_reactive(&mut self, target: AnimatedMaterialTarget) -> Vec<MaterialKey> {
+        match target {
+            AnimatedMaterialTarget::Material(key) => {
+                if self.materials.set_temporal(
+                    key,
+                    MaterialTemporal::Reactive,
+                    &self.dynamic_materials,
+                ) {
+                    vec![key]
+                } else {
+                    Vec::new()
+                }
+            }
+            AnimatedMaterialTarget::Shader(shader) => self.materials.set_custom_temporal(
+                shader,
+                MaterialTemporal::Reactive,
+                &self.dynamic_materials,
+            ),
+        }
+    }
+
+    fn refresh(&mut self, changed: &[MaterialKey]) -> crate::error::Result<()> {
+        self.refresh_temporal_meta(changed)
+    }
+}
+
+#[cfg(test)]
+mod animated_temporal_tests {
+    use super::*;
+
+    fn keys(n: usize) -> Vec<MaterialKey> {
+        let mut map: slotmap::SlotMap<MaterialKey, ()> = slotmap::SlotMap::with_key();
+        (0..n).map(|_| map.insert(())).collect()
+    }
+
+    /// A host whose mesh-meta refresh fails, as it does for a mesh that a
+    /// load has bound but not yet wired (`MeshNotFound`).
+    struct Host {
+        marked: Vec<AnimatedMaterialTarget>,
+        refreshed: Vec<Vec<MaterialKey>>,
+        refresh_fails: bool,
+    }
+
+    impl TemporalMarkingHost for Host {
+        fn temporal_is_auto(&self, _: AnimatedMaterialTarget) -> bool {
+            true
+        }
+        fn mark_reactive(&mut self, target: AnimatedMaterialTarget) -> Vec<MaterialKey> {
+            self.marked.push(target);
+            match target {
+                AnimatedMaterialTarget::Material(key) => vec![key],
+                AnimatedMaterialTarget::Shader(_) => Vec::new(),
+            }
+        }
+        fn refresh(&mut self, changed: &[MaterialKey]) -> crate::error::Result<()> {
+            self.refreshed.push(changed.to_vec());
+            if self.refresh_fails {
+                Err(crate::meshes::error::AwsmMeshError::MeshNotFound(Default::default()).into())
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    /// Dreidel Derby's warning: one mesh that cannot be refreshed must not
+    /// leave the clip's later materials unmarked (they would never be
+    /// reactive). Every target is marked, then the meta refreshed once.
+    #[test]
+    fn a_failing_refresh_leaves_no_target_unmarked() {
+        let k = keys(3);
+        let targets = [
+            AnimatedMaterialTarget::Material(k[0]),
+            AnimatedMaterialTarget::Shader(MaterialShaderId::PBR),
+            AnimatedMaterialTarget::Material(k[1]),
+            AnimatedMaterialTarget::Material(k[2]),
+            AnimatedMaterialTarget::Material(k[1]),
+        ];
+        let mut host = Host {
+            marked: Vec::new(),
+            refreshed: Vec::new(),
+            refresh_fails: true,
+        };
+        assert!(mark_targets_reactive(&mut host, &targets).is_err());
+        assert_eq!(host.marked, targets.to_vec());
+        assert_eq!(host.refreshed, vec![vec![k[0], k[1], k[2]]]);
+    }
+
+    /// A mesh bound but not wired is skipped (its meta is written at the
+    /// commit), and a failing mesh does not stop the ones after it.
+    #[test]
+    fn refresh_skips_unwired_meshes_and_continues_after_a_failure() {
+        let mut refreshed = Vec::new();
+        let (skipped, err) = refresh_each(
+            vec![(1, false), (2, true), (3, true), (4, false), (5, true)],
+            |key| {
+                refreshed.push(key);
+                if key == 3 {
+                    Err("mesh 3")
+                } else {
+                    Ok(())
+                }
+            },
+        );
+        assert_eq!(skipped, 2);
+        assert_eq!(err, Some("mesh 3"));
+        assert_eq!(refreshed, vec![2, 3, 5]);
     }
 }
 
