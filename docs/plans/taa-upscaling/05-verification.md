@@ -72,22 +72,34 @@ All colour errors are measured on the tonemapped, display-encoded image in
 - **Trail:** `taa-motion` and `taa-reveal`. The trail band is pixels the
   moving object covered within the last 0.5 s but not now. Error against
   the reference: mean < 2 and max < 16 inside the band, at every frame.
-  **Restated (maximum only; the mean is unchanged).** Round 1 showed "max
-  < 16" to be wrong as written: a perfect-information oracle (exact vectors,
-  exact disocclusion knowledge, the resolve's own kernel) reads a band
-  maximum of 18-39 on the first frame a pixel is uncovered, because one
-  sample cannot be within 16 of a 64-sample reference on a high-contrast
-  edge. The maximum is therefore held against methods that keep no history
-  and so cannot ghost: on every frame, TAA's band maximum may not exceed the
-  larger of MSAA 4×'s and no-AA's maximum on the same band. (That bound is
-  generous on a checker, where no AA aliases by 55-60 on every frame, and
-  strict on a smooth background, 13-33 on `taa-skin`: it follows the
-  content.) The oracle's
-  maximum is printed beside it, and the original "max < 16" number stays in
-  every report (`trail-max-restated`, `trail-max-compare`, `trail-ghosts`).
-  The mean bound is not restated: where the oracle itself is at or above 2
-  (a band made only of first-frame pixels) the line fails and says so
-  (`trail-mean`, `trail-mean-vs-oracle`).
+  **Restated (by the user, after round 2's evidence).** "Mean < 2 and max
+  < 16 at every frame" cannot tell a ghost from what no history method can
+  know. A perfect-information oracle (exact vectors, exact disocclusion
+  knowledge, the resolve's own kernel) reads a band maximum of 18-39 and,
+  where a band holds only first-frame pixels, a mean of 2.2-3.8
+  (`taa-motion` k31, k211): one sample cannot be within those bounds of a
+  64-sample reference on a high-contrast edge. The gate is restated as what
+  it was for: **no ghost**. Every pixel of every frame is classified
+  (`?mode=ghost-track`):
+  - **(a) ghost**: history was used (alpha < 0.99) and the error exceeds
+    both no AA's and the oracle's (MSAA's on moving pixels) by more than 16
+    display units: stale history where it should not be;
+  - **(b) current frame**: the pixel shows this frame only (alpha ≥ 0.99)
+    and has the same excess: kernel bleed or aliasing, gone when the edge
+    moves on;
+  - **(c)** within 16 of the oracle, **(d)** within 16 of no AA.
+
+  (a) pixels are followed along their motion into events. The gate: **in
+  the trail band a moving object leaves and in the still parts of the
+  frame, no (a) event lasts more than one frame** (`ghost-persist`), at the
+  default configuration; and where (b) and (c) pixels are, TAA's mean error
+  is no worse than MSAA 4×'s on the same region. The moving objects' own
+  surfaces are reported, not gated (softness of moving detail, judged
+  against MSAA by its region error). Scenes without a moving object
+  (`taa-orbit`) and the sub-pixel-wire stress scene (`taa-thin`, whose
+  still-image events repeat with the jitter cycle and are covered by the
+  flicker test) are reported only. The original numbers stay in every
+  report (`trail`, `trail-mean`, `trail-max-restated`, `trail-max-compare`).
 - **Stop:** after motion stops, the whole image is within mean < 1 of the
   reference after 8 frames. A slower settle is history surviving that
   shouldn't.
@@ -156,6 +168,13 @@ take (T(N) − T(1)) / (N − 1), because Apple GPUs overlap pass timestamps.
 
 The targets are estimates until phase 2 and 4 measure them. Record the real
 numbers here and keep the table honest.
+
+**Restated (by the user, after round 2's evidence).** The 0.6 ms resolve
+rows and the Dreidel Derby 11.5 ms and 7.5 ms rows are reported, not gates:
+the measured resolve is about twice the estimate for structural reasons
+(`docs/TAA.md` §7.6). The cost gate is: TAA at the shipped default is
+cheaper than MSAA 4× in Dreidel Derby, mid-round and on the title screen.
+Resolve time may be spent where it buys visible quality.
 
 ## 6. When a ghost appears: in this order
 
