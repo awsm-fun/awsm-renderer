@@ -29,6 +29,8 @@ mod hooks;
 mod modes;
 #[cfg(feature = "taa-phase1")]
 mod oracle;
+#[cfg(feature = "taa-fb-overlay")]
+mod overlay;
 #[cfg(feature = "taa-phase1")]
 mod phase3;
 #[cfg(feature = "taa-phase4")]
@@ -313,6 +315,12 @@ pub fn boot() -> Result<(), JsValue> {
             "tune-sweep2" => sweep2::tune_sweep2_mode(&p, &mut r).await,
             #[cfg(feature = "taa-phase1")]
             "trail-oracle" => oracle::trail_oracle_mode(&p, &mut r).await,
+            #[cfg(feature = "taa-fb-overlay")]
+            "overlay-check" => overlay::overlay_check_mode(&p, &mut r).await,
+            #[cfg(feature = "taa-fb-overlay")]
+            "overlay-cost" => overlay::overlay_cost_mode(&p, &mut r).await,
+            #[cfg(feature = "taa-fb-overlay")]
+            "overlay-parity" => overlay::overlay_parity_mode(&p, &mut r).await,
             other => r.emit("mode", false, &format!("unknown mode `{other}`")),
         }
         r.complete();

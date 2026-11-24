@@ -26,6 +26,7 @@ pub mod shared;
 pub mod smaa;
 pub mod ssr;
 pub mod taa;
+pub mod taa_overlay;
 pub mod volumetrics;
 
 use std::ops::Range;
@@ -156,6 +157,10 @@ pub struct RenderPasses {
     /// when the boot AA config has TAA) and DROPPED on disable, textures
     /// destroyed, so TAA off is zero-cost.
     pub taa: Option<crate::render_passes::taa::render_pass::TaaRenderPass>,
+    /// TAA's deforming-mesh velocity overlay on the 32 B/sample fallback.
+    /// `None` unless TAA runs on the fallback path with a storage-buffer limit
+    /// that fits it (`AwsmRenderer::sync_taa_overlay_pass`).
+    pub taa_overlay: Option<crate::render_passes::taa_overlay::render_pass::TaaOverlayRenderPass>,
     pub display: DisplayRenderPass,
 }
 
@@ -1160,6 +1165,7 @@ impl RenderPasses {
             ssr,
             smaa,
             taa,
+            taa_overlay: None,
             display,
         })
     }

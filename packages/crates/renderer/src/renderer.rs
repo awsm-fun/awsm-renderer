@@ -333,6 +333,12 @@ pub struct AwsmRenderer {
     /// Test override of [`AwsmRenderer::taa_velocity_path`] (forces the
     /// phase-5 prep-pass fallback on a capable device). `None` = by limits.
     pub(crate) taa_velocity_path_override: Option<crate::anti_alias::TaaVelocityPath>,
+    /// Test override of the storage-buffer limit behind
+    /// [`AwsmRenderer::taa_fallback_overlay`]. `None` = the device's.
+    pub(crate) taa_fallback_storage_limit_override: Option<u32>,
+    /// TAA test hook: build the fallback's velocity overlay as its debug
+    /// check variant (`set_taa_debug_overlay_check`).
+    pub(crate) taa_overlay_debug_check: bool,
     /// TAA test hook: the motion-history self-check
     /// (`set_debug_motion_history_check`). `None` (no cost) unless enabled.
     pub(crate) motion_check: Option<crate::buffer::history::MotionHistoryDebug>,
@@ -2557,6 +2563,10 @@ impl AwsmRendererBuilder {
         render_texture_formats.prep_velocity_path =
             crate::anti_alias::velocity_path_for_device(&gpu)
                 == crate::anti_alias::TaaVelocityPath::PrepReconstruction;
+        render_texture_formats.fallback_overlay =
+            crate::anti_alias::TaaFallbackOverlay::for_storage_buffer_limit(
+                gpu.device.limits().max_storage_buffers_per_shader_stage(),
+            );
 
         // tracing::info!("Max bind groups: {}", gpu.device.limits().max_bind_groups());
         // tracing::info!(
@@ -3210,6 +3220,8 @@ impl AwsmRendererBuilder {
             render_scale: 1.0,
             taa: crate::taa::TaaRuntime::default(),
             taa_velocity_path_override: None,
+            taa_fallback_storage_limit_override: None,
+            taa_overlay_debug_check: false,
             motion_check: None,
             prep_config,
             post_processing,
@@ -3271,6 +3283,9 @@ impl AwsmRendererBuilder {
         // TAA from the start: the previous-frame buffers turn on (no-op
         // without TAA).
         _self.sync_motion_history();
+        // ...the fallback's velocity overlay (no-op unless TAA runs on the
+        // prep-pass fallback)...
+        _self.sync_taa_overlay_pass().await?;
         // ...and its RCAS pass when the boot config sharpens (a preset other
         // than native). No-op without TAA or at sharpen 0.
         _self.sync_taa_rcas().await?;

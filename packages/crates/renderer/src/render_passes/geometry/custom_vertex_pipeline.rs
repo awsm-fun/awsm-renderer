@@ -293,7 +293,7 @@ fn create_uv0_zero_buffer(ctx: &mut RenderPassInitContext<'_>) -> Result<web_sys
 
 /// The uv0 vertex-buffer layout: `array_stride: 0` so every vertex reads the
 /// single `vec2<f32>` at offset 0 of the shared zero buffer.
-fn uv0_vertex_buffer_layout() -> VertexBufferLayout {
+pub(crate) fn uv0_vertex_buffer_layout() -> VertexBufferLayout {
     VertexBufferLayout {
         array_stride: 0,
         step_mode: None,

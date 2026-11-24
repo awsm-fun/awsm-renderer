@@ -104,6 +104,14 @@ pub struct RenderTextureFormats {
     /// [`Self::taa_prep_velocity`].
     pub prep_velocity_path: bool,
 
+    /// Not a texture format: renderer state kept beside
+    /// [`Self::prep_velocity_path`] (the passes that build against these
+    /// formats need it the same way). Which deforming meshes the fallback's
+    /// velocity overlay covers on this renderer
+    /// (`AwsmRenderer::taa_fallback_overlay`), set by the builder and
+    /// `set_anti_aliasing`; read through [`Self::taa_fallback_overlay`].
+    pub fallback_overlay: crate::anti_alias::TaaFallbackOverlay,
+
     // output from display pass is whatever current gpu texture format is
 
     // For depth testing and transparency
@@ -132,6 +140,7 @@ impl RenderTextureFormats {
             reflection_descriptor: TextureFormat::Rgba8unorm, // SSR reflectivity + spread factors
             reactive: TextureFormat::R8unorm,  // TAA reactive mask (0..1)
             prep_velocity_path: false,
+            fallback_overlay: crate::anti_alias::TaaFallbackOverlay::Off,
             depth: TextureFormat::Depth32float, // More precision for thin/close surfaces
         }
     }
@@ -141,6 +150,19 @@ impl RenderTextureFormats {
     /// TAA is on and its motion vectors come from the prep-pass fallback.
     pub fn taa_prep_velocity(&self, anti_aliasing: &crate::anti_alias::AntiAliasing) -> bool {
         anti_aliasing.taa.is_some() && self.prep_velocity_path
+    }
+
+    /// The fallback's velocity overlay in use: `Off` unless TAA is on with
+    /// the prep-pass fallback.
+    pub fn taa_fallback_overlay(
+        &self,
+        anti_aliasing: &crate::anti_alias::AntiAliasing,
+    ) -> crate::anti_alias::TaaFallbackOverlay {
+        if self.taa_prep_velocity(anti_aliasing) {
+            self.fallback_overlay
+        } else {
+            crate::anti_alias::TaaFallbackOverlay::Off
+        }
     }
 }
 

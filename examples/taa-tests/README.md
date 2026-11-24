@@ -85,6 +85,9 @@ Features: `taa-hooks` (the `awsm_renderer::taa` hooks), `taa-phase1` (the
 | `reactive-sweep` | reactive_transparent × reactive_material (× reactive_gamma_scale with `taa-experimental`) on taa-transparent: static flicker per content region, the 05 §4.4 trail per region, each region's own trail; `particles` flicker. |
 | `scale-change`, `mip-bias`, `governor-hitch`, `sharpen-sweep`, `upscale-sweep`, `gamma-sweep` | Phase 4 (`taa-phase4`; `gamma-sweep` needs `taa-tuning-v2`): see src/phase4.rs. `?scale=` sets the TAA render scale of every TAA session (references stay full resolution). `gamma-sweep&values=…[&motion]`: gamma_still vs thin / isolated-detail error and dropout, static flicker, and with `motion` the taa-motion trail + stop and taa-orbit pan + stop. |
 | `frame-cost` | GPU frame time from the timestamp queries (`profiling::gpu_frame_timing`) over `cost_frames` frames; `runs` interleaved rounds, median + spread per configuration, and a sentinel (first scene, no AA) before and after every run to show drift. `&busy` (use it: Apple GPUs clock down when drained every frame) measures a window of back-to-back frames drained every 4th. `variants=none,msaa,smaa,taa,taa@0.67,taa@0.5,taa@0.67s0.25,taa-fb` (scale, RCAS strength, forced fallback); `repeat=1,8,32` measures the resolve of native TAA by repetition, by frame slope and by "Taa" pass-timestamp slope, and TAA − none − resolve; also the RCAS pass, the transparent pass TAA − none (holds the reactive seed) and fallback − native. Use `size=1920x1435`. Builds against v0.45.0 with `--no-default-features` (none / MSAA / SMAA only). |
+| `overlay-check` | The 32 B/sample fallback's velocity overlay (docs/TAA.md §3.10), forced fallback, built as its debug-check variant: per frame and per mesh the overlay drew, the pixels it wrote (FAIL when a drawn mesh wrote none, or when the shipping depth compare loses any), how many a depth-EQUAL test would have lost, the frames with / without overlay draws, and the reactive-mask pixels at the seed's 0.5. With `&fallback-storage=6` (no overlay) it checks that nothing is built or drawn. `frames` (default 90), `scenes` (default the deforming scenes + `kitchen-sink`). Feature `taa-fb-overlay`. |
+| `overlay-parity` | Two lockstep TAA sessions, geometry path and forced fallback, same jitter: every pixel's vector of the fallback against the geometry path's (PASS: none over max(0.02 px, 1 rg16float ulp)). `&move-instances[=n]` moves every instance of every instanced mesh every n-th frame in both (no bundle writes instance transforms); `&hold` adds a time-frozen frame after each (the first frame after a deformation stops) and reports the overlay's draws there. Feature `taa-fb-overlay`. |
+| `overlay-cost` | The fallback's velocity overlay by repetition (`set_taa_debug_overlay_repeat`, `repeat=1,8`): frame slope and the `TAA Overlay` pass timestamp over a busy window, `runs` rounds. Use `size=1920x1435` and the GPU-timing lock. Feature `taa-fb-overlay`. |
 
 `?tune=name:value,…` overrides TaaTuning fields (and, with `taa-experimental`, `clip_alpha` / `reactive_gamma_scale`) for every TAA session; the session re-applies its TAA config after the scene load (the loader applies the scene's authored AA) and refuses to open unless the renderer holds exactly that config. `?refcache=<name>` caches the 64-phase references in the store (they do not depend on TAA tuning).
 
@@ -92,6 +95,12 @@ URL params: `scenes=a,b`, `aa=msaa,smaa,none,taa`, `size=WxH`,
 `frames=5,60`, `k=30,90`, `runs=2`, `warmup=8`, `phases=64`, `set=…`,
 `tolerance=0`, `keep`, `bundles=<origin>` (default `http://localhost:9084`),
 `store=<origin>` (default `http://localhost:9095`).
+With `taa-fb-overlay`: `&fallback-storage=N` (with `&fallback`) replaces the
+device's storage-buffer limit behind the fallback overlay's tiers
+(`set_taa_fallback_storage_limit_override`: 10+ everything, 7-9 vertex hooks
+stay reactive, < 7 no overlay); `&fallback-early` applies the fallback before
+the scene loads, so its materials (vertex hooks included) register after the
+overlay exists.
 
 ## The TAA-off pixel baseline (zero-cost-off proof)
 

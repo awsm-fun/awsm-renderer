@@ -746,15 +746,18 @@ async fn blur_cache_key(
 
 impl crate::AwsmRenderer {
     /// TAA prep-pass fallback (03 §2.4), once per frame before the meta
-    /// upload: flag the non-rigid meshes that deform now (their prep vector is
-    /// the node's rigid motion only), and unflag the ones at rest (their
-    /// vector is exact). No-op on every other path.
+    /// upload: pick the deforming meshes the velocity overlay redraws this
+    /// frame (`render_passes::taa_overlay`), flag the non-rigid meshes it
+    /// does not cover that deform now (their prep vector is the node's rigid
+    /// motion only), and unflag the ones at rest (their vector is exact).
+    /// No-op on every other path.
     pub(crate) fn update_non_rigid_gates(&mut self) {
         if !self
             .render_textures
             .formats
             .taa_prep_velocity(&self.anti_aliasing)
         {
+            self.meshes.meta.clear_overlay_draws();
             return;
         }
         let deformed = crate::meshes::meta::DeformedThisFrame {
@@ -762,7 +765,31 @@ impl crate::AwsmRenderer {
             morphs: self.meshes.morphs.geometry.take_deformed(),
             instances: self.instances.take_deformed(),
         };
-        self.meshes.meta.update_non_rigid_gates(&deformed);
+        // What the overlay covers: nothing without the pass; vertex hooks
+        // only on a device with the storage buffers for them, and only once
+        // the hook material's overlay variant is compiled (until then the
+        // mesh stays reactive, as without the overlay).
+        let overlay_pass = self.render_passes.taa_overlay.as_ref();
+        let mut vertex_hooks = std::collections::HashSet::new();
+        if let Some(pass) = overlay_pass.filter(|p| p.tier().vertex_hooks()) {
+            for mesh_key in self.meshes.meta.non_rigid_vertex_hook_meshes() {
+                let Ok(mesh) = self.meshes.get(mesh_key) else {
+                    continue;
+                };
+                if pass.has_custom_vertex_variant(
+                    self.materials.canonical_shader_id(mesh.material_key),
+                ) {
+                    vertex_hooks.insert(mesh_key);
+                }
+            }
+        }
+        let coverage = crate::meshes::meta::OverlayCoverage {
+            plain: overlay_pass.is_some(),
+            vertex_hooks: &vertex_hooks,
+        };
+        self.meshes
+            .meta
+            .update_non_rigid_gates(&deformed, &coverage);
     }
 
     /// Cost measurement: dispatch `cs_prep` `n` times per frame (1 =

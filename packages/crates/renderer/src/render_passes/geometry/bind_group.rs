@@ -339,6 +339,30 @@ impl GeometryBindGroupTransforms {
 /// the instanced variant keeps the legacy uniform-with-dynamic-
 /// offset binding (its instance_index ranges would otherwise
 /// collide with neighbouring meshes' meta slots).
+/// Group 2 of a geometry-family draw: the mesh meta as a storage array
+/// (non-instanced under `indirect-first-instance`) or as a uniform with a
+/// dynamic offset. The geometry pass's [`GeometryBindGroupMeta`]; the TAA
+/// velocity overlay's group 2 holds the same meta binding plus its own.
+pub trait GeometryMetaGroups {
+    fn storage_meta_group(&self)
+        -> std::result::Result<&web_sys::GpuBindGroup, AwsmBindGroupError>;
+    fn uniform_meta_group(&self)
+        -> std::result::Result<&web_sys::GpuBindGroup, AwsmBindGroupError>;
+}
+
+impl GeometryMetaGroups for GeometryBindGroupMeta {
+    fn storage_meta_group(
+        &self,
+    ) -> std::result::Result<&web_sys::GpuBindGroup, AwsmBindGroupError> {
+        self.get_storage_bind_group()
+    }
+    fn uniform_meta_group(
+        &self,
+    ) -> std::result::Result<&web_sys::GpuBindGroup, AwsmBindGroupError> {
+        self.get_uniform_bind_group()
+    }
+}
+
 #[derive(Default)]
 pub struct GeometryBindGroupMeta {
     /// Storage-array layout used by the non-instanced pipeline

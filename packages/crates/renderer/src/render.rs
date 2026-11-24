@@ -1513,6 +1513,16 @@ impl AwsmRenderer {
             prep.render_blur(&ctx)?;
         }
 
+        // TAA prep-pass fallback: the deforming meshes' exact vectors over
+        // the prep's rigid reconstruction (`render_passes::taa_overlay`).
+        // `None` on every other path; no render pass on a frame where no
+        // deforming mesh is visible.
+        if let Some(overlay) = self.render_passes.taa_overlay.as_ref() {
+            let _maybe_span_guard =
+                crate::profiling::cpu_scope(&self.logging, "TAA Velocity Overlay", true);
+            overlay.render(&ctx, &self.render_passes.geometry, renderables.opaque)?;
+        }
+
         {
             let _maybe_span_guard =
                 crate::profiling::cpu_scope(&self.logging, "Material Opaque RenderPass", true);

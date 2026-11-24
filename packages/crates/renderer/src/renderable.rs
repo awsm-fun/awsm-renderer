@@ -506,7 +506,49 @@ impl Renderable {
         masked: bool,
     ) -> Result<()> {
         let mesh = ctx.meshes.get(self.key)?;
-        mesh.push_geometry_pass_commands(ctx, self.key, render_pass, geometry_bind_groups, masked)
+        // The TAA geometry-target pipelines read last frame's instance
+        // transforms (the fallback's geometry pipelines do not).
+        let prev_instances =
+            ctx.render_texture_views.velocity.is_some() && !ctx.render_texture_views.prep_velocity;
+        mesh.push_geometry_pass_commands(
+            ctx,
+            self.key,
+            render_pass,
+            &geometry_bind_groups.meta,
+            masked,
+            prev_instances,
+        )
+    }
+
+    /// Pushes this renderable's draw into the TAA fallback's velocity overlay
+    /// (`render_passes::taa_overlay`): the same draw as the geometry pass
+    /// (same buffers, LOD cut and indirect arguments, so the same triangles
+    /// and ids), with the overlay's group 2.
+    pub(crate) fn push_taa_overlay_commands(
+        &self,
+        ctx: &RenderContext,
+        render_pass: &RenderPassEncoder,
+        meta: &dyn crate::render_passes::geometry::bind_group::GeometryMetaGroups,
+        custom_vertex_uv0: Option<&web_sys::GpuBuffer>,
+    ) -> Result<()> {
+        let mesh = ctx.meshes.get(self.key)?;
+        match custom_vertex_uv0 {
+            Some(uv0) => mesh.push_geometry_custom_vertex_pass_commands(
+                ctx,
+                self.key,
+                render_pass,
+                meta,
+                uv0,
+            ),
+            None => mesh.push_geometry_pass_commands(
+                ctx,
+                self.key,
+                render_pass,
+                meta,
+                self.geometry_masked_render_pipeline_key.is_some(),
+                true,
+            ),
+        }
     }
 
     /// Returns the masked (alpha-tested) geometry pipeline key, if this mesh's
@@ -544,7 +586,7 @@ impl Renderable {
             ctx,
             self.key,
             render_pass,
-            geometry_bind_groups,
+            &geometry_bind_groups.meta,
             uv0_zero_buffer,
         )
     }

@@ -133,6 +133,31 @@ impl Session {
             features_for(&opts.scene),
         )
         .await?;
+        // `?fallback&fallback-early`: switch to the fallback (and its velocity
+        // overlay) BEFORE the scene loads, so every material — vertex hooks
+        // included — is registered after the overlay exists (its hook variants
+        // then compile at the load's commit, not at the overlay's build).
+        #[cfg(feature = "taa-fb-overlay")]
+        if opts.aa == Aa::Taa
+            && crate::hooks::fallback()
+            && crate::url_value("fallback-early").is_some()
+        {
+            use awsm_renderer::anti_alias::TaaVelocityPath;
+            renderer.set_taa_velocity_path_override(Some(TaaVelocityPath::PrepReconstruction));
+            renderer.set_taa_fallback_storage_limit_override(
+                crate::url_value("fallback-storage").and_then(|v| v.parse().ok()),
+            );
+            renderer.set_taa_debug_overlay_check(crate::overlay::debug_check());
+            renderer
+                .set_anti_aliasing(aa_config(Aa::Taa)?)
+                .await
+                .map_err(|e| anyhow!("set_anti_aliasing (fallback-early): {e}"))?;
+            if renderer.taa_overlay_draw_count() != 0 {
+                return Err(anyhow!(
+                    "fallback-early: overlay draw set not empty before the load"
+                ));
+            }
+        }
 
         let assets = awsm_renderer_scene_loader::assets::HttpAssets::new(bundle_base);
         let loaded = awsm_renderer_scene_loader::load_scene_for_player(
@@ -178,6 +203,16 @@ impl Session {
             if want.taa.is_some() && crate::hooks::fallback() {
                 use awsm_renderer::anti_alias::TaaVelocityPath;
                 renderer.set_taa_velocity_path_override(Some(TaaVelocityPath::PrepReconstruction));
+                // `?fallback-storage=N`: the storage-buffer limit behind the
+                // overlay's coverage (7-9: vertex hooks stay reactive; < 7:
+                // no overlay); `overlay-check` builds its debug variant.
+                #[cfg(feature = "taa-fb-overlay")]
+                {
+                    renderer.set_taa_fallback_storage_limit_override(
+                        crate::url_value("fallback-storage").and_then(|v| v.parse().ok()),
+                    );
+                    renderer.set_taa_debug_overlay_check(crate::overlay::debug_check());
+                }
                 renderer
                     .set_anti_aliasing(want.clone())
                     .await

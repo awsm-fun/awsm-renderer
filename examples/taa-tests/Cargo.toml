@@ -47,6 +47,10 @@ taa-experimental = ["taa-tuning-v2"]
 # Phase 5: `?fallback` forces the prep-velocity reconstruction path
 # (`set_taa_velocity_path_override`), 3c975597.
 taa-phase5 = ["taa-phase4"]
+# Round 2: the fallback's deforming-mesh velocity overlay —
+# `?fallback-storage=N` (`set_taa_fallback_storage_limit_override`) and
+# `?mode=overlay-check` / `overlay-cost` (its debug check and repeat hooks).
+taa-fb-overlay = ["taa-phase5"]
 
 [dependencies]
 awsm-renderer = { workspace = true }

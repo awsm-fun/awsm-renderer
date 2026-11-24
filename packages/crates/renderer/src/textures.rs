@@ -264,15 +264,22 @@ impl AwsmRenderer {
                 return false;
             }
             let geometry = &self.render_passes.geometry;
-            if self.dynamic_materials.alpha_info_for(id).is_some() {
-                !geometry
-                    .masked_custom_vertex_pipelines
-                    .has_variant(geometry_targets, id)
-            } else {
-                !geometry
-                    .custom_vertex_pipelines
-                    .has_variant(geometry_targets, id)
-            }
+            // TAA fallback: the velocity overlay's variant of a hook material.
+            let overlay_missing = self
+                .render_passes
+                .taa_overlay
+                .as_ref()
+                .is_some_and(|o| o.tier().vertex_hooks() && !o.has_custom_vertex_variant(id));
+            overlay_missing
+                || if self.dynamic_materials.alpha_info_for(id).is_some() {
+                    !geometry
+                        .masked_custom_vertex_pipelines
+                        .has_variant(geometry_targets, id)
+                } else {
+                    !geometry
+                        .custom_vertex_pipelines
+                        .has_variant(geometry_targets, id)
+                }
         });
         let was_dirty = pool_dirty || sampler_pool_dirty;
 
@@ -809,6 +816,31 @@ impl AwsmRenderer {
                         &variant,
                     )
                     .await?;
+            }
+
+            // TAA fallback: the velocity overlay's vertex-hook variants share
+            // the masked group 0 too (no-op unless the overlay covers hooks).
+            if let Some(overlay) = self
+                .render_passes
+                .taa_overlay
+                .as_mut()
+                .filter(|o| o.tier().vertex_hooks())
+            {
+                overlay.relayout_custom_vertex(
+                    &mut ctx,
+                    &self.render_passes.geometry.bind_groups,
+                    &self.render_passes.geometry.masked_bind_group,
+                )?;
+                for (shader_id, info) in &custom_vertex {
+                    overlay
+                        .ensure_custom_vertex_variant(
+                            &mut ctx,
+                            &self.render_passes.geometry.masked_bind_group,
+                            *shader_id,
+                            info,
+                        )
+                        .await?;
+                }
             }
 
             // -------------------------------------------------------------

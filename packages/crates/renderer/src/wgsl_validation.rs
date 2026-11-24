@@ -3509,6 +3509,159 @@ fn taa_prev_functions_mirror_current() {
     }
 }
 
+/// Every TAA fallback velocity-overlay variant, rendered: the three plain
+/// draw shapes and a vertex-hook material, each in the shipping and the debug
+/// check variant. `(label, key, wgsl)`.
+fn taa_overlay_variants() -> Vec<(
+    String,
+    crate::render_passes::taa_overlay::shader::cache_key::ShaderCacheKeyTaaOverlay,
+    String,
+)> {
+    use crate::render_passes::geometry::shader::cache_key::DynamicVertexShaderInfo;
+    use crate::render_passes::taa_overlay::shader::{
+        cache_key::{ShaderCacheKeyTaaOverlay, TaaOverlayCustomVertex},
+        template::ShaderTemplateTaaOverlay,
+    };
+    let hook = TaaOverlayCustomVertex {
+        shader_id: MaterialShaderId::PBR,
+        dynamic_vertex: DynamicVertexShaderInfo {
+            shader_includes: Default::default(),
+            struct_decl: "struct MaterialData { amp: f32, }".to_string(),
+            loader_decl: "fn material_data_load(byte_offset: u32) -> MaterialData { \
+                          return MaterialData(bitcast<f32>(materials[byte_offset / 4u])); }"
+                .to_string(),
+            wgsl_vertex: "var out: VertexDisplaceOutput; \
+                          out.position = input.position + input.normal * input.material.amp * sin(input.globals.time); \
+                          out.normal = input.normal; out.tangent = input.tangent; return out;"
+                .to_string(),
+        },
+        texture_pool_arrays_len: 2,
+        texture_pool_samplers_len: 2,
+    };
+    let mut out = Vec::new();
+    for debug in [false, true] {
+        for (instancing, storage, custom) in [
+            (false, true, None),
+            (false, false, None),
+            (true, false, None),
+            (false, false, Some(hook.clone())),
+        ] {
+            let is_hook = custom.is_some();
+            let key = ShaderCacheKeyTaaOverlay {
+                instancing_transforms: instancing,
+                meta_storage_array: storage,
+                custom_vertex: custom,
+                debug,
+                reverse_z: true,
+            };
+            let src = ShaderTemplateTaaOverlay::try_from(&key)
+                .unwrap()
+                .into_source()
+                .unwrap();
+            out.push((
+                format!("overlay inst={instancing} storage={storage} hook={is_hook} debug={debug}"),
+                key,
+                src,
+            ));
+        }
+    }
+    out
+}
+
+/// TAA fallback velocity overlay (docs/TAA.md §3.10): every variant
+/// validates; its vertex stage is the geometry pass's TAA vertex stage
+/// verbatim (two evaluations, unjittered clip positions on both ends); the
+/// fragment divides per fragment and stores ONLY under the identity test.
+#[test]
+fn taa_overlay_variants_validate() {
+    use crate::render_passes::geometry::shader::{
+        cache_key::ShaderCacheKeyGeometry, template::ShaderTemplateGeometryVertex,
+    };
+    use askama::Template;
+    for (label, key, src) in taa_overlay_variants() {
+        naga_validate(&src, &label);
+        // The vertex stage: the geometry velocity variant's, byte for byte.
+        let vertex = ShaderTemplateGeometryVertex::new(&ShaderCacheKeyGeometry {
+            instancing_transforms: key.instancing_transforms,
+            meta_storage_array: key.meta_storage_array,
+            msaa_samples: None,
+            velocity: true,
+            mip_bias: false,
+            dynamic_vertex_shader: key.custom_vertex.as_ref().map(|c| c.dynamic_vertex.clone()),
+        })
+        .render()
+        .unwrap();
+        assert!(
+            src.contains(&vertex),
+            "{label}: vertex stage differs from the geometry pass's"
+        );
+        let vert = wgsl_function(&src, "vert_main");
+        assert!(
+            vert.contains("out.clip_now = camera.view_proj_unjittered *")
+                && vert.contains("out.clip_prev = camera.prev_view_proj *")
+                && src.contains("fn apply_vertex_prev("),
+            "{label}: no unjittered current + previous evaluation"
+        );
+        let frag = wgsl_function(&src, "fs_main");
+        let store = frag.find("textureStore(").expect("store");
+        let identity = frag.find("if (same)").expect("identity test");
+        assert!(identity < store, "{label}: store outside the identity test");
+        assert_eq!(frag.matches("textureStore(").count(), 1, "{label}");
+        assert!(
+            frag.contains("all(vis == ids) && all(bary.zw == split16(input.instance_id))"),
+            "{label}: the identity test changed"
+        );
+        assert!(
+            frag.contains("taa_motion_vector(input.clip_now, input.clip_prev)"),
+            "{label}: the fragment no longer divides the interpolated clip positions"
+        );
+        assert_eq!(src.contains("taa_overlay_check"), key.debug, "{label}");
+    }
+}
+
+/// The storage buffers each overlay variant binds (all of them visible to
+/// the vertex stage, which is where the device limit bites; the debug
+/// counters are fragment-only and read-write) match the constants behind the
+/// capability tiers, and the tiers follow the limit.
+#[test]
+fn taa_overlay_storage_buffers_fit_the_tiers() {
+    use crate::anti_alias::{
+        TaaFallbackOverlay, TAA_OVERLAY_CUSTOM_VERTEX_STORAGE_BUFFERS, TAA_OVERLAY_STORAGE_BUFFERS,
+    };
+    let mut plain_max = 0;
+    let mut hook_max = 0;
+    for (label, key, src) in taa_overlay_variants() {
+        let read_only = src.matches("var<storage, read>").count() as u32;
+        if key.custom_vertex.is_some() {
+            hook_max = hook_max.max(read_only);
+        } else {
+            plain_max = plain_max.max(read_only);
+        }
+        assert!(
+            !src.contains("var<storage, read_write>") || label.contains("debug=true"),
+            "{label}: a writable storage buffer outside the debug check"
+        );
+    }
+    assert_eq!(plain_max, TAA_OVERLAY_STORAGE_BUFFERS);
+    assert_eq!(hook_max, TAA_OVERLAY_CUSTOM_VERTEX_STORAGE_BUFFERS);
+    for (limit, tier) in [
+        (4, TaaFallbackOverlay::Off),
+        (6, TaaFallbackOverlay::Off),
+        (7, TaaFallbackOverlay::NoVertexHooks),
+        // The WebGPU default.
+        (8, TaaFallbackOverlay::NoVertexHooks),
+        (9, TaaFallbackOverlay::NoVertexHooks),
+        (10, TaaFallbackOverlay::All),
+        (16, TaaFallbackOverlay::All),
+    ] {
+        assert_eq!(
+            TaaFallbackOverlay::for_storage_buffer_limit(limit),
+            tier,
+            "limit {limit}"
+        );
+    }
+}
+
 #[test]
 fn taa_resolve_shader_validates() {
     // The TAA resolve must naga-validate for every variant (reverse_z ×

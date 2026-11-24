@@ -286,6 +286,13 @@ against flicker.
   stage) or `PrepReconstruction` (the prep pass reconstructs vectors; §3.10).
 - `AwsmRenderer::set_taa_velocity_path_override(Option<TaaVelocityPath>)`:
   forces a path for testing (takes effect at the next `set_anti_aliasing`).
+- `AwsmRenderer::taa_fallback_overlay() -> TaaFallbackOverlay`: on the
+  fallback path, which deforming meshes get exact vectors from the velocity
+  overlay (§3.10): `All` (10 or more storage buffers per stage), `NoVertexHooks`
+  (7-9: vertex-hook meshes stay reactive) or `Off` (fewer than 7).
+- `AwsmRenderer::set_taa_fallback_storage_limit_override(Option<u32>)`:
+  replaces the device's storage-buffer limit in that decision, for testing
+  each outcome on a capable device (next `set_anti_aliasing`).
 - `AwsmRenderer::taa_fallback_reason() -> Option<&str>`: why this renderer
   replaced TAA by MSAA 4x, if it did. That happens once, when a TAA pipeline
   fails to compile at a commit or the TAA pass cannot be built. Sticky for the
@@ -307,9 +314,14 @@ Not for per-frame use (each allocates and syncs).
 
 Hidden harness hooks: `set_taa_debug_view_raw` (internal views 10-13),
 `set_taa_experimental_tuning` (overrides `CLIP_ALPHA`),
-`set_taa_debug_seed_repeat`.
+`set_taa_debug_seed_repeat`, `set_taa_debug_overlay_repeat` (the fallback's
+velocity overlay drawn `n` times), `set_taa_debug_overlay_check(true)` +
+`debug_read_taa_overlay_check()` (the overlay built as a variant that counts,
+per mesh it drew, the pixels it wrote and how many of them a depth-EQUAL or
+the shipping depth compare would have lost).
 
-GPU pass timings (`profiling`): `Taa` (the resolve) and `TaaRcas`.
+GPU pass timings (`profiling`): `Taa` (the resolve), `TaaRcas` and
+`TAA Overlay` (§3.10).
 
 ### 2.11 Scenes, the loader, the editor and MCP
 
@@ -402,6 +414,8 @@ separate buffers needed 12 in the largest variant. The region bases and
   one frame of zero motion.
 - The previous depth (a depth-format copy, bound as `texture_depth_2d`) is
   copied right after the resolve, its only reader.
+- On the 32-byte fallback all of it is kept when the velocity overlay exists
+  (§3.10); without the overlay only the transforms are.
 - With TAA off none of this exists and nothing is copied.
 
 ### 3.5 The resolve
@@ -483,8 +497,9 @@ trust, 1 = ignore. The resolve takes the max over the same 3x3.
 - **Transparent surfaces, particles, lines** write
   `alpha · reactive_transparent` as a second target of the transparent pass,
   blended with max.
-- **Reactive materials** (§2.6) and the fallback path's deforming meshes are
-  written by a "seed" draw: one full-screen triangle at the start of the
+- **Reactive materials** (§2.6) and the fallback path's deforming meshes
+  that its velocity overlay does not cover (§3.10) are written by a "seed"
+  draw: one full-screen triangle at the start of the
   transparent pass that reads the material meta of the opaque surface at each
   pixel (`r8unorm` is not a storage format, so a compute pass cannot write
   it). Drawn only on frames that need it: a reactive material is live, a
@@ -558,10 +573,53 @@ v      = uv(VP_unjittered · P) − uv(prev_VP · P_prev)
 
 That is exact for the camera and rigid objects (measured identical to the
 geometry path on rigid scenes, §7.3). It cannot see skinning, morphs, vertex
-hooks or per-instance motion. Skinned, morphed and instanced meshes are made
-reactive at 0.5 while they deform (with a 2-frame linger), custom vertex
-hooks always. Only the skins with a joint in a moving subtree keep previous
-state on this path.
+hooks or per-instance motion.
+
+**The velocity overlay** gives those meshes exact vectors. Right after the
+prep pass, a render pass draws only the meshes that deformed this frame (a
+joint matrix, morph weight or instance transform written with a new value)
+and the vertex-hook meshes (every frame), with the geometry pass's TAA vertex
+stage verbatim: the current and the previous evaluation, unjittered on both
+ends (§3.3). Its fragment divides per fragment and `textureStore`s the vector
+into the same `rg32float` texture, over the prep's. Masked and vertex-hook
+variants are covered; the HUD is not drawn. One frame after the last
+deformation the previous state equals the current one, the mesh is not
+drawn, and the prep's rigid vector is exact again. Same frame, same draw
+commands as the geometry pass (buffers, LOD cut, indirect arguments), so the
+same triangles.
+
+- **One writer per pixel.** A fragment stores only if its triangle index,
+  mesh meta offset and instance id equal what the geometry pass wrote into
+  the visibility and barycentric targets at that pixel. That makes the result
+  independent of depth precision between the two pipelines, and masked meshes
+  need no alpha test (a cut-out fragment never matches). Depth is attached
+  read-only with the main compare, only to cull early. Measured with the
+  debug check (`set_taa_debug_overlay_check`): a depth-EQUAL test would have
+  lost 0.7-1.7% of the overlay's pixels on the test scenes (the two pipelines'
+  depths differ by ulps); the shipping compare loses none, and every drawn
+  mesh wrote pixels.
+- **Limits.** The overlay's vertex stage binds what the geometry pass's TAA
+  vertex stage binds: 7 storage buffers (transforms, `prev_state`, mesh meta
+  array, morph weights and values, joint matrices and weights), 10 for a
+  vertex hook (plus materials, material meta, the geometry pool and texture
+  transforms on group 0; a hook can sample textures). `TaaFallbackOverlay`
+  is a pure function of the device's limit: 10 or more covers everything;
+  7-9 (the WebGPU default is 8) covers skins, morphs and instances and leaves
+  vertex-hook meshes reactive; below 7 there is no overlay.
+  `wgsl_validation` counts the bindings of each generated variant against
+  those constants. A hook variant's fragment stage also sees the texture
+  pool's arrays plus the two identity targets; past the device's
+  sampled-texture limit that hook stays reactive.
+- **Previous state.** With the overlay the joint matrices, morph weights and
+  instance transforms keep previous copies as on the geometry path (§3.4,
+  G10 included).
+- **What stays reactive.** A deforming mesh the overlay does not cover (the
+  limit, or a vertex-hook variant not compiled yet) is made reactive at 0.5
+  while it deforms (2-frame linger), a vertex hook always, as before the
+  overlay.
+- **Cost.** Nothing on frames where no deforming mesh is visible (no render
+  pass). Otherwise one draw per such mesh with two vertex evaluations and,
+  per fragment, two texel loads and a compare (§7.3).
 
 ### 3.11 Sharpening
 
@@ -596,7 +654,9 @@ Memory with TAA on (from the formats; at 1920x1435 output and native scale,
 2.76 M pixels): velocity 4 B/px, reactive 1 B/px, previous depth 4 B/px at
 render size; two history textures and `taa_out` at 8 B/px each at post size;
 previous-state copies at the size of the current buffers (112 B per
-transform). On the fallback path the velocity texture is 8 B/px.
+transform). On the fallback path the velocity texture is 8 B/px; its
+velocity overlay allocates nothing of its own (bind groups and pipelines
+only) and exists only on that path.
 
 ## 4. The ghosting rules
 
@@ -704,8 +764,15 @@ measure flicker too).
   no AA (§7.7).
 - **The resolve costs 1.03-1.17 ms** at 1920x1435 output, about 1.8x the
   0.6 ms the plan targeted (§7.6).
-- **The 32-byte fallback** loses skin, morph, vertex-hook and per-instance
-  motion (those meshes are reactive instead, §3.10).
+- **The 32-byte fallback** on a device with fewer than 10 storage buffers per
+  stage loses vertex-hook motion (those meshes are reactive instead), and
+  below 7 also skin, morph and per-instance motion (§3.10). With 10 or more
+  its vectors match the geometry path's (§7.3).
+  Two of the overlay's cases are verified only indirectly: no bundled scene
+  has a masked (alpha-tested) deforming mesh (the identity test needs no
+  alpha test, and masked meshes use the plain uniform-meta variant), and no
+  bundled scene writes instance transforms (the instanced variant was checked
+  with harness-side instance motion, `?mode=overlay-parity&move-instances`).
 - **Once per jitter cycle**, static edges see a burst of false disocclusions
   at the largest jitter step (the 3x3 and the previous 2x2 are point samples
   at different sub-pixel positions). It passes the flicker gate and was left
@@ -810,14 +877,45 @@ lines 3.104 (p99 17), rest 0.044; whole image 0.292 p99 3.
 
 ### 7.3 Fallback path (`PrepReconstruction`, forced on the M1)
 
-| | Geometry target | Fallback |
-|---|---|---|
-| Vectors | all PASS except vertex-hook coverage | 70/82: rigid scenes identical (analytic ≤ 0.0004 px); FAIL `taa-vertex-hook` analytic (max 2.14 px, hook motion absent), `prefab-skinned-morph` reprojection 7.56 / 6.05 (geometry 1.48 / 1.43); `taa-skin` 0.496 (geometry 0.177) |
-| Trail `taa-motion` | 3.672 max 152 | 3.672 max 152 |
-| Trail `taa-orbit` / `instancing-stress` | 5.734 / 6.609 | 5.701 / 6.610 |
-| Stop (motion, orbit, instancing, skin, vertex-hook) | 0.606, 0.773, 0.943, 0.251, 0.491 | 0.606, 0.773, 0.942, 0.247, 0.489 |
-| Flicker | all PASS (vertex-hook 0.077) | all PASS (vertex-hook 0.114) |
-| Converged skin / vertex-hook / instancing | 0.341 / 0.696 / 1.179 | 0.391 / 0.757 / 1.179 |
+With the velocity overlay (§3.10), 960x720, the M1's 10 storage buffers
+(`TaaFallbackOverlay::All`):
+
+| | Geometry target | Fallback, overlay | Fallback, no overlay (before it; a limit below 7 measures the same) |
+|---|---|---|---|
+| Vectors (`?mode=vectors`, 120 lines) | 120/120 | 120/120 | 103/115 |
+| `taa-vertex-hook` analytic max, k30 / k60 | 0.00155 / 0.00151 px | 0.00029 / 0.00030 px | 2.14 / 2.11 px (hook motion absent) |
+| `prefab-skinned-morph` reprojection, k30 / k60 | 1.4771 / 1.4261 | 1.4775 / 1.4265 | 7.563 / 6.051 |
+| `taa-skin` reprojection, k30 / k60 | 0.1772 / 0.1128 | 0.1772 / 0.1128 | 0.4961 / 0.4817 |
+| `instancing-stress` reprojection, k30 / k60 | 1.8466 / 1.9037 | 1.8465 / 1.9037 | 1.8465 / 1.9037 |
+| Per-pixel against the geometry path (`overlay-parity`, 30 frames) | | max 0.0003-0.009 px, none over max(0.02 px, 1 rg16float ulp) | `taa-skin` max 14.1 px |
+| Instances moved every frame (`instancing-stress`) | | max 0.00097 px | max 0.65 px |
+| Trail `taa-skin`, worst mean / max | 1.979 / 135 | 1.979 / 135 | 9.555 / 96 |
+| Trail `prefab-skinned-morph` | 10.590 / 110 | 10.590 / 110 | 10.590 / 105 |
+| Stop `taa-skin` / `prefab-skinned-morph` / `taa-vertex-hook` | 0.0966 / 0.1835 / 0.4172 | 0.0966 / 0.1835 / 0.4172 | 0.0905 / 0.1702 / 0.4172 |
+| Converged `taa-skin` / `taa-vertex-hook` / `prefab-skinned-morph` | 0.1925 / 0.6344 / 0.2873 | 0.1925 / 0.6343 / 0.2873 | 0.2442 / 0.6953 / 0.3309 |
+| Flicker `taa-vertex-hook` (others unchanged) | 0.0770 | 0.0770 | 0.1139 |
+
+The vectors are the geometry path's to within its `rg16float` rounding (the
+fallback stores `rg32float`); every gate line equals the geometry path's to
+three decimals. Rigid scenes draw nothing in the overlay and their fallback
+frames are bit-identical with and without it. The meshes that were reactive
+now keep their history: converged error drops on all three deforming scenes,
+`taa-skin`'s worst trail mean drops from 9.555 to 1.979, and the stop error
+of `taa-skin` / `prefab-skinned-morph` rises by about 0.01 (all far below the
+bound), as on the geometry path. With the WebGPU default limit (8),
+`taa-vertex-hook` keeps the no-overlay numbers and the skinned scenes get the
+overlay's.
+
+The overlay's own pixels: a depth-EQUAL test would have lost 0.75-1.67% of
+them (the two pipelines' depths differ by ulps); the shipping compare loses
+none (debug check over all 48 bundled scenes, 40 frames each).
+
+Cost at 1920x1435 (busy window, median of 3 runs), forced fallback minus
+geometry target: `taa-skin` +0.096 ms with the overlay against +0.179 ms
+without it (the reactive seed it replaces cost more), `kitchen-sink` +0.013
+against −0.078, `instancing-stress` (no overlay draw) +0.075 against +0.080.
+The overlay pass alone by repeat-N is pending (a first attempt ran its N=1
+windows at a lower GPU clock and is discarded).
 
 `inverse(M)` as the transpose of the normal matrix against a per-pixel
 inverse: prep pass 1.118 ms against 1.142 ms at 1920x1435 (repeat-N), equal
@@ -924,7 +1022,8 @@ Synthetic scenes, GPU frame median (ms; delta against no AA):
   0.076 ms with TAA on `kitchen-sink`, which bounds it; 0.03-0.04 ms by
   repeat-N.
 - Forced fallback (`PrepReconstruction`) against the geometry target:
-  +0.03 to +0.13 ms.
+  +0.03 to +0.13 ms; with the velocity overlay (§3.10, §7.3) +0.01 to
+  +0.10 ms.
 - TAA native against MSAA 4x: cheaper on `instancing-stress` (−1.26) and
   `taa-thin` (−1.07), dearer on `kitchen-sink` (+0.27) and `ssr` (+0.52).
   TAA 0.67 is cheaper than MSAA on all four (−0.54 to −2.70) and within

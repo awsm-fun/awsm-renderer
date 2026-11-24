@@ -322,6 +322,9 @@ impl BindGroups {
             Smaa,
             Ssr,
             Taa,
+            /// TAA fallback velocity overlay's group 2 (meta, identity
+            /// targets, velocity; no-op while the pass is `None`).
+            TaaOverlay,
             Effects,
             Display,
             Picker,
@@ -386,6 +389,7 @@ impl BindGroups {
                 }
                 BindGroupCreate::GeometryMeshMetaResize => {
                     functions_to_call.insert(FunctionToCall::GeometryMeta);
+                    functions_to_call.insert(FunctionToCall::TaaOverlay);
                     functions_to_call.insert(FunctionToCall::TransparentMeshMaterial);
                 }
                 BindGroupCreate::GeometryMorphTargetWeightsResize
@@ -431,6 +435,7 @@ impl BindGroups {
                     // own textures; bloom / effects (above) bind its `out`.
                     // No-op while the pass is `None` (TAA off).
                     functions_to_call.insert(FunctionToCall::Taa);
+                    functions_to_call.insert(FunctionToCall::TaaOverlay);
                     functions_to_call.insert(FunctionToCall::OpaqueMain);
                     functions_to_call.insert(FunctionToCall::TransparentMain);
                     functions_to_call.insert(FunctionToCall::Picker);
@@ -470,6 +475,7 @@ impl BindGroups {
                 }
                 BindGroupCreate::TaaResources => {
                     functions_to_call.insert(FunctionToCall::Taa);
+                    functions_to_call.insert(FunctionToCall::TaaOverlay);
                 }
                 BindGroupCreate::IblTextures => {
                     functions_to_call.insert(FunctionToCall::OpaqueMain);
@@ -497,8 +503,10 @@ impl BindGroups {
                 }
                 BindGroupCreate::MaterialMeshMetaResize => {
                     // The TAA reactive seed reads the material meta (no-op
-                    // while TAA is off).
+                    // while TAA is off); the overlay's debug counters are
+                    // sized to it.
                     functions_to_call.insert(FunctionToCall::Taa);
+                    functions_to_call.insert(FunctionToCall::TaaOverlay);
                     functions_to_call.insert(FunctionToCall::OpaqueMain);
                     functions_to_call.insert(FunctionToCall::GeometryMasked);
                     functions_to_call.insert(FunctionToCall::ShadowMasked);
@@ -972,6 +980,11 @@ impl BindGroups {
                         {
                             rcas.recreate(ctx.gpu, &textures.out_view, reactive)?;
                         }
+                    }
+                }
+                FunctionToCall::TaaOverlay => {
+                    if let Some(overlay) = render_passes.taa_overlay.as_mut() {
+                        overlay.recreate(&ctx)?;
                     }
                 }
                 FunctionToCall::Effects => {

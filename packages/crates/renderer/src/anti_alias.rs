@@ -120,6 +120,66 @@ pub enum TaaVelocityPath {
     PrepReconstruction,
 }
 
+/// Storage buffers visible to the vertex stage of the largest plain variant
+/// of the fallback's deforming-mesh velocity overlay
+/// ([`TaaFallbackOverlay`]): transforms + the shared previous-frame buffer
+/// (group 1), the mesh-meta storage array (group 2, non-instanced draws under
+/// `indirect-first-instance`), morph weights + values, joint matrices + joint
+/// weights (group 3). The uniform-meta and instanced variants need 6.
+/// `wgsl_validation` counts them in the generated shaders.
+pub const TAA_OVERLAY_STORAGE_BUFFERS: u32 = 7;
+
+/// The same for the overlay's vertex-hook (custom-vertex) variant: the four
+/// buffers a hook may read on group 0 (materials, material meta, the geometry
+/// pool, texture transforms: a hook can sample textures in the vertex stage),
+/// plus groups 1 and 3 (the meta is a uniform). Equal to
+/// [`TAA_GEOMETRY_STORAGE_BUFFERS`].
+pub const TAA_OVERLAY_CUSTOM_VERTEX_STORAGE_BUFFERS: u32 = 10;
+
+/// On the 32 B/sample fallback ([`TaaVelocityPath::PrepReconstruction`]),
+/// which deforming meshes get exact vectors from the velocity overlay (a
+/// re-draw of just those meshes with the geometry vertex stage's current and
+/// previous evaluation, docs/TAA.md §3.10). The rest are reactive at 0.5
+/// while they deform, as before the overlay.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum TaaFallbackOverlay {
+    /// No overlay: every skinned, morphed or instanced mesh is reactive while
+    /// it deforms, vertex hooks always (fewer than
+    /// [`TAA_OVERLAY_STORAGE_BUFFERS`] per stage, or not on the fallback).
+    #[default]
+    Off,
+    /// Skins, morphs and per-instance motion get exact vectors; vertex-hook
+    /// meshes stay reactive (fewer than
+    /// [`TAA_OVERLAY_CUSTOM_VERTEX_STORAGE_BUFFERS`] per stage).
+    NoVertexHooks,
+    /// Every deforming mesh gets exact vectors.
+    All,
+}
+
+impl TaaFallbackOverlay {
+    /// The overlay this many storage buffers per shader stage allows. A
+    /// pure function of the limit (docs/TAA.md §3.10).
+    pub fn for_storage_buffer_limit(max_storage_buffers_per_shader_stage: u32) -> Self {
+        if max_storage_buffers_per_shader_stage >= TAA_OVERLAY_CUSTOM_VERTEX_STORAGE_BUFFERS {
+            Self::All
+        } else if max_storage_buffers_per_shader_stage >= TAA_OVERLAY_STORAGE_BUFFERS {
+            Self::NoVertexHooks
+        } else {
+            Self::Off
+        }
+    }
+
+    /// The overlay is built (some deforming meshes get exact vectors).
+    pub fn enabled(self) -> bool {
+        self != Self::Off
+    }
+
+    /// Vertex-hook meshes get exact vectors.
+    pub fn vertex_hooks(self) -> bool {
+        self == Self::All
+    }
+}
+
 /// The motion-vector path this device supports (see
 /// [`AwsmRenderer::taa_velocity_path`]).
 pub(crate) fn velocity_path_for_device(
@@ -215,7 +275,16 @@ impl AwsmRenderer {
         // debug override), not part of the config: a change of it (the
         // override) is structural like an AA-mode change (03 §2.4).
         let prep_velocity_path = self.taa_velocity_path() == TaaVelocityPath::PrepReconstruction;
-        let path_changed = prep_velocity_path != self.render_textures.formats.prep_velocity_path;
+        // Which deforming meshes the fallback's velocity overlay covers is
+        // renderer state of the same kind (the limit override).
+        let fallback_overlay = self.taa_fallback_overlay();
+        let path_changed = prep_velocity_path != self.render_textures.formats.prep_velocity_path
+            || fallback_overlay != self.render_textures.formats.fallback_overlay
+            || self
+                .render_passes
+                .taa_overlay
+                .as_ref()
+                .is_some_and(|p| p.debug() != self.taa_overlay_debug_check);
         // No-op fast path — caller asked for the state we're
         // already in. The bind-group recreate marks are skipped too;
         // there's nothing for them to invalidate.
@@ -265,6 +334,7 @@ impl AwsmRenderer {
             );
         self.anti_aliasing = aa;
         self.render_textures.formats.prep_velocity_path = prep_velocity_path;
+        self.render_textures.formats.fallback_overlay = fallback_overlay;
         let new_msaa_on = self.anti_aliasing.has_msaa_checked()?;
         let new_geometry_targets =
             crate::render_passes::geometry::pipeline::GeometryTargets::from_aa(
@@ -314,6 +384,9 @@ impl AwsmRenderer {
         //    disable (textures destroyed — TAA off is zero-cost). Same shape
         //    as SMAA above.
         self.sync_taa_pass().await?;
+        // The fallback's deforming-mesh velocity overlay (03 §2.4, built only
+        // while TAA runs on the prep-pass fallback).
+        self.sync_taa_overlay_pass().await?;
 
         // MSAA off → on transition: allocate `material_edge_buffers`
         // + `material_edge_layout_uniform` if they're not already
@@ -1009,20 +1082,53 @@ impl AwsmRenderer {
         self.taa_velocity_path_override = path;
     }
 
+    /// The deforming-mesh velocity overlay this device's storage-buffer limit
+    /// allows on the fallback path ([`TaaFallbackOverlay`]), whether or not
+    /// the fallback is in use. [`Self::set_taa_fallback_storage_limit_override`]
+    /// replaces the device limit in this decision.
+    pub fn taa_fallback_overlay(&self) -> TaaFallbackOverlay {
+        TaaFallbackOverlay::for_storage_buffer_limit(
+            self.taa_fallback_storage_limit_override.unwrap_or_else(|| {
+                self.gpu
+                    .device
+                    .limits()
+                    .max_storage_buffers_per_shader_stage()
+            }),
+        )
+    }
+
+    /// Debug / test override of the storage-buffer limit that decides
+    /// [`Self::taa_fallback_overlay`] (`None` = the device's), so a capable
+    /// device can exercise each outcome of the fallback. Takes effect at the
+    /// next `set_anti_aliasing`. Does not change the velocity path itself
+    /// (see [`Self::set_taa_velocity_path_override`]).
+    pub fn set_taa_fallback_storage_limit_override(&mut self, limit: Option<u32>) {
+        self.taa_fallback_storage_limit_override = limit;
+    }
+
     /// Turns the previous-frame buffers (transforms, instances, joint
     /// matrices, morph weights) on exactly while TAA is on.
     ///
-    /// With the prep-pass fallback (03 §2.4) only what prep reads is kept:
-    /// the node transforms. Instances, joint matrices and morph weights get
-    /// no previous copy there (prep gives their meshes the rigid motion of
-    /// their node and the seed marks them reactive).
+    /// With the prep-pass fallback (03 §2.4) and no velocity overlay
+    /// (`TaaFallbackOverlay::Off`) only what prep reads is kept: the node
+    /// transforms. Instances, joint matrices and morph weights get no
+    /// previous copy there (prep gives their meshes the rigid motion of
+    /// their node and the seed marks them reactive). With the overlay they
+    /// are kept as on the geometry path: the overlay's vertex stage reads
+    /// them.
     pub(crate) fn sync_motion_history(&mut self) {
         let on = self.anti_aliasing.taa.is_some();
-        let per_vertex = on
-            && !self
-                .render_textures
-                .formats
-                .taa_prep_velocity(&self.anti_aliasing);
+        let formats = &self.render_textures.formats;
+        let prep = formats.taa_prep_velocity(&self.anti_aliasing);
+        let per_vertex =
+            on && (!prep || formats.taa_fallback_overlay(&self.anti_aliasing).enabled());
+        // The fallback records which of them deform (the overlay's draw set
+        // and the non-rigid marking, `update_non_rigid_gates`). Set before the
+        // early return: the geometry path and the fallback with the overlay
+        // keep the same buffers.
+        self.instances.set_track_deformed(prep);
+        self.meshes.skins.set_track_deformed(prep);
+        self.meshes.morphs.geometry.set_track_deformed(prep);
         let was = (
             self.transforms.motion_history_enabled(),
             self.meshes.skins.motion_history_mut().0.enabled(),
@@ -1038,12 +1144,6 @@ impl AwsmRenderer {
         self.instances.set_motion_history(per_vertex);
         self.meshes.skins.set_motion_history(per_vertex);
         self.meshes.morphs.geometry.set_motion_history(per_vertex);
-        // The fallback instead records which of them deform (non-rigid
-        // marking, `update_non_rigid_gates`).
-        let prep = on && !per_vertex;
-        self.instances.set_track_deformed(prep);
-        self.meshes.skins.set_track_deformed(prep);
-        self.meshes.morphs.geometry.set_track_deformed(prep);
     }
 
     /// The scene resolution: swap-chain size scaled by

@@ -66,6 +66,19 @@ pub struct MeshMeta {
     /// Calls of `update_non_rigid_gates` (its own clock: the renderer's
     /// `frame_index` is public and test harnesses rewind it).
     non_rigid_clock: u64,
+    /// TAA fallback velocity overlay: the meshes it draws this frame (those
+    /// it covers that deformed this frame, vertex hooks always). Rebuilt by
+    /// `update_non_rigid_gates`.
+    overlay_draws: std::collections::HashSet<MeshKey>,
+}
+
+/// Which non-rigid meshes the TAA fallback's velocity overlay gives exact
+/// vectors this frame (see [`MeshMeta::update_non_rigid_gates`]).
+pub struct OverlayCoverage<'a> {
+    /// Skinned, morphed and instanced meshes without a vertex hook.
+    pub plain: bool,
+    /// Vertex-hook meshes whose overlay variant is compiled.
+    pub vertex_hooks: &'a std::collections::HashSet<MeshKey>,
 }
 
 /// A mesh whose surface can move with more than its node's matrix (TAA
@@ -141,6 +154,7 @@ impl MeshMeta {
             non_rigid: slotmap::SecondaryMap::new(),
             non_rigid_gated: 0,
             non_rigid_clock: 0,
+            overlay_draws: std::collections::HashSet::new(),
         })
     }
 
@@ -405,6 +419,7 @@ impl MeshMeta {
         if self.non_rigid.remove(mesh_key).is_some_and(|n| n.gate) {
             self.non_rigid_gated -= 1;
         }
+        self.overlay_draws.remove(&mesh_key);
     }
 
     /// Whether any live mesh is flagged non-rigid right now (see
@@ -414,11 +429,53 @@ impl MeshMeta {
         self.non_rigid_gated > 0
     }
 
-    /// TAA prep-pass fallback, once per frame: flag (meta word 23) exactly
-    /// the non-rigid meshes that deformed within the last
-    /// [`NON_RIGID_LINGER_FRAMES`] frames (plus vertex hooks, always). Only
-    /// transitions are patched into the meta. O(non-rigid meshes).
-    pub fn update_non_rigid_gates(&mut self, deformed: &DeformedThisFrame) {
+    /// The vertex-hook meshes among the non-rigid ones (the caller decides
+    /// which of them the velocity overlay covers).
+    pub fn non_rigid_vertex_hook_meshes(&self) -> impl Iterator<Item = MeshKey> + '_ {
+        self.non_rigid
+            .iter()
+            .filter(|(_, n)| n.vertex_hook)
+            .map(|(k, _)| k)
+    }
+
+    /// The TAA fallback's velocity overlay draws this mesh this frame.
+    pub fn overlay_draws(&self, mesh_key: MeshKey) -> bool {
+        self.overlay_draws.contains(&mesh_key)
+    }
+
+    /// How many meshes the overlay draws this frame (visible or not).
+    pub fn non_rigid_overlay_draws(&self) -> usize {
+        self.overlay_draws.len()
+    }
+
+    /// The overlay has anything to draw this frame (visible or not).
+    pub fn has_overlay_draws(&self) -> bool {
+        !self.overlay_draws.is_empty()
+    }
+
+    /// Forget the overlay's draw set (TAA left the fallback path).
+    pub fn clear_overlay_draws(&mut self) {
+        self.overlay_draws.clear();
+    }
+
+    /// TAA prep-pass fallback, once per frame.
+    ///
+    /// A non-rigid mesh the velocity overlay covers (`overlay`) is drawn by
+    /// it on every frame it deformed (a vertex hook: every frame) and is
+    /// never flagged: its vectors are exact. One frame after its last
+    /// deformation the previous state equals the current one and the prep's
+    /// rigid vector is exact, so no linger is needed.
+    ///
+    /// Every other non-rigid mesh is flagged (meta word 23, reactive) while
+    /// it deformed within the last [`NON_RIGID_LINGER_FRAMES`] frames (a
+    /// vertex hook: always). Only transitions are patched into the meta.
+    /// O(non-rigid meshes).
+    pub fn update_non_rigid_gates(
+        &mut self,
+        deformed: &DeformedThisFrame,
+        overlay: &OverlayCoverage<'_>,
+    ) {
+        self.overlay_draws.clear();
         if self.non_rigid.is_empty() {
             return;
         }
@@ -431,16 +488,25 @@ impl MeshMeta {
             deformed.instances.iter().copied().collect();
         let mut patches: Vec<(MeshKey, bool)> = Vec::new();
         for (mesh_key, entry) in self.non_rigid.iter_mut() {
-            if entry.skin.is_some_and(|k| skins.contains(&k))
+            let deformed_now = entry.skin.is_some_and(|k| skins.contains(&k))
                 || entry.morph.is_some_and(|k| morphs.contains(&k))
-                || entry.instances.is_some_and(|k| instances.contains(&k))
-            {
+                || entry.instances.is_some_and(|k| instances.contains(&k));
+            if deformed_now {
                 entry.last_deformed = Some(frame_index);
             }
-            let gate = entry.vertex_hook
-                || entry
-                    .last_deformed
-                    .is_some_and(|f| frame_index.saturating_sub(f) <= NON_RIGID_LINGER_FRAMES);
+            let covered = if entry.vertex_hook {
+                overlay.vertex_hooks.contains(&mesh_key)
+            } else {
+                overlay.plain
+            };
+            if covered && (entry.vertex_hook || deformed_now) {
+                self.overlay_draws.insert(mesh_key);
+            }
+            let gate = !covered
+                && (entry.vertex_hook
+                    || entry
+                        .last_deformed
+                        .is_some_and(|f| frame_index.saturating_sub(f) <= NON_RIGID_LINGER_FRAMES));
             if gate != entry.gate {
                 entry.gate = gate;
                 patches.push((mesh_key, gate));
