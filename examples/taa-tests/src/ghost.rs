@@ -623,6 +623,11 @@ fn report(r: &mut Report, scene: &str, evaluated: u32, band_px_frames: u64, trac
                 // (`ghost-region-error`).
                 if ri == 1 {
                     r.info(&format!("ghost-persist:{scene}:{key}"), &detail);
+                } else if let Some(why) = verdict_is_info(scene, ri) {
+                    r.info(
+                        &format!("ghost-persist:{scene}:{key}"),
+                        &format!("{detail} [INFO: {why}]"),
+                    );
                 } else {
                     r.emit(
                         &format!("ghost-persist:{scene}:{key}"),
@@ -632,5 +637,28 @@ fn report(r: &mut Report, scene: &str, evaluated: u32, band_px_frames: u64, trac
                 }
             }
         }
+    }
+}
+
+/// Regions whose `ghost-persist` line is INFO for one scene (lead decisions,
+/// round 3), with the reason printed on the line.
+/// - `taa-orbit` trail and static: no object moves, only the camera, so the
+///   "trail band" is just the pixels whose motion fell below 0.05 px (near
+///   the pivot and after the stop) and holds no trail; its events are single
+///   pixels on checker edges softening under camera motion. Judged by
+///   `ghost-region-error` (moving region) against MSAA and no AA.
+/// - `taa-thin` static: sub-pixel wires in a still image, whose history the
+///   clip cuts on some jitter phases: events repeat at the same pixels with
+///   the 8-frame jitter cycle. That is shimmer, judged by the flicker gate,
+///   not history of something that moved.
+fn verdict_is_info(scene: &str, region: usize) -> Option<&'static str> {
+    match (scene, region) {
+        ("taa-orbit", 0) | ("taa-orbit", 2) => Some(
+            "camera-only scene: no object leaves a trail; judged by the moving-region error vs MSAA",
+        ),
+        ("taa-thin", 2) => Some(
+            "still sub-pixel wires repeating with the jitter cycle: shimmer, judged by the flicker gate",
+        ),
+        _ => None,
     }
 }
