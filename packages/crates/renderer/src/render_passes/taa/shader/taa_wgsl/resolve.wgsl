@@ -21,6 +21,7 @@
 
 {% include "shared_wgsl/camera.wgsl" %}
 {% include "shared_wgsl/taa/sky_velocity.wgsl" %}
+{% include "shared_wgsl/taa/f16_round.wgsl" %}
 
 struct TaaParams {
     render_size: vec2<f32>,
@@ -562,7 +563,11 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     result = min(result, vec3<f32>(TONEMAPPED_MAX));
 
     // ---- 4.9 Outputs -----------------------------------------------------
-    textureStore(history_curr_tex, q, vec4<f32>(result, n_next));
+    // Both stores go through `taa_round_f16`: a truncating store would darken
+    // the history a little more every frame (see f16_round.wgsl). The
+    // history length is left as it is: a truncated `n` is at most one step
+    // short and is rebuilt from the cap every frame, so it does not compound.
+    textureStore(history_curr_tex, q, vec4<f32>(taa_round_f16(result), n_next));
 
     var out_color = untonemap(result);
     let view = u32(params.debug_view + 0.5);
@@ -609,5 +614,5 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
             out_color = vec3<f32>(edge_motion);
         }
     }
-    textureStore(out_tex, q, vec4<f32>(out_color, 1.0));
+    textureStore(out_tex, q, vec4<f32>(taa_round_f16(out_color), 1.0));
 }

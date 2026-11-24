@@ -56,6 +56,14 @@ fn untonemap(t: vec3<f32>) -> vec3<f32> {
     return t / (1.0 - min(max3(t), TONEMAPPED_MAX));
 }
 
+// Nearest rgba16float value, so the store is exact on devices whose store
+// truncates. A copy of `taa_round_f16` in shared_wgsl/taa/f16_round.wgsl
+// (this file is not a template and cannot include it); the reasons are there.
+fn taa_round_f16(x: vec3<f32>) -> vec3<f32> {
+    let bits = bitcast<vec3<u32>>(max(x, vec3<f32>(0.0)));
+    return bitcast<vec3<f32>>((bits + vec3<u32>(0x1000u)) & vec3<u32>(0xFFFFE000u));
+}
+
 // One tap in the working space, clamped to the image; non-finite or negative
 // input reads as black (NaN fails the range test).
 fn tap(p: vec2<i32>, p_max: vec2<i32>) -> vec3<f32> {
@@ -112,5 +120,5 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // so 4·lobe + 1 >= 0.25.
     let t = (lobe * (b + d + f + h) + e) / (4.0 * lobe + 1.0);
     let out = untonemap(clamp(t, vec3<f32>(0.0), vec3<f32>(TONEMAPPED_MAX)));
-    textureStore(dst_tex, p, vec4<f32>(out, 1.0));
+    textureStore(dst_tex, p, vec4<f32>(taa_round_f16(out), 1.0));
 }

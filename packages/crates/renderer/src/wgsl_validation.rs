@@ -3659,3 +3659,83 @@ fn taa_resolve_shader_validates() {
         }
     }
 }
+
+#[test]
+fn taa_rgba16float_stores_are_rounded() {
+    // Every colour the TAA passes store into an rgba16float texture goes
+    // through `taa_round_f16` first: a compute-shader store truncates on Apple
+    // GPUs, and the history is stored again every frame, so the loss
+    // accumulated into a converged image one 8-bit level too dark on 7-16% of
+    // a flat-shaded scene's pixels (docs/TAA.md §7).
+    use crate::render_passes::taa::rcas::RCAS_SHADER_SOURCE;
+    use crate::render_passes::taa::shader::{
+        cache_key::ShaderCacheKeyTaa, template::ShaderTemplateTaa,
+    };
+    let shared = include_str!("render_passes/shared/shared_wgsl/taa/f16_round.wgsl");
+    let body = |src: &str| -> String {
+        let start = src
+            .find("fn taa_round_f16(")
+            .expect("taa_round_f16 must be defined");
+        let end = start + src[start..].find("\n}").expect("function end") + 2;
+        src[start..end].to_string()
+    };
+    for reactive in [false, true] {
+        let src = ShaderTemplateTaa::try_from(&ShaderCacheKeyTaa {
+            reverse_z: true,
+            reactive,
+        })
+        .unwrap()
+        .into_source()
+        .unwrap();
+        let stores: Vec<&str> = src
+            .lines()
+            .filter(|l| l.contains("textureStore("))
+            .collect();
+        assert_eq!(stores.len(), 2, "resolve: history and output stores");
+        for line in stores {
+            assert!(
+                line.contains("taa_round_f16("),
+                "resolve: unrounded rgba16float store `{}`",
+                line.trim()
+            );
+        }
+        assert_eq!(body(&src), body(shared));
+    }
+    // RCAS: the sharpened store is rounded; the HUD pass-through store copies
+    // a texel that is already a binary16 value.
+    let stores: Vec<&str> = RCAS_SHADER_SOURCE
+        .lines()
+        .filter(|l| l.contains("textureStore("))
+        .collect();
+    assert_eq!(stores.len(), 2, "rcas: pass-through and sharpened stores");
+    assert!(stores[0].contains("textureLoad(src_tex, p, 0)"));
+    assert!(stores[1].contains("taa_round_f16(out)"));
+    // rcas.wgsl is not a template, so it carries a copy: keep it identical.
+    assert_eq!(body(RCAS_SHADER_SOURCE), body(shared));
+
+    // The bit trick itself, mirrored: the nearest binary16 value (10 mantissa
+    // bits), ties up, for every value from the smallest normal half upwards.
+    fn round_f16(x: f32) -> f32 {
+        f32::from_bits((x.max(0.0).to_bits() + 0x1000) & 0xFFFF_E000)
+    }
+    let mut x = 6.2e-5f64;
+    while x < 60000.0 {
+        let e = x.log2().floor();
+        let ulp = 2f64.powf(e - 10.0);
+        let expected = ((x / ulp) + 0.5).floor() * ulp;
+        let got = round_f16(x as f32) as f64;
+        // `x as f32` rounds x first; allow that rounding to move a tie.
+        assert!(
+            (got - expected).abs() <= ulp * 1.0e-3 || ((x / ulp).fract() - 0.5).abs() < 1.0e-4,
+            "round_f16({x}) = {got}, expected {expected}"
+        );
+        assert_eq!(round_f16(got as f32) as f64, got, "idempotent");
+        assert!((got - x).abs() <= ulp * 0.5 * 1.001);
+        x *= 1.000_37;
+    }
+    assert_eq!(round_f16(0.0), 0.0);
+    assert_eq!(round_f16(-1.0), 0.0);
+    assert_eq!(round_f16(f32::INFINITY), f32::INFINITY);
+    // The largest value below 1 the history may hold stays below 1.
+    assert!(round_f16(0.9995) < 1.0);
+}
