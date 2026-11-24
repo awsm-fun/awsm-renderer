@@ -3391,7 +3391,7 @@ fn taa_resolve_shader_validates() {
             for line in [
                 "let mean = m1 / kept;",
                 "let sigma = sqrt(max(m2 / kept - mean * mean, vec3<f32>(0.0)));",
-                "let box_extent = max(gamma * sigma, vec3<f32>(1.5e-3));",
+                "let box_extent = max(gamma_reactive * sigma, vec3<f32>(1.5e-3));",
                 "let clip_scale = max(max(over.x, max(over.y, over.z)), 1.0);",
                 "let history_clipped = max(ycocg_to_rgb(mean + to_history / clip_scale), vec3<f32>(0.0));",
                 "var result = mix(history_clipped, current, alpha);",

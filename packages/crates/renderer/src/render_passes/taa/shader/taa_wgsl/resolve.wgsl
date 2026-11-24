@@ -442,12 +442,17 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         params.gamma_moving,
         clamp(speed_px / max(params.gamma_moving_speed, 1.0e-4), 0.0, 1.0),
     );
+    // Reactive pixels show colour that does not follow their vector, so
+    // their history is fetched from the wrong place whenever they move. A
+    // tighter box removes it faster there, which lets the reactive weight
+    // itself stay low enough that still glass and water do not shimmer.
+    let gamma_reactive = gamma * mix(1.0, 0.5, clamp(reactive * params.reactive_valid, 0.0, 1.0));
     let history_y = rgb_to_ycocg(history_rgb);
     let to_history = history_y - mean;
     // The floor is a few steps of the rgba16float history's quantisation
     // (2.4e-4 just below 1.0): below it a flat area would read its own
     // rounding as a clipped history and forget everything.
-    let box_extent = max(gamma * sigma, vec3<f32>(1.5e-3));
+    let box_extent = max(gamma_reactive * sigma, vec3<f32>(1.5e-3));
     let over = abs(to_history) / box_extent;
     let clip_scale = max(max(over.x, max(over.y, over.z)), 1.0);
     let history_clipped = max(ycocg_to_rgb(mean + to_history / clip_scale), vec3<f32>(0.0));
