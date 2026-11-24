@@ -248,7 +248,7 @@ impl Default for TaaTuningSettings {
             max_history_moving: 2.0,
             max_history_moving_speed: 1.0,
             motion_edge_alpha: 1.0,
-            motion_edge_speed: 2.0,
+            motion_edge_speed: 0.5,
         }
     }
 }

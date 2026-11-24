@@ -883,6 +883,9 @@ fn cs_main(
     alpha = max(alpha, params.motion_edge_alpha * edge_motion);
     alpha = max(alpha, params.motion_alpha * clamp(speed_px / max(params.motion_alpha_speed, 1.0e-4), 0.0, 1.0));
     alpha = max(alpha, reactive * params.reactive_valid);
+    // What the boosts (motion boundary, speed, reactive) leave of the
+    // history, before the clip (whose shortening `n_next` already applies).
+    let alpha_kept = alpha;
     alpha = max(alpha, clip_amount * params.clip_alpha);
     if (params.upscaling > 0.5) {
         // No render sample near this output pixel this frame: lean on history.
@@ -892,7 +895,12 @@ fn cs_main(
         alpha = 1.0;
     }
     var result = mix(history_clipped, current, alpha);
-    var n_next = min(n + 1.0, history_cap) * (1.0 - clip_amount);
+    // The history's length after this blend: one more frame, but never more
+    // than the boosts leave it (`1 / alpha` frames: a pixel whose weight was
+    // raised to ~1 by a motion boundary or a reactive value holds about one
+    // frame of history, and must not be trusted as a long one the frame the
+    // boost ends). Equal to `n + 1` whenever no boost applies.
+    var n_next = min(min(n + 1.0, 1.0 / max(alpha_kept, 1.0e-4)), history_cap) * (1.0 - clip_amount);
     if (!has_history) {
         n_next = 1.0;
     }

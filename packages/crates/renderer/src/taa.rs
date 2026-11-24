@@ -232,6 +232,9 @@ pub struct TaaTuning {
     pub motion_edge_alpha: f32,
     /// The relative speed (output px / frame) between the nearest and the
     /// farthest surface of the 3×3 at which `motion_edge_alpha` is reached.
+    /// 0.5 (round 3; was 2.0): a silhouette moving slower than that kept
+    /// part of its history and ghosted for 15-45 frames (skinned legs, a
+    /// deforming edge; `docs/TAA.md` §6, §7.5).
     pub motion_edge_speed: f32,
 }
 
@@ -253,7 +256,7 @@ impl Default for TaaTuning {
             max_history_moving: 2.0,
             max_history_moving_speed: 1.0,
             motion_edge_alpha: 1.0,
-            motion_edge_speed: 2.0,
+            motion_edge_speed: 0.5,
         }
     }
 }
