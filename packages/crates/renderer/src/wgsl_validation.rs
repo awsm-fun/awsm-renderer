@@ -3671,21 +3671,22 @@ fn taa_resolve_shader_validates() {
         cache_key::ShaderCacheKeyTaa, template::ShaderTemplateTaa,
     };
     use crate::post_process::ToneMapping;
-    for (reverse_z, reactive, tonemapping) in [false, true].into_iter().flat_map(|z| {
+    for (reverse_z, reactive, tonemapping, debug_views) in [false, true].into_iter().flat_map(|z| {
         [false, true].into_iter().flat_map(move |r| {
             [ToneMapping::None, ToneMapping::KhronosNeutralPbr, ToneMapping::Aces]
                 .into_iter()
-                .map(move |t| (z, r, t))
+                .flat_map(move |t| [false, true].into_iter().map(move |d| (z, r, t, d)))
         })
     }) {
         {
             let label = format!(
-                "taa resolve reverse_z={reverse_z} reactive={reactive} tonemapping={tonemapping:?}"
+                "taa resolve reverse_z={reverse_z} reactive={reactive} tonemapping={tonemapping:?} debug_views={debug_views}"
             );
             let src = ShaderTemplateTaa::try_from(&ShaderCacheKeyTaa {
                 reverse_z,
                 reactive,
                 tonemapping,
+                debug_views,
             })
             .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
             .into_source()
@@ -3749,6 +3750,13 @@ fn taa_resolve_shader_validates() {
                 ToneMapping::None => "return tonemap(c);",
             };
             assert!(src.contains(curve), "{label}: working space is not the display curve");
+            // The debug views exist only in their variant (their branch costs
+            // the production resolve ~0.12 ms even when never taken).
+            assert_eq!(
+                src.contains("params.debug_view"),
+                debug_views,
+                "{label}: debug views must be compiled exactly in the debug variant"
+            );
             // G2 — jitter removed where the current frame is sampled.
             assert!(
                 src.contains("let dxy1 = vec2<f32>(p0) + 0.5 - jitter - r_pos;"),
@@ -3863,11 +3871,12 @@ fn taa_rgba16float_stores_are_rounded() {
         let end = start + src[start..].find("\n}").expect("function end") + 2;
         src[start..end].to_string()
     };
-    for reactive in [false, true] {
+    for (reactive, debug_views) in [(false, false), (true, false), (false, true), (true, true)] {
         let src = ShaderTemplateTaa::try_from(&ShaderCacheKeyTaa {
             reverse_z: true,
             reactive,
             tonemapping: crate::post_process::ToneMapping::KhronosNeutralPbr,
+            debug_views,
         })
         .unwrap()
         .into_source()

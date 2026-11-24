@@ -178,7 +178,6 @@ impl TaaParamsValues {
         {
             out[i * 4..i * 4 + 4].copy_from_slice(&f.to_ne_bytes());
         }
-
         out
     }
 }
@@ -229,6 +228,12 @@ impl TaaParams {
     /// values).
     pub fn reactive_valid(&self) -> bool {
         self.values.get().is_some_and(|v| v.reactive_valid)
+    }
+
+    /// The debug view of the last write (0 = none): selects the resolve
+    /// variant with the debug views compiled in.
+    pub fn debug_view(&self) -> u32 {
+        self.values.get().map_or(0, |v| v.debug_view)
     }
 
     /// Plan phase 3: whether the reactive mask was written this frame, known
@@ -423,7 +428,13 @@ impl TaaRenderPass {
                     )
                     .into(),
             ));
-            compute_pass.set_pipeline(ctx.pipelines.compute.get(self.pipelines.resolve)?);
+            // The debug variant once a view is selected and it has compiled
+            // (`TaaPipelines::ensure_debug`); the production one otherwise.
+            let pipeline = match self.pipelines.resolve_debug {
+                Some(debug) if self.params.debug_view() != 0 => debug,
+                _ => self.pipelines.resolve,
+            };
+            compute_pass.set_pipeline(ctx.pipelines.compute.get(pipeline)?);
             // The pass's own parity, flipped only after a submitted resolve.
             compute_pass.set_bind_group(
                 0,
@@ -673,6 +684,14 @@ impl AwsmRenderer {
                     .mark_create(BindGroupCreate::TextureViewRecreate);
             }
             rcas.write_strength(&self.gpu, config.sharpen)?;
+        }
+        if self.taa.debug_shader_id() != 0 {
+            pass.pipelines.ensure_debug(
+                &self.gpu,
+                &mut self.shaders,
+                &self.pipeline_layouts,
+                &mut self.pipelines.compute,
+            );
         }
         let reset = self.taa.reset_pending || pass.bookkeeping.history_fresh();
         pass.repeat = self.taa.debug_repeat.max(1);

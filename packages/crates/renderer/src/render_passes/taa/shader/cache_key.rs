@@ -24,6 +24,11 @@ pub struct ShaderCacheKeyTaa {
     /// A tonemapping change rebuilds the resolve pipeline (no history reset:
     /// the stored history does not depend on it).
     pub tonemapping: ToneMapping,
+    /// Compiles the debug views (`TaaDebugView`, raw views). The pass holds
+    /// both variants and dispatches this one only while a view is selected:
+    /// the views' branch, even never taken, costs the resolve about 0.12 ms
+    /// at 1920x1435.
+    pub debug_views: bool,
 }
 
 impl From<ShaderCacheKeyTaa> for ShaderCacheKey {

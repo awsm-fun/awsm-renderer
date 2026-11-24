@@ -19,6 +19,8 @@ pub struct ShaderTemplateTaa {
     pub reactive: bool,
     /// The display tonemapper (the working space).
     pub tonemapping: ToneMapping,
+    /// See [`ShaderCacheKeyTaa::debug_views`].
+    pub debug_views: bool,
 }
 
 impl TryFrom<&ShaderCacheKeyTaa> for ShaderTemplateTaa {
@@ -29,6 +31,7 @@ impl TryFrom<&ShaderCacheKeyTaa> for ShaderTemplateTaa {
             reverse_z: value.reverse_z,
             reactive: value.reactive,
             tonemapping: value.tonemapping,
+            debug_views: value.debug_views,
         })
     }
 }

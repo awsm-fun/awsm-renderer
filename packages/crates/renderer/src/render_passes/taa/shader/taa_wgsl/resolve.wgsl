@@ -74,7 +74,6 @@ struct TaaParams {
     prev_prev_view_projection: mat4x4<f32>,
 };
 
-
 @group(0) @binding(0) var<uniform> camera_raw: CameraRaw;
 @group(0) @binding(1) var<uniform> params: TaaParams;
 // Lit HDR after SSR, render size.
@@ -395,6 +394,7 @@ fn sample_history(uv: vec2<f32>, size: vec2<f32>) -> vec3<f32> {
     return clamp(sum / (wa + wb + wc + wd + we), vec3<f32>(0.0), vec3<f32>(TONEMAPPED_MAX));
 }
 
+{% if debug_views %}
 fn heat(x: f32) -> vec3<f32> {
     let t = clamp(x, 0.0, 1.0);
     return clamp(
@@ -403,6 +403,7 @@ fn heat(x: f32) -> vec3<f32> {
         vec3<f32>(1.0),
     );
 }
+{% endif %}
 
 // ---- The 3x3 neighbourhoods of a workgroup, shared -----------------------
 // An 8x8 block of output pixels reads at most a 10x10 block of render
@@ -637,11 +638,13 @@ fn cs_main(
     let prev_footprint = prev_depth_footprint(uv_hist, camera_raw.jitter.zw);
     let d_prev = view_distance(prev_footprint.near);
     var disoccluded = d_prev < d_expected * (1.0 - params.disocclusion_threshold);
+    {% if debug_views %}
     let diag_test1 = disoccluded;
     var diag_test2 = false;
     var diag_depth2 = false;
     var diag_mixed = false;
     var diag_covered = false;
+    {% endif %}
 
     // Test 2: the pixel's OWN surface, with its own depth and its own vector.
     // Test 1 alone has two blind spots, both on the strip a moving object has
@@ -689,7 +692,9 @@ fn cs_main(
             // NEAREST of the footprint: the edge really did sweep across, so
             // any sample of the thing in front means it was there.
             hidden = view_distance(fp_own.near) < own.z * (1.0 - slack_own);
+            {% if debug_views %}
             diag_depth2 = hidden;
+            {% endif %}
         } else {
             // Away from a nearer surface moving relative to this one, the
             // FARTHEST of the footprint: was this surface visible anywhere in
@@ -704,7 +709,9 @@ fn cs_main(
             if (!dilated) {
                 hidden = d_far < own.z * (1.0 - slack_own);
             }
+            {% if debug_views %}
             diag_depth2 = hidden;
+            {% endif %}
             if (!hidden && is_static) {
                 // Motion, where depth cannot tell two surfaces apart: the
                 // bottom of an object resting on this surface touches it in
@@ -734,13 +741,17 @@ fn cs_main(
                     covered = length((pv_far - v_own_prev) * O) > motion_slack;
                 }
                 hidden = mixed || covered;
+                {% if debug_views %}
                 diag_mixed = mixed;
                 diag_covered = covered;
+                {% endif %}
             }
         }
         if (hidden) {
             disoccluded = true;
+            {% if debug_views %}
             diag_test2 = true;
+            {% endif %}
         }
     }
 
@@ -864,7 +875,14 @@ fn cs_main(
     // short and is rebuilt from the cap every frame, so it does not compound.
     textureStore(history_curr_tex, q, vec4<f32>(taa_round_f16(stored), n_next));
 
+    {% if debug_views %}
     var out_color = result_linear;
+    {% else %}
+    let out_color = result_linear;
+    {% endif %}
+    // The debug views live in their own variant: the branch, even never
+    // taken, cost about 0.12 ms at 1920x1435 (register pressure).
+    {% if debug_views %}
     let view = u32(params.debug_view + 0.5);
     if (view != 0u) {
         if (view == 1u) {
@@ -931,5 +949,6 @@ fn cs_main(
             );
         }
     }
+    {% endif %}
     textureStore(out_tex, q, vec4<f32>(taa_round_f16(out_color), 1.0));
 }

@@ -450,6 +450,39 @@ impl AwsmRenderer {
     #[doc(hidden)]
     pub fn set_taa_debug_view_raw(&mut self, id: Option<u32>) {
         self.taa.debug_view_raw = id;
+        self.start_taa_debug_variant();
+    }
+
+    /// Whether the resolve variant with the debug views is ready for the
+    /// next frame (or failed to compile, then the normal image shows). The
+    /// variant compiles on first selection of a view; until it is ready the
+    /// production resolve runs and the view shows the normal image. Tests
+    /// that read a debug view wait for this after selecting one. True when
+    /// no view is selected or TAA is off.
+    pub fn taa_debug_variant_ready(&self) -> bool {
+        if self.taa.debug_shader_id() == 0 {
+            return true;
+        }
+        self.render_passes
+            .taa
+            .as_ref()
+            .is_none_or(|pass| pass.pipelines.debug_settled())
+    }
+
+    /// Start compiling the debug-view resolve variant if a view is selected
+    /// (it compiles on first need; see [`Self::taa_debug_variant_ready`]).
+    fn start_taa_debug_variant(&mut self) {
+        if self.taa.debug_shader_id() == 0 {
+            return;
+        }
+        if let Some(pass) = self.render_passes.taa.as_mut() {
+            pass.pipelines.ensure_debug(
+                &self.gpu,
+                &mut self.shaders,
+                &self.pipeline_layouts,
+                &mut self.pipelines.compute,
+            );
+        }
     }
 
     /// Harness diagnostics: overrides [`CLIP_ALPHA`] for tuning sweeps.
@@ -483,6 +516,7 @@ impl AwsmRenderer {
             self.reset_temporal_history();
         }
         self.taa.debug_view = view;
+        self.start_taa_debug_variant();
     }
 
     /// The selected TAA debug view.
