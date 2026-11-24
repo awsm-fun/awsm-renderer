@@ -3737,6 +3737,10 @@ fn taa_resolve_shader_validates() {
                 // channel), and the clipped history is what gets blended.
                 for line in [
                 "let mean = m1 / kept;",
+                // Taps outside the image (clamped to the edge sample) take no
+                // part in the box or the reconstruction.
+                "kept += keep * inside;",
+                "let w = w0.x * w0.y * keep * inside;",
                 "let sigma = sqrt(max(m2 / kept - mean * mean, vec3<f32>(0.0)));",
                 "let box_extent = max(gamma * sigma, vec3<f32>(max(1.5e-3, quant)));",
                 "let clip_scale = max(max(over.x, max(over.y, over.z)), 1.0);",

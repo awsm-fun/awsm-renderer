@@ -549,6 +549,11 @@ fn cs_main(
         // One tap of the unrolled 3x3 (weight w{{ dx }}.x * w{{ dy }}.y).
         let p = clamp(p0 + vec2<i32>({{ dx }} - 1, {{ dy }} - 1), vec2<i32>(0), p_max);
         let ti = u32((base.y + {{ dy }} - 1) * TILE + base.x + {{ dx }} - 1);
+        // A tap outside the image is the edge sample again: counting it
+        // twice narrows the clip box on the border rows (it then clips the
+        // history every frame and the edge row flickers) and doubles the
+        // edge sample's weight. Only the real taps count.
+        let inside = select(0.0, 1.0, all(p == p0 + vec2<i32>({{ dx }} - 1, {{ dy }} - 1)));
         {% if reactive %}
         // A mask value of exactly 1 marks a HUD pixel (see HUD_REACTIVE). It
         // must not reach its neighbours in any way: not through the reactive
@@ -563,7 +568,7 @@ fn cs_main(
         {% endif %}
         let s = tile[ti];
         let y = s.xyz;
-        let w = w{{ dx }}.x * w{{ dy }}.y * keep;
+        let w = w{{ dx }}.x * w{{ dy }}.y * keep * inside;
         current_y += y * w;
         weight_sum += w;
         {% if id_test %}
@@ -573,9 +578,9 @@ fn cs_main(
         }
         {% endif %}
         confidence = max(confidence, w);
-        m1 += y * keep;
-        m2 += y * y * keep;
-        kept += keep;
+        m1 += y * keep * inside;
+        m2 += y * y * keep * inside;
+        kept += keep * inside;
         let z = s.w;
         {% if dx == 0 && dy == 1 %}z_left = z;{% endif %}
         {% if dx == 2 && dy == 1 %}z_right = z;{% endif %}
