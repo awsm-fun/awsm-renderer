@@ -33,10 +33,10 @@ before TAA. The renderer default is MSAA 4x.
 | MSAA 4x | `AntiAliasing::msaa4()` (the default) | geometric edges | shading and specular aliasing, sub-pixel detail between samples | +0.74 to +2.46 ms over no AA on the synthetic scenes, +4.1 ms in Dreidel Derby mid-round (1920x1435, §7.6) |
 | SMAA | `AntiAliasing::smaa()` | geometric edges, as a post-process | sub-pixel detail, temporal shimmer | one post pass: +0.22 to +0.46 ms |
 | MSAA + SMAA | `AntiAliasing { smaa: true, ..AntiAliasing::msaa4() }` | as MSAA; SMAA on top adds little | | both |
-| TAA native | `AntiAliasing::taa(TaaConfig::native())` | geometric edges, shading and specular aliasing, sub-pixel detail, thin geometry | trails on things without motion vectors (§6); one frame of aliasing at every revealed pixel | +1.38 to +1.60 ms over no AA on the synthetic scenes (resolve 1.21-1.41 ms), +1.5 ms in Dreidel Derby mid-round |
-| TAA Quality | `TaaConfig::preset(TaaPreset::Quality)`, scale 0.67 | as native, at 45% of the pixels shaded | 4.3% of isolated sub-render-pixel features lost in a still image; softer thin detail; opaque-path HUD soft | −0.12 to +0.44 ms against no AA (sharpening off; RCAS adds 0.16-0.20 ms); Dreidel Derby mid-round 7.30 ms against 10.74 with no AA (unpaced, §7.6) |
+| TAA native | `AntiAliasing::taa(TaaConfig::native())` | geometric edges, shading and specular aliasing, sub-pixel detail, thin geometry | trails on things without motion vectors (§6); one frame of aliasing at every revealed pixel | +1.68 to +2.08 ms over no AA on the synthetic scenes (resolve 1.53-1.83 ms), +1.5 ms in Dreidel Derby mid-round |
+| TAA Quality | `TaaConfig::preset(TaaPreset::Quality)`, scale 0.67 | as native, at 45% of the pixels shaded | 4.3% of isolated sub-render-pixel features lost in a still image; softer thin detail; opaque-path HUD soft | +0.29 to +0.76 ms against no AA (sharpening off; RCAS adds 0.17-0.20 ms); Dreidel Derby mid-round 7.30 ms against 10.74 with no AA (unpaced, §7.6) |
 | TAA Balanced | `TaaPreset::Balanced`, scale 0.58 | as Quality, at 34% of the pixels | 7.3% of isolated sub-render-pixel features lost | not measured |
-| TAA Performance | `TaaPreset::Performance`, scale 0.5 | as Quality, at 25% of the pixels | 14.5% of isolated sub-render-pixel features lost; softer than 0.67 | −0.75 to +0.14 ms against no AA; Dreidel Derby mid-round 6.16 ms (unpaced) |
+| TAA Performance | `TaaPreset::Performance`, scale 0.5 | as Quality, at 25% of the pixels | 14.5% of isolated sub-render-pixel features lost; softer than 0.67 | −0.36 to +0.54 ms against no AA; Dreidel Derby mid-round 6.16 ms (unpaced) |
 
 Measured image error against the reference (§7.1, display-linear;
 `taa-thin`, converged, mean absolute error in 0-255 display units, lower is
@@ -44,7 +44,7 @@ better):
 
 | | native | 0.67 | 0.58 | 0.5 |
 |---|--:|--:|--:|--:|
-| TAA | 0.559 | 1.243 | 1.769 | 2.668 |
+| TAA | 0.560 | 1.254 | 1.783 | 2.679 |
 | MSAA 4x | 5.525 | | | |
 | SMAA | 5.268 | | | |
 | None | 6.274 | | | |
@@ -70,14 +70,14 @@ So, in short:
   on content without a correct motion vector (particles, transparents, a
   moving silhouette's first uncovered pixels); §6.
 - **Quality (0.67)** is still far better than native MSAA on the gate scene
-  (1.243 against 5.525) while shading 45% of the pixels. It is the preset to use
+  (1.254 against 5.525) while shading 45% of the pixels. It is the preset to use
   when frame time matters.
-- **Performance (0.5)** is still below native MSAA on fine detail (2.668
+- **Performance (0.5)** is still below native MSAA on fine detail (2.679
   against 5.525) but loses 14.5% of isolated sub-pixel features and is above
-  MSAA on `taa-orbit` (3.496 against 3.184). Use it when frame time decides.
+  MSAA on `taa-orbit` (3.555 against 3.184). Use it when frame time decides.
 - **Balanced (0.58)** sits between the two: below native MSAA on `taa-thin`
-  (1.769 against 5.525), `taa-orbit` (2.557 against 3.184) and `taa-reveal`
-  (0.654 against 1.770); 7.3% of isolated sub-pixel features lost. Its frame
+  (1.783 against 5.525), `taa-orbit` (2.637 against 3.184) and `taa-reveal`
+  (0.667 against 1.770); 7.3% of isolated sub-pixel features lost. Its frame
   cost was not measured.
 
 ### Should TAA be the default?
@@ -87,12 +87,12 @@ The facts, as measured (§7):
 - **Quality against MSAA 4x.** TAA native has the lower error on `taa-thin`
   (0.559 against 5.525), in Dreidel Derby mid-round (0.873 against 1.864;
   **TODO (lead, pass B)**) and on 9 of the 10 other converged test scenes. It
-  is level on `taa-skin` (0.180 against 0.173).
+  is level on `taa-skin` (0.174 against 0.173).
 - **Cost against MSAA 4x.** TAA native is cheaper on two of the four synthetic
-  scenes (`instancing-stress` −1.01 ms, `taa-thin` −0.86 ms) and in Dreidel
+  scenes (`instancing-stress` −0.72 ms, `taa-thin` −0.45 ms) and in Dreidel
   Derby mid-round (−2.6 ms; **TODO (lead, pass B)**), and dearer on the other
-  two (`kitchen-sink` +0.49 ms, `ssr` +0.71 ms). TAA 0.67 is cheaper than MSAA
-  everywhere it was measured (−0.40 to −2.58 ms on the synthetic scenes,
+  two (`kitchen-sink` +0.71 ms, `ssr` +1.03 ms). TAA 0.67 is cheaper than MSAA
+  everywhere it was measured (−0.10 to −2.24 ms on the synthetic scenes,
   −7.4 ms in Dreidel Derby mid-round, unpaced).
 - **Gates.** Not every verification gate is met: the trail mean on the two
   `taa-motion` frames where even the oracle is above it, the trail maximum
@@ -122,13 +122,13 @@ TAA | MSAA 4x | oracle | reference | class map, red = ghost).
 
 | Option | Default | What it fixes | Evidence | Cost when on |
 |---|---|---|---|---|
-| `disocclusion: Depth` | | reveals where the uncovered surface is farther than what covered it | | resolve 1.11 / 1.18 ms; previous depth 4 B/px |
-| `disocclusion: DepthAndMotion` | | + the contact line under an object moving over a static surface, where the two depths touch | | +0.10 / +0.20 ms over `Depth`; previous vectors 4 B/px |
-| `disocclusion: DepthMotionAndId` | **on** | + contact lines on moving surfaces and between two objects (limbs crossing, a character on a moving platform); a revealed pixel's new history from its own object only. together with the two rows below and the history-length rule (§3.5 step 7), `taa-motion` trail ghosts 300 → 24 pixel-frames and events longer than one frame 36 → 1 against round 2; `prefab-skinned-morph` / `anim-skinned` trail events longer than one frame 1 → 0, moving-object ghosts 799 → 597 / 139 → 98 against `DepthAndMotion` | `skin-legs-k18-before-after.png`, `skin-morph-k91-before-after.png` (round 2 → round 3) | +0.28 / +0.37 ms over `DepthAndMotion`; previous visibility 8 B/px and its copy |
+| `disocclusion: Depth` | | reveals where the uncovered surface is farther than what covered it | | resolve 1.23 / 1.30 ms; previous depth 4 B/px |
+| `disocclusion: DepthAndMotion` | | + the contact line under an object moving over a static surface, where the two depths touch | | +0.24 / +0.34 ms over `Depth`; previous vectors 4 B/px |
+| `disocclusion: DepthMotionAndId` | **on** | + contact lines on moving surfaces and between two objects (limbs crossing, a character on a moving platform); a revealed pixel's new history from its own object only. together with the two rows below and the history-length rule (§3.5 step 7), `taa-motion` trail ghosts 300 → 24 pixel-frames and events longer than one frame 36 → 1 against round 2; `prefab-skinned-morph` / `anim-skinned` trail events longer than one frame 1 → 0, moving-object ghosts 799 → 597 / 139 → 98 against `DepthAndMotion` | `skin-legs-k18-before-after.png`, `skin-morph-k91-before-after.png` (round 2 → round 3) | +0.07 / +0.18 ms over `DepthAndMotion`; previous visibility 8 B/px and its copy |
 | `motion_edge_speed` 0.5 | **on** (2.0 before) | slow silhouettes kept part of their history and ghosted for 15-45 frames | | none (a uniform) |
 | `reactive_particles` 1.0 | **on** | particle sprites' soft skirts kept a stale colour for up to 32 frames | | none: the reactive value was already written |
 | `reactive_lines` 1.0 | off (0.3) | the faint double behind an animated line (lines have no vectors): `taa-transparent` moving-region ghost pixel-frames 184,562 → 15,633 | `lines-k123-before-after.png` (0.3 → 1.0), `leftover-transp-k123.png` | no GPU time; still lines alias: `taa-transparent` still-image flicker 0.291 → 0.372, p99 3 → 4 (fails 05's p99 < 4), hence off by default |
-| `edge_release` 1.0 | off (0) | the one ghost event left at the default: a resting edge released by a sub-pixel move (`taa-motion` k211, 1 px for 4 frames); `taa-motion` trail ghosts 24 → 7, events longer than one frame 1 → 0 | `k211-edge-release.png` | resolve +0.07 / +0.23 ms; still-image flicker `taa-thin` 0.301 → 0.323, `instancing-stress` 0.105 → 0.151 (both still pass, p99 unchanged) |
+| `edge_release` 1.0 | off (0) | the one stale-history event left at the default: a resting edge released by a sub-pixel move (`taa-motion` k211, 1 px for 4 frames); `taa-motion` trail ghosts 24 → 7, events longer than one frame 1 → 0 | `k211-edge-release.png` | resolve +0.07 / +0.23 ms; still-image flicker `taa-thin` 0.301 → 0.323, `instancing-stress` 0.105 → 0.151 (both still pass, p99 unchanged) |
 | `max_history_moving` 1.0 | **on** (2.0 before) | softness in motion: moving-region error `taa-motion` 2.52 → 2.20, `taa-orbit` 1.20 → 1.06; frame-to-frame change of the error on the `taa-orbit` strafe 1.21 → 1.06 (MSAA 4.00); pan worst mean 1.01 → 0.86 (2.50 → 2.33 at 0.67) | `max-history-moving-orbit-k70-before-after.png` | none (a uniform); still-image flicker unchanged |
 
 **Recommended configurations.**
@@ -137,7 +137,7 @@ TAA | MSAA 4x | oracle | reference | class map, red = ghost).
 |---|---|---|---|
 | Games and scenes with objects moving over other objects (the default) | TAA native | `DepthMotionAndId` | defaults |
 | The same when frame time decides | TAA Quality (0.67), §2.3 | `DepthMotionAndId` | defaults |
-| Camera-only motion (walkthroughs, a static world): no object moves over another, so the id test finds nothing | TAA native or Quality | `DepthAndMotion` (saves 0.28-0.37 ms) | defaults |
+| Camera-only motion (walkthroughs, a static world): no object moves over another, so the id test finds nothing | TAA native or Quality | `DepthAndMotion` (saves 0.07-0.18 ms) | defaults |
 | Apps that animate lines (gizmos, debug draw that moves) | TAA | default | `reactive_lines: 1.0` |
 | A zero-ghost requirement that accepts a little more shimmer on thin wires and small instances | TAA | `DepthMotionAndId` (required) | `edge_release: 1.0` |
 | Only geometric edges matter and the content has no thin or specular detail | MSAA 4x | | |
@@ -194,12 +194,12 @@ fixes (ghost counts as in §1, "Choosing the TAA options"):
 
 | Level | Keeps from last frame | Resolve | Fixes |
 |---|---|--:|---|
-| `Depth` | depth (4 B/px) | 1.11 / 1.18 ms | reveals where the uncovered surface is farther than what covered it |
-| `DepthAndMotion` | + motion vectors (4 B/px; 8 on the fallback path) | 1.21 / 1.38 ms | + the contact line under an object moving over a static surface (the two depths touch there): missed first-frame ring pixels on `taa-motion` 7,548 → 1,791 |
-| `DepthMotionAndId` (default) | + the visibility target's mesh id (8 B/px) | 1.48 / 1.75 ms | + the contact line on a moving surface and wherever two objects touch in depth; a revealed pixel's new history starts from its own object only (§3.5). `taa-motion` trail-band ghost pixel-frames 300 → 24, events longer than one frame 36 → 1 (with §2.4's `motion_edge_speed`) |
+| `Depth` | depth (4 B/px) | 1.23 / 1.30 ms | reveals where the uncovered surface is farther than what covered it |
+| `DepthAndMotion` | + motion vectors (4 B/px; 8 on the fallback path) | 1.47 / 1.64 ms | + the contact line under an object moving over a static surface (the two depths touch there): missed first-frame ring pixels on `taa-motion` 7,548 → 1,791 |
+| `DepthMotionAndId` (default) | + the visibility target's mesh id (8 B/px) | 1.54 / 1.83 ms | + the contact line on a moving surface and wherever two objects touch in depth; a revealed pixel's new history starts from its own object only (§3.5). `taa-motion` trail-band ghost pixel-frames 300 → 24, events longer than one frame 36 → 1 (with §2.4's `motion_edge_speed`) |
 
 Recommended: `DepthMotionAndId` everywhere. The cheaper levels are for a
-device or scene where the 0.3 ms matters more than contact-line ghosts (a
+device or scene where 0.1-0.2 ms matters more than contact-line ghosts (a
 camera-only scene gains nothing from the id test; one with objects moving
 over others does).
 
@@ -959,8 +959,10 @@ measure flicker too).
   frames there can exceed MSAA's error. Those pixels show this frame, not
   history: `?mode=ghost-track` counts them as current-frame (class b), not as
   ghosts. 05's original "max < 16" is not reachable by any one-sample method:
-  the oracle reads 18-39 on first-frame pixels. **TODO (measurement, final
-  sweep):** restate the per-frame maximum counts on the final head.
+  the oracle reads 18-39 on first-frame pixels. On the final head the band
+  maximum is above max(MSAA, no AA) on 11 / 4 / 37 frames of `taa-motion` /
+  `taa-reveal` / `taa-skin`, and TAA alone exceeds it on 4 / 2 / 3 of them
+  (round 2: 9 / 2 / 5; §7.2).
 - **What is left of ghosting** at the default (`DepthMotionAndId`), counted
   by `?mode=ghost-track` at 960x720 (events = a ghost pixel followed along
   its motion):
@@ -973,14 +975,25 @@ measure flicker too).
   - `taa-skin`, `taa-reveal`, `prefab-skinned-morph`, `anim-skinned`,
     `particles`: no trail or still-area event longer than one frame.
   - `taa-transparent`: no still-area event longer than one frame; two trail
-    events of two frames.
+    events of two frames, both on particle sprite edges
+    (`docs/taa/transp-trail-k101.png`). Particles take `reactive_particles`
+    1.0, stored as 252/255 = 0.988 in the `r8unorm` mask, just under the
+    classifier's "alpha ≥ 0.99 = this frame only" cut, so these pixels count
+    as kept history although they show (almost) only this frame's one
+    jittered sample: TAA shows the backdrop where the 64-sample reference
+    shows part of a sprite, and the sprite where the reference shows mostly
+    backdrop, never the sprite where it was. Not stale history.
   - `taa-thin` (a still-image flicker stress scene with moving parts): 3
-    trail events of two frames; still-area events of 2-4 frames that repeat
-    at the same pixels with the 8-frame jitter cycle (sub-pixel wires whose
-    history the clip cuts on some jitter phases). That is still-image
-    shimmer, measured by the flicker gate (0.300, passes), not history of
-    something that moved. Its still-area error is TAA 0.514, MSAA 5.008, no
-    AA 5.667.
+    trail events of two frames, on the 1-2 px light rim of the moving red
+    block, which TAA renders about half a pixel off its true position
+    (`docs/taa/thin-trail-k212.png`): a thin moving feature, like a wire,
+    not stale history (TAA is never redder than the reference behind the
+    block). Still-area events of 2-4 frames that repeat at the same pixels
+    with the 8-frame jitter cycle (sub-pixel wires whose history the clip
+    cuts on some jitter phases; `docs/taa/thin-static-flicker.png`). That is
+    still-image shimmer, measured by the flicker gate (0.300, passes), not
+    history of something that moved; `ghost-track` reports it as INFO. Its
+    still-area error is TAA 0.514, MSAA 5.008, no AA 5.667.
   - On `taa-orbit` no object exists, so its trail band (the pixels whose
     motion falls below 0.05 px: near the pivot, and after the stop) holds no
     trail: its 2-4 frame events are single pixels on floor-checker edges
@@ -999,9 +1012,10 @@ measure flicker too).
   within the restated bound, not within 05's bound as written. An
   animated line leaves a faint double behind it (`docs/taa/leftover-transp-k123.png`);
   apps that animate lines set `reactive_lines: 1.0`. Particles flagged as such
-  (§3.6, §5) keep no history at all (`reactive_particles` 1.0). **TODO
-  (measurement, final sweep):** restate the 0.67 transparent trail numbers on
-  the final head.
+  (§3.6, §5) keep no history at all (`reactive_particles` 1.0). At 0.67 the
+  transparent trail lines are INFO and above MSAA and no AA (band under the
+  content 26.6 at the worst frame, the content's own trail 11.5), because
+  the reactive pixels show this frame's render-resolution image.
 - **Upscaled thin detail.** Isolated features smaller than a render pixel
   still drop out of a still image sometimes: 4.3% at 0.67, 7.3% at 0.58,
   14.5% at 0.5.
@@ -1023,9 +1037,9 @@ measure flicker too).
   most of TAA's remaining mid-round error (§7.7). Remedy: `temporal: stable`
   on materials whose time dependence is subtle. **TODO (lead, pass B):**
   re-check the Dreidel Derby claim against the final §7.7.
-- **The resolve costs 1.48 ms** (1.75 ms on `taa-thin`) at 1920x1435
-  output with the default `DepthMotionAndId`; 1.21 / 1.38 ms at
-  `DepthAndMotion`, 1.11 / 1.18 ms at `Depth` (§1, "Choosing the TAA
+- **The resolve costs 1.54 ms** (1.83 ms on `taa-thin`) at 1920x1435
+  output with the default `DepthMotionAndId`; 1.47 / 1.64 ms at
+  `DepthAndMotion`, 1.23 / 1.30 ms at `Depth` (§1, "Choosing the TAA
   options"). The plan targeted 0.6 ms; the bar it was replaced by is "cheaper
   than MSAA 4x in Dreidel Derby" (§7.6). Where the `DepthAndMotion` time goes,
   measured by removing each part in round 2 (`kitchen-sink`, `taa-thin`):
@@ -1105,58 +1119,82 @@ Method deviations from 05:
 
 ### 7.2 Native gates
 
+Final head (renderer `ec35a6fd`), 960x720, every frame, 64-phase references;
+the full record with every log line is the round-3 gate record (the team's
+report, `gates-record.md`; round 2's beside it).
+
 | Gate | Scene | Threshold | Measured (linear, decides) | Karis | Verdict |
 |---|---|---|---|---|---|
-| Vectors, analytic | `taa-motion`, `taa-orbit`, all G2 rows | \|v − v_exact\| ≤ 0.02 px | max 0.0092 px | | PASS |
-| Vectors, reprojection | every scene | mean < 2, p99 < 12, coverage ≥ 50% | worst `taa-vertex-hook` k60 0.27 / 6 | | PASS (120/120 lines) |
+| Vectors, analytic and reprojection | every scene, both paths | \|v − v_exact\| ≤ 0.02 px; mean < 2, p99 < 12 | 120/120 lines on each path | | PASS |
 | Motion-history self-check | 48 scenes, 120 frames | 0 mismatching bytes | 0 | | PASS |
-| History burst / density / reset | `taa-motion`, `prefab-skinned-morph` | clean self-check, exact vectors | 0 mismatching, max 0.0037 px | | PASS 3/3 |
-| Trail mean | `taa-motion` | band mean < 2, every frame | 2 of 208 frames: k31 3.79, k211 2.39, where the oracle reads 3.81 and 2.17 (the band is all first-frame pixels) | 5 frames (k31-34, k211) | FAIL (oracle floor) |
-| Trail mean | `taa-reveal` / `taa-skin` | same | worst 1.751 / 1.388 | 2.610 / 1.723 | PASS / PASS (Karis FAIL / PASS) |
-| Trail max, as written | all three | max < 16 | 89 / 74 / 67 | 79 / 69 / 64 | FAIL (oracle 18-39) |
-| Trail max, restated | `taa-motion` / `taa-reveal` / `taa-skin` | ≤ max(MSAA, no AA) on the same frame | over on 16 / 4 / 42 frames; TAA alone 9 / 2 / 5, the oracle too 7 / 2 / 37 | 24 / 3 / 13 | FAIL |
-| Stop | `taa-motion` | mean < 1, 8 frames after stopping | 0.191 | 0.678 | PASS |
-| Stop | `taa-orbit` | same | 0.344 | 1.006 | PASS (Karis FAIL) |
-| Cut, flagged | `taa-cut` k120 | first frame vs TAA-off < 3 | 2.620 | 2.620 | PASS |
-| Cut, unflagged (guard) | `taa-cut` k240 | same | 2.183 | 2.183 | PASS |
-| Pan | `taa-orbit` strafe | every frame < 3 | worst 1.002 | 1.348 | PASS |
-| Converged | `taa-thin` | TAA < MSAA 4x | 0.559 (MSAA 5.525, SMAA 5.268, none 6.274) | 1.839 (MSAA 5.309) | PASS |
-| Flicker | 16 scenes | mean f2f < 0.5, p99 < 4 | worst `taa-thin` 0.301 p99 2, `taa-transparent` 0.290 p99 3 | | PASS 16/16 |
+| History burst / density / reset | `taa-motion`, `prefab-skinned-morph` | clean self-check, exact vectors | 3/3 | | PASS |
+| Trail mean | `taa-motion` | band mean < 2, every frame | 2 of 208 frames: k31 3.79, k211 2.39, where the oracle reads 3.81 and 2.17 (the band is all first-frame pixels) | 5 frames | FAIL (oracle floor) |
+| Trail mean | `taa-reveal` / `taa-skin` | same | worst 1.750 / 1.384 | 2.612 / 1.778 | PASS / PASS (Karis FAIL / PASS) |
+| Trail max, as written | all three | max < 16 | 89 / 74 / 50 | 76 / 69 / 47 | FAIL (oracle 18-39) |
+| Trail max, restated | `taa-motion` / `taa-reveal` / `taa-skin` | ≤ max(MSAA, no AA) on the same frame | over on 11 / 4 / 37 frames; TAA alone 4 / 2 / 3 (round 2: 9 / 2 / 5) | TAA alone 11 / 2 / 0 | FAIL |
+| Ghost persistence (round 3) | 9 scenes | no ghost (a) event longer than one frame in the trail band or static areas | see "Ghost classification" below | | see below |
+| Stop | `taa-motion` / `taa-orbit` | mean < 1, 8 frames after stopping | 0.187 / 0.296 | 0.674 / 0.970 | PASS (Karis too; round 2 `taa-orbit` Karis 1.006) |
+| Cut, flagged / unflagged (guard) | `taa-cut` k120 / k240 | first frame vs TAA-off < 3 | 2.620 / 2.183 | same | PASS |
+| Pan | `taa-orbit` strafe | every frame < 3 | worst 0.858 | 1.234 | PASS |
+| Converged | `taa-thin` | TAA < MSAA 4x | 0.560 (MSAA 5.525) | 1.839 | PASS |
+| Flicker | 17 scenes | mean f2f < 0.5, p99 < 4 | worst `taa-thin` 0.300 p99 2, `taa-transparent` 0.291 p99 3 | | PASS 17/17 |
 | HUD | `taa-hud` | HUD px vs TAA-off < 1 | worst 0.018, max 1 | 0.018 | PASS |
-| Transparent trail, band ∩ content | `taa-transparent` | mean < 2, max < 16 | TAA 11.85 (avg 4.66); MSAA 8.44 (avg 4.71); no AA 16.78 | 13.05 | FAIL (every mode) |
-| Transparent trail, restated | same | average ≤ MSAA's, worst ≤ no AA's | 4.66 ≤ 4.71, 11.85 ≤ 16.78 | 5.69 ≤ 6.22, 13.05 ≤ 18.06 | PASS |
-| Transparent, content's own trail | `taa-transparent` | mean < 2, max < 16 | TAA 3.84 max 164 (avg 1.01); MSAA 5.64 (avg 3.20) | 4.08 | FAIL (every mode) |
-| Content's own trail, restated | same | as above | 1.01 ≤ 3.20, 3.84 ≤ 5.69 | 1.59 ≤ 3.09, 4.08 ≤ 5.41 | PASS |
-| TAA-off baseline | 6 scenes × MSAA/SMAA/none × 2 frames | bit-exact to 0.45 | 36/36, max diff 0 | | PASS |
+| Transparent trail, band ∩ content | `taa-transparent` | mean < 2, max < 16 | TAA worst 7.67 (avg 2.96); MSAA 8.44 (avg 4.71); no AA 16.78 | 8.57 | FAIL (every mode) |
+| Transparent trail, restated | same | average ≤ MSAA's, worst ≤ no AA's | 2.96 ≤ 4.71, 7.67 ≤ 16.78 (round 2: 4.66, 11.85) | 4.18 ≤ 6.22, 8.57 ≤ 18.06 | PASS |
+| Transparent, content's own trail | `taa-transparent` | mean < 2, max < 16 | TAA worst 1.88 (avg 0.81); MSAA 5.64 (avg 3.20) | 2.63 | FAIL (every mode) |
+| Content's own trail, restated | same | as above | 0.81 ≤ 3.20, 1.88 ≤ 5.69 (round 2: 1.01, 3.84) | 1.34 ≤ 3.09, 2.63 ≤ 5.41 | PASS |
+| TAA-off baseline | 6 scenes × MSAA/SMAA/none × 2 frames | bit-exact to 0.45 | 36/36, max diff 0 (against a set recorded from a build itself 36/36 against 0.45) | | PASS |
 
 Converged image on the other scenes (INFO, not gate scenes; TAA / MSAA,
-linear): `taa-motion` 0.229 / 2.051, `taa-orbit` 0.878 / 3.184, `taa-reveal`
-0.212 / 1.770, `taa-transparent` 0.536 / 2.867, `taa-hud` 0.827 / 2.584,
-`taa-cut` 0.217 / 2.847, `taa-vertex-hook` 0.358 / 1.567, `taa-cluster`
-0.442 / 1.071, `instancing-stress` 0.836 / 0.948, **`taa-skin` 0.180 / 0.173
+linear): `taa-motion` 0.225 / 2.051, `taa-orbit` 0.839 / 3.184, `taa-reveal`
+0.209 / 1.770, `taa-transparent` 0.511 / 2.867, `taa-hud` 0.799 / 2.584,
+`taa-cut` 0.216 / 2.847, `taa-vertex-hook` 0.305 / 1.567, `taa-cluster`
+0.373 / 1.071, `instancing-stress` 0.759 / 0.948, **`taa-skin` 0.174 / 0.173
 (level)**.
-
-Trail broken down (linear): band minus the 1.5 px ring around the current
-silhouette: `taa-motion` 1.700 (max 63), `taa-reveal` 1.582 (max 36),
-`taa-skin` 1.293 (max 16). The ring alone: 9.2, 16.2, 4.4. Over the whole
-`taa-motion` run, TAA's band error pooled over 3.58 M pixel-frames is 0.542
-against the oracle's 0.733 (the oracle keeps 16 frames); 341 band
-pixel-frames are worse than both no AA and the oracle by more than 16. The
-causes of TAA's own excess on the restated maximum are in §6.
 
 Static false disocclusions (30 still frames, Rejection view): no pixel is
 flagged on all 30 frames in any of 15 scenes; the once-per-cycle burst
 remains (e.g. `taa-motion` max 1 px, `taa-orbit` 423, `taa-thin` 1008 on the
-burst frame), the same as round 1.
+burst frame).
+
+**Ghost classification** (`?mode=ghost-track`, every pixel of every frame;
+(a) = history kept and more than 16 worse than both no AA and the oracle, or
+MSAA where it moves; events follow a pixel along its motion). Events longer
+than one frame / all events (longest), and `ghost-region`: TAA's mean error
+over the region against MSAA 4x's and the oracle's, at the default
+`DepthMotionAndId`:
+
+| Scene | Trail band | Static areas | Region error, trail band: TAA / MSAA / no AA | Static: TAA / MSAA / no AA |
+|---|---|---|---|---|
+| `taa-motion` | 1 / 20 (4): k211, §6 | 0 / 0 | 0.529 / 3.771 / 3.762 | 0.163 / 1.876 / 1.876 |
+| `taa-reveal` | 0 / 2 | 0 / 0 | 0.403 / 4.263 / 4.318 | 0.163 / 1.888 / 1.903 |
+| `taa-skin` | 0 / 5 | 0 / 4 | 0.938 / 0.813 / 0.388 | 0.046 / 0.022 / 0.017 |
+| `prefab-skinned-morph` | 0 / 2 | 0 / 0 | 0.704 / 0.913 / 1.525 | 0.030 / 0.007 / 0.011 |
+| `anim-skinned` | 0 / 2 | 0 / 0 | 0.992 / 1.006 / 2.020 | 0.030 / 0.008 / 0.014 |
+| `particles` | 0 / 6 | 0 / 34 | 0.892 / 0.795 / 1.790 | 0.030 / 0.008 / 0.014 |
+| `taa-transparent` | 2 / 109 (2): particle edges, §6 | 0 / 305 | 0.437 / 0.653 / 0.981 | 0.273 / 2.364 / 2.476 |
+| `taa-thin` | 3 / 91 (2): a thin moving rim, §6 | INFO 448 / 5614 (4): jitter-cycle shimmer | 2.786 / 14.762 / 14.780 | 0.514 / 5.008 / 5.667 |
+| `taa-orbit` | INFO (camera only) | INFO | 0.415 / 3.928 / 3.912 | 0.142 / 1.571 / 1.563 |
+
+`ghost-region` passes on every verdict region (TAA ≤ the larger of MSAA's
+and the oracle's on the same still pixel-frames). TAA's mean is above MSAA's
+on `taa-skin`'s and `particles`' trail bands and on the static areas of the
+skinned and particle scenes, where every mode is within 0.05 of the
+reference and the oracle itself reads 0.11-0.30.
+
+Per level, trail-band events longer than one frame (`taa-motion` /
+`prefab-skinned-morph` / `anim-skinned` / `taa-skin` / `taa-thin`):
+`Depth` 266 / 2 / 1 / 17 / 105, `DepthAndMotion` 26 / 1 / 1 / 0 / 8,
+`DepthMotionAndId` 1 / 0 / 0 / 0 / 3.
 
 ### 7.3 Fallback path (`PrepReconstruction`, forced on the M1)
 
-On the final resolve, forced fallback with the overlay: vectors 120/120;
-every gate line equals the geometry path's to three decimals (trail
-`taa-motion` 3.791 against 3.793, `taa-skin` 1.388 max 67 on both; stop
+On the final resolve (round 3), forced fallback with the overlay: vectors
+120/120; every gate line equals the geometry path's to three decimals (trail
+`taa-motion` 3.791 against 3.793, `taa-skin` 1.384 max 50 on both; stop
 `taa-motion` / `taa-orbit` / `instancing-stress` / `taa-skin` /
-`taa-vertex-hook` 0.191 / 0.344 / 0.483 / 0.078 / 0.166; converged `taa-skin`
-0.179, `taa-vertex-hook` 0.358, `instancing-stress` 0.836; flicker equal).
+`taa-vertex-hook` 0.187 / 0.296 / 0.419 / 0.073 / 0.162; converged `taa-skin`
+0.174, `taa-vertex-hook` 0.305, `instancing-stress` 0.759; flicker equal).
 The table below was measured on the round-1 resolve when the overlay was
 built; its comparisons between the paths hold.
 
@@ -1215,31 +1253,35 @@ Karis in parentheses.
 
 | Gate | Scene | 0.67 | 0.58 | 0.5 | Verdict |
 |---|---|---|---|---|---|
-| Converged (MSAA 5.525) | `taa-thin` | 1.243 (2.141) | 1.769 (2.523) | 2.668 (3.254) | PASS, below 1x MSAA at every scale |
-| Converged (INFO) | `taa-orbit` (MSAA 3.184) | 1.943 | 2.557 | 3.496 | above 1x MSAA at 0.5 |
-| Converged (INFO) | `taa-motion` (MSAA 2.051) | 0.543 | 0.773 | 1.117 | |
-| Converged (INFO) | `taa-reveal` (MSAA 1.770) | 0.510 | 0.654 | 0.917 | |
-| Pan | `taa-orbit` | worst 2.519 (2.751) | 3.193 (3.418) | 4.084 (4.305) | PASS (FAIL at the unrelaxed 3 from 0.58) |
-| Flicker | `taa-thin` | 0.292 p99 2 | 0.287 p99 2 | 0.271 p99 2 | PASS at the literal native bound |
+| Converged (MSAA 5.525) | `taa-thin` | 1.254 (2.150) | 1.783 (2.536) | 2.679 (3.265) | PASS, below 1x MSAA at every scale |
+| Converged (INFO) | `taa-orbit` (MSAA 3.184) | 2.036 | 2.637 | 3.555 | above 1x MSAA at 0.5 |
+| Converged (INFO) | `taa-motion` (MSAA 2.051) | 0.551 | 0.775 | 1.132 | |
+| Converged (INFO) | `taa-reveal` (MSAA 1.770) | 0.539 | 0.667 | 0.922 | |
+| Pan | `taa-orbit` | worst 2.329 (2.534) | 2.934 (3.139) | 3.764 (3.963) | PASS (FAIL at the unrelaxed 3 at 0.5) |
+| Flicker | `taa-thin` | 0.297 p99 2 | 0.297 p99 2 | 0.280 p99 2 | PASS at the literal native bound |
 | Flicker | `taa-orbit`, `taa-motion`, `taa-reveal` | ≤ 0.122 p99 1 | ≤ 0.113 p99 1 | ≤ 0.102 p99 1 | PASS |
-| Stop (INFO) | orbit / thin / reveal / motion | 0.880 / 1.111 / 0.409 / 0.436 | 1.304 / 1.658 / 0.528 / 0.659 | 1.879 / 2.542 / 0.763 / 0.998 | under the relaxed bound except `taa-thin` at 0.5 |
-| Scale change 0.67 → 0.5 → 0.67 | `taa-orbit` | no frame > 3: worst 4.190 @k82 | | | FAIL (literal) |
-| Scale change, restated | `taa-orbit` | pop +0.863 (bound +1.5); settled +0.039 (bound +0.25) | | | PASS |
-| Isolated-detail dropout (INFO) | `taa-thin`, 4822 px | 4.3% | 7.3% | 14.5% | |
-| Trail (INFO) | `taa-motion` / `taa-reveal` | worst 6.40 / 5.68, max 158 / 177 | | | |
-| Phase 3 (INFO) | `taa-transparent` band ∩ content / own trail | 26.6 / 16.8 | | | above MSAA and no AA (native) |
+| Stop (INFO) | orbit / thin / reveal / motion | 0.819 / 1.122 / 0.426 / 0.413 | 1.206 / 1.672 / 0.522 / 0.626 | 1.768 / 2.553 / 0.753 / 0.976 | under the relaxed bound except `taa-thin` at 0.5 |
+| Scale change 0.67 → 0.5 → 0.67 | `taa-orbit` | no frame > 3: worst 3.900 @k82 | | | FAIL (literal) |
+| Scale change, restated | `taa-orbit` | pop +0.626 (bound +1.5); settled +0.008 (bound +0.25) | | | PASS |
+| Isolated-detail dropout (INFO) | `taa-thin`, 4822 px | 4.4% | 7.3% | 14.6% | |
+| Trail (INFO) | `taa-motion` / `taa-reveal` | worst 6.28 / 5.15, max 123 / 177 | | | |
+| Phase 3 (INFO) | `taa-transparent` band ∩ content / own trail | 26.6 / 11.5 | | | above MSAA and no AA (native) |
 | HUD | `taa-hud` | worst 0.984, average 0.829, max 132 | | | PASS (< 1) |
 
 The literal scale-change failure is the 0.5 steady state under orbit (a
 constant-0.5 run is itself above 3), not a reset pop: the switched run is at
-most 0.863 above a constant-scale run at the same scale and frame (on the
-up-step frame), and within 0.039 of it from 8 frames after each step.
+most 0.626 above a constant-scale run at the same scale and frame (on the
+up-step frame), and within 0.008 of it from 8 frames after each step.
 
 ### 7.5 The sweeps behind the shipped values
 
 | Value | Sweep | Chosen |
 |---|---|---|
-| `max_history_moving` 2 (new) | default 4: `taa-orbit` stop 1.144, pan 1.483, motion flicker 0.057; 2: 1.079, 1.206, 0.075; 1: stop 1.035 | 2 |
+| `max_history_moving` 1 (round 3; 2 in round 2) | round 2, default 4: `taa-orbit` stop 1.144, pan 1.483, motion flicker 0.057; 2: 1.079, 1.206, 0.075; 1: stop 1.035. Round 3 (on the round-3 resolve), 2 → 1: moving-region error `taa-motion` 2.52 → 2.20, `taa-orbit` 1.20 → 1.06; strafe shimmer 1.21 → 1.06; pan 1.006 → 0.858 (2.495 → 2.329 at 0.67); stop `taa-orbit` 0.343 → 0.296; still-image flicker unchanged | 1 |
+| `motion_edge_speed` 0.5 (round 3; was 2.0) | slow silhouettes kept part of their history and ghosted for 15-45 frames at 2.0 | 0.5 |
+| `reactive_particles` 1.0 (round 3) | coverage-based, not scaled by alpha; at `alpha · 0.3` soft sprite skirts kept a stale colour for up to 32 frames | 1.0 |
+| `reactive_lines` 0.3 | 1.0: `taa-transparent` moving-region ghost pixel-frames 184,562 → 15,633, still-image flicker 0.291 → 0.372 p99 3 → 4 (fails) | 0.3 |
+| `edge_release` 0 | 1.0: `taa-motion` trail events longer than one frame 1 → 0; flicker `taa-thin` 0.301 → 0.323, `instancing-stress` 0.105 → 0.151; resolve +0.07 / +0.23 ms | 0 (off) |
 | `motion_edge_alpha` 1.0 (was 0.6), `CLIP_ALPHA` 1.0 (was 0.5) | combined with the above: `taa-motion` trail 3.23 (ring 12.24, contact 5.06), stop 1.063, pan 1.195, motion flicker 0.102 | 1.0 / 1.0 |
 | `reactive_transparent` 0.3 (was 0.8) | whole-image static flicker of `taa-transparent` at `reactive_material` 0.2: 0.1 → 0.27 (p99 3), 0.3 → 0.30 (3), 0.5 → 0.32 (4), 0.8 → 0.36 (4); particle trail avg 8.1 at 0.8, 9.8 at 0.3 (MSAA 6.12) | 0.3 |
 | `reactive_material` 0.2 (was 0.6) | 0.4 fails flicker (0.51-0.61) | 0.2 |
@@ -1256,72 +1298,70 @@ The shipped values were checked bit-exact against `?tune=` overrides (10/10).
 
 **Method** (05 §5): M1 Max, Chrome 158, 1920x1435 output (DPR 2), one tab,
 nothing else rendering (a shared lock and queue kept other runs off the GPU).
-Synthetic scenes (renderer `34b6dc92`): 5 interleaved runs, 120 frames per
-configuration after 60 warm-up frames, GPU frame = timestamp span per frame.
-Frames are submitted back to back and drained every 4th, so the GPU does not
-clock down between frames: draining every frame read light frames 1-1.5 ms
-high at random. A sentinel configuration (`kitchen-sink`, no AA) before and
-after every run read 4.58-4.77 ms, with at most 0.14 ms drift within a run.
-A pass is timed by repeating it N times and taking `(T(N) − T(1)) / (N − 1)`,
-because Apple GPUs overlap pass timestamps.
+Synthetic scenes (renderer `ec35a6fd`, the default `DepthMotionAndId`): 5
+interleaved runs, 120 frames per configuration after 60 warm-up frames, GPU
+frame = timestamp span per frame. Frames are submitted back to back and
+drained every 4th, so the GPU does not clock down between frames: draining
+every frame read light frames 1-1.5 ms high at random. A sentinel
+configuration (`kitchen-sink`, no AA) before and after every run read
+4.62-4.77 ms, with at most 0.11 ms drift within a run. A pass is timed by
+repeating it N times and taking `(T(N) − T(1)) / (N − 1)`, because Apple
+GPUs overlap pass timestamps.
 
 | Row (05 §5) | Target | Measured | Verdict |
 |---|--:|---|---|
-| Velocity target + second vertex evaluation (+ seed, + previous-velocity copy) | ≤ 0.2 ms | 0.12-0.23 ms, ±0.05 (TAA − no AA − resolve, N=32) | at the target |
-| Resolve, native 1920x1435 | ≤ 0.6 ms | 1.21-1.26 ms, `taa-thin` 1.39-1.41 ms (frame and pass-timestamp slopes, N=8 and N=32) | not met (about 2-2.3x) |
-| Resolve, 0.67 → 1920x1435 | ≤ 0.6 ms | 1.16-1.18 ms, `taa-thin` 1.34-1.35 ms (the resolve runs at output size) | not met |
-| Dreidel Derby mid-round, TAA native | ≤ 11.5 ms | **TODO (lead, pass B)** | |
-| Dreidel Derby mid-round, TAA 0.67 | ≤ 7.5 ms | **TODO (lead, pass B)** | |
-| TAA off | unchanged | synthetic scenes within ±0.107 ms of 0.45 with mixed signs (12 configurations, A B A B); 36 baseline captures bit-identical; Dreidel Derby **TODO (lead, pass B)** | met |
+| Velocity target + second vertex evaluation (+ seed, + previous-velocity and previous-visibility copies) | ≤ 0.2 ms | 0.15-0.19 ms, `taa-thin` 0.25, ±0.05 (TAA − no AA − resolve, N=32) | at the target except `taa-thin` |
+| Resolve, native 1920x1435 | ≤ 0.6 ms | 1.53-1.55 ms, `taa-thin` 1.83 ms (frame and pass-timestamp slopes, N=8 and N=32) | not met (about 2.5-3x); the bar became "cheaper than MSAA 4x in Dreidel Derby" |
+| Resolve, 0.67 → 1920x1435 | ≤ 0.6 ms | 1.46-1.48 ms, `taa-thin` 1.72-1.73 ms (the resolve runs at output size) | not met |
+| Dreidel Derby mid-round, TAA native | ≤ 11.5 ms | **TODO (lead, pass C)** | |
+| Dreidel Derby mid-round, TAA 0.67 | ≤ 7.5 ms | **TODO (lead, pass C)** | |
+| TAA off | unchanged | synthetic scenes within ±0.053 ms of the round-2 build (12 configurations, A B × 3, mixed signs), which was within ±0.107 ms of 0.45; 36 baseline captures bit-identical; Dreidel Derby **TODO (lead, pass C)** | met |
 
 Synthetic scenes, GPU frame median (ms; delta against no AA):
 
 | Scene | No AA | MSAA 4x | SMAA | TAA native | TAA 0.67 | TAA 0.5 | 0.67 + RCAS 0.25 | Forced fallback |
 |---|--:|--:|--:|--:|--:|--:|--:|--:|
-| `kitchen-sink` | 4.600 | 5.593 (+0.99) | 4.845 (+0.25) | 6.084 (+1.48) | 4.933 (+0.33) | 4.550 (−0.05) | 5.059 (+0.46) | 6.154 (+1.55) |
-| `instancing-stress` | 3.380 | 5.763 (+2.38) | 3.610 (+0.23) | 4.755 (+1.38) | 3.816 (+0.44) | 3.518 (+0.14) | 3.978 (+0.60) | 4.883 (+1.50) |
-| `ssr` | 3.749 | 4.492 (+0.74) | 3.971 (+0.22) | 5.198 (+1.45) | 4.092 (+0.34) | 3.709 (−0.04) | 4.267 (+0.52) | 5.297 (+1.55) |
-| `taa-thin` | 3.643 | 6.103 (+2.46) | 4.102 (+0.46) | 5.244 (+1.60) | 3.522 (−0.12) | 2.893 (−0.75) | 3.723 (+0.08) | 5.378 (+1.74) |
+| `kitchen-sink` | 4.709 | 5.676 (+0.97) | 4.905 (+0.20) | 6.390 (+1.68) | 5.238 (+0.53) | 4.836 (+0.13) | 5.438 (+0.73) | 6.607 (+1.90) |
+| `instancing-stress` | 3.412 | 5.873 (+2.46) | 3.691 (+0.28) | 5.156 (+1.74) | 4.177 (+0.76) | 3.953 (+0.54) | 4.354 (+0.94) | 5.283 (+1.87) |
+| `ssr` | 3.857 | 4.556 (+0.70) | 4.035 (+0.18) | 5.582 (+1.72) | 4.453 (+0.60) | 4.017 (+0.16) | 4.624 (+0.77) | 5.695 (+1.84) |
+| `taa-thin` | 3.670 | 6.196 (+2.53) | 4.162 (+0.49) | 5.748 (+2.08) | 3.957 (+0.29) | 3.314 (−0.36) | 4.127 (+0.46) | 5.881 (+2.21) |
 
 - Resolve per scene (`kitchen-sink` / `instancing-stress` / `ssr` /
-  `taa-thin`): frame slope N=8 1.225 / 1.221 / 1.211 / 1.402 ms, N=32
-  1.251 / 1.256 / 1.222 / 1.394 ms; the `Taa` pass-timestamp slope agrees
-  within 0.011 ms. At 0.67: N=8 1.164 / 1.176 / 1.157 / 1.344, N=32
-  1.172 / 1.174 / 1.169 / 1.343. Round 1's resolve read 1.03-1.17 ms; the
-  round-2 stack (§3.5) costs +0.12 ms on `kitchen-sink` and +0.23 ms on
-  `taa-thin`.
-- Where the resolve's time goes (each part removed in turn, `kitchen-sink` /
-  `taa-thin`): disocclusion 0.31 / 0.42 ms (two static reprojections, up to
-  8 footprint loads, about 10 depth linearisations; the motion test about
-  0.06), Catmull-Rom history 0.19, the clip-box floor's curve and its inverse
-  0.07-0.09, the display curve elsewhere 0.01-0.03, the rest (tile loads,
-  3x3, clip, blend, two stores) about 0.6. Measured and not taken: one
-  precomputed reprojection matrix (at most 0.025 ms, not bit-exact), the
-  slope slack from raw depth (no gain), the floor only on bright boxes (not
-  exact: the floor's stored-step term binds at grey HDR 0.6-0.85 and on
-  saturated highlights).
-- RCAS (`TaaRcas`): 0.164-0.199 ms.
+  `taa-thin`): frame slope N=8 1.542 / 1.547 / 1.530 / 1.827 ms, N=32
+  1.533 / 1.552 / 1.528 / 1.826 ms; the `Taa` pass-timestamp slope agrees
+  within 0.016 ms. At 0.67: N=8 1.475 / 1.474 / 1.461 / 1.723, N=32
+  1.462 / 1.469 / 1.461 / 1.734. Round 2's resolve read 1.21-1.26 ms
+  (`taa-thin` 1.39-1.41).
+- Per disocclusion level (N=8, two reps agreeing within 0.01, `kitchen-sink`
+  / `taa-thin`): `Depth` 1.23 / 1.30 ms, `DepthAndMotion` 1.47 / 1.64,
+  `DepthMotionAndId` 1.54 / 1.83. `edge_release` 1.0 adds 0.07 / 0.23.
+- Where the round-2 resolve's time went (each part removed in turn,
+  `kitchen-sink` / `taa-thin`): disocclusion 0.31 / 0.42 ms (two static
+  reprojections, up to 8 footprint loads, about 10 depth linearisations; the
+  motion test about 0.06), Catmull-Rom history 0.19, the clip-box floor's
+  curve and its inverse 0.07-0.09, the display curve elsewhere 0.01-0.03, the
+  rest (tile loads, 3x3, clip, blend, two stores) about 0.6. Measured and not
+  taken: one precomputed reprojection matrix (at most 0.025 ms, not
+  bit-exact), the slope slack from raw depth (no gain), the floor only on
+  bright boxes (not exact).
+- RCAS (`TaaRcas`): 0.165-0.203 ms.
 - Reactive seed: no timestamp of its own; round 1 bounded it at 0.03-0.04 ms
   by repeat-N.
 - Forced fallback (`PrepReconstruction`, with the velocity overlay) against
-  the geometry target: +0.07 to +0.13 ms.
-- TAA native against MSAA 4x: cheaper on `instancing-stress` (−1.01) and
-  `taa-thin` (−0.86), dearer on `kitchen-sink` (+0.49) and `ssr` (+0.71).
-  TAA 0.67 is cheaper than MSAA on all four (−0.40 to −2.58) and within
-  −0.12 to +0.44 ms of no AA.
-- Zero cost off against v0.45.0 (A B A B, 3 runs each): all 12 no-AA / MSAA /
-  SMAA configurations within ±0.107 ms with mixed signs between passes, except
-  `taa-thin` no AA (+0.016 in both passes, within its run spread of
-  0.04-0.06) and `taa-thin` SMAA (+0.006 / +0.020). Round 1's consistent
-  +0.06 / +0.09 ms on `taa-thin` no AA is gone.
-- Resolution governor (`kitchen-sink`, 0.67 ↔ 0.5 every 120 frames, five
-  runs, two with per-span CPU splits): CPU `render()` median 0.60 ms; a step
-  frame 0.7-1.2 ms (render-target and bind-group rebuilds, light-culling
-  buffers), the frames after it 0.5-0.8 ms, the first and the second
-  up-step alike. Round 1 measured +5.3 to +5.8 ms once on the frame after a
-  0.5 → 0.67 step, with a `render()` median of 2.10 ms; that no longer
-  reproduces. On the GPU the step frame and the next read a few ms above the
-  median under this method's idle-clock noise (±2 ms).
+  the geometry target: +0.11 to +0.22 ms.
+- TAA native against MSAA 4x: cheaper on `instancing-stress` (−0.72) and
+  `taa-thin` (−0.45), dearer on `kitchen-sink` (+0.71) and `ssr` (+1.03).
+  TAA 0.67 is cheaper than MSAA on all four (−0.10 to −2.24) and +0.29 to
+  +0.76 ms above no AA.
+- Zero cost off (A = the round-2 build, B = `ec35a6fd`, A B × 3): all 12
+  no-AA / MSAA / SMAA configurations within ±0.053 ms with mixed signs. Round
+  2 measured that build within ±0.107 ms of v0.45.0.
+- Resolution governor (round 2, `kitchen-sink`, 0.67 ↔ 0.5 every 120 frames,
+  five runs, two with per-span CPU splits): CPU `render()` median 0.60 ms; a
+  step frame 0.7-1.2 ms (render-target and bind-group rebuilds, light-culling
+  buffers), the frames after it 0.5-0.8 ms. On the GPU the step frame and the
+  next read a few ms above the median under this method's idle-clock noise
+  (±2 ms).
 
 **Dreidel Derby** (the real game, the same machine, canvas 1920x1435, the
 game's own stats: the renderer's whole-frame GPU timestamp span, averaged over
