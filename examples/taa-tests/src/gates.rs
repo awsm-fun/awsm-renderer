@@ -696,15 +696,38 @@ async fn trail(p: &Params, scene: &str, r: &mut Report) -> Result<()> {
             frames_list(&cmp.mean_oracle_floor),
         ),
     );
+    // The frames over the bound in two groups, as `trail-mean` does for the
+    // mean: where TAA alone exceeds it, and where the perfect-information
+    // ORACLE is at or above it too (the band's worst pixel is one no history
+    // method can know: a first-frame pixel). The verdict counts both.
+    let (oracle_too, taa_alone): (Vec<_>, Vec<_>) = cmp
+        .max_over
+        .iter()
+        .partition(|(_, _, m, n, o)| *o >= (*m).max(*n));
+    let max_list = |v: &[&(u32, u8, u8, u8, u8)]| -> String {
+        v.iter()
+            .map(|(k, t, m, n, o)| {
+                format!(
+                    "k{k} +{} ({t}/{m}/{n}/{o})",
+                    *t as i32 - (*m).max(*n) as i32
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
     stride_verdict(
         p,
         r,
         &format!("trail-max-restated:{scene}"),
         cmp.max_over.is_empty(),
         &format!(
-            "band max <= max(MSAA 4x, no-AA) band max on the same frame: exceeded on {} of {} frames; worst TAA max {} @k{} (MSAA {}, no-AA {}, ORACLE {} there); original bound max < {:.0}: worst {} @k{}",
+            "band max <= max(MSAA 4x, no-AA) band max on the same frame: exceeded on {} of {} frames; of those, {} where TAA alone exceeds it [{}] and {} where the ORACLE is at or above it too [{}] (excess over the bound, then TAA/MSAA/no-AA/ORACLE max); worst TAA max {} @k{} (MSAA {}, no-AA {}, ORACLE {} there); original bound max < {:.0}: worst {} @k{}",
             cmp.max_over.len(),
             cmp.frames,
+            taa_alone.len(),
+            max_list(&taa_alone),
+            oracle_too.len(),
+            max_list(&oracle_too),
             cmp.worst_taa_max.0,
             cmp.worst_taa_max.1,
             cmp.worst_taa_max.2,
