@@ -292,6 +292,8 @@ pub struct TaaRuntime {
     /// Diagnostic views beyond [`TaaDebugView`] (ids 10+ in the resolve
     /// shader), for the test harness. Overrides `debug_view` when set.
     pub(crate) debug_view_raw: Option<u32>,
+    /// Harness overrides of [`CLIP_ALPHA`] and [`REACTIVE_GAMMA_SCALE`].
+    pub(crate) experimental: Option<[f32; 2]>,
     /// Resolve dispatches per frame (`AwsmRenderer::set_taa_debug_repeat`,
     /// cost measurement). 0 (the default) and 1 both mean one dispatch.
     pub(crate) debug_repeat: u32,
@@ -353,6 +355,13 @@ pub fn reconstruction_weight(d2: f32) -> f32 {
     (-RECONSTRUCTION_SHARPNESS * d2).exp()
 }
 
+/// Current-frame weight per unit of clip amount: a heavily clipped history
+/// is suspect, so the more of it the clip removed, the less it is trusted.
+pub const CLIP_ALPHA: f32 = 0.5;
+
+/// How far the variance-clip box narrows on a fully reactive pixel.
+pub const REACTIVE_GAMMA_SCALE: f32 = 0.5;
+
 /// The exponent of [`reconstruction_weight`].
 pub const RECONSTRUCTION_SHARPNESS: f32 = 2.29;
 
@@ -374,6 +383,13 @@ impl AwsmRenderer {
     #[doc(hidden)]
     pub fn set_taa_debug_view_raw(&mut self, id: Option<u32>) {
         self.taa.debug_view_raw = id;
+    }
+
+    /// Harness diagnostics: overrides [`CLIP_ALPHA`] and
+    /// [`REACTIVE_GAMMA_SCALE`] for tuning sweeps. `None` restores them.
+    #[doc(hidden)]
+    pub fn set_taa_experimental_tuning(&mut self, values: Option<[f32; 2]>) {
+        self.taa.experimental = values;
     }
 
     /// Forget all temporal history (TAA, and the jitter cycle restarts).

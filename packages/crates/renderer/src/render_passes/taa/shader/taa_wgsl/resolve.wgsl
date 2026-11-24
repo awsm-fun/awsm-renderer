@@ -55,6 +55,10 @@ struct TaaParams {
     // `motion_edge_speed` output px / frame of relative motion in the 3x3.
     motion_edge_alpha: f32,
     motion_edge_speed: f32,
+    // Current weight per unit of clip amount.
+    clip_alpha: f32,
+    // Clip-box scale on a fully reactive pixel.
+    reactive_gamma_scale: f32,
 };
 
 @group(0) @binding(0) var<uniform> camera_raw: CameraRaw;
@@ -307,11 +311,14 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         {% if dx == 2 && dy == 1 %}z_right = z;{% endif %}
         {% if dx == 1 && dy == 0 %}z_up = z;{% endif %}
         {% if dx == 1 && dy == 2 %}z_down = z;{% endif %}
-        if (nearer(z, nearest_depth)) {
+        // HUD pixels stay out of the nearest / farthest search too: the scene
+        // depth under a HUD pixel is the world behind it, but its vector is
+        // the HUD's.
+        if (keep > 0.5 && nearer(z, nearest_depth)) {
             nearest_depth = z;
             nearest_p = p;
         }
-        if (nearer(farthest_depth, z)) {
+        if (keep > 0.5 && nearer(farthest_depth, z)) {
             farthest_depth = z;
             farthest_p = p;
         }
@@ -392,10 +399,11 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // reprojection) the expected previous distance is exact, so there the
     // slack shrinks to the surface's own depth slope across a pixel.
     //
-    // This test takes the FARTHEST depth of the previous footprint: it asks
-    // whether the pixel's own surface was visible ANYWHERE in the 2x2 it
-    // came from. Taking the nearest would flag every pixel beside a static
-    // silhouette whenever the jitter moved the footprint across it.
+    // Away from any nearer surface this test takes the FARTHEST depth of the
+    // previous footprint: it asks whether the pixel's own surface was visible
+    // ANYWHERE in the 2x2 it came from. Taking the nearest would flag pixels
+    // near a static silhouette whenever the jitter moved the footprint
+    // across it.
     let dilated = any(nearest_p != p0);
     if (!is_sky(z_own)) {
         var v_own = v;
@@ -417,7 +425,10 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let slack_own = select(params.disocclusion_threshold, slack_static, is_static);
         var d_prev_own = view_distance(prev_footprint.y, cam.inv_proj);
         if (dilated) {
-            d_prev_own = view_distance(prev_depth_footprint(uv_hist_own, cam.prev_jitter).y, cam.inv_proj);
+            // Beside a nearer surface that moves relative to this one, the
+            // NEAREST of the footprint: the edge really did sweep across,
+            // so any sample of the thing in front means it was there.
+            d_prev_own = view_distance(prev_depth_footprint(uv_hist_own, cam.prev_jitter).x, cam.inv_proj);
         }
         // A pixel beside a nearer surface (dilated) only counts when that
         // surface moves relative to its own. Without relative motion the
@@ -446,7 +457,8 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // their history is fetched from the wrong place whenever they move. A
     // tighter box removes it faster there, which lets the reactive weight
     // itself stay low enough that still glass and water do not shimmer.
-    let gamma_reactive = gamma * mix(1.0, 0.5, clamp(reactive * params.reactive_valid, 0.0, 1.0));
+    let gamma_reactive = gamma
+        * mix(1.0, params.reactive_gamma_scale, clamp(reactive * params.reactive_valid, 0.0, 1.0));
     let history_y = rgb_to_ycocg(history_rgb);
     let to_history = history_y - mean;
     // The floor is a few steps of the rgba16float history's quantisation
@@ -474,7 +486,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     alpha = max(alpha, params.motion_edge_alpha * edge_motion);
     alpha = max(alpha, params.motion_alpha * clamp(speed_px / max(params.motion_alpha_speed, 1.0e-4), 0.0, 1.0));
     alpha = max(alpha, reactive * params.reactive_valid);
-    alpha = max(alpha, clip_amount * 0.5);
+    alpha = max(alpha, clip_amount * params.clip_alpha);
     if (params.upscaling > 0.5) {
         // No render sample near this output pixel this frame: lean on history.
         alpha *= mix(0.3, 1.0, confidence);

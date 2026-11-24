@@ -39,7 +39,7 @@ use crate::{
 /// future device path without the mask).
 pub(crate) const REACTIVE_MASK: bool = true;
 
-/// `TaaParams`: 80-byte uniform (20 x f32), the live tuning of the resolve.
+/// `TaaParams`: 88-byte uniform (22 x f32), the live tuning of the resolve.
 /// Layout must match `struct TaaParams` in `taa_wgsl/resolve.wgsl`.
 ///
 /// Interior-mutable so the reactive flag can be set after
@@ -83,6 +83,10 @@ pub struct TaaParamsValues {
     pub max_history_moving_speed: f32,
     pub motion_edge_alpha: f32,
     pub motion_edge_speed: f32,
+    /// Current weight per unit of clip amount (03 §4.8: 0.5).
+    pub clip_alpha: f32,
+    /// Clip-box scale on a fully reactive pixel.
+    pub reactive_gamma_scale: f32,
 }
 
 impl TaaParamsValues {
@@ -122,13 +126,15 @@ impl TaaParamsValues {
             max_history_moving_speed: tuning.max_history_moving_speed,
             motion_edge_alpha: tuning.motion_edge_alpha,
             motion_edge_speed: tuning.motion_edge_speed,
+            clip_alpha: crate::taa::CLIP_ALPHA,
+            reactive_gamma_scale: crate::taa::REACTIVE_GAMMA_SCALE,
         }
     }
 
     /// The uniform bytes (native endian, like every other uniform here).
     pub fn pack(&self) -> [u8; TaaParams::BYTE_SIZE] {
         let flag = |b: bool| if b { 1.0f32 } else { 0.0 };
-        let floats: [f32; 20] = [
+        let floats: [f32; 22] = [
             self.render_size.0 as f32,
             self.render_size.1 as f32,
             self.post_size.0 as f32,
@@ -149,6 +155,8 @@ impl TaaParamsValues {
             self.max_history_moving_speed,
             self.motion_edge_alpha,
             self.motion_edge_speed,
+            self.clip_alpha,
+            self.reactive_gamma_scale,
         ];
         let mut out = [0u8; TaaParams::BYTE_SIZE];
         for (i, f) in floats.iter().enumerate() {
@@ -159,7 +167,7 @@ impl TaaParamsValues {
 }
 
 impl TaaParams {
-    pub const BYTE_SIZE: usize = 80;
+    pub const BYTE_SIZE: usize = 88;
 
     pub fn new(gpu: &AwsmRendererWebGpu) -> Result<Self> {
         let gpu_buffer = gpu.create_buffer(
@@ -181,7 +189,7 @@ impl TaaParams {
 
     /// Upload `values` if they differ from what the buffer holds. A still,
     /// steady frame uploads nothing; a reset frame and the frame after it
-    /// upload 80 bytes each (the `reset` flag goes 1 then back to 0).
+    /// upload 88 bytes each (the `reset` flag goes 1 then back to 0).
     pub fn write(&self, gpu: &AwsmRendererWebGpu, values: &TaaParamsValues) -> Result<()> {
         self.values.set(Some(*values));
         let packed = values.pack();
@@ -521,6 +529,10 @@ impl AwsmRenderer {
             reset,
         );
         values.reactive_valid = pass.params.reactive_valid();
+        if let Some([clip_alpha, reactive_gamma_scale]) = self.taa.experimental {
+            values.clip_alpha = clip_alpha;
+            values.reactive_gamma_scale = reactive_gamma_scale;
+        }
         pass.params.write(&self.gpu, &values)?;
         Ok(())
     }
@@ -588,14 +600,16 @@ mod tests {
     #[test]
     fn params_pack_matches_the_wgsl_struct() {
         // Field order of `struct TaaParams` in taa_wgsl/resolve.wgsl, one
-        // f32 each: 20 x 4 = 80 bytes, no implicit padding (vec2 at offsets
+        // f32 each: 22 x 4 = 88 bytes, no implicit padding (vec2 at offsets
         // 0 and 8 are 8-aligned).
         let config = TaaConfig::native();
         let v = TaaParamsValues::new(&config, (1920, 1435), (1920, 1435), 3, true);
         let bytes = v.pack();
         let f = |i: usize| f32::from_ne_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap());
         let t = &config.tuning;
-        assert_eq!(bytes.len(), 80);
+        assert_eq!(bytes.len(), 88);
+        assert_eq!(f(20), crate::taa::CLIP_ALPHA);
+        assert_eq!(f(21), crate::taa::REACTIVE_GAMMA_SCALE);
         assert_eq!(f(16), t.max_history_moving);
         assert_eq!(f(17), t.max_history_moving_speed);
         assert_eq!(f(18), t.motion_edge_alpha);
@@ -668,6 +682,8 @@ mod tests {
                 "max_history_moving_speed",
                 "motion_edge_alpha",
                 "motion_edge_speed",
+                "clip_alpha",
+                "reactive_gamma_scale",
             ]
         );
     }
