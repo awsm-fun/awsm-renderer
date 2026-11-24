@@ -107,6 +107,43 @@ geometry target get motion vectors from the prep pass instead (§3.10). If a
 TAA pipeline fails to compile on a device, the renderer switches to MSAA 4x
 once and says why (`taa_fallback_reason`, §2.9).
 
+### Choosing the TAA options
+
+Each option below fixes one kind of ghost, and each costs nothing when it is
+off (a level not selected compiles, allocates, copies and binds nothing; a
+tuning value at 0 is a uniform branch). Ghost counts are from
+`?mode=ghost-track` (`examples/taa-tests`): a pixel-frame where TAA kept
+history (alpha < 0.99) and is more than 16 display units worse than both no
+AA and the oracle (MSAA where it moves), counted in the trail band a moving
+object leaves and in the still parts of the frame; events are such pixels
+followed along their motion. Costs are repeat-N GPU time at 1920x1435 on the
+M1, `kitchen-sink` / `taa-thin`. Evidence crops are in `docs/taa/` (panels:
+TAA | MSAA 4x | oracle | reference | class map, red = ghost).
+
+| Option | Default | What it fixes | Evidence | Cost when on |
+|---|---|---|---|---|
+| `disocclusion: Depth` | | reveals where the uncovered surface is farther than what covered it | | resolve 1.11 / 1.18 ms; previous depth 4 B/px |
+| `disocclusion: DepthAndMotion` | | + the contact line under an object moving over a static surface, where the two depths touch | | +0.10 / +0.20 ms over `Depth`; previous vectors 4 B/px |
+| `disocclusion: DepthMotionAndId` | **on** | + contact lines on moving surfaces and between two objects (limbs crossing, a character on a moving platform); a revealed pixel's new history from its own object only. together with the two rows below and the history-length rule (§3.5 step 7), `taa-motion` trail ghosts 300 → 24 pixel-frames and events longer than one frame 36 → 1 against round 2; `prefab-skinned-morph` / `anim-skinned` trail events longer than one frame 1 → 0, moving-object ghosts 799 → 597 / 139 → 98 against `DepthAndMotion` | `skin-legs-k18-before-after.png`, `skin-morph-k91-before-after.png` (round 2 → round 3) | +0.28 / +0.37 ms over `DepthAndMotion`; previous visibility 8 B/px and its copy |
+| `motion_edge_speed` 0.5 | **on** (2.0 before) | slow silhouettes kept part of their history and ghosted for 15-45 frames | | none (a uniform) |
+| `reactive_particles` 1.0 | **on** | particle sprites' soft skirts kept a stale colour for up to 32 frames | | none: the reactive value was already written |
+| `reactive_lines` 1.0 | off (0.3) | the faint double behind an animated line (lines have no vectors): `taa-transparent` moving-region ghost pixel-frames 184,562 → 15,633 | `lines-k123-before-after.png` (0.3 → 1.0), `leftover-transp-k123.png` | no GPU time; still lines alias: `taa-transparent` still-image flicker 0.291 → 0.372, p99 3 → 4 (fails 05's p99 < 4), hence off by default |
+| `edge_release` 1.0 | off (0) | the one ghost event left at the default: a resting edge released by a sub-pixel move (`taa-motion` k211, 1 px for 4 frames); `taa-motion` trail ghosts 24 → 7, events longer than one frame 1 → 0 | `k211-edge-release.png` | resolve +0.07 / +0.23 ms; still-image flicker `taa-thin` 0.301 → 0.323, `instancing-stress` 0.105 → 0.151 (both still pass, p99 unchanged) |
+| `max_history_moving` 1.0 | **on** (2.0 before) | softness in motion: moving-region error `taa-motion` 2.52 → 2.20, `taa-orbit` 1.20 → 1.06; frame-to-frame change of the error on the `taa-orbit` strafe 1.21 → 1.06 (MSAA 4.00); pan worst mean 1.01 → 0.86 (2.50 → 2.33 at 0.67) | `max-history-moving-orbit-k70-before-after.png` | none (a uniform); still-image flicker unchanged |
+
+**Recommended configurations.**
+
+| Content | AA | `disocclusion` | Tuning |
+|---|---|---|---|
+| Games and scenes with objects moving over other objects (the default) | TAA native | `DepthMotionAndId` | defaults |
+| The same when frame time decides | TAA Quality (0.67), §2.3 | `DepthMotionAndId` | defaults |
+| Camera-only motion (walkthroughs, a static world): no object moves over another, so the id test finds nothing | TAA native or Quality | `DepthAndMotion` (saves 0.28-0.37 ms) | defaults |
+| Apps that animate lines (gizmos, debug draw that moves) | TAA | default | `reactive_lines: 1.0` |
+| A zero-ghost requirement that accepts a little more shimmer on thin wires and small instances | TAA | `DepthMotionAndId` (required) | `edge_release: 1.0` |
+| Only geometric edges matter and the content has no thin or specular detail | MSAA 4x | | |
+
+Particle meshes an app builds itself must be flagged (§5).
+
 ## 2. API
 
 ### 2.1 Turning it on
@@ -149,6 +186,23 @@ scale is `TaaConfig::render_scale`.
 `TaaConfig::native()`, `TaaConfig::preset(p)`, `matching_preset()`,
 `clamped_render_scale()`, `upscales()`. `MIN_RENDER_SCALE` is 0.5.
 
+**`TaaDisocclusion`.** Each level adds to the one before; a level that is
+not selected compiles, allocates, copies and binds nothing of its own
+(pinned by `taa_resolve_shader_validates` over all levels). Resolve cost by
+repeat-N at 1920x1435 (`kitchen-sink` / `taa-thin`), and what each level
+fixes (ghost counts as in §1, "Choosing the TAA options"):
+
+| Level | Keeps from last frame | Resolve | Fixes |
+|---|---|--:|---|
+| `Depth` | depth (4 B/px) | 1.11 / 1.18 ms | reveals where the uncovered surface is farther than what covered it |
+| `DepthAndMotion` | + motion vectors (4 B/px; 8 on the fallback path) | 1.21 / 1.38 ms | + the contact line under an object moving over a static surface (the two depths touch there): missed first-frame ring pixels on `taa-motion` 7,548 → 1,791 |
+| `DepthMotionAndId` (default) | + the visibility target's mesh id (8 B/px) | 1.48 / 1.75 ms | + the contact line on a moving surface and wherever two objects touch in depth; a revealed pixel's new history starts from its own object only (§3.5). `taa-motion` trail-band ghost pixel-frames 300 → 24, events longer than one frame 36 → 1 (with §2.4's `motion_edge_speed`) |
+
+Recommended: `DepthMotionAndId` everywhere. The cheaper levels are for a
+device or scene where the 0.3 ms matters more than contact-line ghosts (a
+camera-only scene gains nothing from the id test; one with objects moving
+over others does).
+
 ### 2.3 `TaaPreset`
 
 | Preset | Render scale | Pixels shaded | Sharpen |
@@ -178,12 +232,14 @@ output pixels per frame.
 | `max_history_upscaling` | 64 | Upper bound of the upscaling cap (the cap itself is `max_history_native` times the pixel ratio: 35.6 at 0.67, 64 at 0.5) | | Caps the upscaled history shorter; 0.5 flickers more |
 | `motion_alpha` | 0.2 | Minimum current-frame weight at `motion_alpha_speed` (ramps from 0) | Sharper and noisier under motion | Softer under motion |
 | `motion_alpha_speed` | 8.0 | The speed at which `motion_alpha` is reached | | |
-| `max_history_moving` | 2.0 | History cap for a pixel moving at `max_history_moving_speed` or faster | Smoother motion, slower to sharpen after stopping | Sharpens again faster after motion stops |
+| `max_history_moving` | 1.0 | History cap for a pixel moving at `max_history_moving_speed` or faster (2.0 before round 3; 1.0 is closer to the reference in motion and steadier frame to frame, §1 "Choosing the TAA options") | Smoother motion, softer, slower to sharpen after stopping | Sharpens again faster after motion stops |
 | `max_history_moving_speed` | 1.0 | The speed at which the cap reaches `max_history_moving` | | |
 | `motion_edge_alpha` | 1.0 | Minimum current-frame weight on a motion boundary (3x3 with surfaces moving differently) | | Smoother moving silhouettes, more trail on them |
-| `motion_edge_speed` | 0.5 | The relative speed at which `motion_edge_alpha` is reached | | |
-| `reactive_transparent` | 0.3 | Reactive value per unit of alpha written by transparent surfaces and lines (glass, water; not particles) | Fewer trails behind transparents, more shimmer on still glass and water | More trail, steadier glass |
+| `motion_edge_speed` | 0.5 | The relative speed at which `motion_edge_alpha` is reached (2.0 before round 3: slow silhouettes kept part of their history and ghosted for 15-45 frames) | Slow silhouettes keep more history (ghosting risk) | Even slow edges show only this frame |
+| `reactive_transparent` | 0.3 | Reactive value per unit of alpha written by transparent surfaces (glass, water; not particles or lines) | Fewer trails behind transparents, more shimmer on still glass and water | More trail, steadier glass |
 | `reactive_particles` | 1.0 | Reactive value on every pixel a particle mesh covers, whatever the sprite's alpha (meshes flagged by `set_mesh_taa_particles`; the scene loader flags every emitter). Nothing reprojects a particle (§3.6) | | Particles and their soft skirts keep some history (trails behind them) |
+| `reactive_lines` | 0.3 | Reactive value per unit of alpha written by lines (§3.6). Lines have no motion vectors | An app that animates lines raises it to 1.0: no faint double behind a moving line, but aliased line edges | Steadier still lines, longer double behind moving ones |
+| `edge_release` | 0.0 (off) | `DepthMotionAndId` only: the current-frame weight of a pixel whose history came from a 2x2 that held an object now absent from its 3x3 (§3.5 step 5, "resting-edge release") | 1.0 removes the last measured trail ghost (a 1-px, 4-frame event on `taa-motion`), but raises still-image flicker where a thin wire or small instance was hit by one jitter phase's sample and by no current one (§6) | |
 | `reactive_material` | 0.2 | Reactive value of materials resolved `Reactive` (§2.6) | Less smearing of animated colour, more aliasing on those surfaces | More smearing |
 | `reactive_ssr` | 0.0 | Extra reactivity from SSR reflectivity | For mirrors that trail under camera motion | |
 | `mip_bias_extra` | 0.0 | Added to `log2(render_scale)` for the texture LOD bias | Blurrier textures | Sharper textures, more shimmer (−0.5 raised flicker p99 from 4 to 6 at 0.67) |
@@ -447,6 +503,11 @@ separate buffers needed 12 in the largest variant. The region bases and
   at the new size.
 - The TAA pass keeps the last two unjittered view-projections for the
   resolve's motion test (§3.5, step 5).
+- Which of these previous-frame targets exist follows the disocclusion level
+  (§2.2): depth always; velocity from `DepthAndMotion`; at
+  `DepthMotionAndId` also a copy of the visibility target (`rgba16uint`,
+  whose BA holds the per-pixel mesh id), with a copy-source flag on the
+  visibility target at that level only.
 - On the 32-byte fallback all of it is kept when the velocity overlay exists
   (§3.10); without the overlay only the transforms are.
 - With TAA off none of this exists and nothing is copied.
@@ -501,7 +562,9 @@ For output pixel `q`:
    `exp(−k · d²)`, where `d` is the distance from `r_pos` to where the sample
    really is (`p + 0.5 − j`). The kernel is separable, so 6 `exp` per pixel.
    `k = 2.29 · (O / R)²` (§3.7). The pass accumulates the weighted colour
-   (YCoCg in `W`) and the unweighted YCoCg moments. `confidence` = the
+   (YCoCg in `W`) and the unweighted YCoCg moments. A tap outside the image
+   takes no part in either: clamped to the edge it would count the edge
+   sample twice, narrow the box and make the border row flicker. `confidence` = the
    largest weight. Opaque-path HUD pixels (§3.8) take no part.
 3. **Dilated vector (G3).** The vector of the nearest-depth pixel of the
    3x3. The vector of the farthest is kept too, for the motion-boundary
@@ -554,6 +617,36 @@ For output pixel `q`:
        fires on 1-px lines along parallax silhouettes, about half of them by
        motion (about 1,100 pixels a frame in all on the `taa-orbit` strafe at
        960x720). In a still scene it fires nowhere.
+     - **Object-id test** (`DepthMotionAndId`), where neither fired: last
+       frame's mesh id at the texel whose sample sat nearest the point
+       (`floor(uv · size + previous jitter)`). It fires when that id is not
+       this pixel's and the object there moved unlike this surface did last
+       frame (the motion test's rule: a static edge or a thin wire that the
+       jitter moves across the point has no relative motion and keeps its
+       history). It decides the contact line on a moving surface too, and
+       wherever two objects touch in depth. Not the 2x2 around the point: an
+       edge lying on a texel boundary always finds the object in the other
+       row. One mesh occluding itself, and instances of one instanced mesh
+       (they share the mesh id), are left to the depth and motion tests: a
+       contact between two instances of one instanced mesh is decided by
+       depth and motion only, as at `DepthAndMotion`.
+     - **Resting-edge release** (`edge_release`, off by default): a pixel
+       whose history came from a 2x2 that held an object now absent from
+       the current 3x3 takes at least `edge_release` of this frame. It
+       catches the one case the tests above cannot see: an edge that rested
+       over a pixel (so its history converged to the partial coverage, as
+       the reference's does) and is then moved off by less than a pixel, so
+       that no surface there shows relative motion. At one sample per pixel
+       this is indistinguishable from a thin wire that one jitter phase's
+       sample hit and no current sample hits, which is why it costs
+       still-image flicker (§2.4, §6).
+   - At `DepthMotionAndId` a pixel flagged here starts its NEW history from
+     its own object only: the 3x3 reconstruction restricted to taps with the
+     centre's mesh id is what is stored, so the object that just left does
+     not live on in the history through the kernel. The displayed colour
+     keeps the full reconstruction, like the reference (showing the
+     own-object colour too made revealed edges aliased: class (b) +6k to
+     +15k pixel-frames).
 6. **Variance clip (G5).** `mean ± γ·σ` of the plain current 3x3 in YCoCg
    of `W`; the history is clipped along the line to the mean (never a
    per-channel clamp). `γ` goes from `gamma_still` to `gamma_moving` with
@@ -579,8 +672,13 @@ For output pixel `q`:
    alpha *= mix(0.3, 1, confidence)      // upscaling only
    alpha  = 1 on reset, off screen, disoccluded
    result = mix(history_clipped, current, alpha)               // in W
-   n_next = min(n + 1, cap) · (1 − clip_amount)                // 1 on reset
+   n_next = min(n + 1, 1 / alpha_before_clip, cap) · (1 − clip_amount)  // 1 on reset
    ```
+
+   `n_next` never exceeds what the boosts (motion boundary, speed, reactive)
+   leave of the history: a pixel whose weight was raised to ~1 holds about
+   one frame of history and must not be trusted as a 16-frame one the frame
+   the boost ends. It equals `n + 1` whenever no boost applies.
 
    The motion boundary is a 3x3 whose nearest and farthest surfaces move
    differently: a moving silhouette's coverage changes every frame, and its
@@ -600,9 +698,17 @@ Reset frames (§2.7) write the current colour with `n = 1` everywhere.
 `reactive` (`r8unorm`, render size) says how much to distrust history: 0 =
 trust, 1 = ignore. The resolve takes the max over the same 3x3.
 
-- **Transparent surfaces, particles, lines** write
-  `alpha · reactive_transparent` as a second target of the transparent pass,
-  blended with max.
+- **Transparent surfaces** write `alpha · reactive_transparent` as a second
+  target of the transparent pass, blended with max; **lines** write
+  `alpha · reactive_lines` (from the line uniform's fourth word, 0 without
+  TAA).
+- **Particles** (meshes flagged `Mesh::taa_particles`, which the scene
+  loader sets on every emitter; `AwsmRenderer::set_mesh_taa_particles` for
+  meshes an app builds itself) write `reactive_particles` on every covered
+  pixel (alpha > 1/255), not scaled by alpha: nothing reprojects a particle,
+  and a soft sprite's low-alpha skirt kept a stale colour for up to 32
+  frames at `alpha · 0.3`. The flag is bit 1 of mesh-meta word 22; the
+  weight rides in the camera uniform's `position.w` (0 without TAA).
 - **Reactive materials** (§2.6) and the fallback path's deforming meshes
   that its velocity overlay does not cover (§3.10) are written by a "seed"
   draw: one full-screen triangle at the start of the
@@ -767,7 +873,8 @@ bytes larger in every mode.
 
 Memory with TAA on (from the formats; at 1920x1435 output and native scale,
 2.76 M pixels): velocity 4 B/px, reactive 1 B/px, previous depth 4 B/px,
-previous velocity 4 B/px at render size; two history textures and `taa_out` at 8 B/px each at post size;
+previous velocity 4 B/px (from `DepthAndMotion`), previous visibility
+8 B/px (`DepthMotionAndId`) at render size; two history textures and `taa_out` at 8 B/px each at post size;
 previous-state copies at the size of the current buffers (112 B per
 transform). On the fallback path the velocity texture is 8 B/px; its
 velocity overlay allocates nothing of its own (bind groups and pipelines
@@ -786,9 +893,9 @@ earlier forward-renderer TAA (removed in `c42b6805`) broke most of these.
 | G3 | Edge pixels with background velocity | Dilate: nearest-depth vector of the 3x3 (opaque-path HUD pixels excluded) | resolve step 3 | `taa_resolve_shader_validates` (depth convention, the tile's depth); trail tests |
 | G4 | Blurry history accumulates | 5-tap Catmull-Rom, never plain bilinear | resolve step 4 | `taa_resolve_shader_validates` (5 taps); stop and pan tests |
 | G5 | Clip box too big | Variance clip in YCoCg of the working-space colour, clip to mean, unconditional; floor at the stored history's quantisation | resolve step 6 | `taa_resolve_shader_validates` (clip lines and the floor at top level of `cs_main`); flicker and trail tests |
-| G6 | Revealed background keeps old foreground | Depth disocclusion test; the own-surface test by depth, and by last frame's motion where depth cannot tell (contact lines) | resolve step 5, previous velocity copy (§3.4) | trail tests (oracle and ghost lines), static false-flag counts (§7.2), `?mode=flag-count` |
+| G6 | Revealed background keeps old foreground | Depth disocclusion test; the own-surface test by depth, by last frame's motion where depth cannot tell (contact lines), and by last frame's object id (`DepthMotionAndId`); a revealed pixel's new history from its own object only | resolve step 5, previous velocity and visibility copies (§3.4) | `?mode=ghost-track` (`ghost-persist` lines), trail tests (oracle and ghost lines), static false-flag counts (§7.2), `?mode=flag-count`; `taa_resolve_shader_validates` per level |
 | G7 | Memory too long | `1/(n+1)` with a cap (16 native, scaled when upscaling, shortened with speed) | resolve step 7 | stop, trail and flicker tests; `history_cap` unit tests |
-| G8 | Things with no correct vector | Reactive mask: transparents, particles, lines, reactive materials, HUD | transparent pass target, seed draw | `taa_reactive_transparent_and_line_shaders_validate`, `taa_reactive_seed_validates_and_reads_the_right_meta_words`; phase-3 tests |
+| G8 | Things with no correct vector | Reactive mask: transparents, particles (full weight on every covered pixel), lines, reactive materials, HUD | transparent pass target, seed draw | `taa_reactive_transparent_and_line_shaders_validate`, `taa_reactive_seed_validates_and_reads_the_right_meta_words`; phase-3 tests |
 | G9 | History reused across a cut | Resets on cuts, loads, size and AA changes, camera-jump guard | `reset_temporal_history`, renderer-side resets | cut tests (flagged and unflagged); `jump_guard` unit test |
 | G10 | Objects appearing or teleporting | No valid previous value means prev = current | frame-start fix-ups, `reset_motion_history` | history burst / density / reset device tests; `fresh_ranges_*` unit tests |
 | G11 | Averaging in the wrong space | Reconstruct, clip and blend in the display's own space (the tonemapper's curve after exposure); store the history in the Karis map | resolve steps 2, 4, 6-8 | `taa_resolve_shader_validates` (the tile and the history converted with `to_work` before the moments; the curve per tonemapper), `taa_working_space_curves_invert` |
@@ -831,6 +938,11 @@ measure flicker too).
 7. **Hook-drawn geometry** (`begin_world_geometry_extension_pass`, the public
    transparent-pass hook) writes no vector and no reactive value. Keep it
    static, or mark nearby content reactive.
+8. **Flag particle meshes you build yourself.** The scene loader flags every
+   emitter. A particle or sprite mesh an app builds and moves itself (an
+   instanced billboard updated every frame, not through the loader) has no
+   motion vectors either: call `set_mesh_taa_particles(mesh, true)` once, or
+   it trails like any transparent surface.
 
 ## 6. Known limits
 
@@ -841,33 +953,55 @@ measure flicker too).
   frame" fails there for any 1-sample-per-pixel temporal method. TAA reads
   3.79 at k31. Every other frame of `taa-motion`, and every frame of
   `taa-reveal` and `taa-skin`, is below 2 (§7.2).
-- **The maximum on a moving silhouette.** Within 1.5 px of the silhouette the
-  band mean is 9.2 on `taa-motion` (1.70 outside it). On some frames the band
-  maximum is above the larger of MSAA 4x's and no-AA's, which is 05's
-  restated bound: 16 of 208 frames on `taa-motion` (worst max 89), 4 of 178
-  on `taa-reveal`, 42 of 179 on `taa-skin`; on 7, 2 and 37 of those frames
-  the oracle is at or above the bound too, leaving 9, 2 and 5 frames where TAA
-  alone exceeds it. 05's original "max < 16" is not reachable: the oracle
-  reads 18-39 on first-frame pixels. The pixels that set TAA's own excess lie
-  on the contact line under the moving object. Most sit at the motion
-  boundary, where alpha is 1 and the pixel shows only this frame's
-  reconstruction, whose 3x3 still holds samples of the object one pixel away
-  (k149: a row of 8 pixels at 66-69 against the oracle's 5-9). A few are
-  first-frame contact pixels that no test flags and that keep their history
-  (k136: 83 against 3).
-- **Contact lines on a moving surface.** Where an object rests on a surface,
-  depth cannot separate the two. The motion test (§3.5) catches the contact
-  line when the surface under the object is static; on a surface that itself
-  moves (an object riding a moving platform) only the depth tests run.
-  Ghosts that remain, of every kind: on `taa-motion`, 341 of 3.58 M band
-  pixel-frames are worse than both no AA and the oracle by more than 16.
-- **Transparent and particle trails.** Particles, glass, UV-flow water and
-  lines over a moving background trail for every AA mode, TAA included
-  (§7.2); the reactive weight 0.3 trades some of that for still-image
-  stability of glass and water. Native: band over the content 11.85, the
-  content's own trail 3.84 (worst frames), both within the restated bound
-  (no worse than MSAA on average, no worse than no AA at the worst frame). At
-  0.67 they are 26.6 and 16.8, about twice native, and above both.
+- **The maximum on a moving silhouette.** Within 1.5 px of a moving
+  silhouette the pixel shows mostly this frame (the motion-boundary weight),
+  whose 3x3 still holds samples of the object one pixel away, so single
+  frames there can exceed MSAA's error. Those pixels show this frame, not
+  history: `?mode=ghost-track` counts them as current-frame (class b), not as
+  ghosts. 05's original "max < 16" is not reachable by any one-sample method:
+  the oracle reads 18-39 on first-frame pixels. **TODO (measurement, final
+  sweep):** restate the per-frame maximum counts on the final head.
+- **What is left of ghosting** at the default (`DepthMotionAndId`), counted
+  by `?mode=ghost-track` at 960x720 (events = a ghost pixel followed along
+  its motion):
+  - `taa-motion`: 24 trail-band ghost pixel-frames, one event longer than a
+    frame: k211, a cube edge that rested over a pixel (whose history
+    converged to the partial coverage, as the reference's does) and then
+    moved off by less than a pixel, 1 px for 4 frames. No test can see it:
+    nothing there shows relative motion. `edge_release: 1.0` removes it
+    (§2.4), at a still-image flicker cost, and is off by default.
+  - `taa-skin`, `taa-reveal`, `prefab-skinned-morph`, `anim-skinned`,
+    `particles`: no trail or still-area event longer than one frame.
+  - `taa-transparent`: no still-area event longer than one frame; two trail
+    events of two frames.
+  - `taa-thin` (a still-image flicker stress scene with moving parts): 3
+    trail events of two frames; still-area events of 2-4 frames that repeat
+    at the same pixels with the 8-frame jitter cycle (sub-pixel wires whose
+    history the clip cuts on some jitter phases). That is still-image
+    shimmer, measured by the flicker gate (0.300, passes), not history of
+    something that moved. Its still-area error is TAA 0.514, MSAA 5.008, no
+    AA 5.667.
+  - On `taa-orbit` no object exists, so its trail band (the pixels whose
+    motion falls below 0.05 px: near the pivot, and after the stop) holds no
+    trail: its 2-4 frame events are single pixels on floor-checker edges
+    softening under camera motion. It is judged by the moving-region error:
+    TAA 1.20, MSAA 4.12, no AA 4.10.
+- **Contacts the id test cannot separate.** One mesh occluding itself (a
+  limb over the body of the same mesh) and two instances of one instanced
+  mesh share a mesh id; there the depth and motion tests decide alone, as at
+  `DepthAndMotion`.
+- **Transparent and line trails.** Glass, UV-flow water and lines over a
+  moving background trail for every AA mode, TAA included (§7.2). Their
+  reactive weights (0.3) trade some of that for still-image stability. On
+  `taa-transparent` (round 3, native, display-linear) the backdrop band under
+  the content averages 2.96 (worst frame 7.67) against MSAA's 4.71 (8.44), and
+  the content's own trail 0.81 (worst 1.88) against MSAA's 3.20 (5.64): both
+  within the restated bound, not within 05's bound as written. An
+  animated line leaves a faint double behind it (`docs/taa/leftover-transp-k123.png`);
+  apps that animate lines set `reactive_lines: 1.0`. Particles flagged as such
+  (§3.6, §5) keep no history at all (`reactive_particles` 1.0). **TODO
+  (measurement, final sweep):** restate the 0.67 transparent trail numbers on
+  the final head.
 - **Upscaled thin detail.** Isolated features smaller than a render pixel
   still drop out of a still image sometimes: 4.3% at 0.67, 7.3% at 0.58,
   14.5% at 0.5.
@@ -889,14 +1023,19 @@ measure flicker too).
   most of TAA's remaining mid-round error (§7.7). Remedy: `temporal: stable`
   on materials whose time dependence is subtle. **TODO (lead, pass B):**
   re-check the Dreidel Derby claim against the final §7.7.
-- **The resolve costs 1.21-1.26 ms** (1.39-1.41 ms on `taa-thin`) at
-  1920x1435 output, 1.16-1.35 ms at 0.67: about 2x the 0.6 ms the plan
-  targeted (§7.6). Where it goes, measured by removing each
-  part (`kitchen-sink`, `taa-thin`): disocclusion 0.31-0.42 ms (two static
-  reprojections, up to 8 footprint loads, about 10 depth linearisations, the
-  motion test about 0.06); Catmull-Rom history 0.19; the clip-box floor's
-  curve and inverse 0.07-0.09; the display curve elsewhere 0.01-0.03; the
-  rest (tile loads, 3x3, clip, blend, two stores) about 0.6.
+- **The resolve costs 1.48 ms** (1.75 ms on `taa-thin`) at 1920x1435
+  output with the default `DepthMotionAndId`; 1.21 / 1.38 ms at
+  `DepthAndMotion`, 1.11 / 1.18 ms at `Depth` (§1, "Choosing the TAA
+  options"). The plan targeted 0.6 ms; the bar it was replaced by is "cheaper
+  than MSAA 4x in Dreidel Derby" (§7.6). Where the `DepthAndMotion` time goes,
+  measured by removing each part in round 2 (`kitchen-sink`, `taa-thin`):
+  disocclusion 0.31-0.42 ms (two static reprojections, up to 8 footprint
+  loads, about 10 depth linearisations, the motion test about 0.06);
+  Catmull-Rom history 0.19; the clip-box floor's curve and inverse
+  0.07-0.09; the display curve elsewhere 0.01-0.03; the rest (tile loads, 3x3,
+  clip, blend, two stores) about 0.6. The id level adds the id test's loads,
+  the own-object second sum over the 3x3, the tile's visibility loads and the
+  8 B/px copy.
 - **The 32-byte fallback** on a device with fewer than 10 storage buffers per
   stage loses vertex-hook motion (those meshes are reactive instead), and
   below 7 also skin, morph and per-instance motion (§3.10). With 10 or more
