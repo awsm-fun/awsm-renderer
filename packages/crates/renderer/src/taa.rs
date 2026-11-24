@@ -203,22 +203,34 @@ pub struct TaaTuning {
     pub max_history_upscaling: f32,
     /// Minimum current-frame weight at `motion_alpha_speed` output pixels per
     /// frame of motion (ramps linearly from 0).
+    /// A current-frame weight: values above 1 are not meaningful (the blend
+    /// would extrapolate past the current frame; the scene loader clamps
+    /// authored values to `0..=1`).
     pub motion_alpha: f32,
     /// The speed (output px / frame) at which `motion_alpha` is reached.
     pub motion_alpha_speed: f32,
     /// Reactive value written by the transparent pass per unit of alpha
     /// (glass, water, lines and other transparent surfaces; not particles).
+    /// A current-frame weight: values above 1 are not meaningful (the blend
+    /// would extrapolate past the current frame; the scene loader clamps
+    /// authored values to `0..=1`).
     pub reactive_transparent: f32,
     /// Reactive value of particle meshes (`AwsmRenderer::set_mesh_taa_particles`,
     /// set by the scene loader for every emitter). Nothing reprojects a
     /// particle, so a covered pixel takes this weight whatever the sprite's
     /// alpha (a soft sprite's low-alpha skirt would otherwise keep its stale
     /// colour for many frames). `docs/TAA.md` §3.6.
+    /// A current-frame weight: values above 1 are not meaningful (the blend
+    /// would extrapolate past the current frame; the scene loader clamps
+    /// authored values to `0..=1`).
     pub reactive_particles: f32,
     /// Reactive value per unit of alpha written by lines (`docs/TAA.md`
     /// §3.6). Lines have no motion vectors; an app that animates lines
     /// raises it (1.0 = a moving line keeps no history, at the cost of
     /// aliased line edges).
+    /// A current-frame weight: values above 1 are not meaningful (the blend
+    /// would extrapolate past the current frame; the scene loader clamps
+    /// authored values to `0..=1`).
     pub reactive_lines: f32,
     /// At `TaaDisocclusion::DepthMotionAndId`: the current-frame weight of a
     /// pixel whose history came from a 2x2 that held an object now absent
@@ -227,10 +239,19 @@ pub struct TaaTuning {
     /// still-image flicker on thin wires and small instances a sample missed
     /// (`taa-thin` 0.301 -> 0.323, `instancing-stress` 0.105 -> 0.151).
     /// `docs/TAA.md` §2.4.
+    /// A current-frame weight: values above 1 are not meaningful (the blend
+    /// would extrapolate past the current frame; the scene loader clamps
+    /// authored values to `0..=1`).
     pub edge_release: f32,
     /// Reactive value written for materials flagged `temporal: reactive`.
+    /// A current-frame weight: values above 1 are not meaningful (the blend
+    /// would extrapolate past the current frame; the scene loader clamps
+    /// authored values to `0..=1`).
     pub reactive_material: f32,
     /// Extra reactivity from SSR reflectivity. 0 unless mirrors trail.
+    /// A current-frame weight: values above 1 are not meaningful (the blend
+    /// would extrapolate past the current frame; the scene loader clamps
+    /// authored values to `0..=1`).
     pub reactive_ssr: f32,
     /// Added to `log2(render_scale)` for the texture LOD bias.
     pub mip_bias_extra: f32,
@@ -251,6 +272,9 @@ pub struct TaaTuning {
     /// holds surfaces moving differently (a moving silhouette). The coverage
     /// of such a pixel changes every frame, so its history is the average
     /// coverage of the last frames, not this frame's.
+    /// A current-frame weight: values above 1 are not meaningful (the blend
+    /// would extrapolate past the current frame; the scene loader clamps
+    /// authored values to `0..=1`).
     pub motion_edge_alpha: f32,
     /// The relative speed (output px / frame) between the nearest and the
     /// farthest surface of the 3×3 at which `motion_edge_alpha` is reached.

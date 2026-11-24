@@ -1016,7 +1016,11 @@ pub fn anti_aliasing_to_renderer(
 /// never make the renderer reject TAA (which would drop the scene to the
 /// MSAA fallback): `render_scale` is clamped to `0.5..=1.0` (non-finite →
 /// 1.0), `sharpen` to `0..=1` (non-finite → 0), and a non-finite or negative
-/// tuning value takes its default.
+/// tuning value takes its default. The current-frame weights (`motion_alpha`,
+/// `motion_edge_alpha`, `edge_release` and every `reactive_*`) are also
+/// clamped to at most 1: the resolve takes the largest of them as the
+/// current frame's share, and above 1 the blend would extrapolate past the
+/// current frame (overshoot, flicker).
 pub fn taa_settings_to_renderer(
     taa: &awsm_renderer_scene::TaaSettings,
 ) -> awsm_renderer::taa::TaaConfig {
@@ -1033,6 +1037,8 @@ pub fn taa_settings_to_renderer(
         }
     };
     let fin = |v: f32, default: f32| if v.is_finite() { v } else { default };
+    // A current-frame weight: `pos`, then at most 1.
+    let weight = |v: f32, default: f32| pos(v, default).min(1.0);
     TaaConfig {
         render_scale: if taa.render_scale.is_finite() {
             taa.render_scale.clamp(TaaConfig::MIN_RENDER_SCALE, 1.0)
@@ -1061,19 +1067,19 @@ pub fn taa_settings_to_renderer(
             disocclusion_threshold: pos(t.disocclusion_threshold, d.disocclusion_threshold),
             max_history_native: pos(t.max_history_native, d.max_history_native),
             max_history_upscaling: pos(t.max_history_upscaling, d.max_history_upscaling),
-            motion_alpha: pos(t.motion_alpha, d.motion_alpha),
+            motion_alpha: weight(t.motion_alpha, d.motion_alpha),
             motion_alpha_speed: pos(t.motion_alpha_speed, d.motion_alpha_speed),
-            reactive_transparent: pos(t.reactive_transparent, d.reactive_transparent),
-            reactive_particles: pos(t.reactive_particles, d.reactive_particles),
-            reactive_lines: pos(t.reactive_lines, d.reactive_lines),
-            edge_release: pos(t.edge_release, d.edge_release),
-            reactive_material: pos(t.reactive_material, d.reactive_material),
-            reactive_ssr: pos(t.reactive_ssr, d.reactive_ssr),
+            reactive_transparent: weight(t.reactive_transparent, d.reactive_transparent),
+            reactive_particles: weight(t.reactive_particles, d.reactive_particles),
+            reactive_lines: weight(t.reactive_lines, d.reactive_lines),
+            edge_release: weight(t.edge_release, d.edge_release),
+            reactive_material: weight(t.reactive_material, d.reactive_material),
+            reactive_ssr: weight(t.reactive_ssr, d.reactive_ssr),
             mip_bias_extra: fin(t.mip_bias_extra, d.mip_bias_extra),
             gamma_moving_speed: pos(t.gamma_moving_speed, d.gamma_moving_speed),
             max_history_moving: pos(t.max_history_moving, d.max_history_moving),
             max_history_moving_speed: pos(t.max_history_moving_speed, d.max_history_moving_speed),
-            motion_edge_alpha: pos(t.motion_edge_alpha, d.motion_edge_alpha),
+            motion_edge_alpha: weight(t.motion_edge_alpha, d.motion_edge_alpha),
             motion_edge_speed: pos(t.motion_edge_speed, d.motion_edge_speed),
         },
     }
@@ -5311,6 +5317,58 @@ mod anti_aliasing_tests {
         );
     }
 
+    /// A current-frame weight above 1 is clamped to 1 (above it the blend
+    /// would extrapolate); every other tuning value keeps its authored size,
+    /// and a weight in range passes unchanged.
+    #[test]
+    fn taa_weights_above_one_are_clamped() {
+        use awsm_renderer_scene::TaaTuningSettings;
+        let authored = TaaTuningSettings {
+            motion_alpha: 1.5,
+            motion_edge_alpha: 2.0,
+            edge_release: 1.25,
+            reactive_transparent: 3.0,
+            reactive_material: 1.01,
+            reactive_particles: 7.0,
+            reactive_lines: 1.5,
+            reactive_ssr: 4.0,
+            max_history_native: 24.0,
+            motion_alpha_speed: 12.0,
+            ..TaaTuningSettings::default()
+        };
+        let t = taa_settings_to_renderer(&TaaSettings {
+            tuning: authored,
+            ..TaaSettings::default()
+        })
+        .tuning;
+        for (name, v) in [
+            ("motion_alpha", t.motion_alpha),
+            ("motion_edge_alpha", t.motion_edge_alpha),
+            ("edge_release", t.edge_release),
+            ("reactive_transparent", t.reactive_transparent),
+            ("reactive_material", t.reactive_material),
+            ("reactive_particles", t.reactive_particles),
+            ("reactive_lines", t.reactive_lines),
+            ("reactive_ssr", t.reactive_ssr),
+        ] {
+            assert_eq!(v, 1.0, "{name}");
+        }
+        // Not weights: unchanged.
+        assert_eq!(t.max_history_native, 24.0);
+        assert_eq!(t.motion_alpha_speed, 12.0);
+        // In range: unchanged.
+        let t = taa_settings_to_renderer(&TaaSettings {
+            tuning: TaaTuningSettings {
+                edge_release: 0.5,
+                reactive_lines: 1.0,
+                ..TaaTuningSettings::default()
+            },
+            ..TaaSettings::default()
+        })
+        .tuning;
+        assert_eq!((t.edge_release, t.reactive_lines), (0.5, 1.0));
+    }
+
     /// The schema's tuning defaults are the renderer's, field by field (the
     /// values may change while tuning; each layer has ONE default site).
     #[test]
@@ -5329,8 +5387,12 @@ mod anti_aliasing_tests {
     fn every_authored_taa_tuning_field_passes_through() {
         use awsm_renderer_scene::TaaTuningSettings;
         let mut json = serde_json::to_value(TaaTuningSettings::default()).unwrap();
+        // Moved off its default but kept in every field's valid range (the
+        // weights are clamped to at most 1).
         for (i, v) in json.as_object_mut().unwrap().values_mut().enumerate() {
-            *v = serde_json::json!(v.as_f64().unwrap() + 0.125 * (i as f64 + 1.0));
+            let d = v.as_f64().unwrap();
+            let step = 0.01 * (i as f64 + 1.0);
+            *v = serde_json::json!(if d >= 0.5 { d - step } else { d + step });
         }
         let authored: TaaTuningSettings = serde_json::from_value(json).unwrap();
         let cfg = taa_settings_to_renderer(&TaaSettings {

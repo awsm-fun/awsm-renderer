@@ -1656,6 +1656,23 @@ fn anti_aliasing_section() -> Dom {
         )
     };
 
+    // The same for a current-frame weight: 0..=1 (above 1 the blend would
+    // extrapolate; the loader clamps it too).
+    let weight_knob =
+        |label: &'static str, value: f32, step: f64, patch: fn(f32) -> TaaTuningPatch| {
+            row(
+                label,
+                NumField::new(value as f64)
+                    .min(0.0)
+                    .max(1.0)
+                    .step(step)
+                    .on_change(move |v| {
+                        dispatch_aa(None, None, None, None, None, Some(patch(v as f32)), None)
+                    })
+                    .render(),
+            )
+        };
+
     let mut section = DrawerSection::new("Anti-aliasing")
         .right(settings_help_button(
             "Anti-aliasing",
@@ -1690,7 +1707,13 @@ fn anti_aliasing_section() -> Dom {
                      (tighter = less ghosting, more flicker). Depth slack: relative depth \
                      difference before revealed background drops its history. Max history: frames \
                      accumulated at native / when upscaling. Motion alpha: minimum current \
-                     weight at the given speed (px/frame).",
+                     weight at the given speed (px/frame). The weights (motion alpha, motion \
+                     edge alpha, edge release, reactive) are 0..1. Reactive (particles): every \
+                     pixel a particle covers (1 = no history). Reactive (lines): per unit of \
+                     alpha on lines; 1 for animated lines (in the editor it also covers the \
+                     grid, gizmo and wireframe overlays). Edge release (depth + motion + \
+                     object only): current weight where an object just left the pixel's \
+                     neighbourhood; 1 removes the last ghost at some shimmer on thin wires.",
                 ),
                 (
                     "TAA debug view",
@@ -1805,7 +1828,7 @@ fn anti_aliasing_section() -> Dom {
                 ..Default::default()
             },
         ))
-        .child(knob("TAA motion alpha", t.motion_alpha, 0.05, |v| {
+        .child(weight_knob("TAA motion alpha", t.motion_alpha, 0.05, |v| {
             TaaTuningPatch {
                 motion_alpha: Some(v),
                 ..Default::default()
@@ -1820,7 +1843,7 @@ fn anti_aliasing_section() -> Dom {
                 ..Default::default()
             },
         ))
-        .child(knob(
+        .child(weight_knob(
             "TAA reactive (transparent)",
             t.reactive_transparent,
             0.05,
@@ -1829,7 +1852,7 @@ fn anti_aliasing_section() -> Dom {
                 ..Default::default()
             },
         ))
-        .child(knob(
+        .child(weight_knob(
             "TAA reactive (material)",
             t.reactive_material,
             0.05,
@@ -1838,7 +1861,7 @@ fn anti_aliasing_section() -> Dom {
                 ..Default::default()
             },
         ))
-        .child(knob(
+        .child(weight_knob(
             "TAA reactive (particles)",
             t.reactive_particles,
             0.05,
@@ -1847,24 +1870,30 @@ fn anti_aliasing_section() -> Dom {
                 ..Default::default()
             },
         ))
-        .child(knob("TAA reactive (lines)", t.reactive_lines, 0.05, |v| {
-            TaaTuningPatch {
+        .child(weight_knob(
+            "TAA reactive (lines)",
+            t.reactive_lines,
+            0.05,
+            |v| TaaTuningPatch {
                 reactive_lines: Some(v),
                 ..Default::default()
-            }
-        }))
-        .child(knob("TAA edge release", t.edge_release, 0.25, |v| {
+            },
+        ))
+        .child(weight_knob("TAA edge release", t.edge_release, 0.25, |v| {
             TaaTuningPatch {
                 edge_release: Some(v),
                 ..Default::default()
             }
         }))
-        .child(knob("TAA reactive (SSR)", t.reactive_ssr, 0.05, |v| {
-            TaaTuningPatch {
+        .child(weight_knob(
+            "TAA reactive (SSR)",
+            t.reactive_ssr,
+            0.05,
+            |v| TaaTuningPatch {
                 reactive_ssr: Some(v),
                 ..Default::default()
-            }
-        }))
+            },
+        ))
         .child(knob("TAA mip bias", t.mip_bias_extra, 0.1, |v| {
             TaaTuningPatch {
                 mip_bias_extra: Some(v),
@@ -1889,7 +1918,7 @@ fn anti_aliasing_section() -> Dom {
                 ..Default::default()
             },
         ))
-        .child(knob(
+        .child(weight_knob(
             "TAA motion edge alpha",
             t.motion_edge_alpha,
             0.05,
