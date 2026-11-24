@@ -337,6 +337,12 @@ impl CameraBuffer {
         });
     }
 
+    /// The unjittered view-projection of the last frame that was rendered
+    /// (after [`Self::prepare_frame`]: this frame's).
+    pub(crate) fn rendered_view_projection(&self) -> Option<glam::Mat4> {
+        self.rendered.map(|r| r.view_projection)
+    }
+
     /// Whether the camera moved so far between the previous rendered frame
     /// and this one that it is a cut nobody flagged: it turned by more than
     /// 30°, or travelled more than 20% of its view distance (the focus

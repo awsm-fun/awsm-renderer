@@ -10,7 +10,8 @@
 //! - 7 linear clamp-to-edge sampler for that fetch
 //! - 8 this frame's history (storage write)
 //! - 9 `out`, linear HDR at post size (storage write)
-//! - 10 reactive mask, render size: only in the `reactive` variant (phase 3)
+//! - 10 previous velocity, last frame's render size (textureLoad)
+//! - 11 reactive mask, render size: only in the `reactive` variant (phase 3)
 //!
 //! Two groups, one per history parity: group `i` writes `history[i]` and
 //! reads `history[1 - i]`; the pass picks by its own history index, which
@@ -38,7 +39,7 @@ use crate::render_passes::RenderPassInitContext;
 
 pub struct TaaBindGroups {
     pub layout_key: BindGroupLayoutKey,
-    /// Whether the layout carries the reactive mask (binding 10).
+    /// Whether the layout carries the reactive mask (binding 11).
     reactive: bool,
     /// Linear, clamp-to-edge: the Catmull-Rom history fetch is five bilinear
     /// taps, and its outer taps may land just past the edge.
@@ -148,9 +149,13 @@ impl TaaBindGroups {
                     BindGroupResource::TextureView(Cow::Borrowed(&textures.out_view)),
                 ),
             ];
+            entries.push(BindGroupEntry::new(
+                10,
+                BindGroupResource::TextureView(Cow::Borrowed(textures.prev_velocity_view())),
+            ));
             if let Some(reactive) = reactive {
                 entries.push(BindGroupEntry::new(
-                    10,
+                    11,
                     BindGroupResource::TextureView(Cow::Borrowed(reactive)),
                 ));
             }
@@ -221,9 +226,11 @@ fn layout_cache_key(reactive: bool) -> BindGroupLayoutCacheKey {
         // 8 this frame's history, 9 out
         storage_write(),
         storage_write(),
+        // 10 previous velocity
+        load_only(),
     ];
     if reactive {
-        // 10 reactive mask
+        // 11 reactive mask
         entries.push(load_only());
     }
     BindGroupLayoutCacheKey { entries }

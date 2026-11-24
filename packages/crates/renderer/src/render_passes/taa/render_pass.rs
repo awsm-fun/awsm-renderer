@@ -35,7 +35,7 @@ use crate::{
 
 /// Whether the pass binds the reactive mask (`TaaRenderPass::new`): the
 /// render textures allocate `views.reactive` whenever TAA is on (plan phase
-/// 3), bound at binding 10. `false` remains a valid variant (tests, and a
+/// 3), bound at binding 11. `false` remains a valid variant (tests, and a
 /// future device path without the mask).
 pub(crate) const REACTIVE_MASK: bool = true;
 
@@ -88,6 +88,10 @@ pub struct TaaParamsValues {
     /// The display's exposure multiplier, `exp2(post_processing.exposure)`:
     /// the resolve's working space is what the display shows.
     pub exposure: f32,
+    /// The unjittered view-projection of the frame before last (column
+    /// major): a static surface's own motion vector LAST frame, for the
+    /// resolve's contact test.
+    pub prev_prev_view_projection: [f32; 16],
 }
 
 impl TaaParamsValues {
@@ -132,13 +136,14 @@ impl TaaParamsValues {
             motion_edge_speed: tuning.motion_edge_speed,
             clip_alpha: crate::taa::CLIP_ALPHA,
             exposure: 1.0,
+            prev_prev_view_projection: glam::Mat4::IDENTITY.to_cols_array(),
         }
     }
 
     /// The uniform bytes (native endian, like every other uniform here).
     pub fn pack(&self) -> [u8; TaaParams::BYTE_SIZE] {
         let flag = |b: bool| if b { 1.0f32 } else { 0.0 };
-        let floats: [f32; 22] = [
+        let floats: [f32; 24] = [
             self.render_size.0 as f32,
             self.render_size.1 as f32,
             self.post_size.0 as f32,
@@ -161,17 +166,25 @@ impl TaaParamsValues {
             self.motion_edge_speed,
             self.clip_alpha,
             self.exposure,
+            // `_pad0`, `_pad1`: the matrix below is 16-byte aligned.
+            0.0,
+            0.0,
         ];
         let mut out = [0u8; TaaParams::BYTE_SIZE];
-        for (i, f) in floats.iter().enumerate() {
+        for (i, f) in floats
+            .iter()
+            .chain(self.prev_prev_view_projection.iter())
+            .enumerate()
+        {
             out[i * 4..i * 4 + 4].copy_from_slice(&f.to_ne_bytes());
         }
+
         out
     }
 }
 
 impl TaaParams {
-    pub const BYTE_SIZE: usize = 88;
+    pub const BYTE_SIZE: usize = 160;
 
     pub fn new(gpu: &AwsmRendererWebGpu) -> Result<Self> {
         let gpu_buffer = gpu.create_buffer(
@@ -316,6 +329,10 @@ pub struct TaaRenderPass {
     /// 1 normally; N > 1 only to measure the pass's cost.
     repeat: u32,
     bookkeeping: ResolveBookkeeping,
+    /// The unjittered view-projections of the last two frames this pass
+    /// prepared (newest first): the frame before last's is the resolve's
+    /// `prev_prev_view_projection`.
+    view_projections: Cell<[Option<glam::Mat4>; 2]>,
 }
 
 impl TaaRenderPass {
@@ -333,7 +350,16 @@ impl TaaRenderPass {
         // Sizes are not known here (as for SMAA); the textures start 1x1 and
         // the first frame's `prepare_taa_frame` sizes them. The history
         // starts fresh, so the first submitted resolve resets.
-        let textures = TaaTextures::new(ctx.gpu, (1, 1), (1, 1), ctx.render_texture_formats.depth)?;
+        let textures = TaaTextures::new(
+            ctx.gpu,
+            (1, 1),
+            (1, 1),
+            ctx.render_texture_formats.depth,
+            velocity_format(
+                ctx.render_texture_formats
+                    .taa_prep_velocity(ctx.anti_aliasing),
+            ),
+        )?;
         Ok(Self {
             bind_groups,
             pipelines,
@@ -343,6 +369,7 @@ impl TaaRenderPass {
             rcas: None,
             repeat: 1,
             bookkeeping: ResolveBookkeeping::new(),
+            view_projections: Cell::new([None, None]),
         })
     }
 
@@ -422,7 +449,7 @@ impl TaaRenderPass {
         // TAA writes the scene depth, so this is the depth that matches the
         // colour just accumulated. A copy is not a compute command: after
         // `end()`.
-        let (target, target_size, into_next) = self.textures.prev_depth_copy_target();
+        let (target, velocity_target, target_size, into_next) = self.textures.prev_copy_targets();
         let render_size = ctx.render_texture_views.render_size;
         let mut copied_into_next = false;
         if let Some(inner) = ctx.render_textures.inner() {
@@ -437,11 +464,30 @@ impl TaaRenderPass {
                     &TexelCopyTextureInfo::new(target).into(),
                     &Extent3d::new(render_size.0, Some(render_size.1), Some(1)).into(),
                 )?;
+                // And this frame's vectors, for the next resolve's
+                // own-surface test (`prev_velocity_tex`).
+                if let Some(velocity) = inner.velocity.as_ref() {
+                    ctx.command_encoder.copy_texture_to_texture(
+                        &TexelCopyTextureInfo::new(velocity).into(),
+                        &TexelCopyTextureInfo::new(velocity_target).into(),
+                        &Extent3d::new(render_size.0, Some(render_size.1), Some(1)).into(),
+                    )?;
+                }
                 copied_into_next = into_next;
             }
         }
         self.bookkeeping.resolve_recorded(copied_into_next);
         Ok(())
+    }
+}
+
+/// The format of the velocity target (and so of its previous-frame copy):
+/// `rg16float` from the geometry pass, `rg32float` from the prep fallback.
+fn velocity_format(prep_velocity: bool) -> awsm_renderer_core::texture::TextureFormat {
+    if prep_velocity {
+        crate::render_passes::material_prep::PREP_VELOCITY_FORMAT
+    } else {
+        crate::render_passes::geometry::pipeline::VELOCITY_FORMAT
     }
 }
 
@@ -611,7 +657,11 @@ impl AwsmRenderer {
         }
         if pass
             .textures
-            .ensure_render_size(&self.gpu, views.render_size)?
+            .ensure_render_size(
+                &self.gpu,
+                views.render_size,
+                velocity_format(views.prep_velocity),
+            )?
         {
             self.bind_groups.mark_create(BindGroupCreate::TaaResources);
         }
@@ -635,6 +685,16 @@ impl AwsmRenderer {
         );
         values.reactive_valid = pass.params.reactive_valid();
         values.exposure = self.post_processing.exposure.exp2();
+        // The camera of this frame and the two before it (the shader's
+        // `prev_view_projection` is the frame before this one).
+        let now = self.camera.rendered_view_projection();
+        let [last, before_last] = pass.view_projections.get();
+        values.prev_prev_view_projection = before_last
+            .or(last)
+            .or(now)
+            .unwrap_or(glam::Mat4::IDENTITY)
+            .to_cols_array();
+        pass.view_projections.set([now, last]);
         if let Some([clip_alpha, _]) = self.taa.experimental {
             values.clip_alpha = clip_alpha;
         }
@@ -765,7 +825,10 @@ mod tests {
         let bytes = v.pack();
         let f = |i: usize| f32::from_ne_bytes(bytes[i * 4..i * 4 + 4].try_into().unwrap());
         let t = &config.tuning;
-        assert_eq!(bytes.len(), 88);
+        assert_eq!(bytes.len(), 160);
+        assert_eq!((f(22), f(23)), (0.0, 0.0), "padding before the matrix");
+        assert_eq!(f(24), 1.0, "prev_prev_view_projection (identity by default)");
+        assert_eq!(f(25), 0.0);
         assert_eq!(f(20), crate::taa::CLIP_ALPHA);
         assert_eq!(f(21), 1.0, "exposure (EV 0)");
         assert_eq!(f(16), t.max_history_moving);
@@ -851,6 +914,9 @@ mod tests {
                 "motion_edge_speed",
                 "clip_alpha",
                 "exposure",
+                "_pad0",
+                "_pad1",
+                "prev_prev_view_projection",
             ]
         );
     }

@@ -65,7 +65,15 @@ struct TaaParams {
     // The display's exposure multiplier (exp2 of the scene's EV), so the
     // working space below is the display's (G11).
     exposure: f32,
+    _pad0: f32,
+    _pad1: f32,
+    // The unjittered view-projection of the frame BEFORE last (the camera
+    // buffer's `prev_view_projection` is last frame's): a static surface's
+    // own motion vector LAST frame, which last frame's velocity copy holds
+    // wherever that surface was visible (the contact test, 4.7).
+    prev_prev_view_projection: mat4x4<f32>,
 };
+
 
 @group(0) @binding(0) var<uniform> camera_raw: CameraRaw;
 @group(0) @binding(1) var<uniform> params: TaaParams;
@@ -84,9 +92,12 @@ struct TaaParams {
 @group(0) @binding(8) var history_curr_tex: texture_storage_2d<rgba16float, write>;
 // Linear HDR at post size.
 @group(0) @binding(9) var out_tex: texture_storage_2d<rgba16float, write>;
+// Last frame's motion vectors, at LAST frame's render size (a copy, like the
+// previous depth): what moved where this surface's history comes from.
+@group(0) @binding(10) var prev_velocity_tex: texture_2d<f32>;
 {% if reactive %}
 // Reactive mask, render size: 0 = trust history, 1 = ignore it (G8).
-@group(0) @binding(10) var reactive_tex: texture_2d<f32>;
+@group(0) @binding(11) var reactive_tex: texture_2d<f32>;
 {% endif %}
 
 {% if reactive %}
@@ -255,6 +266,19 @@ fn nearer(a: f32, b: f32) -> bool {
     {% endif %}
 }
 
+// The motion part of the own-surface test (4.7): two of last frame's vectors
+// belong to different surfaces when they differ by more than this many
+// output px, or this fraction of this surface's own speed (rg16float
+// precision and the small change of a surface's vector across a pixel).
+const CONTACT_MOTION_PX: f32 = 0.25;
+const CONTACT_MOTION_REL: f32 = 0.25;
+
+// The velocity target's "behind last frame's camera" marker
+// (shared_wgsl/motion_vector.wgsl): no usable vector.
+fn is_marker(v: vec2<f32>) -> bool {
+    return all(abs(v - vec2<f32>(2.0)) < vec2<f32>(1.0e-3));
+}
+
 // Positive view distance of a raw depth. Sky is "infinitely far".
 //
 // The camera is read straight from the uniform throughout (no
@@ -269,38 +293,68 @@ fn view_distance(depth: f32) -> f32 {
     return -(m[2].z * depth + m[3].z) / (m[2].w * depth + m[3].w);
 }
 
-// Last frame's depth around unjittered position `uv`: x = the nearest and
-// y = the farthest raw depth of the 2x2 footprint. Last frame's render pixel p held unjittered position
-// p + 0.5 - prev_jitter, so the texel-space position is
-// uv * size + prev_jitter - 0.5, in that texture's own size (the render size
-// may have changed since).
-fn prev_depth_footprint(uv: vec2<f32>, prev_jitter: vec2<f32>) -> vec2<f32> {
+// Last frame's 2x2 footprint around unjittered position `uv`: the nearest
+// and farthest raw depth and the texels holding them. Last frame's render
+// pixel p held unjittered position p + 0.5 - prev_jitter, so the texel-space
+// position is uv * size + prev_jitter - 0.5, in that texture's own size (the
+// render size may have changed since).
+struct Footprint {
+    near: f32,
+    far: f32,
+    near_texel: vec2<i32>,
+    far_texel: vec2<i32>,
+}
+
+fn prev_depth_footprint(uv: vec2<f32>, prev_jitter: vec2<f32>) -> Footprint {
     let dims = vec2<i32>(textureDimensions(prev_depth_tex));
     let hi = dims - 1;
     let pd0 = vec2<i32>(floor(uv * vec2<f32>(dims) + prev_jitter - 0.5));
-    let pd00 = textureLoad(prev_depth_tex, clamp(pd0, vec2<i32>(0), hi), 0);
-    let pd10 = textureLoad(prev_depth_tex, clamp(pd0 + vec2<i32>(1, 0), vec2<i32>(0), hi), 0);
-    let pd01 = textureLoad(prev_depth_tex, clamp(pd0 + vec2<i32>(0, 1), vec2<i32>(0), hi), 0);
-    let pd11 = textureLoad(prev_depth_tex, clamp(pd0 + vec2<i32>(1, 1), vec2<i32>(0), hi), 0);
-    let lo = min(min(pd00, pd10), min(pd01, pd11));
-    let hi_depth = max(max(pd00, pd10), max(pd01, pd11));
-    {% if reverse_z %}
-    return vec2<f32>(hi_depth, lo);
-    {% else %}
-    return vec2<f32>(lo, hi_depth);
-    {% endif %}
+    let c00 = clamp(pd0, vec2<i32>(0), hi);
+    let c10 = clamp(pd0 + vec2<i32>(1, 0), vec2<i32>(0), hi);
+    let c01 = clamp(pd0 + vec2<i32>(0, 1), vec2<i32>(0), hi);
+    let c11 = clamp(pd0 + vec2<i32>(1, 1), vec2<i32>(0), hi);
+    let pd00 = textureLoad(prev_depth_tex, c00, 0);
+    let pd10 = textureLoad(prev_depth_tex, c10, 0);
+    let pd01 = textureLoad(prev_depth_tex, c01, 0);
+    let pd11 = textureLoad(prev_depth_tex, c11, 0);
+    var f = Footprint(pd00, pd00, c00, c00);
+    if (nearer(pd10, f.near)) { f.near = pd10; f.near_texel = c10; }
+    if (nearer(f.far, pd10)) { f.far = pd10; f.far_texel = c10; }
+    if (nearer(pd01, f.near)) { f.near = pd01; f.near_texel = c01; }
+    if (nearer(f.far, pd01)) { f.far = pd01; f.far_texel = c01; }
+    if (nearer(pd11, f.near)) { f.near = pd11; f.near_texel = c11; }
+    if (nearer(f.far, pd11)) { f.far = pd11; f.far_texel = c11; }
+    return f;
 }
 
 // Where the point seen now at unjittered `uv` with raw depth `depth` was
 // last frame IF IT DID NOT MOVE: xy = its previous uv, z = its previous view
 // distance. The jitter does not touch z, so the jittered inverse and the
 // unjittered previous matrix agree on depth.
-fn static_reprojection(uv: vec2<f32>, depth: f32) -> vec3<f32> {
+fn static_world(uv: vec2<f32>, depth: f32) -> vec3<f32> {
     let jitter = camera_raw.jitter.xy;
     let ndc = vec2<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0)
         + vec2<f32>(2.0 * jitter.x, -2.0 * jitter.y) / camera_raw.viewport.zw;
     let world_h = camera_raw.inv_view_proj * vec4<f32>(ndc, depth, 1.0);
-    let prev_clip = camera_raw.prev_view_projection * vec4<f32>(world_h.xyz / world_h.w, 1.0);
+    return world_h.xyz / world_h.w;
+}
+
+fn clip_to_uv(clip: vec4<f32>) -> vec2<f32> {
+    return vec2<f32>(clip.x / clip.w * 0.5 + 0.5, 0.5 - clip.y / clip.w * 0.5);
+}
+
+// The motion vector LAST frame (uv two frames ago -> uv last frame) of the
+// static point seen now at unjittered `uv` with raw depth `depth`: what last
+// frame's velocity target held wherever that point was visible, whatever the
+// camera did since (it may have started, stopped or turned).
+fn static_prev_motion(uv: vec2<f32>, depth: f32) -> vec2<f32> {
+    let world = vec4<f32>(static_world(uv, depth), 1.0);
+    return clip_to_uv(camera_raw.prev_view_projection * world)
+        - clip_to_uv(params.prev_prev_view_projection * world);
+}
+
+fn static_reprojection(uv: vec2<f32>, depth: f32) -> vec3<f32> {
+    let prev_clip = camera_raw.prev_view_projection * vec4<f32>(static_world(uv, depth), 1.0);
     let prev_ndc = prev_clip.xyz / prev_clip.w;
     return vec3<f32>(
         prev_ndc.x * 0.5 + 0.5,
@@ -521,8 +575,13 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
     }
     let prev_footprint = prev_depth_footprint(uv_hist, camera_raw.jitter.zw);
-    let d_prev = view_distance(prev_footprint.x);
+    let d_prev = view_distance(prev_footprint.near);
     var disoccluded = d_prev < d_expected * (1.0 - params.disocclusion_threshold);
+    let diag_test1 = disoccluded;
+    var diag_test2 = false;
+    var diag_depth2 = false;
+    var diag_mixed = false;
+    var diag_covered = false;
 
     // Test 2: the pixel's OWN surface, with its own depth and its own vector.
     // Test 1 alone has two blind spots, both on the strip a moving object has
@@ -556,21 +615,72 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         // than the general threshold.
         let slack_static = min(params.disocclusion_threshold, 2.0 * slope / max(d_own, 1.0e-6) + 0.002);
         let slack_own = select(params.disocclusion_threshold, slack_static, is_static);
-        var d_prev_own = view_distance(prev_footprint.y);
-        if (dilated) {
-            // Beside a nearer surface that moves relative to this one, the
-            // NEAREST of the footprint: the edge really did sweep across,
-            // so any sample of the thing in front means it was there.
-            d_prev_own = view_distance(prev_depth_footprint(uv_hist_own, camera_raw.jitter.zw).x);
-        }
-        // A pixel beside a nearer surface (dilated) only counts when that
-        // surface moves relative to its own. Without relative motion the
-        // nearer thing seen last frame is the same static edge, or a wire a
-        // pixel or two wide, that the jitter moved across the footprint:
-        // resetting there every few frames would make thin geometry shimmer.
+        // The footprint this surface's history comes from: test 1's, unless
+        // the two vectors differ by more than a quarter pixel (closer than
+        // that, the 2x2 is all but the same, and four loads are saved).
         let relative_motion = length((v - v_own) * O) > 0.25;
-        if ((!dilated || relative_motion) && d_prev_own < own.z * (1.0 - slack_own)) {
+        var fp_own = prev_footprint;
+        if (relative_motion) {
+            fp_own = prev_depth_footprint(uv_hist_own, camera_raw.jitter.zw);
+        }
+        var hidden = false;
+        if (dilated && relative_motion) {
+            // Beside a nearer surface that moves relative to this one, the
+            // NEAREST of the footprint: the edge really did sweep across, so
+            // any sample of the thing in front means it was there.
+            hidden = view_distance(fp_own.near) < own.z * (1.0 - slack_own);
+            diag_depth2 = hidden;
+        } else {
+            // Away from a nearer surface moving relative to this one, the
+            // FARTHEST of the footprint: was this surface visible anywhere in
+            // the 2x2 (a static edge or a wire the jitter moved across the
+            // footprint is not a reveal). Beside a nearer surface that does
+            // not move relative to this one (or on a slope, where the nearest
+            // of the 3x3 is the same surface one pixel nearer) depth is not
+            // trusted at all: the jitter sweeps such edges across the
+            // footprint every cycle, and resetting there makes thin geometry
+            // shimmer. Only the motion test below runs there.
+            let d_far = view_distance(fp_own.far);
+            if (!dilated) {
+                hidden = d_far < own.z * (1.0 - slack_own);
+            }
+            diag_depth2 = hidden;
+            if (!hidden && is_static) {
+                // Motion, where depth cannot tell two surfaces apart: the
+                // bottom of an object resting on this surface touches it in
+                // depth. Last frame's vectors at the nearest and the farthest
+                // texel of the footprint, each compared like with like:
+                // - MIXED: the two differ (both are last frame's vectors):
+                //   two surfaces moving differently shared the footprint, so
+                //   the history here holds a blend of them;
+                // - COVERED: everything in it was nearer than this surface,
+                //   and what was at the farthest texel moved unlike this
+                //   surface did LAST frame (its static motion through the
+                //   previous two view-projections, so a camera that starts,
+                //   stops or turns between the frames changes nothing).
+                // Sky texels and texels without a vector (cleared to 0, or
+                // the (2, 2) "behind last camera" marker) take no part: the
+                // velocity target holds no motion for them.
+                let pv_near = textureLoad(prev_velocity_tex, fp_own.near_texel, 0).xy;
+                let pv_far = textureLoad(prev_velocity_tex, fp_own.far_texel, 0).xy;
+                let near_valid = !is_sky(fp_own.near) && !is_marker(pv_near);
+                let far_valid = !is_sky(fp_own.far) && !is_marker(pv_far);
+                let motion_slack = max(CONTACT_MOTION_PX, CONTACT_MOTION_REL * length(v_own * O));
+                let mixed = near_valid && far_valid
+                    && length((pv_near - pv_far) * O) > motion_slack;
+                var covered = false;
+                if (far_valid && d_far < own.z) {
+                    let v_own_prev = static_prev_motion(uv_q, z_own);
+                    covered = length((pv_far - v_own_prev) * O) > motion_slack;
+                }
+                hidden = mixed || covered;
+                diag_mixed = mixed;
+                diag_covered = covered;
+            }
+        }
+        if (hidden) {
             disoccluded = true;
+            diag_test2 = true;
         }
     }
 
@@ -737,6 +847,28 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
             out_color = vec3<f32>(alpha);
         } else if (view == 13u) {
             out_color = vec3<f32>(edge_motion);
+        } else if (view == 14u) {
+            // Diagnostics: R = dilated, G = test 1 fired, B = test 2 fired.
+            out_color = vec3<f32>(
+                select(0.0, 1.0, dilated),
+                select(0.0, 1.0, diag_test1),
+                select(0.0, 1.0, diag_test2),
+            );
+        } else if (view == 16u) {
+            // Diagnostics, test 2's parts: R = depth, G = MIXED, B = COVERED.
+            out_color = vec3<f32>(
+                select(0.0, 1.0, diag_depth2),
+                select(0.0, 1.0, diag_mixed),
+                select(0.0, 1.0, diag_covered),
+            );
+        } else if (view == 15u) {
+            // Diagnostics: R = final alpha >= 0.99, G = motion-edge term >= 0.99,
+            // B = clip term >= 0.99.
+            out_color = vec3<f32>(
+                select(0.0, 1.0, alpha >= 0.99),
+                select(0.0, 1.0, params.motion_edge_alpha * edge_motion >= 0.99),
+                select(0.0, 1.0, clip_amount * params.clip_alpha >= 0.99),
+            );
         }
     }
     textureStore(out_tex, q, vec4<f32>(taa_round_f16(out_color), 1.0));
