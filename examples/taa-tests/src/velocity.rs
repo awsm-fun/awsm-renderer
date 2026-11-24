@@ -258,6 +258,8 @@ struct Analytic {
     /// |v| (px) at the worst pixel.
     v_at_max: f32,
     field: VelocityField,
+    /// Pixels with an expectation whose vector is within the tolerance.
+    verified: Mask,
 }
 
 fn analytic(prev: &VFrame, cur: &VFrame, model: Model, jitter: Vec2) -> Analytic {
@@ -268,6 +270,7 @@ fn analytic(prev: &VFrame, cur: &VFrame, model: Model, jitter: Vec2) -> Analytic
     // The expected field (measured vector where no expectation exists), for
     // the reprojection control.
     let mut field = cur.vel.clone();
+    let mut verified = Mask::new(cur.vel.width, cur.vel.height, false);
     for y in 0..cur.vel.height {
         for x in 0..cur.vel.width {
             let v = cur.vel.get(x, y);
@@ -286,6 +289,8 @@ fn analytic(prev: &VFrame, cur: &VFrame, model: Model, jitter: Vec2) -> Analytic
                 }
                 if err > tolerance_px(e, size) {
                     over_tol += 1;
+                } else {
+                    verified.set(x, y, true);
                 }
                 errs.push(err);
             }
@@ -302,6 +307,7 @@ fn analytic(prev: &VFrame, cur: &VFrame, model: Model, jitter: Vec2) -> Analytic
         over_tol,
         v_at_max,
         field,
+        verified,
     }
 }
 
@@ -877,6 +883,7 @@ async fn vectors_scene(p: &Params, scene: &str, r: &mut Report) -> Result<()> {
             }
             // (a) analytic.
             let mut control: Option<VelocityField> = None;
+            let mut analytic_verified: Option<Mask> = None;
             if let Some(model) = model_for(scene, half, k) {
                 let an = analytic(pa, &fa, model, Vec2::ZERO);
                 r.emit(
@@ -896,6 +903,7 @@ async fn vectors_scene(p: &Params, scene: &str, r: &mut Report) -> Result<()> {
                     ),
                 );
                 control = Some(an.field);
+                analytic_verified = Some(an.verified);
             }
             let (vis, vis_nc) = visible_in_both(pa, &fa);
             let drawn = fa.depth.iter().filter(|d| **d > 0.0).count();
@@ -933,25 +941,48 @@ async fn vectors_scene(p: &Params, scene: &str, r: &mut Report) -> Result<()> {
             let (objects, small_px) = components(&moving, 200);
             let mut obj_rows = Vec::new();
             let mut obj_ok = true;
+            // An object the supersampled warp cannot measure (a strip a few
+            // pixels wide has no pixel whose 3×3 is free of its own
+            // silhouette) is still covered when the analytic test, which is
+            // the direct statement about vectors, verified at least 99 % of
+            // its pixels. Without an analytic model it fails as before.
+            let mut obj_low: Vec<bool> = Vec::new();
             for (oi, o) in objects.iter().enumerate() {
                 let c = o.and(&keep).count() as f64 / o.count().max(1) as f64;
-                if c < 0.5 {
+                let c_an = analytic_verified
+                    .as_ref()
+                    .map(|v| o.and(v).count() as f64 / o.count().max(1) as f64);
+                let by_analytic = c < 0.5 && c_an.is_some_and(|a| a >= 0.99);
+                if c < 0.5 && !by_analytic {
                     obj_ok = false;
                 }
-                obj_rows.push(format!("#{} {} px {:.1}%", oi + 1, o.count(), 100.0 * c));
+                obj_low.push(c < 0.5 && !by_analytic);
+                obj_rows.push(format!(
+                    "#{} {} px {:.1}%{}",
+                    oi + 1,
+                    o.count(),
+                    100.0 * c,
+                    match (c < 0.5, c_an) {
+                        (true, Some(a)) => format!(
+                            " (below 50 %, the kept px still count in the error above; analytic test verified {:.1}% of its px: {})",
+                            100.0 * a,
+                            if by_analytic { "covered by it" } else { "NOT covered" }
+                        ),
+                        _ => String::new(),
+                    }
+                ));
             }
             let moving_cov = moving.and(&keep).count() as f64 / moving.count().max(1) as f64;
             if !obj_ok || p.keep {
                 // Which moving objects lost their coverage: red = moving px
                 // excluded, green = moving px kept, over the plain frame.
                 let mut img = plain.clone();
-                for o in objects.iter() {
-                    let c = o.and(&keep).count() as f64 / o.count().max(1) as f64;
+                for (oi, o) in objects.iter().enumerate() {
                     for (i, b) in o.bits.iter().enumerate() {
                         if *b {
                             let px = if keep.bits[i] {
                                 [0, 200, 0, 255]
-                            } else if c < 0.5 {
+                            } else if obj_low[oi] {
                                 [255, 0, 0, 255]
                             } else {
                                 [255, 160, 0, 255]
@@ -999,7 +1030,7 @@ async fn vectors_scene(p: &Params, scene: &str, r: &mut Report) -> Result<()> {
                 &format!(
                     "{}64-phase refs, Catmull-Rom, refined mask: {gate}; coverage {:.1}% of {drawn} drawn px (visible-in-both {:.1}%, then mixed px removed, then {content_px} no-vector-content px removed); MOVING px (|v| > 0.5): {} px, {:.1}% kept, per object [{}]{}; thresholds mean < 2, p99 < 12; v = 0 on the same px: {z}",
                     if !enough {
-                        "INSUFFICIENT COVERAGE (< 50 % of drawn px or of a moving object) — "
+                        "INSUFFICIENT COVERAGE (< 50 % of drawn px, or of a moving object the analytic test does not cover) — "
                     } else if !cons_ok {
                         "TOO MANY MOVING PX EXCLUDED BY CONSISTENCY — "
                     } else {

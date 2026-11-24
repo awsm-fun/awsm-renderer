@@ -325,14 +325,46 @@ async fn trail(p: &Params, scene: &str, r: &mut Report) -> Result<()> {
     let has_tracked_motion = pair.test.scenario.tracked.is_some();
     let mut worst_rest = Worst::default();
     let mut worst_ring = Worst::default();
+    // A scene without a tracked box: the band comes from REAL coverage of its
+    // moving nodes (05 §4.2: "covered within the last 0.5 s but not now"),
+    // not from |v| > 0.05 px, which also counts pixels a limb still covers
+    // once it stops moving. The vector band is kept as an INFO line.
+    #[cfg(feature = "taa-phase1")]
+    let mut probe = match crate::oracle::untracked_moving_nodes(scene) {
+        Some(nodes) if !has_tracked_motion => {
+            Some(crate::oracle::CoverageProbe::open(p, scene, nodes).await?)
+        }
+        _ => None,
+    };
+    let mut vhistory: Vec<Mask> = Vec::new();
+    let mut worst_vband = Worst::default();
     while pair.test.next_k < frames {
         let k = pair.test.next_k;
         // Only frames whose band can be non-empty need a reference.
         let band_possible = history.iter().any(|m| m.count() > 0);
         let evaluate = k >= 1 && k % p.stride == 0 && band_possible;
+        #[cfg(feature = "taa-phase1")]
+        let probed = match probe.as_mut() {
+            Some(pr) => Some(pr.step().await?),
+            None => None,
+        };
+        #[cfg(not(feature = "taa-phase1"))]
+        let probed: Option<Mask> = None;
+        let by_probe = probed.is_some();
         let now = if evaluate {
             let (_, test, reference, _) = pair.step_with_reference(p).await?;
-            let now = moving_coverage(&pair.test).await?;
+            let vnow = moving_coverage(&pair.test).await?;
+            if by_probe {
+                let recent: Vec<&Mask> = vhistory.iter().rev().take(window).collect();
+                let vband = metrics::trail_band(&recent, &vnow);
+                if vband.count() > 0 {
+                    let s = abs_error(&test, &reference, Some(&vband));
+                    let ok = s.mean < thr(p, 2.0) && (s.max as f64) < thr(p, 16.0);
+                    worst_vband.add(k, &s, ok);
+                }
+                vhistory.push(vnow.clone());
+            }
+            let now = probed.unwrap_or(vnow);
             let recent: Vec<&Mask> = history.iter().rev().take(window).collect();
             let band = metrics::trail_band(&recent, &now);
             let n = band.count();
@@ -372,8 +404,15 @@ async fn trail(p: &Params, scene: &str, r: &mut Report) -> Result<()> {
             now
         } else {
             pair.step().await?;
-            moving_coverage(&pair.test).await?
+            let vnow = moving_coverage(&pair.test).await?;
+            if by_probe {
+                vhistory.push(vnow.clone());
+            }
+            probed.unwrap_or(vnow)
         };
+        if vhistory.len() > window + 1 {
+            vhistory.remove(0);
+        }
         history.push(now);
         if history.len() > window + 1 {
             history.remove(0);
@@ -381,6 +420,18 @@ async fn trail(p: &Params, scene: &str, r: &mut Report) -> Result<()> {
         set_hud(&format!("taa-tests: trail {scene} k{k}/{frames}"));
     }
     pair.destroy();
+    #[cfg(feature = "taa-phase1")]
+    if let Some(pr) = probe.take() {
+        r.info(
+            &format!("trail-vector-band:{scene}"),
+            &format!(
+                "band from measured coverage of {:?} (pixel centre + four corners); the round-1 band (|v| > 0.05 px within 30 frames, not now) on the same run: {}",
+                pr.nodes,
+                worst_vband.summary()
+            ),
+        );
+        pr.destroy();
+    }
     if worst.frames == 0 {
         if has_tracked_motion {
             r.emit(
@@ -654,6 +705,23 @@ async fn converged(p: &Params, scene: &str, r: &mut Report) -> Result<()> {
         pair.step().await?;
     }
     let (_, test, reference, _) = pair.step_with_reference(p).await?;
+    // Frame k of a scene that is still moving at k (every scene but the
+    // scripted static phases) is TAA in motion against MSAA, not converged
+    // quality. For those, also hold frame k with time frozen (the jitter
+    // keeps cycling) for 40 frames and compare that against the same
+    // reference: the converged image of the same instant. (Frame-index
+    // cadences keep advancing over the frozen frames; harmless while the
+    // skin update cadence is off, which lockstep sessions require.)
+    let moving_at_k = pair.test.scenario.phase_at(k) != "static";
+    let still = if moving_at_k {
+        for _ in 0..40 {
+            pair.test.render_frozen(None)?;
+            gpu_idle(&pair.test.renderer).await;
+        }
+        Some(pair.test.render_frozen_captured(None).await?)
+    } else {
+        None
+    };
     pair.destroy();
     let et = abs_error(&test, &reference, None);
     let rows: Vec<(Aa, ErrorStats)> = others
@@ -679,6 +747,29 @@ async fn converged(p: &Params, scene: &str, r: &mut Report) -> Result<()> {
             p.relax
         ),
     );
+    if let Some(still) = &still {
+        let es = abs_error(still, &reference, None);
+        r.info(
+            &format!("converged-still:{scene}"),
+            &format!(
+                "frame k{k} is in motion in this scenario, so the line above is TAA in motion. The same instant held for 40 frames (time frozen, jitter cycling): {} vs ref {es}; MSAA {em} ({})",
+                test_aa(p).name(),
+                if es.mean < thr(p, em.mean) {
+                    "TAA below MSAA"
+                } else {
+                    "TAA NOT below MSAA"
+                }
+            ),
+        );
+        if p.keep {
+            crate::store::put(
+                &p.store,
+                &format!("phase2/converged-{scene}-taa-still.png"),
+                still,
+            )
+            .await?;
+        }
+    }
     if p.keep {
         crate::store::put(
             &p.store,

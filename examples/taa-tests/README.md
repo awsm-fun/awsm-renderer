@@ -71,7 +71,8 @@ Features: `taa-hooks` (the `awsm_renderer::taa` hooks), `taa-phase1` (the
 | `motion-history` | The renderer's byte-exact previous-state self-check (`debug_verify_motion_history`: transforms, joints, morph weights, instance transforms) every frame for `frames` (default 120) frames of EVERY bundled scene; PASS only with 0 mismatching bytes and > 0 bytes compared. Reports the meshes' `skin_update_period` histogram. |
 | `history-burst` | `gates=burst,density,reset`: 40 new transforms in non-adjacent recycled slots while the cube moves (taa-motion); `burst_n` new transforms in a scene reduced to 3 transforms (fresh ≥ 60 %); `reset_motion_history` on 2 of 3 skinned prefab clones while the third walks. Self-check clean on k−1…k+3 and the moving object's vectors right on the event frame. |
 | `aa-toggle` | `taa-vertex-hook`: none → TAA → MSAA → TAA at runtime (`set_anti_aliasing` + `commit_load`), each frame bit-identical to a fresh session of that mode; the hook mesh moves. |
-| `gate` | `gates=ghosting` (trail, stop, cut) / `convergence` (converged, flicker, pan) or any list; TAA vs lockstep 64-phase references (05 §4.2–4.3). `relax=1.5` for 0.67 scale, `stride=1` for every frame of the trail. taa-cut's switch at 120 is flagged (`reset_temporal_history`), at 240 unflagged (the camera-jump guard must fire). Failing lines store 05 §6 evidence (FreezeJitter, Velocity, ReprojectionError, Rejection, HistoryLength) under `phase2/`. Scene `<name>@cadence`: coverage LOD on and the skins at update periods 2 / 4 / 1. |
+| `gate` | `gates=ghosting` (trail, stop, cut) / `convergence` (converged, flicker, pan) or any list; TAA vs lockstep 64-phase references (05 §4.2–4.3). `relax=1.5` for 0.67 scale, `stride=1` for every frame of the trail. taa-cut's switch at 120 is flagged (`reset_temporal_history`), at 240 unflagged (the camera-jump guard must fire). `converged` also prints `converged-still` for a scene that is moving at k32 (the frame held for 40 frames with time frozen: the converged image of that instant). Failing lines store 05 §6 evidence (FreezeJitter, Velocity, ReprojectionError, Rejection, HistoryLength) under `phase2/`. Scene `<name>@cadence`: coverage LOD on and the skins at update periods 2 / 4 / 1. |
+| `trail-oracle` | The trail band of a scene without a tracked box (`taa-skin`; `moving=a,b` names the nodes), from REAL coverage (depth with and without those nodes, jitter frozen) instead of the gate's `|v| > 0.05 px`, with the oracle, no-AA and MSAA beside TAA, split by ring / age, and the gate's vector band split into pixels the object still covers and pixels it left (INFO). `k=` stores tiles under `r2/trail-oracle/`. |
 | `trail-evidence` | Diagnostics for a failing trail (INFO): at `k=…`, the band split by age (frames since the tracked object left the pixel) and by cause (≤ 2 px from the silhouette; the object's measured shadow footprint), TAA / no-AA / MSAA vs the same reference; the worst pixel with its Rejection / HistoryLength / ReprojectionError / Velocity debug values; full-frame tiles under `phase2/evidence/`. |
 | `speeds` | Screen speed (px/frame) per scenario phase from the velocity readback. |
 | `reference-floor` | Static frame: the 64-phase reference vs the resolve's own convergence model (8 phases, per-frame normalisation, clamped borders), and the converged TAA frame vs both — the floor under the stop / trail thresholds. |
@@ -146,7 +147,10 @@ frame k (and k−1):
   analytic motion of the surface each pixel shows (q + 0.5 − j), and resampled
   to the unjittered grid driving the same warp.
 - Coverage: kept / drawn ≥ 50 %, AND over the MOVING pixels (|v| > 0.5 px)
-  per 4-connected moving component of ≥ 200 px, each ≥ 50 % kept. The moving
+  per 4-connected moving component of ≥ 200 px, each ≥ 50 % kept, or, for a
+  component the warp cannot measure (a strip a few pixels wide has no pixel
+  whose 3×3 is free of its own silhouette), ≥ 99 % of its pixels verified by
+  the analytic test (scenes with an analytic model only). The moving
   pixels excluded ONLY by the forward-backward consistency test are reported
   (`vectors-consistency-excluded`) with the warp error there using v_k as-is
   (a wrong vector would show there), against a per-scene bound.

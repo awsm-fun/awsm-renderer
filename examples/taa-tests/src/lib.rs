@@ -28,6 +28,8 @@ mod gates;
 mod hooks;
 mod modes;
 #[cfg(feature = "taa-phase1")]
+mod oracle;
+#[cfg(feature = "taa-phase1")]
 mod phase3;
 #[cfg(feature = "taa-phase4")]
 mod phase4;
@@ -309,6 +311,8 @@ pub fn boot() -> Result<(), JsValue> {
             "tune-sweep" => sweep::tune_sweep_mode(&p, &mut r).await,
             #[cfg(feature = "taa-tuning-v2")]
             "tune-sweep2" => sweep2::tune_sweep2_mode(&p, &mut r).await,
+            #[cfg(feature = "taa-phase1")]
+            "trail-oracle" => oracle::trail_oracle_mode(&p, &mut r).await,
             other => r.emit("mode", false, &format!("unknown mode `{other}`")),
         }
         r.complete();
