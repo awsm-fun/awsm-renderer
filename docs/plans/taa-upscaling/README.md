@@ -20,8 +20,24 @@ Dreidel Derby (M1 Max, Chrome, 1920×1435 output, 0.45.0):
 MSAA costs about 4 ms here. Nearly all the rest scales with pixel count:
 shading, the shadow prep and blur, SSR. Rendering 67% of the width and height
 is 45% of the pixels. Expect the frame well under 16.7 ms with better edges
-than MSAA (MSAA does nothing for specular or shading aliasing; TAA does). That
-estimate is not measured yet; phase 2 measures it.
+than MSAA (MSAA does nothing for specular or shading aliasing; TAA does).
+
+Measured after the implementation (renderer `0d878578`, same machine and
+canvas, the game's own GPU stats; "unpaced" draws on every 120 Hz refresh,
+"paced" is the game's own 60 fps, which lets the GPU clock down between cheap
+frames; [05 Results](05-verification.md#results)):
+
+| Mid-round | Paced | Unpaced |
+|---|--:|--:|
+| No AA | 10.64 ms | 10.74 ms |
+| MSAA 4× | 14.75 ms | 14.77 ms |
+| TAA native | 12.13 ms | 12.22 ms |
+| TAA 0.67 | 8.43 ms | 7.30 ms |
+| TAA 0.5 | 8.17 ms | 6.16 ms |
+
+The title screen with MSAA 4× measured 19.35 ms, TAA native 15.43 ms and TAA
+0.67 10.28 ms. Converged image error against a 64-sample reference,
+mid-round: TAA native 0.873, MSAA 1.864.
 
 ## Why there is a plan at all
 

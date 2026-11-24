@@ -139,7 +139,8 @@ Recorded after the implementation on `feat/taa-upscaling`. The gates above
 are unchanged; this section only reports against them. Harness:
 `examples/taa-tests`, M1 Max, Chrome, 960x720, fixed timestep and seeds.
 Native results: `a2be12b1` with the shipped tuning (bit-exact to
-`3c975597`). Phase 4: `19acddee`. Phase 5: `3c975597`. The full record, with
+`3c975597`). Phase 4: `19acddee`. Phase 5: `3c975597`. Balanced 0.58, phase 3
+at 0.67, frame cost and Dreidel Derby: `0d878578`. The full record, with
 every frame number and the evidence captures, was kept as
 `gates-native-record.md` beside the report; `docs/TAA.md` §7 carries the
 condensed tables.
@@ -190,7 +191,8 @@ condensed tables.
 | Cut, flagged (`taa-cut` k120) | < 3 vs TAA-off | 2.249 | | PASS |
 | Cut, unflagged, guard fired (k240) | same | 1.883 | | PASS |
 | Converged `taa-thin` | < MSAA 4x | 1.449 (MSAA 5.309) | 1.979 (MSAA 5.525) | PASS |
-| Converged Dreidel Derby | < MSAA 4x | not measured | | NOT MEASURED |
+| Converged Dreidel Derby, title | < MSAA 4x | 1.217 (MSAA 1.310; SMAA 1.114, none 1.167) | 1.264 (MSAA 1.335) | PASS (narrow; above SMAA and none) |
+| Converged Dreidel Derby, mid-round | < MSAA 4x | 0.873 (MSAA 1.864) | 0.921 (MSAA 1.877) | PASS |
 | Flicker, 16 scenes | mean < 0.5, p99 < 4 | worst 0.292 p99 3 (`taa-transparent`), `taa-thin` 0.272 p99 2 | | PASS |
 | Camera-motion blur (pan) `taa-orbit` | every strafe frame < 3 | worst 1.134 | 1.217 | PASS |
 
@@ -219,6 +221,12 @@ better (`taa-motion` 0.633 / 1.935, `taa-orbit` 1.037 / 3.075, `taa-reveal`
 | `taa-transparent`, the content's own trail | same | TAA 5.83, max 192 (avg 1.12); MSAA 5.35 (avg 3.09) | NOT MET (by any AA mode) |
 | `taa-hud` HUD pixels vs TAA-off | mean < 1 | worst 0.068, max 1 | PASS |
 
+At 0.67 (INFO, not a 05 gate): HUD pixels worst 0.887, average 0.755, max 127
+(still under 1; the opaque-path HUD is rasterised at render size); band over
+the content 23.63, the content's own trail 18.43; whole-image static flicker
+of `taa-transparent` 0.361 p99 4, which fails the 05 flicker bound by
+equality (native 0.292 p99 3).
+
 ### §4.5 Upscaling (phase 4)
 
 | Test | Threshold | 0.67 | 0.5 | Verdict |
@@ -229,13 +237,13 @@ better (`taa-motion` 0.633 / 1.935, `taa-orbit` 1.037 / 3.075, `taa-reveal`
 | Flicker `taa-orbit`, `taa-motion`, `taa-reveal` | same | ≤ 0.149 p99 1 | ≤ 0.161 p99 2 | PASS |
 | Scale change 0.67 → 0.5 → 0.67 | no frame mean > 3 | worst 4.589 @k82 | | NOT MET (literal) |
 | Moiré / mip bias | no visible moiré; flicker passes | `mip_bias_extra` 0 chosen by sweep | | PASS (flicker); moiré judged by the sweep numbers, not by eye |
-| Balanced 0.58 | | not measured | | NOT MEASURED |
+| Balanced 0.58 (INFO; no 05 threshold between 1.5x and 2x) | | converged `taa-thin` 4.233 (below 1x MSAA); pan worst 3.485; flicker `taa-thin` 0.290 p99 2 | | PASS at 1.5x and 2x; pan above the unrelaxed 3 |
 
 The scale-change failure is the 0.5 steady state under orbit (a constant-0.5
 run is itself 4.4-4.6), not a reset pop: the step down is better than
 constant 0.5 for about 6 frames; the step up costs +1.033, decaying to +0.175
 within 4 frames. Isolated sub-render-pixel features dropped from a still
-`taa-thin` (INFO): native 0%, 0.67 5.0%, 0.5 73.0%.
+`taa-thin` (INFO): native 0%, 0.67 5.0%, 0.58 31.8%, 0.5 73.0%.
 
 ### Phase 5 (32 B/sample fallback, forced on the M1)
 
@@ -247,8 +255,11 @@ Trail, stop and flicker match the geometry path within noise (stop 0.606 /
 0.773 / 0.942 / 0.247 / 0.489, all PASS; flicker all PASS). "Mobile path
 works" on an actual 32 B/sample device: not measured (the Android device
 check is outstanding). Governor: a render-scale step does not reset the
-history (verified); the hitch is +0.4-0.6 ms CPU on the step frame,
-indicative.
+history (verified). Its cost (`kitchen-sink`, 0.67 ↔ 0.5): CPU +0.5 to
++1.1 ms on the step frame, and the frame after a 0.5 → 0.67 step costs
++5.3 to +5.8 ms of CPU once; the GPU part could not be separated from noise.
+The forced fallback costs +0.03 to +0.13 ms of GPU against the geometry
+target.
 
 ### Regressions
 
@@ -260,18 +271,42 @@ found and fixed (`7e8eac3f`).
 
 ### §5 Frame cost
 
+Synthetic scenes (`0d878578`, 1920x1435, one tab, 5 interleaved runs, frames
+submitted back to back and drained every 4th so the GPU does not clock down
+between frames). Dreidel Derby with its own stats (whole-frame GPU timestamp
+span), 5 interleaved runs paced and 3 unpaced, against the same game built on
+0.45.0.
+
 | | Target | Measured | Verdict |
 |---|--:|---|---|
-| Velocity target + second vertex evaluation | ≤ 0.2 ms | pending quiet-window measurement (about 1 ms on `instancing-stress`, indicative) | not yet |
-| Resolve at native 1920x1435 | ≤ 0.6 ms | about 1.1 ms by pass-timestamp slope after optimisation; pending quiet-window measurement | NOT MET as measured so far |
-| Resolve at 0.67 → 1920x1435 | ≤ 0.6 ms | pending quiet-window measurement | not yet |
-| Dreidel Derby mid-round, TAA native | ≤ 11.5 ms | pending quiet-window measurement | not yet |
-| Dreidel Derby mid-round, TAA 0.67 | ≤ 7.5 ms | pending quiet-window measurement | not yet |
-| TAA off | unchanged | pixel-identical; timing pending quiet-window measurement | not yet |
+| Velocity target + second vertex evaluation | ≤ 0.2 ms | 0.093-0.123 ms (with the seed; TAA − no AA − resolve, N=32) | MET |
+| Resolve at native 1920x1435 | ≤ 0.6 ms | 1.03-1.17 ms (frame and pass slopes, N=8 and N=32) | NOT MET (about 1.8x) |
+| Resolve at 0.67 → 1920x1435 | ≤ 0.6 ms | about 1.10 ms (runs at output size) | NOT MET |
+| Dreidel Derby mid-round, TAA native | ≤ 11.5 ms | 12.13 paced / 12.22 unpaced (no AA 10.64, MSAA 14.75) | NOT MET |
+| Dreidel Derby mid-round, TAA 0.67 | ≤ 7.5 ms | 8.43 paced / 7.30 unpaced | MET only unpaced |
+| TAA off | unchanged | Dreidel no AA 10.64 vs 0.45 10.67, MSAA 14.75 vs 14.74; synthetic configurations within ±0.114 ms of 0.45 (`taa-thin` no AA consistently +0.06 / +0.09); 36 baseline captures bit-identical | MET |
 
-Also measured: RCAS about 0.21 ms, reactive seed about 0.03-0.04 ms (quiet);
-whole frames, indicative: `kitchen-sink` no AA 9.09 / MSAA 11.27 / SMAA 9.08 /
-TAA 11.83 ms, `instancing-stress` 6.65 / 13.63 / 7.29 / 9.79 ms.
+Paced and unpaced: on the 120 Hz display the game halves to 60 fps when its
+smoothed GPU time exceeds 7.17 ms, so every mode ran at 60 fps. The cheap
+modes then leave the GPU idle half the time, it clocks down between frames,
+and they read 1.1-2.0 ms high (0.67: 8.43 against 7.30; 0.5: 8.17 against
+6.16). The busy modes read the same either way (within 0.1 ms). Unpaced
+(a scratch switch that draws on every refresh) is the closer number to the
+GPU cost of the cheap modes.
+
+Synthetic scenes, GPU frame median in ms (delta against no AA):
+
+| Scene | No AA | MSAA 4x | SMAA | TAA native | TAA 0.67 | TAA 0.5 | 0.67 + RCAS 0.25 | Forced fallback |
+|---|--:|--:|--:|--:|--:|--:|--:|--:|
+| `kitchen-sink` | 4.813 | 5.713 (+0.90) | 5.012 (+0.20) | 5.980 (+1.17) | 4.922 (+0.11) | 4.562 (−0.25) | 5.101 (+0.29) | 6.040 (+1.23) |
+| `instancing-stress` | 3.393 | 5.893 (+2.50) | 3.701 (+0.31) | 4.633 (+1.24) | 3.710 (+0.32) | 3.424 (+0.03) | 3.878 (+0.49) | 4.700 (+1.31) |
+| `ssr` | 3.799 | 4.507 (+0.71) | 4.103 (+0.30) | 5.026 (+1.23) | 3.963 (+0.16) | 3.639 (−0.16) | 4.156 (+0.36) | 5.141 (+1.34) |
+| `taa-thin` | 3.714 | 6.037 (+2.32) | 4.136 (+0.42) | 4.968 (+1.25) | 3.337 (−0.38) | 2.705 (−1.01) | 3.539 (−0.18) | 5.063 (+1.35) |
+
+Also measured: RCAS 0.164-0.193 ms; the reactive seed is bounded by the
++0.076 ms the transparent pass grows with TAA on `kitchen-sink` (0.03-0.04 ms
+by repeat-N); Dreidel Derby title TAA native 15.43 ms against MSAA 19.35 and
+no AA 13.86, TAA 0.67 10.28.
 
 ### What is not met
 
@@ -286,7 +321,12 @@ TAA 11.83 ms, `instancing-stress` 6.65 / 13.63 / 7.29 / 9.79 ms.
 5. At 0.5, converged and pan pass only through the 2x relaxation; the
    converged image is above native MSAA's error.
 6. Converged quality worse than MSAA on `taa-skin` and `instancing-stress`
-   (INFO scenes).
-7. Not measured yet: Dreidel Derby converged quality, Balanced 0.58, every §5
-   frame-cost row in a quiet window, the fallback on a real 32 B/sample
-   device.
+   (INFO scenes). On the Dreidel Derby title the gate passes only narrowly,
+   and TAA is above SMAA and no AA there; TAA 0.67 is above MSAA there.
+7. Frame cost: the resolve at 1.03-1.17 ms against ≤ 0.6 ms (native and
+   0.67); Dreidel Derby mid-round TAA native at 12.13-12.22 ms against
+   ≤ 11.5 ms; TAA 0.67 meets ≤ 7.5 ms only unpaced (7.30), not at the game's
+   own 60 fps pacing (8.43).
+8. At 0.67 (INFO): `taa-transparent` whole-image flicker p99 4, at the bound.
+9. Not measured: the fallback on a real 32 B/sample device (the Android
+   device check), the frame cost of Balanced 0.58.

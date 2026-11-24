@@ -25,8 +25,24 @@ Measured on the `taa-thin` test scene (M1 Max, Chrome; mean error against a
 | TAA 0.67 | 2.991 |
 | TAA 0.5 | 5.759 |
 
-The default stays MSAA 4×. Frame-cost numbers are pending a quiet-window
-measurement; see `docs/TAA.md` §7.6.
+In Dreidel Derby (1920×1435, mid-round), TAA native has half of MSAA's error
+against the same kind of reference (0.873 against 1.864); on its title screen
+it is only narrowly better (1.217 against 1.310).
+
+GPU frame time at 1920×1435 (M1 Max, Chrome):
+
+| | No AA | MSAA 4× | TAA native | TAA 0.67 | TAA 0.5 |
+|---|--:|--:|--:|--:|--:|
+| Dreidel Derby mid-round (unpaced) | 10.74 ms | 14.77 ms | 12.22 ms | 7.30 ms | 6.16 ms |
+| `kitchen-sink` | 4.81 ms | 5.71 ms | 5.98 ms | 4.92 ms | 4.56 ms |
+| `taa-thin` | 3.71 ms | 6.04 ms | 4.97 ms | 3.34 ms | 2.71 ms |
+
+The resolve costs 1.03-1.17 ms at 1920×1435 output. With TAA off, frame time
+is unchanged against 0.45 (within ±0.114 ms on the test scenes; Dreidel Derby
+no AA 10.64 against 10.67 ms). Details and the remaining gaps:
+`docs/TAA.md` §7.6.
+
+The default stays MSAA 4×: not every verification gate is met.
 
 ## New
 
@@ -149,5 +165,10 @@ are not met; the list is in `docs/plans/taa-upscaling/05-verification.md`,
 
 - The Android device check (`docs/checklist-android.md`): the 32 B/sample
   fallback has only been forced on an M1, not run on a device that needs it.
-- Frame cost in a quiet window (resolve at native and 0.67, velocity
-  target, Dreidel Derby mid-round at native and 0.67, TAA off).
+- The frame-cost targets that are not met: the resolve at 1.03-1.17 ms
+  against 0.6 ms, and Dreidel Derby mid-round TAA native at 12.1-12.2 ms
+  against 11.5 ms. TAA 0.67 meets its 7.5 ms target only when the game draws
+  on every refresh (7.30 ms); at the game's own 60 fps pacing on a 120 Hz
+  display the GPU clocks down between frames and it reads 8.43 ms.
+- The verification gates listed as not met in
+  `docs/plans/taa-upscaling/05-verification.md`, Results.
