@@ -175,7 +175,7 @@ impl Session {
             // path (the 32 B/sample fallback) on a device that has the
             // geometry path.
             #[cfg(feature = "taa-phase5")]
-            if crate::url_value("fallback").is_some() {
+            if want.taa.is_some() && crate::hooks::fallback() {
                 use awsm_renderer::anti_alias::TaaVelocityPath;
                 renderer.set_taa_velocity_path_override(Some(TaaVelocityPath::PrepReconstruction));
                 renderer

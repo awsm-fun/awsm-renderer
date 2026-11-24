@@ -19,6 +19,18 @@ thread_local! {
     /// `TaaTuning` overrides (`?tune=name:value,…`, or set by a sweep) for
     /// every TAA session opened after they are set.
     static TUNE: RefCell<Vec<(String, f32)>> = const { RefCell::new(Vec::new()) };
+    /// Force the prep-reconstruction (fallback) velocity path on every TAA
+    /// session opened while set (as `?fallback` does for the whole page).
+    static FALLBACK: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+pub fn set_fallback(on: bool) {
+    FALLBACK.with(|c| c.set(on));
+}
+
+#[cfg_attr(not(feature = "taa-phase5"), allow(dead_code))]
+pub fn fallback() -> bool {
+    FALLBACK.with(|c| c.get()) || crate::url_value("fallback").is_some()
 }
 
 /// The doc-hidden experimental knobs (`set_taa_experimental_tuning`):
@@ -43,6 +55,7 @@ pub fn set_tune(tune: &[(String, f32)]) -> Result<(), String> {
 
 /// The experimental knob values to set on a TAA session, `None` when the
 /// tuning names none of them (shipped behaviour).
+#[cfg_attr(not(feature = "taa-experimental"), allow(dead_code))]
 pub fn experimental() -> Option<[f32; 2]> {
     TUNE.with(|c| {
         let t = c.borrow();

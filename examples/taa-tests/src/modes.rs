@@ -431,104 +431,343 @@ fn mean_value(img: &Image) -> f64 {
 /// resolve (velocity target + second vertex evaluation + the rest).
 /// Informational (always PASS unless a measurement fails); compare two builds
 /// (e.g. the 0.45 worktree and HEAD) at the same size.
-pub async fn frame_cost(p: &Params, r: &mut Report) {
-    // Configurations: scene × AA (× resolve repeat count for TAA). `runs`
-    // rounds, each measuring every configuration once (interleaved), so slow
-    // drift (thermals, other tabs) spreads over all configurations alike.
-    let mut configs: Vec<(String, Aa, u32)> = Vec::new();
-    for scene in &p.scenes {
-        for aa in &p.aas {
-            if *aa == Aa::Taa {
-                for n in &p.repeats {
-                    configs.push((scene.clone(), *aa, (*n).max(1)));
-                }
-            } else {
-                configs.push((scene.clone(), *aa, 1));
+/// One frame-cost configuration.
+#[derive(Clone, Debug, PartialEq)]
+struct CostCfg {
+    scene: String,
+    aa: Aa,
+    repeat: u32,
+    scale: f32,
+    sharpen: f32,
+    fallback: bool,
+}
+
+impl CostCfg {
+    fn label(&self) -> String {
+        let mut l = format!("{}:{}", self.scene, self.aa.name());
+        if self.aa == Aa::Taa {
+            if (self.scale - 1.0).abs() > 1e-6 {
+                l.push_str(&format!("@{}", self.scale));
+            }
+            if self.sharpen > 0.0 {
+                l.push_str(&format!("+rcas{}", self.sharpen));
+            }
+            if self.fallback {
+                l.push_str("+fallback");
+            }
+            if self.repeat > 1 {
+                l.push_str(&format!("x{}", self.repeat));
             }
         }
+        l
     }
-    let label = |(scene, aa, n): &(String, Aa, u32)| {
-        if *aa == Aa::Taa && p.repeats.len() > 1 {
-            format!("{scene}:{}x{n}", aa.name())
-        } else {
-            format!("{scene}:{}", aa.name())
-        }
+}
+
+/// `?variants=none,msaa,smaa,taa,taa@0.67,taa@0.5,taa@0.67s0.25,taa-fb`
+/// (default: the `?aa=` list): AA variants. `taa` (native, sharpen 0) is
+/// also measured at every `?repeat=` count (resolve by slope).
+fn cost_variants(p: &Params) -> Vec<(Aa, f32, f32, bool)> {
+    let Some(v) = crate::url_value("variants") else {
+        return p.aas.iter().map(|a| (*a, 1.0, 0.0, false)).collect();
     };
-    let mut results: Vec<Vec<f64>> = vec![Vec::new(); configs.len()];
-    for run in 0..p.runs.max(1) {
-        for (i, c) in configs.iter().enumerate() {
-            let name = format!("frame-cost:{}@{}x{}:run{run}", label(c), p.size.0, p.size.1);
-            set_hud(&format!("taa-tests: {name}…"));
-            match frame_cost_one(p, &c.0, c.1, c.2).await {
-                Ok((mean, detail)) => {
-                    results[i].push(mean);
-                    r.info(&name, &detail);
+    v.split(',')
+        .filter_map(|t| {
+            let t = t.trim();
+            match t {
+                "none" => Some((Aa::None, 1.0, 0.0, false)),
+                "msaa" => Some((Aa::Msaa, 1.0, 0.0, false)),
+                "smaa" => Some((Aa::Smaa, 1.0, 0.0, false)),
+                "taa" => Some((Aa::Taa, 1.0, 0.0, false)),
+                "taa-fb" => Some((Aa::Taa, 1.0, 0.0, true)),
+                _ => {
+                    let rest = t.strip_prefix("taa@")?;
+                    let (sc, sh) = match rest.split_once('s') {
+                        Some((a, b)) => (a.parse().ok()?, b.parse().ok()?),
+                        None => (rest.parse().ok()?, 0.0),
+                    };
+                    Some((Aa::Taa, sc, sh, false))
                 }
-                Err(e) => r.emit(&name, false, &format!("error: {e:#}")),
+            }
+        })
+        .collect()
+}
+
+pub async fn frame_cost(p: &Params, r: &mut Report) {
+    // Configurations: scene × variant (× resolve repeat count for native
+    // TAA). `runs` rounds, each measuring every configuration once
+    // (interleaved), so slow drift spreads over all configurations alike.
+    // A sentinel (the first scene, no AA) is measured at the start and at
+    // the end of every run: its drift shows whether the window was quiet.
+    let variants = cost_variants(p);
+    let mut configs: Vec<CostCfg> = Vec::new();
+    for scene in &p.scenes {
+        for (aa, scale, sharpen, fallback) in &variants {
+            let native_plain =
+                *aa == Aa::Taa && (*scale - 1.0).abs() < 1e-6 && *sharpen == 0.0 && !fallback;
+            let reps: Vec<u32> = if native_plain {
+                p.repeats.clone()
+            } else {
+                vec![1]
+            };
+            for n in reps {
+                configs.push(CostCfg {
+                    scene: scene.clone(),
+                    aa: *aa,
+                    repeat: n.max(1),
+                    scale: *scale,
+                    sharpen: *sharpen,
+                    fallback: *fallback,
+                });
             }
         }
     }
-    let spread = |v: &[f64]| -> (f64, f64, f64) {
-        let mean = v.iter().sum::<f64>() / v.len().max(1) as f64;
-        let lo = v.iter().cloned().fold(f64::INFINITY, f64::min);
-        let hi = v.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-        (mean, lo, hi)
+    let sentinel = CostCfg {
+        scene: p.scenes.first().cloned().unwrap_or_default(),
+        aa: Aa::None,
+        repeat: 1,
+        scale: 1.0,
+        sharpen: 0.0,
+        fallback: false,
+    };
+    let (w, h) = p.size;
+    let mut results: Vec<Vec<f64>> = vec![Vec::new(); configs.len()];
+    let mut passes: Vec<Vec<Vec<(String, f64)>>> = vec![Vec::new(); configs.len()];
+    let mut sentinels: Vec<(f64, f64)> = Vec::new();
+    for run in 0..p.runs.max(1) {
+        let mut sent = [f64::NAN; 2];
+        for (si, slot) in sent.iter_mut().enumerate() {
+            if si == 1 {
+                for (i, c) in configs.iter().enumerate() {
+                    let name = format!("frame-cost:{}@{w}x{h}:run{run}", c.label());
+                    set_hud(&format!("taa-tests: {name}…"));
+                    match frame_cost_cfg(p, c).await {
+                        Ok((mean, pp, detail)) => {
+                            results[i].push(mean);
+                            passes[i].push(pp);
+                            r.info(&name, &detail);
+                        }
+                        Err(e) => r.emit(&name, false, &format!("error: {e:#}")),
+                    }
+                }
+            }
+            match frame_cost_cfg(p, &sentinel).await {
+                Ok((mean, _, _)) => *slot = mean,
+                Err(e) => r.emit("frame-cost:sentinel", false, &format!("error: {e:#}")),
+            }
+        }
+        r.info(
+            &format!("frame-cost:sentinel:run{run}"),
+            &format!(
+                "{} before {:.3} ms, after {:.3} ms (drift {:+.3})",
+                sentinel.label(),
+                sent[0],
+                sent[1],
+                sent[1] - sent[0]
+            ),
+        );
+        sentinels.push((sent[0], sent[1]));
+    }
+    #[cfg(feature = "taa-hooks")]
+    {
+        crate::hooks::set_scale(p.scale);
+        crate::hooks::set_sharpen(0.0);
+        crate::hooks::set_fallback(false);
+    }
+    let med = |v: &[f64]| -> f64 {
+        let mut s: Vec<f64> = v.iter().cloned().filter(|x| x.is_finite()).collect();
+        s.sort_by(|a, b| a.total_cmp(b));
+        if s.is_empty() {
+            f64::NAN
+        } else if s.len() % 2 == 1 {
+            s[s.len() / 2]
+        } else {
+            (s[s.len() / 2 - 1] + s[s.len() / 2]) / 2.0
+        }
     };
     let fmt = |v: &[f64]| {
-        let (m, lo, hi) = spread(v);
+        let lo = v.iter().cloned().fold(f64::INFINITY, f64::min);
+        let hi = v.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
         let runs: Vec<String> = v.iter().map(|x| format!("{x:.3}")).collect();
         format!(
-            "{m:.3} ms (min {lo:.3}, max {hi:.3}; runs {})",
+            "median {:.3} ms (min {lo:.3}, max {hi:.3}, spread {:.3}; runs {})",
+            med(v),
+            hi - lo,
             runs.join(", ")
         )
+    };
+    let all_s: Vec<f64> = sentinels.iter().flat_map(|(a, b)| [*a, *b]).collect();
+    r.info(
+        &format!("frame-cost:sentinel@{w}x{h}"),
+        &format!(
+            "{} over all runs: {}; worst within-run drift {:.3} ms",
+            sentinel.label(),
+            fmt(&all_s),
+            sentinels
+                .iter()
+                .map(|(a, b)| (b - a).abs())
+                .fold(0.0, f64::max)
+        ),
+    );
+    let pass_of = |i: usize, name: &str| -> Vec<f64> {
+        passes[i]
+            .iter()
+            .map(|pp| {
+                pp.iter()
+                    .find(|(k, _)| k == name)
+                    .map(|(_, v)| *v)
+                    .unwrap_or(f64::NAN)
+            })
+            .collect()
     };
     for (i, c) in configs.iter().enumerate() {
         if results[i].is_empty() {
             continue;
         }
+        let mut extra = String::new();
+        for pn in [
+            "Taa",
+            "TaaRcas",
+            "Material Transparent",
+            "Geometry",
+            "Smaa",
+            "Display",
+        ] {
+            let v = pass_of(i, pn);
+            if v.iter().any(|x| x.is_finite()) {
+                extra.push_str(&format!("; pass {pn} median {:.3}", med(&v)));
+            }
+        }
         r.emit(
-            &format!("frame-cost:{}@{}x{}", label(c), p.size.0, p.size.1),
+            &format!("frame-cost:{}@{w}x{h}", c.label()),
             true,
-            &format!("GPU frame mean {}", fmt(&results[i])),
+            &format!("GPU frame {}{extra}", fmt(&results[i])),
         );
     }
-    // Derived per scene: resolve = (T(N) - T(1)) / (N - 1), per run; and the
-    // rest of TAA's cost = T_taa(1) - T_none - resolve.
+    // Derived per scene.
     for scene in &p.scenes {
-        let find = |aa: Aa, n: u32| {
-            configs
-                .iter()
-                .position(|c| &c.0 == scene && c.1 == aa && c.2 == n)
-                .map(|i| results[i].clone())
+        let find =
+            |f: &dyn Fn(&CostCfg) -> bool| configs.iter().position(|c| &c.scene == scene && f(c));
+        let plain = |c: &CostCfg, n: u32| {
+            c.aa == Aa::Taa
+                && c.repeat == n
+                && (c.scale - 1.0).abs() < 1e-6
+                && c.sharpen == 0.0
+                && !c.fallback
         };
-        let (Some(t1), Some(none)) = (find(Aa::Taa, 1), find(Aa::None, 1)) else {
+        let (Some(i1), Some(inone)) = (find(&|c| plain(c, 1)), find(&|c| c.aa == Aa::None)) else {
             continue;
         };
+        let (t1, none) = (&results[i1], &results[inone]);
+        let taa1 = pass_of(i1, "Taa");
         for n in p.repeats.iter().filter(|n| **n > 1) {
-            let Some(tn) = find(Aa::Taa, *n) else {
+            let Some(in_) = find(&|c| plain(c, *n)) else {
                 continue;
             };
+            let tn = &results[in_];
+            let taan = pass_of(in_, "Taa");
             let runs = t1.len().min(tn.len()).min(none.len());
-            let resolve: Vec<f64> = (0..runs)
-                .map(|k| (tn[k] - t1[k]) / (*n as f64 - 1.0))
+            let nf = *n as f64 - 1.0;
+            let resolve: Vec<f64> = (0..runs).map(|k| (tn[k] - t1[k]) / nf).collect();
+            let resolve_pass: Vec<f64> = (0..runs.min(taa1.len()).min(taan.len()))
+                .map(|k| (taan[k] - taa1[k]) / nf)
                 .collect();
             let rest: Vec<f64> = (0..runs).map(|k| t1[k] - none[k] - resolve[k]).collect();
+            let rest_pass: Vec<f64> = (0..resolve_pass.len())
+                .map(|k| t1[k] - none[k] - resolve_pass[k])
+                .collect();
             let total: Vec<f64> = (0..runs).map(|k| t1[k] - none[k]).collect();
             r.info(
-                &format!("frame-cost:{scene}:taa-resolve(N={n})@{}x{}", p.size.0, p.size.1),
+                &format!("frame-cost:{scene}:taa-resolve(N={n})@{w}x{h}"),
                 &format!(
-                    "resolve {}; TAA - none {}; velocity target + 2nd vertex evaluation + rest = TAA - none - resolve {}",
+                    "resolve by frame slope {}; by \"Taa\" pass-timestamp slope {}; \"Taa\" pass at N=1 median {:.3}; TAA − none {}; velocity target + 2nd vertex evaluation + seed + rest = TAA − none − resolve: frame-slope {} / pass-slope {}",
                     fmt(&resolve),
+                    fmt(&resolve_pass),
+                    med(&taa1),
                     fmt(&total),
-                    fmt(&rest)
+                    fmt(&rest),
+                    fmt(&rest_pass)
                 ),
+            );
+        }
+        // Material Transparent (holds the reactive seed draw) TAA vs none.
+        let mt1 = pass_of(i1, "Material Transparent");
+        let mt0 = pass_of(inone, "Material Transparent");
+        if mt1.iter().chain(&mt0).any(|x| x.is_finite()) {
+            let d: Vec<f64> = mt1.iter().zip(&mt0).map(|(a, b)| a - b).collect();
+            r.info(
+                &format!("frame-cost:{scene}:transparent-pass(TAA − none)@{w}x{h}"),
+                &format!(
+                    "the reactive seed draws inside \"Material Transparent\" (no timestamp of its own); that pass TAA − none: {}",
+                    fmt(&d)
+                ),
+            );
+        }
+        // RCAS: the TaaRcas pass and the frame delta, Quality (0.67 + rcas) vs 0.67.
+        let iq = find(&|c| c.aa == Aa::Taa && c.sharpen > 0.0);
+        let i67 = iq.and_then(|q| {
+            let sc = configs[q].scale;
+            find(&|c| {
+                c.aa == Aa::Taa
+                    && c.sharpen == 0.0
+                    && (c.scale - sc).abs() < 1e-6
+                    && !c.fallback
+                    && c.repeat == 1
+            })
+        });
+        if let (Some(q), Some(b)) = (iq, i67) {
+            let d: Vec<f64> = results[q]
+                .iter()
+                .zip(&results[b])
+                .map(|(a, b)| a - b)
+                .collect();
+            r.info(
+                &format!("frame-cost:{scene}:rcas@{w}x{h}"),
+                &format!(
+                    "{} − {}: {}; TaaRcas pass {}",
+                    configs[q].label(),
+                    configs[b].label(),
+                    fmt(&d),
+                    fmt(&pass_of(q, "TaaRcas"))
+                ),
+            );
+        }
+        if let Some(fb) = find(&|c| c.fallback) {
+            let d: Vec<f64> = results[fb].iter().zip(t1).map(|(a, b)| a - b).collect();
+            r.info(
+                &format!("frame-cost:{scene}:fallback@{w}x{h}"),
+                &format!("forced fallback − TAA native: {}", fmt(&d)),
             );
         }
     }
 }
 
+async fn frame_cost_cfg(p: &Params, c: &CostCfg) -> Result<(f64, Vec<(String, f64)>, String)> {
+    #[cfg(feature = "taa-hooks")]
+    {
+        crate::hooks::set_scale(c.scale);
+        crate::hooks::set_sharpen(c.sharpen);
+        crate::hooks::set_fallback(c.fallback);
+    }
+    #[cfg(not(feature = "taa-hooks"))]
+    if c.aa == Aa::Taa {
+        return Err(anyhow!("TAA needs the taa-hooks feature"));
+    }
+    let res = frame_cost_one(p, &c.scene, c.aa, c.repeat).await;
+    #[cfg(feature = "taa-hooks")]
+    {
+        crate::hooks::set_fallback(false);
+        crate::hooks::set_sharpen(0.0);
+    }
+    res
+}
+
 /// One frame-cost measurement: (mean GPU frame ms, detail).
-async fn frame_cost_one(p: &Params, scene: &str, aa: Aa, repeat: u32) -> Result<(f64, String)> {
+async fn frame_cost_one(
+    p: &Params,
+    scene: &str,
+    aa: Aa,
+    repeat: u32,
+) -> Result<(f64, Vec<(String, f64)>, String)> {
     use awsm_renderer::debug::TimingTier;
     use awsm_renderer::profiling;
     let n = p.cost_frames;
@@ -591,12 +830,63 @@ async fn frame_cost_one(p: &Params, scene: &str, aa: Aa, repeat: u32) -> Result<
         .take(6)
         .map(|(k, v)| format!("{k} {v:.2}"))
         .collect();
+    // Busy window (`?busy`): frames submitted back to back, the GPU drained
+    // only every 4th frame, so it never idles long enough to clock down.
+    // GPU frame mean from the same timestamps + wall-clock ms per frame.
+    let mut busy = String::new();
+    let mut mean = mean;
+    if crate::url_value("busy").is_some() {
+        let b0 = profiling::gpu_frame_timing()
+            .map(|t| (t.count, t.total_ms))
+            .unwrap_or((0, 0.0));
+        let passes_b0 = profiling::gpu_timing_stats();
+        let t0 = crate::now_ms();
+        for i in 0..n {
+            s.render_next()?;
+            if i % 4 == 3 {
+                gpu_idle(&s.renderer).await;
+            }
+        }
+        gpu_idle(&s.renderer).await;
+        let wall = (crate::now_ms() - t0) / n as f64;
+        for _ in 0..6 {
+            s.render_next()?;
+            gpu_idle(&s.renderer).await;
+            crate::session::sleep_ms(4).await;
+        }
+        let b1 = profiling::gpu_frame_timing().ok_or_else(|| anyhow!("no GPU frame timing"))?;
+        let bc = b1.count.saturating_sub(b0.0);
+        if bc == 0 {
+            return Err(anyhow!("busy window produced no samples"));
+        }
+        let bmean = (b1.total_ms - b0.1) / bc as f64;
+        let pb1 = profiling::gpu_timing_stats();
+        per_pass = pb1
+            .iter()
+            .filter(|(k, _)| *k != profiling::GPU_FRAME_SCOPE)
+            .filter_map(|(k, v1)| {
+                let (c0, t0) = passes_b0
+                    .iter()
+                    .find(|(k0, _)| k0 == k)
+                    .map(|(_, v)| (v.count, v.total_ms))
+                    .unwrap_or((0, 0.0));
+                let c = v1.count.saturating_sub(c0);
+                (c > 0).then(|| (k.to_string(), (v1.total_ms - t0) / c as f64))
+            })
+            .collect();
+        per_pass.sort_by(|a, b| b.1.total_cmp(&a.1));
+        busy = format!(
+            "; BUSY window: GPU frame mean {bmean:.3} ms over {bc} frames, wall {wall:.3} ms/frame (idle-window mean {mean:.3})"
+        );
+        mean = bmean;
+    }
     s.renderer.logging.gpu = TimingTier::Off;
     s.destroy();
     Ok((
         mean,
+        per_pass.clone(),
         format!(
-            "GPU frame mean {mean:.3} ms over {count} frames; passes (ms, overlap on Apple GPUs): {}",
+            "GPU frame mean {mean:.3} ms over {count} frames; passes (ms, overlap on Apple GPUs): {}{busy}",
             top.join(", ")
         ),
     ))
