@@ -102,6 +102,20 @@ async fn moving_coverage(s: &Session) -> Result<Mask> {
         let marker = (vv.x - 2.0).abs() < 1e-3 && (vv.y - 2.0).abs() < 1e-3;
         m.bits[i] = !marker && (vv * size).length() > 0.05;
     }
+    // Upscaling: the readback is at render size; resample (nearest) to the
+    // output size the images are compared at.
+    let (ow, oh) = s.opts.size;
+    if (w, h) != (ow, oh) {
+        let mut o = Mask::new(ow, oh, false);
+        for y in 0..oh {
+            for x in 0..ow {
+                let sx = ((x as u64 * w as u64) / ow as u64) as u32;
+                let sy = ((y as u64 * h as u64) / oh as u64) as u32;
+                o.set(x, y, m.get(sx.min(w - 1), sy.min(h - 1)));
+            }
+        }
+        return Ok(o);
+    }
     Ok(m)
 }
 
@@ -657,11 +671,12 @@ async fn converged(p: &Params, scene: &str, r: &mut Report) -> Result<()> {
         .collect();
     r.emit(
         &format!("converged:{scene}"),
-        et.mean < em.mean,
+        et.mean < thr(p, em.mean),
         &format!(
-            "k{k}: {} vs ref {et}; {} (PASS iff TAA mean < MSAA mean)",
+            "k{k}: {} vs ref {et}; {} (PASS iff TAA mean < {} × MSAA mean)",
             test_aa(p).name(),
-            table.join("; ")
+            table.join("; "),
+            p.relax
         ),
     );
     if p.keep {

@@ -13,6 +13,9 @@ use crate::reference;
 thread_local! {
     /// `?scale=`: the TAA render scale of every TAA session (phase 4).
     static SCALE: std::cell::Cell<f32> = const { std::cell::Cell::new(1.0) };
+    /// RCAS sharpening of every TAA session (0 = off; only the sharpen sweep
+    /// sets it: the gates refuse sharpen ≠ 0).
+    static SHARPEN: std::cell::Cell<f32> = const { std::cell::Cell::new(0.0) };
     /// `TaaTuning` overrides (`?tune=name:value,…`, or set by a sweep) for
     /// every TAA session opened after they are set.
     static TUNE: RefCell<Vec<(String, f32)>> = const { RefCell::new(Vec::new()) };
@@ -113,11 +116,16 @@ pub fn scale() -> f32 {
     SCALE.with(|c| c.get())
 }
 
+pub fn set_sharpen(v: f32) {
+    SHARPEN.with(|c| c.set(v));
+}
+
 /// `AntiAliasing` for TAA (sharpen 0) at the `?scale=` render scale (native
 /// by default), with the current tuning overrides.
 pub fn taa_native() -> awsm_renderer::anti_alias::AntiAliasing {
     let mut cfg = TaaConfig::native();
     cfg.render_scale = scale();
+    cfg.sharpen = SHARPEN.with(|c| c.get());
     TUNE.with(|c| {
         for (k, v) in c.borrow().iter() {
             // Validated in `set_tune` (experimental knobs are applied on the

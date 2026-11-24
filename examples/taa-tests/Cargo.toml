@@ -44,6 +44,9 @@ taa-phase4 = ["taa-tuning-v2"]
 # `set_taa_experimental_tuning` (doc-hidden: clip_alpha, reactive_gamma_scale)
 # as `?tune=clip_alpha:…,reactive_gamma_scale:…` (a2be12b1).
 taa-experimental = ["taa-tuning-v2"]
+# Phase 5: `?fallback` forces the prep-velocity reconstruction path
+# (`set_taa_velocity_path_override`), 3c975597.
+taa-phase5 = ["taa-phase4"]
 
 [dependencies]
 awsm-renderer = { workspace = true }

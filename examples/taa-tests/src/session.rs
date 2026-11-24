@@ -171,6 +171,33 @@ impl Session {
             }
             #[cfg(feature = "taa-experimental")]
             renderer.set_taa_experimental_tuning(crate::hooks::experimental());
+            // Phase 5: `?fallback` forces the prep-velocity reconstruction
+            // path (the 32 B/sample fallback) on a device that has the
+            // geometry path.
+            #[cfg(feature = "taa-phase5")]
+            if crate::url_value("fallback").is_some() {
+                use awsm_renderer::anti_alias::TaaVelocityPath;
+                renderer.set_taa_velocity_path_override(Some(TaaVelocityPath::PrepReconstruction));
+                renderer
+                    .set_anti_aliasing(want.clone())
+                    .await
+                    .map_err(|e| anyhow!("set_anti_aliasing (fallback): {e}"))?;
+                renderer
+                    .commit_load(|_| {})
+                    .await
+                    .map_err(|e| anyhow!("commit_load (fallback): {e}"))?;
+                if renderer.taa_velocity_path() != TaaVelocityPath::PrepReconstruction {
+                    return Err(anyhow!(
+                        "fallback requested, velocity path is {:?}",
+                        renderer.taa_velocity_path()
+                    ));
+                }
+            }
+            // A silent fall-back from TAA to MSAA would invalidate a TAA gate.
+            #[cfg(feature = "taa-phase4")]
+            if let Some(reason) = renderer.taa_fallback_reason() {
+                return Err(anyhow!("TAA fell back to MSAA: {reason}"));
+            }
         }
 
         // Name → handles (first node of a name wins; scripts use unique names).

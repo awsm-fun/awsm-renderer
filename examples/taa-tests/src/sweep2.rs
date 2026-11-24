@@ -99,13 +99,13 @@ impl Series {
 const TRAIL_SETS: [&str; 5] = ["literal", "minus-ring", "ring", "contact", "rest"];
 
 /// Per evaluated frame: index lists of the five trail sets.
-struct TrailPlan {
+pub(crate) struct TrailPlan {
     scene: String,
     frames: Vec<(u32, Vec<Vec<u32>>)>,
     total: u32,
 }
 
-async fn plan_trail(p: &Params, scene: &str) -> Result<TrailPlan> {
+pub(crate) async fn plan_trail(p: &Params, scene: &str) -> Result<TrailPlan> {
     let (w, h) = p.size;
     let n = (w * h) as usize;
     let mut t = Session::open(opts(p, scene, Aa::Taa)).await?;
@@ -180,7 +180,7 @@ async fn cached_ref(p: &Params, scene: &str, k: u32) -> Result<Image> {
         .ok_or_else(|| anyhow!("{path} missing"))
 }
 
-async fn run_trail(p: &Params, plan: &TrailPlan) -> Result<String> {
+pub(crate) async fn run_trail(p: &Params, plan: &TrailPlan) -> Result<String> {
     let mut t = Session::open(opts(p, &plan.scene, Aa::Taa)).await?;
     let mut series = vec![Series::default(); TRAIL_SETS.len()];
     let mut fi = 0;
@@ -214,7 +214,7 @@ async fn run_trail(p: &Params, plan: &TrailPlan) -> Result<String> {
     ))
 }
 
-async fn run_orbit(p: &Params) -> Result<String> {
+pub(crate) async fn run_orbit(p: &Params) -> Result<String> {
     let scene = "taa-orbit";
     let mut t = Session::open(opts(p, scene, Aa::Taa)).await?;
     let (a, b) = t.scenario.phase_range("strafe").unwrap_or((150, 240));
@@ -259,7 +259,7 @@ async fn run_orbit(p: &Params) -> Result<String> {
     ))
 }
 
-async fn static_flicker(p: &Params, scene: &str) -> Result<(f64, u8)> {
+pub(crate) async fn static_flicker(p: &Params, scene: &str) -> Result<(f64, u8)> {
     let mut s = Session::open(opts(p, scene, Aa::Taa)).await?;
     let scripted = s
         .scenario
