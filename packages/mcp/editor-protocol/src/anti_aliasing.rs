@@ -163,6 +163,8 @@ pub struct TaaTuningPatch {
     #[serde(default)]
     pub reactive_material: Option<f32>,
     #[serde(default)]
+    pub reactive_particles: Option<f32>,
+    #[serde(default)]
     pub reactive_ssr: Option<f32>,
     #[serde(default)]
     pub mip_bias_extra: Option<f32>,
@@ -190,6 +192,7 @@ impl TaaTuningPatch {
             motion_alpha_speed: Some(t.motion_alpha_speed),
             reactive_transparent: Some(t.reactive_transparent),
             reactive_material: Some(t.reactive_material),
+            reactive_particles: Some(t.reactive_particles),
             reactive_ssr: Some(t.reactive_ssr),
             mip_bias_extra: Some(t.mip_bias_extra),
             max_history_moving: Some(t.max_history_moving),
@@ -216,6 +219,7 @@ impl TaaTuningPatch {
         set(&mut t.motion_alpha_speed, self.motion_alpha_speed);
         set(&mut t.reactive_transparent, self.reactive_transparent);
         set(&mut t.reactive_material, self.reactive_material);
+        set(&mut t.reactive_particles, self.reactive_particles);
         set(&mut t.reactive_ssr, self.reactive_ssr);
         set(&mut t.mip_bias_extra, self.mip_bias_extra);
         set(&mut t.max_history_moving, self.max_history_moving);
@@ -296,5 +300,40 @@ mod tests {
             fields,
             "one patch field per tuning field"
         );
+    }
+
+    /// `set_anti_aliasing` carries the disocclusion level by its schema
+    /// name, and leaves it unchanged when absent.
+    #[test]
+    fn set_anti_aliasing_carries_the_disocclusion_level() {
+        use crate::EditorCommand;
+        use awsm_renderer_scene::TaaDisocclusionSetting;
+        for level in TaaDisocclusionSetting::ALL {
+            let cmd: EditorCommand = serde_json::from_value(serde_json::json!({
+                "cmd": "set_anti_aliasing",
+                "taa_disocclusion": level.as_str(),
+            }))
+            .unwrap();
+            match cmd {
+                EditorCommand::SetAntiAliasing {
+                    taa_disocclusion, ..
+                } => assert_eq!(taa_disocclusion, Some(level)),
+                other => panic!("{other:?}"),
+            }
+        }
+        let cmd: EditorCommand =
+            serde_json::from_value(serde_json::json!({ "cmd": "set_anti_aliasing" })).unwrap();
+        assert!(matches!(
+            cmd,
+            EditorCommand::SetAntiAliasing {
+                taa_disocclusion: None,
+                ..
+            }
+        ));
+        assert!(serde_json::from_value::<EditorCommand>(serde_json::json!({
+            "cmd": "set_anti_aliasing",
+            "taa_disocclusion": "plane",
+        }))
+        .is_err());
     }
 }

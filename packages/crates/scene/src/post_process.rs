@@ -112,6 +112,11 @@ pub struct TaaSettings {
     pub render_scale: f32,
     /// Sharpening strength after the resolve (0 = off).
     pub sharpen: f32,
+    /// Which tests decide that a pixel's history no longer belongs to it
+    /// (`"depth"` | `"depth_and_motion"` | `"depth_motion_and_id"`). Each
+    /// level costs more than the one before; changing it rebuilds the TAA
+    /// pass and restarts history. Costs and the recommendation: docs/TAA.md.
+    pub disocclusion: TaaDisocclusionSetting,
     /// Resolve tuning. Default = the shipped tuning.
     pub tuning: TaaTuningSettings,
 }
@@ -121,8 +126,58 @@ impl Default for TaaSettings {
         Self {
             render_scale: 1.0,
             sharpen: 0.0,
+            disocclusion: TaaDisocclusionSetting::default(),
             tuning: TaaTuningSettings::default(),
         }
+    }
+}
+
+/// How the TAA resolve detects disocclusion: when a pixel's history shows a
+/// surface other than the one now at that pixel and must be dropped.
+/// Mirrors `awsm_renderer::taa::TaaDisocclusion` variant for variant (same
+/// default; a scene-loader test pins the two together). Structural: a change
+/// rebuilds the TAA pass and restarts history.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub enum TaaDisocclusionSetting {
+    /// Depth only: this frame's surface against last frame's depth (keeps
+    /// last frame's depth, 4 B per render pixel). The cheapest level; misses
+    /// the contact line under a moving object, where the two depths touch.
+    Depth,
+    /// Depth, plus last frame's motion where depth cannot tell two surfaces
+    /// apart (adds a copy of last frame's motion vectors, 4 B per render
+    /// pixel, 8 on the fallback path). Catches the contact line under an
+    /// object moving over a static surface.
+    DepthAndMotion,
+    /// Depth and motion, plus last frame's object id (adds a copy of the
+    /// visibility target, 8 B per render pixel): a different object at a
+    /// pixel last frame drops its history, also on a moving surface and
+    /// wherever two objects touch in depth. The recommended level.
+    #[default]
+    DepthMotionAndId,
+}
+
+impl TaaDisocclusionSetting {
+    /// Every level, cheapest first.
+    pub const ALL: [TaaDisocclusionSetting; 3] =
+        [Self::Depth, Self::DepthAndMotion, Self::DepthMotionAndId];
+
+    /// The schema / wire name (`"depth"`, `"depth_and_motion"`,
+    /// `"depth_motion_and_id"`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Depth => "depth",
+            Self::DepthAndMotion => "depth_and_motion",
+            Self::DepthMotionAndId => "depth_motion_and_id",
+        }
+    }
+
+    /// The level with that schema / wire name.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|d| d.as_str() == name)
     }
 }
 
@@ -153,6 +208,9 @@ pub struct TaaTuningSettings {
     pub reactive_transparent: f32,
     /// Reactive value for materials flagged `temporal: reactive`.
     pub reactive_material: f32,
+    /// Reactive value on every pixel a particle emitter covers (particles are
+    /// fully reactive by default: they move and change too fast for history).
+    pub reactive_particles: f32,
     /// Extra reactivity from SSR reflectivity.
     pub reactive_ssr: f32,
     /// Added to `log2(render_scale)` for the texture LOD bias.
@@ -184,6 +242,7 @@ impl Default for TaaTuningSettings {
             motion_alpha_speed: 8.0,
             reactive_transparent: 0.3,
             reactive_material: 0.2,
+            reactive_particles: 1.0,
             reactive_ssr: 0.0,
             mip_bias_extra: 0.0,
             max_history_moving: 2.0,
@@ -574,6 +633,7 @@ gamma_moving = 0.6
         let taa = parsed.anti_aliasing.taa.expect("taa block");
         assert_eq!(taa.render_scale, 0.67);
         assert_eq!(taa.sharpen, 0.0);
+        assert_eq!(taa.disocclusion, TaaDisocclusionSetting::default());
         assert_eq!(taa.tuning.gamma_moving, 0.6);
         assert_eq!(
             taa.tuning.gamma_still,
@@ -587,6 +647,7 @@ gamma_moving = 0.6
                 taa: Some(TaaSettings {
                     render_scale: 0.58,
                     sharpen: 0.25,
+                    disocclusion: TaaDisocclusionSetting::Depth,
                     tuning: TaaTuningSettings {
                         max_history_native: 12.0,
                         ..TaaTuningSettings::default()
@@ -598,5 +659,54 @@ gamma_moving = 0.6
         let round_tripped: PostProcessConfig =
             toml::from_str(&toml::to_string(&authored).unwrap()).unwrap();
         assert_eq!(round_tripped.anti_aliasing, authored.anti_aliasing);
+    }
+
+    /// The disocclusion level is written by its snake_case name, read back
+    /// as itself, and a file without it (written before the option existed)
+    /// takes the default.
+    #[test]
+    fn taa_disocclusion_names_and_roundtrip() {
+        for level in TaaDisocclusionSetting::ALL {
+            let authored = PostProcessConfig {
+                anti_aliasing: AntiAliasingConfig {
+                    msaa: false,
+                    smaa: false,
+                    taa: Some(TaaSettings {
+                        disocclusion: level,
+                        ..TaaSettings::default()
+                    }),
+                },
+                ..PostProcessConfig::default()
+            };
+            let written = toml::to_string(&authored).unwrap();
+            assert!(
+                written.contains(&format!("disocclusion = \"{}\"", level.as_str())),
+                "{written}"
+            );
+            let read: PostProcessConfig = toml::from_str(&written).unwrap();
+            assert_eq!(read.anti_aliasing, authored.anti_aliasing);
+            assert_eq!(
+                TaaDisocclusionSetting::from_name(level.as_str()),
+                Some(level)
+            );
+        }
+        let older: PostProcessConfig = toml::from_str(
+            r#"
+[anti_aliasing]
+msaa = false
+[anti_aliasing.taa]
+render_scale = 0.67
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            older.anti_aliasing.taa.unwrap().disocclusion,
+            TaaDisocclusionSetting::DepthMotionAndId
+        );
+        assert!(toml::from_str::<PostProcessConfig>(
+            "[anti_aliasing.taa]\ndisocclusion = \"plane\"\n"
+        )
+        .is_err());
+        assert_eq!(TaaDisocclusionSetting::from_name("plane"), None);
     }
 }

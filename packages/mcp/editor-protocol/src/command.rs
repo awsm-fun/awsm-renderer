@@ -876,12 +876,14 @@ pub enum EditorCommand {
     },
 
     /// Set the anti-aliasing: the mode, and TAA's settings. `mode`,
-    /// `taa_preset`, `taa_render_scale`, `taa_sharpen` and `taa_tuning` are
-    /// persisted on `scene.post_process.anti_aliasing` (project + player
-    /// bundle); `taa_debug_view` is transient view state. Every field is
-    /// optional (patch semantics). Changing the MODE is structural (pipelines
-    /// recompile; `wait_render_settled` after). TAA settings changed while TAA
-    /// is on are live: no recompile, no history reset. TAA settings sent while
+    /// `taa_preset`, `taa_render_scale`, `taa_sharpen`, `taa_disocclusion`
+    /// and `taa_tuning` are persisted on `scene.post_process.anti_aliasing`
+    /// (project + player bundle); `taa_debug_view` is transient view state.
+    /// Every field is optional (patch semantics). Changing the MODE is
+    /// structural (pipelines recompile; `wait_render_settled` after), and so
+    /// is changing `taa_disocclusion` while TAA is on (the TAA pass is rebuilt
+    /// and history restarts). The other TAA settings changed while TAA is on
+    /// are live: no recompile, no history reset. TAA settings sent while
     /// another mode is active are kept and apply when TAA is selected. TAA is
     /// rejected on a device without its motion-vector path; selecting it turns
     /// supersampling (`render_scale` > 1 in `SetViewOptions`) off. Inverse:
@@ -899,6 +901,10 @@ pub enum EditorCommand {
         /// Sharpening strength after the resolve (0 = off), clamped to 0..=1.
         #[serde(default)]
         taa_sharpen: Option<f32>,
+        /// How the resolve detects disocclusion (`depth` | `depth_and_motion`
+        /// | `depth_motion_and_id`). Structural while TAA is on.
+        #[serde(default)]
+        taa_disocclusion: Option<crate::TaaDisocclusionSetting>,
         #[serde(default)]
         taa_tuning: Option<crate::TaaTuningPatch>,
         /// TAA debug view (transient, never persisted or undone).

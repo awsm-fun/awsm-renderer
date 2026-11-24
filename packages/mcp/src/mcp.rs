@@ -1582,6 +1582,12 @@ pub struct AntiAliasingParams {
     /// TAA sharpening strength after the resolve, 0..=1 (0 = off).
     #[serde(default)]
     pub taa_sharpen: Option<f32>,
+    /// How the TAA resolve detects disocclusion: 'depth' (cheapest) |
+    /// 'depth_and_motion' | 'depth_motion_and_id' (default; also catches the
+    /// contact line under moving objects). STRUCTURAL while TAA is on (the
+    /// TAA pass is rebuilt and history restarts; wait_render_settled after).
+    #[serde(default)]
+    pub taa_disocclusion: Option<String>,
     /// TAA debug view (transient): 'none' | 'velocity' | 'reprojection_error' |
     /// 'history_length' | 'rejection' | 'reactive' | 'confidence' |
     /// 'freeze_jitter' | 'history_only' | 'current_only'.
@@ -1620,6 +1626,10 @@ pub struct AntiAliasingParams {
     /// Reactive value of materials flagged temporal: reactive.
     #[serde(default)]
     pub taa_reactive_material: Option<f32>,
+    /// Reactive value on every pixel a particle emitter covers (default 1.0:
+    /// particles keep no history).
+    #[serde(default)]
+    pub taa_reactive_particles: Option<f32>,
     /// Extra reactivity from SSR reflectivity.
     #[serde(default)]
     pub taa_reactive_ssr: Option<f32>,
@@ -5082,14 +5092,15 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Set the anti-aliasing. mode: 'none' | 'msaa' (4x) | 'smaa' | 'msaa_smaa' (the pre-TAA combination) | 'taa' (temporal AA: smooths geometric edges AND shading/specular aliasing; can upscale below taa_render_scale 1). The modes are EXCLUSIVE; changing the mode is STRUCTURAL (pipelines recompile — wait_render_settled after). TAA settings: taa_preset ('native' 1.0 | 'quality' 0.67 | 'balanced' 0.58 | 'performance' 0.5; sets taa_render_scale + taa_sharpen), taa_render_scale (0.5..=1.0), taa_sharpen (0..=1), and the advanced tuning knobs taa_gamma_still / taa_gamma_moving / taa_gamma_moving_speed / taa_disocclusion_threshold / taa_max_history_native / taa_max_history_upscaling / taa_motion_alpha / taa_motion_alpha_speed / taa_reactive_transparent / taa_reactive_material / taa_reactive_ssr / taa_mip_bias_extra / taa_max_history_moving / taa_max_history_moving_speed / taa_motion_edge_alpha / taa_motion_edge_speed (defaults: the renderer's shipped tuning, readable via get_post_process) — all LIVE (no recompile, no history reset); TAA settings sent while another mode is active are kept for when TAA is selected. taa_debug_view (transient, never saved): 'none' | 'velocity' | 'reprojection_error' | 'history_length' | 'rejection' | 'reactive' | 'confidence' | 'freeze_jitter' | 'history_only' | 'current_only'. Persisted on scene.post_process.anti_aliasing (project + player bundle); read back with get_post_process (anti_aliasing block) and get_view_options (anti_aliasing mode, taa_debug_view). Errors: TAA on a device without its motion-vector path. Selecting TAA turns supersampling (set_view_options render_scale) back to 1.0 — the two are exclusive. Every field optional (patch semantics)."
+        description = "Set the anti-aliasing. mode: 'none' | 'msaa' (4x) | 'smaa' | 'msaa_smaa' (the pre-TAA combination) | 'taa' (temporal AA: smooths geometric edges AND shading/specular aliasing; can upscale below taa_render_scale 1). The modes are EXCLUSIVE; changing the mode is STRUCTURAL (pipelines recompile — wait_render_settled after). TAA settings: taa_preset ('native' 1.0 | 'quality' 0.67 | 'balanced' 0.58 | 'performance' 0.5; sets taa_render_scale + taa_sharpen), taa_render_scale (0.5..=1.0), taa_sharpen (0..=1), taa_disocclusion ('depth' | 'depth_and_motion' | 'depth_motion_and_id' (default): which tests drop a pixel's history when another surface now covers it; each level costs more GPU time than the one before; STRUCTURAL while TAA is on — the TAA pass is rebuilt and history restarts, wait_render_settled after), and the advanced tuning knobs taa_gamma_still / taa_gamma_moving / taa_gamma_moving_speed / taa_disocclusion_threshold / taa_max_history_native / taa_max_history_upscaling / taa_motion_alpha / taa_motion_alpha_speed / taa_reactive_transparent / taa_reactive_material / taa_reactive_particles / taa_reactive_ssr / taa_mip_bias_extra / taa_max_history_moving / taa_max_history_moving_speed / taa_motion_edge_alpha / taa_motion_edge_speed (defaults: the renderer's shipped tuning, readable via get_post_process) — all LIVE (no recompile, no history reset); TAA settings sent while another mode is active are kept for when TAA is selected. taa_debug_view (transient, never saved): 'none' | 'velocity' | 'reprojection_error' | 'history_length' | 'rejection' | 'reactive' | 'confidence' | 'freeze_jitter' | 'history_only' | 'current_only'. Persisted on scene.post_process.anti_aliasing (project + player bundle); read back with get_post_process (anti_aliasing block) and get_view_options (anti_aliasing mode, taa_debug_view). Errors: TAA on a device without its motion-vector path. Selecting TAA turns supersampling (set_view_options render_scale) back to 1.0 — the two are exclusive. Every field optional (patch semantics)."
     )]
     async fn set_anti_aliasing(
         &self,
         Parameters(p): Parameters<AntiAliasingParams>,
     ) -> Result<CallToolResult, McpError> {
         use awsm_renderer_editor_protocol::{
-            AntiAliasingMode, TaaDebugViewName, TaaPresetName, TaaTuningPatch,
+            AntiAliasingMode, TaaDebugViewName, TaaDisocclusionSetting, TaaPresetName,
+            TaaTuningPatch,
         };
         let bad = |what: &str, v: &str, expected: &str| {
             Err(McpError::invalid_params(
@@ -5137,6 +5148,19 @@ impl EditorMcp {
                 }
             },
         };
+        let taa_disocclusion = match p.taa_disocclusion.as_deref() {
+            None => None,
+            Some(v) => match TaaDisocclusionSetting::from_name(v) {
+                Some(level) => Some(level),
+                None => {
+                    return bad(
+                        "taa_disocclusion",
+                        v,
+                        "'depth', 'depth_and_motion' or 'depth_motion_and_id'",
+                    )
+                }
+            },
+        };
         let tuning = TaaTuningPatch {
             gamma_still: p.taa_gamma_still,
             gamma_moving: p.taa_gamma_moving,
@@ -5148,6 +5172,7 @@ impl EditorMcp {
             motion_alpha_speed: p.taa_motion_alpha_speed,
             reactive_transparent: p.taa_reactive_transparent,
             reactive_material: p.taa_reactive_material,
+            reactive_particles: p.taa_reactive_particles,
             reactive_ssr: p.taa_reactive_ssr,
             mip_bias_extra: p.taa_mip_bias_extra,
             max_history_moving: p.taa_max_history_moving,
@@ -5160,6 +5185,7 @@ impl EditorMcp {
             taa_preset,
             taa_render_scale: p.taa_render_scale,
             taa_sharpen: p.taa_sharpen,
+            taa_disocclusion,
             taa_tuning: (tuning != TaaTuningPatch::default()).then_some(tuning),
             taa_debug_view,
         })

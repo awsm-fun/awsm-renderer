@@ -345,18 +345,23 @@ GPU pass timings (`profiling`): `Taa` (the resolve), `TaaRcas` and
 ### 2.11 Scenes, the loader, the editor and MCP
 
 - Scene schema: `post_process.anti_aliasing.taa` (`TaaSettings`:
-  `render_scale`, `sharpen`, `tuning` with every `TaaTuning` field; every
-  field defaults to the shipped value, so a file may carry only what it
-  changes). With `taa` present the loader ignores `msaa` / `smaa`.
+  `render_scale`, `sharpen`, `disocclusion` (`"depth"` |
+  `"depth_and_motion"` | `"depth_motion_and_id"`, the renderer's
+  `TaaDisocclusion`), `tuning` with every `TaaTuning` field; every field
+  defaults to the shipped value, so a file may carry only what it changes).
+  With `taa` present the loader ignores `msaa` / `smaa`.
 - `load_scene_for_player` applies the scene's anti-aliasing before its commit
   and replaces the renderer's mode. A scene with no AA block applies MSAA 4x,
   as in 0.45. An authored TAA that cannot be set up falls back to MSAA 4x with
   a warning.
-- Editor: the AA mode, preset, sharpening and tuning knobs are in the scene
-  settings, saved with the project and bundle; debug views are transient.
+- Editor: the AA mode, preset, sharpening, disocclusion test and tuning
+  knobs are in the scene settings, saved with the project and bundle; debug
+  views are transient. Changing the disocclusion test while TAA is on
+  rebuilds the TAA pass and restarts history, like a mode change.
 - MCP: `set_anti_aliasing` (`mode: none | msaa | smaa | msaa_smaa | taa`,
-  `taa_preset`, `taa_render_scale`, `taa_sharpen`, one flat `taa_<name>`
-  param per tuning field, `taa_debug_view`); read back with
+  `taa_preset`, `taa_render_scale`, `taa_sharpen`, `taa_disocclusion`
+  (structural while TAA is on: `wait_render_settled` after), one flat
+  `taa_<name>` param per tuning field, `taa_debug_view`); read back with
   `get_post_process` and `get_view_options`.
 
 ## 3. How it works

@@ -4019,6 +4019,7 @@ impl EditorController {
                 taa_preset,
                 taa_render_scale,
                 taa_sharpen,
+                taa_disocclusion,
                 taa_tuning,
                 taa_debug_view,
             } => {
@@ -4059,6 +4060,12 @@ impl EditorController {
                 if let Some(v) = taa_sharpen.filter(|v| v.is_finite()) {
                     knobs.sharpen = v.clamp(0.0, 1.0);
                 }
+                // Structural while TAA is on: the settings_sync observer sees a
+                // config that is not `same_structure` and takes the recompile
+                // path (TAA pass rebuilt, history restarted).
+                if let Some(level) = taa_disocclusion {
+                    knobs.disocclusion = level;
+                }
                 if let Some(patch) = taa_tuning {
                     patch.apply(&mut knobs.tuning);
                 }
@@ -4091,6 +4098,7 @@ impl EditorController {
                     taa_preset: None,
                     taa_render_scale: Some(prev_knobs.render_scale),
                     taa_sharpen: Some(prev_knobs.sharpen),
+                    taa_disocclusion: Some(prev_knobs.disocclusion),
                     taa_tuning: Some(awsm_renderer_editor_protocol::TaaTuningPatch::replace(
                         &prev_knobs.tuning,
                     )),

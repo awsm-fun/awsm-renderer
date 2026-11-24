@@ -1044,6 +1044,15 @@ pub fn taa_settings_to_renderer(
         } else {
             0.0
         },
+        // TODO(fb, review 17): `taa.disocclusion` is authored, saved and set
+        // over MCP / the editor panel, but not applied yet: the renderer's
+        // `TaaConfig::disocclusion` / `TaaDisocclusion` land with the senior's
+        // disocclusion commit. Then add here (and a pass-through test):
+        //     disocclusion: match taa.disocclusion {
+        //         Depth => TaaDisocclusion::Depth,
+        //         DepthAndMotion => TaaDisocclusion::DepthAndMotion,
+        //         DepthMotionAndId => TaaDisocclusion::DepthMotionAndId,
+        //     },
         tuning: TaaTuning {
             gamma_still: pos(t.gamma_still, d.gamma_still),
             gamma_moving: pos(t.gamma_moving, d.gamma_moving),
@@ -1054,6 +1063,9 @@ pub fn taa_settings_to_renderer(
             motion_alpha_speed: pos(t.motion_alpha_speed, d.motion_alpha_speed),
             reactive_transparent: pos(t.reactive_transparent, d.reactive_transparent),
             reactive_material: pos(t.reactive_material, d.reactive_material),
+            // TODO(fb, review 17): `t.reactive_particles` once
+            // `TaaTuning::reactive_particles` lands (senior's patch):
+            //     reactive_particles: pos(t.reactive_particles, d.reactive_particles),
             reactive_ssr: pos(t.reactive_ssr, d.reactive_ssr),
             mip_bias_extra: fin(t.mip_bias_extra, d.mip_bias_extra),
             gamma_moving_speed: pos(t.gamma_moving_speed, d.gamma_moving_speed),
@@ -5255,13 +5267,24 @@ mod anti_aliasing_tests {
             .collect()
     }
 
+    /// TODO(fb, review 17): delete with its two call sites once the renderer's
+    /// `TaaTuning::reactive_particles` lands. Until then the schema field
+    /// exists (authored, saved, set over MCP and the editor) but the renderer
+    /// has nothing to compare it with.
+    fn not_in_renderer_yet(
+        mut fields: std::collections::BTreeMap<String, String>,
+    ) -> std::collections::BTreeMap<String, String> {
+        fields.remove("reactive_particles");
+        fields
+    }
+
     /// The schema's tuning defaults are the renderer's, field by field (the
     /// values may change while tuning; each layer has ONE default site).
     #[test]
     fn schema_taa_tuning_defaults_equal_the_renderer_field_by_field() {
         use awsm_renderer_scene::TaaTuningSettings;
         assert_eq!(
-            debug_fields(&format!("{:?}", TaaTuningSettings::default())),
+            not_in_renderer_yet(debug_fields(&format!("{:?}", TaaTuningSettings::default()))),
             debug_fields(&format!("{:?}", awsm_renderer::taa::TaaTuning::default())),
         );
     }
@@ -5282,7 +5305,7 @@ mod anti_aliasing_tests {
             ..TaaSettings::default()
         });
         assert_eq!(
-            debug_fields(&format!("{authored:?}")),
+            not_in_renderer_yet(debug_fields(&format!("{authored:?}"))),
             debug_fields(&format!("{:?}", cfg.tuning)),
         );
         assert_ne!(cfg.tuning, awsm_renderer::taa::TaaTuning::default());

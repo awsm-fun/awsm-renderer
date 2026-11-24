@@ -1482,13 +1482,14 @@ fn post_processing_section() -> Dom {
         .render()
 }
 
-/// The anti-aliasing mode, TAA's preset / sharpening / tuning and its debug
-/// views. Every change dispatches `SetAntiAliasing` (persisted on
-/// `scene.post_process.anti_aliasing`, except the debug view). A mode change
-/// recompiles; TAA settings are live (no recompile, no history reset).
+/// The anti-aliasing mode, TAA's preset / sharpening / disocclusion level /
+/// tuning and its debug views. Every change dispatches `SetAntiAliasing`
+/// (persisted on `scene.post_process.anti_aliasing`, except the debug view).
+/// A mode change recompiles, and so does a disocclusion change while TAA is
+/// on; the other TAA settings are live (no recompile, no history reset).
 fn anti_aliasing_section() -> Dom {
     use awsm_renderer_editor_protocol::{
-        AntiAliasingMode, TaaDebugViewName, TaaPresetName, TaaTuningPatch,
+        AntiAliasingMode, TaaDebugViewName, TaaDisocclusionSetting, TaaPresetName, TaaTuningPatch,
     };
     let pp = controller().scene.post_process.get_cloned();
     let knobs = controller().settings.taa_knobs.get();
@@ -1541,6 +1542,7 @@ fn anti_aliasing_section() -> Dom {
                             taa_preset: None,
                             taa_render_scale: None,
                             taa_sharpen: None,
+                            taa_disocclusion: None,
                             taa_tuning: None,
                             taa_debug_view: None,
                         })
@@ -1592,7 +1594,7 @@ fn anti_aliasing_section() -> Dom {
                     _ => None,
                 };
                 if fire && p.is_some() {
-                    dispatch_aa(None, p, None, None, None, None);
+                    dispatch_aa(None, p, None, None, None, None, None);
                 }
             }
         }).await;
@@ -1616,7 +1618,25 @@ fn anti_aliasing_section() -> Dom {
                     if let Some(view) =
                         TaaDebugViewName::ALL.into_iter().find(|n| n.as_str() == v)
                     {
-                        dispatch_aa(None, None, None, None, None, Some(view));
+                        dispatch_aa(None, None, None, None, None, None, Some(view));
+                    }
+                }
+            }
+        }).await;
+    }));
+
+    // Disocclusion level: structural (the TAA pass is rebuilt and history
+    // restarts), so like the mode it rides a Mutable and dispatches on change.
+    let disocclusion = Mutable::new(knobs.disocclusion.as_str().to_string());
+    spawn_local(clone!(disocclusion => async move {
+        let mut first = true;
+        disocclusion.signal_cloned().for_each(move |v| {
+            let fire = !first;
+            first = false;
+            async move {
+                if fire {
+                    if let Some(level) = TaaDisocclusionSetting::from_name(&v) {
+                        dispatch_aa(None, None, None, None, Some(level), None, None);
                     }
                 }
             }
@@ -1630,7 +1650,7 @@ fn anti_aliasing_section() -> Dom {
             NumField::new(value as f64)
                 .step(step)
                 .on_change(move |v| {
-                    dispatch_aa(None, None, None, None, Some(patch(v as f32)), None)
+                    dispatch_aa(None, None, None, None, None, Some(patch(v as f32)), None)
                 })
                 .render(),
         )
@@ -1655,11 +1675,20 @@ fn anti_aliasing_section() -> Dom {
                      smaller and TAA reconstructs the full resolution (temporal upscaling).",
                 ),
                 (
+                    "TAA disocclusion test",
+                    "Which tests drop a pixel's history when another surface now covers it: \
+                     Depth (cheapest), Depth + motion (also when the surface's motion changed), \
+                     Depth + motion + object (also when the object changed, e.g. along the \
+                     contact line under a moving object; the default). Each level costs more \
+                     GPU time and memory than the one before; changing it rebuilds the TAA \
+                     pass and restarts history. Costs and the recommendation: docs/TAA.md.",
+                ),
+                (
                     "TAA tuning",
                     "Advanced resolve knobs (all live: no recompile, no history reset). \
                      Clip γ still / moving: variance-clip box width in standard deviations \
-                     (tighter = less ghosting, more flicker). Disocclusion: relative depth \
-                     slack before revealed background drops its history. Max history: frames \
+                     (tighter = less ghosting, more flicker). Depth slack: relative depth \
+                     difference before revealed background drops its history. Max history: frames \
                      accumulated at native / when upscaling. Motion alpha: minimum current \
                      weight at the given speed (px/frame).",
                 ),
@@ -1703,8 +1732,22 @@ fn anti_aliasing_section() -> Dom {
                 .min(0.0)
                 .max(1.0)
                 .step(0.05)
-                .on_change(|v| dispatch_aa(None, None, None, Some(v as f32), None, None))
+                .on_change(|v| dispatch_aa(None, None, None, Some(v as f32), None, None, None))
                 .render(),
+        ))
+        .child(row(
+            "TAA disocclusion test",
+            select(
+                disocclusion,
+                vec![
+                    ("depth".to_string(), "Depth".to_string()),
+                    ("depth_and_motion".to_string(), "Depth + motion".to_string()),
+                    (
+                        "depth_motion_and_id".to_string(),
+                        "Depth + motion + object".to_string(),
+                    ),
+                ],
+            ),
         ))
         .child(row(
             "TAA debug view",
@@ -1739,7 +1782,7 @@ fn anti_aliasing_section() -> Dom {
             },
         ))
         .child(knob(
-            "TAA disocclusion",
+            "TAA depth slack",
             t.disocclusion_threshold,
             0.01,
             |v| TaaTuningPatch {
@@ -1792,6 +1835,15 @@ fn anti_aliasing_section() -> Dom {
             0.05,
             |v| TaaTuningPatch {
                 reactive_material: Some(v),
+                ..Default::default()
+            },
+        ))
+        .child(knob(
+            "TAA reactive (particles)",
+            t.reactive_particles,
+            0.05,
+            |v| TaaTuningPatch {
+                reactive_particles: Some(v),
                 ..Default::default()
             },
         ))
@@ -1853,6 +1905,7 @@ fn dispatch_aa(
     taa_preset: Option<awsm_renderer_editor_protocol::TaaPresetName>,
     taa_render_scale: Option<f32>,
     taa_sharpen: Option<f32>,
+    taa_disocclusion: Option<awsm_renderer_editor_protocol::TaaDisocclusionSetting>,
     taa_tuning: Option<awsm_renderer_editor_protocol::TaaTuningPatch>,
     taa_debug_view: Option<awsm_renderer_editor_protocol::TaaDebugViewName>,
 ) {
@@ -1863,6 +1916,7 @@ fn dispatch_aa(
                 taa_preset,
                 taa_render_scale,
                 taa_sharpen,
+                taa_disocclusion,
                 taa_tuning,
                 taa_debug_view,
             })
