@@ -42,12 +42,14 @@ impl TaaPipelines {
         ctx: &mut RenderPassInitContext<'_>,
         bind_groups: &TaaBindGroups,
         reactive: bool,
+        disocclusion: crate::taa::TaaDisocclusion,
     ) -> Result<Self> {
         let key = Self::shader_cache_key(
             ctx.features.reverse_z,
             reactive,
             ctx.post_processing.tonemapping,
             false,
+            disocclusion,
         );
         let debug_shader = ShaderCacheKeyTaa {
             debug_views: true,
@@ -177,12 +179,14 @@ impl TaaPipelines {
         reactive: bool,
         tonemapping: crate::post_process::ToneMapping,
         debug_views: bool,
+        disocclusion: crate::taa::TaaDisocclusion,
     ) -> ShaderCacheKeyTaa {
         ShaderCacheKeyTaa {
             reverse_z,
             reactive,
             tonemapping,
             debug_views,
+            disocclusion,
         }
     }
 }

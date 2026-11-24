@@ -91,12 +91,26 @@ struct TaaParams {
 @group(0) @binding(8) var history_curr_tex: texture_storage_2d<rgba16float, write>;
 // Linear HDR at post size.
 @group(0) @binding(9) var out_tex: texture_storage_2d<rgba16float, write>;
+{% if motion_test %}
 // Last frame's motion vectors, at LAST frame's render size (a copy, like the
 // previous depth): what moved where this surface's history comes from.
-@group(0) @binding(10) var prev_velocity_tex: texture_2d<f32>;
+// `TaaDisocclusion::DepthAndMotion` and above.
+@group(0) @binding({{ binding_prev_velocity }}) var prev_velocity_tex: texture_2d<f32>;
+{% endif %}
 {% if reactive %}
 // Reactive mask, render size: 0 = trust history, 1 = ignore it (G8).
-@group(0) @binding(11) var reactive_tex: texture_2d<f32>;
+@group(0) @binding({{ binding_reactive }}) var reactive_tex: texture_2d<f32>;
+{% endif %}
+{% if id_test %}
+// The visibility target (rgba16uint; BA = the per-pixel mesh id), this
+// frame's and last frame's (a copy, at LAST frame's render size).
+// `TaaDisocclusion::DepthMotionAndId`.
+@group(0) @binding({{ binding_visibility }}) var visibility_tex: texture_2d<u32>;
+@group(0) @binding({{ binding_prev_visibility }}) var prev_visibility_tex: texture_2d<u32>;
+
+fn mesh_id(v: vec4<u32>) -> u32 {
+    return v.z | (v.w << 16u);
+}
 {% endif %}
 
 {% if reactive %}
@@ -418,6 +432,9 @@ var<workgroup> tile: array<vec4<f32>, 100>;
 {% if reactive %}
 var<workgroup> tile_reactive: array<f32, 100>;
 {% endif %}
+{% if id_test %}
+var<workgroup> tile_id: array<u32, 100>;
+{% endif %}
 
 fn tile_index(p: vec2<i32>, origin: vec2<i32>) -> u32 {
     let t = p - origin;
@@ -431,6 +448,9 @@ fn load_tile_texel(i: u32, origin: vec2<i32>, p_max: vec2<i32>) {
     tile[i] = vec4<f32>(rgb_to_ycocg(c), textureLoad(depth_tex, p, 0));
     {% if reactive %}
     tile_reactive[i] = textureLoad(reactive_tex, p, 0).r;
+    {% endif %}
+    {% if id_test %}
+    tile_id[i] = mesh_id(textureLoad(visibility_tex, p, 0));
     {% endif %}
 }
 
@@ -512,6 +532,16 @@ fn cs_main(
     // Samples that count: all 9, minus opaque-path HUD pixels in the
     // reactive variant (the HUD is not part of the world's neighbourhood).
     var kept = 0.0;
+    {% if id_test %}
+    // The same reconstruction restricted to the centre's own object (its
+    // mesh id): the NEW history of a pixel whose history is thrown away
+    // (disoccluded) starts from it, so the object that just left the pixel
+    // does not live on in the history through the kernel (the displayed
+    // colour keeps the full reconstruction, like the reference).
+    let centre_id = tile_id[u32(base.y * TILE + base.x)];
+    var own_y = vec3<f32>(0.0);
+    var own_weight = 0.0;
+    {% endif %}
     {% for dy in 0..3 %}
     {% for dx in 0..3 %}
     {
@@ -535,6 +565,12 @@ fn cs_main(
         let w = w{{ dx }}.x * w{{ dy }}.y * keep;
         current_y += y * w;
         weight_sum += w;
+        {% if id_test %}
+        if (tile_id[ti] == centre_id) {
+            own_y += y * w;
+            own_weight += w;
+        }
+        {% endif %}
         confidence = max(confidence, w);
         m1 += y * keep;
         m2 += y * y * keep;
@@ -644,6 +680,7 @@ fn cs_main(
     var diag_depth2 = false;
     var diag_mixed = false;
     var diag_covered = false;
+    var diag_id = false;
     {% endif %}
 
     // Test 2: the pixel's OWN surface, with its own depth and its own vector.
@@ -712,6 +749,7 @@ fn cs_main(
             {% if debug_views %}
             diag_depth2 = hidden;
             {% endif %}
+            {% if motion_test %}
             if (!hidden && is_static) {
                 // Motion, where depth cannot tell two surfaces apart: the
                 // bottom of an object resting on this surface touches it in
@@ -746,7 +784,46 @@ fn cs_main(
                 diag_covered = covered;
                 {% endif %}
             }
+            {% endif %}
         }
+        {% if id_test %}
+        if (!hidden) {
+            // Object id: which object was at THIS point last frame? Depth
+            // cannot tell two objects apart where they touch (the contact
+            // line under a moving object, on a static OR a moving surface);
+            // the mesh id can. The texel whose sample sat nearest the point
+            // (not the 2x2 around it: an edge lying on a texel boundary would
+            // always find this object in the other row). It fires only when
+            // a different object was there AND it moved unlike this surface
+            // did last frame: a static edge or a thin wire that the jitter
+            // moves across the point has no relative motion and keeps its
+            // history (the motion test's rule). Sky texels and texels
+            // without a vector take no part. One mesh occluding itself is
+            // left to the depth tests.
+            let own_id = tile_id[u32(base.y * TILE + base.x)];
+            let vdims = vec2<i32>(textureDimensions(prev_visibility_tex));
+            let c = clamp(
+                vec2<i32>(floor(uv_hist_own * vec2<f32>(vdims) + camera_raw.jitter.zw)),
+                vec2<i32>(0),
+                vdims - 1,
+            );
+            if (!is_sky(textureLoad(prev_depth_tex, c, 0))
+                && mesh_id(textureLoad(prev_visibility_tex, c, 0)) != own_id) {
+                // This surface's own motion last frame: exact for a static
+                // surface (as COVERED), else its motion now.
+                var v_own_prev = v_own;
+                if (is_static) {
+                    v_own_prev = static_prev_motion(uv_q, z_own);
+                }
+                let id_slack = max(CONTACT_MOTION_PX, CONTACT_MOTION_REL * length(v_own * O));
+                let pv = textureLoad(prev_velocity_tex, c, 0).xy;
+                hidden = !is_marker(pv) && length((pv - v_own_prev) * O) > id_slack;
+            }
+            {% if debug_views %}
+            diag_id = hidden;
+            {% endif %}
+        }
+        {% endif %}
         if (hidden) {
             disoccluded = true;
             {% if debug_views %}
@@ -867,7 +944,18 @@ fn cs_main(
     result = min(result, vec3<f32>(WORK_MAX));
     // Back to linear HDR (out_tex) and to the stored space (the history).
     let result_linear = sanitize(from_work(result));
+    {% if id_test %}
+    var store_linear = result_linear;
+    if (disoccluded && own_weight > 0.0{% if reactive %} && !is_hud{% endif %}) {
+        store_linear = sanitize(from_work(min(
+            max(ycocg_to_rgb(own_y / own_weight), vec3<f32>(0.0)),
+            vec3<f32>(WORK_MAX),
+        )));
+    }
+    let stored = min(tonemap(store_linear), vec3<f32>(TONEMAPPED_MAX));
+    {% else %}
     let stored = min(tonemap(result_linear), vec3<f32>(TONEMAPPED_MAX));
+    {% endif %}
 
     // ---- 4.9 Outputs -----------------------------------------------------
     // Both stores go through `taa_round_f16`: a truncating store would darken
@@ -940,6 +1028,9 @@ fn cs_main(
                 select(0.0, 1.0, diag_mixed),
                 select(0.0, 1.0, diag_covered),
             );
+        } else if (view == 17u) {
+            // Diagnostics: R = the object-id test fired (id variant only).
+            out_color = vec3<f32>(select(0.0, 1.0, diag_id), 0.0, 0.0);
         } else if (view == 15u) {
             // Diagnostics: R = final alpha >= 0.99, G = motion-edge term >= 0.99,
             // B = clip term >= 0.99.

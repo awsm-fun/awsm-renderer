@@ -29,6 +29,50 @@ pub struct TaaConfig {
     pub sharpen: f32,
     /// Tuning knobs. `Default` is the shipped tuning.
     pub tuning: TaaTuning,
+    /// How the resolve tells that a pixel's history shows something else
+    /// (structural: a resolve variant and, for the id test, a texture). See
+    /// [`TaaDisocclusion`] and `docs/TAA.md` §3.5 for what each level fixes
+    /// and costs.
+    pub disocclusion: TaaDisocclusion,
+}
+
+/// The disocclusion tests the resolve compiles (`docs/TAA.md` §3.5, step 5;
+/// cost and recommendation per level in §2.4 and §7.6). Each level adds to
+/// the one before; a level that is not selected allocates, copies and binds
+/// nothing of its own.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum TaaDisocclusion {
+    /// Depth only (round 1): this frame's surface against last frame's
+    /// depth, and the pixel's own surface by depth. Misses the contact line
+    /// under a moving object (the two depths touch there). Keeps last
+    /// frame's depth (4 B/px at render size).
+    Depth,
+    /// Depth, plus last frame's motion where depth cannot tell two surfaces
+    /// apart (round 2): adds a copy of last frame's motion vectors (4 B/px,
+    /// 8 on the fallback path). Catches the contact line under an object
+    /// moving over a STATIC surface.
+    DepthAndMotion,
+    /// Depth and motion, plus last frame's object id: the visibility
+    /// target's per-pixel mesh id is kept for one frame (8 B/px at render
+    /// size), so "a different object was here last frame" is decided
+    /// exactly, also on a moving surface and wherever two objects touch in
+    /// depth; and a revealed or motion-boundary pixel is reconstructed from
+    /// its own object's samples only, so the other object's colour never
+    /// enters its history. The recommended level.
+    #[default]
+    DepthMotionAndId,
+}
+
+impl TaaDisocclusion {
+    /// Keeps and reads last frame's motion vectors.
+    pub fn motion(self) -> bool {
+        !matches!(self, Self::Depth)
+    }
+
+    /// Keeps and reads last frame's object ids.
+    pub fn id(self) -> bool {
+        matches!(self, Self::DepthMotionAndId)
+    }
 }
 
 // The config is compared to detect changes and never holds NaN in practice
@@ -50,6 +94,7 @@ impl TaaConfig {
             render_scale: 1.0,
             sharpen: 0.0,
             tuning: TaaTuning::default(),
+            disocclusion: TaaDisocclusion::default(),
         }
     }
 
@@ -59,6 +104,7 @@ impl TaaConfig {
             render_scale: preset.render_scale(),
             sharpen: preset.sharpen(),
             tuning: TaaTuning::default(),
+            disocclusion: TaaDisocclusion::default(),
         }
     }
 

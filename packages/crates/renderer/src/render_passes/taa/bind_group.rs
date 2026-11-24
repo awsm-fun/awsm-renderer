@@ -10,8 +10,10 @@
 //! - 7 linear clamp-to-edge sampler for that fetch
 //! - 8 this frame's history (storage write)
 //! - 9 `out`, linear HDR at post size (storage write)
-//! - 10 previous velocity, last frame's render size (textureLoad)
-//! - 11 reactive mask, render size: only in the `reactive` variant (phase 3)
+//! - then, numbered in this order and present only when used
+//!   ([`TaaBindings`]): previous velocity (`TaaDisocclusion` motion test),
+//!   the reactive mask (`reactive` variant, phase 3), this frame's
+//!   visibility and last frame's (the object-id test).
 //!
 //! Two groups, one per history parity: group `i` writes `history[i]` and
 //! reads `history[1 - i]`; the pass picks by its own history index, which
@@ -37,10 +39,41 @@ use crate::error::Result;
 use crate::render_passes::taa::texture::{TaaTextures, TAA_COLOR_FORMAT};
 use crate::render_passes::RenderPassInitContext;
 
+/// The binding numbers of the optional resources (positional, after the ten
+/// fixed ones): a resource the variant does not use has no binding at all.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TaaBindings {
+    pub prev_velocity: Option<u32>,
+    pub reactive: Option<u32>,
+    pub visibility: Option<u32>,
+    pub prev_visibility: Option<u32>,
+}
+
+impl TaaBindings {
+    pub fn new(reactive: bool, disocclusion: crate::taa::TaaDisocclusion) -> Self {
+        let mut next = 10u32;
+        let mut take = |on: bool| {
+            on.then(|| {
+                next += 1;
+                next - 1
+            })
+        };
+        let prev_velocity = take(disocclusion.motion());
+        let reactive = take(reactive);
+        let visibility = take(disocclusion.id());
+        let prev_visibility = take(disocclusion.id());
+        Self {
+            prev_velocity,
+            reactive,
+            visibility,
+            prev_visibility,
+        }
+    }
+}
+
 pub struct TaaBindGroups {
     pub layout_key: BindGroupLayoutKey,
-    /// Whether the layout carries the reactive mask (binding 11).
-    reactive: bool,
+    bindings: TaaBindings,
     /// Linear, clamp-to-edge: the Catmull-Rom history fetch is five bilinear
     /// taps, and its outer taps may land just past the edge.
     sampler: web_sys::GpuSampler,
@@ -49,10 +82,15 @@ pub struct TaaBindGroups {
 }
 
 impl TaaBindGroups {
-    pub fn new(ctx: &mut RenderPassInitContext<'_>, reactive: bool) -> Result<Self> {
+    pub fn new(
+        ctx: &mut RenderPassInitContext<'_>,
+        reactive: bool,
+        disocclusion: crate::taa::TaaDisocclusion,
+    ) -> Result<Self> {
+        let bindings = TaaBindings::new(reactive, disocclusion);
         let layout_key = ctx
             .bind_group_layouts
-            .get_key(ctx.gpu, layout_cache_key(reactive))?;
+            .get_key(ctx.gpu, layout_cache_key(bindings))?;
         let sampler = ctx.gpu.create_sampler(Some(
             &SamplerDescriptor {
                 label: Some("TAA History Sampler"),
@@ -67,7 +105,7 @@ impl TaaBindGroups {
         ));
         Ok(Self {
             layout_key,
-            reactive,
+            bindings,
             sampler,
             groups: [None, None],
         })
@@ -94,7 +132,7 @@ impl TaaBindGroups {
     ) -> Result<()> {
         let views = ctx.render_texture_views;
         // Allocated with the velocity target whenever TAA is on.
-        let reactive = if self.reactive {
+        let reactive = if self.bindings.reactive.is_some() {
             Some(
                 views
                     .reactive
@@ -149,14 +187,35 @@ impl TaaBindGroups {
                     BindGroupResource::TextureView(Cow::Borrowed(&textures.out_view)),
                 ),
             ];
-            entries.push(BindGroupEntry::new(
-                10,
-                BindGroupResource::TextureView(Cow::Borrowed(textures.prev_velocity_view())),
-            ));
-            if let Some(reactive) = reactive {
+            let missing = |what: &str| AwsmBindGroupError::NotFound(format!("TAA {what}"));
+            if let Some(b) = self.bindings.prev_velocity {
+                let view = textures
+                    .prev_velocity_view()
+                    .ok_or_else(|| missing("previous velocity"))?;
                 entries.push(BindGroupEntry::new(
-                    11,
+                    b,
+                    BindGroupResource::TextureView(Cow::Borrowed(view)),
+                ));
+            }
+            if let (Some(b), Some(reactive)) = (self.bindings.reactive, reactive) {
+                entries.push(BindGroupEntry::new(
+                    b,
                     BindGroupResource::TextureView(Cow::Borrowed(reactive)),
+                ));
+            }
+            if let Some(b) = self.bindings.visibility {
+                entries.push(BindGroupEntry::new(
+                    b,
+                    BindGroupResource::TextureView(Cow::Borrowed(&views.visibility_data)),
+                ));
+            }
+            if let Some(b) = self.bindings.prev_visibility {
+                let view = textures
+                    .prev_visibility_view()
+                    .ok_or_else(|| missing("previous visibility"))?;
+                entries.push(BindGroupEntry::new(
+                    b,
+                    BindGroupResource::TextureView(Cow::Borrowed(view)),
                 ));
             }
             let descriptor = BindGroupDescriptor::new(layout, Some("TAA Resolve"), entries);
@@ -166,7 +225,7 @@ impl TaaBindGroups {
     }
 }
 
-fn layout_cache_key(reactive: bool) -> BindGroupLayoutCacheKey {
+fn layout_cache_key(bindings: TaaBindings) -> BindGroupLayoutCacheKey {
     let compute_only = |resource: BindGroupLayoutResource| BindGroupLayoutCacheKeyEntry {
         resource,
         visibility_vertex: false,
@@ -226,12 +285,27 @@ fn layout_cache_key(reactive: bool) -> BindGroupLayoutCacheKey {
         // 8 this frame's history, 9 out
         storage_write(),
         storage_write(),
-        // 10 previous velocity
-        load_only(),
     ];
-    if reactive {
-        // 11 reactive mask
+    let uint = || {
+        compute_only(BindGroupLayoutResource::Texture(
+            TextureBindingLayout::new()
+                .with_view_dimension(TextureViewDimension::N2d)
+                .with_sample_type(TextureSampleType::Uint)
+                .with_multisampled(false),
+        ))
+    };
+    // The optional ones, in `TaaBindings` order (positional).
+    if bindings.prev_velocity.is_some() {
         entries.push(load_only());
+    }
+    if bindings.reactive.is_some() {
+        entries.push(load_only());
+    }
+    if bindings.visibility.is_some() {
+        entries.push(uint());
+    }
+    if bindings.prev_visibility.is_some() {
+        entries.push(uint());
     }
     BindGroupLayoutCacheKey { entries }
 }

@@ -21,17 +21,39 @@ pub struct ShaderTemplateTaa {
     pub tonemapping: ToneMapping,
     /// See [`ShaderCacheKeyTaa::debug_views`].
     pub debug_views: bool,
+    /// The motion test and the previous-velocity binding
+    /// ([`ShaderCacheKeyTaa::disocclusion`]).
+    pub motion_test: bool,
+    /// The object-id test, its visibility bindings and same-surface
+    /// reconstruction ([`ShaderCacheKeyTaa::disocclusion`]).
+    pub id_test: bool,
+    /// Binding numbers of the optional resources (`TaaBindings`; 0 when the
+    /// resource is not bound).
+    pub binding_prev_velocity: u32,
+    pub binding_reactive: u32,
+    pub binding_visibility: u32,
+    pub binding_prev_visibility: u32,
 }
 
 impl TryFrom<&ShaderCacheKeyTaa> for ShaderTemplateTaa {
     type Error = AwsmShaderError;
 
     fn try_from(value: &ShaderCacheKeyTaa) -> Result<Self> {
+        let b = crate::render_passes::taa::bind_group::TaaBindings::new(
+            value.reactive,
+            value.disocclusion,
+        );
         Ok(Self {
+            binding_prev_velocity: b.prev_velocity.unwrap_or(0),
+            binding_reactive: b.reactive.unwrap_or(0),
+            binding_visibility: b.visibility.unwrap_or(0),
+            binding_prev_visibility: b.prev_visibility.unwrap_or(0),
             reverse_z: value.reverse_z,
             reactive: value.reactive,
             tonemapping: value.tonemapping,
             debug_views: value.debug_views,
+            motion_test: value.disocclusion.motion(),
+            id_test: value.disocclusion.id(),
         })
     }
 }

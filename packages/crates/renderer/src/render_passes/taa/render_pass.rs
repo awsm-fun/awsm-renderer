@@ -25,7 +25,11 @@ use crate::{
     error::Result,
     render::RenderContext,
     render_passes::{
-        taa::{bind_group::TaaBindGroups, pipeline::TaaPipelines, texture::TaaTextures},
+        taa::{
+            bind_group::TaaBindGroups,
+            pipeline::TaaPipelines,
+            texture::{PrevKey, TaaTextures},
+        },
         RenderPassInitContext,
     },
     render_textures::RenderTextureViews,
@@ -338,14 +342,24 @@ pub struct TaaRenderPass {
     /// prepared (newest first): the frame before last's is the resolve's
     /// `prev_prev_view_projection`.
     view_projections: Cell<[Option<glam::Mat4>; 2]>,
+    /// The disocclusion level this pass was built for (its resolve variant,
+    /// bindings and previous-frame targets). A different level rebuilds the
+    /// pass (`AwsmRenderer::sync_taa_pass`).
+    pub disocclusion: crate::taa::TaaDisocclusion,
 }
 
 impl TaaRenderPass {
     /// `reactive`: bind the reactive mask (plan phase 3; see
     /// [`REACTIVE_MASK`]).
     pub async fn new(ctx: &mut RenderPassInitContext<'_>, reactive: bool) -> Result<Self> {
-        let bind_groups = TaaBindGroups::new(ctx, reactive)?;
-        let pipelines = TaaPipelines::new(ctx, &bind_groups, reactive).await?;
+        let disocclusion = ctx
+            .anti_aliasing
+            .taa
+            .as_ref()
+            .map(|taa| taa.disocclusion)
+            .unwrap_or_default();
+        let bind_groups = TaaBindGroups::new(ctx, reactive, disocclusion)?;
+        let pipelines = TaaPipelines::new(ctx, &bind_groups, reactive, disocclusion).await?;
         let params = TaaParams::new(ctx.gpu)?;
         let reactive_seed = if reactive {
             Some(super::reactive_seed::TaaReactiveSeed::new(ctx).await?)
@@ -358,12 +372,16 @@ impl TaaRenderPass {
         let textures = TaaTextures::new(
             ctx.gpu,
             (1, 1),
-            (1, 1),
             ctx.render_texture_formats.depth,
-            velocity_format(
-                ctx.render_texture_formats
-                    .taa_prep_velocity(ctx.anti_aliasing),
-            ),
+            PrevKey {
+                size: (1, 1),
+                velocity_format: velocity_format(
+                    ctx.render_texture_formats
+                        .taa_prep_velocity(ctx.anti_aliasing),
+                ),
+                motion: disocclusion.motion(),
+                id: disocclusion.id(),
+            },
         )?;
         Ok(Self {
             bind_groups,
@@ -375,6 +393,7 @@ impl TaaRenderPass {
             repeat: 1,
             bookkeeping: ResolveBookkeeping::new(),
             view_projections: Cell::new([None, None]),
+            disocclusion,
         })
     }
 
@@ -460,7 +479,7 @@ impl TaaRenderPass {
         // TAA writes the scene depth, so this is the depth that matches the
         // colour just accumulated. A copy is not a compute command: after
         // `end()`.
-        let (target, velocity_target, target_size, into_next) = self.textures.prev_copy_targets();
+        let targets = self.textures.prev_copy_targets();
         let render_size = ctx.render_texture_views.render_size;
         let mut copied_into_next = false;
         if let Some(inner) = ctx.render_textures.inner() {
@@ -469,22 +488,33 @@ impl TaaRenderPass {
             // frame, so skip the copy instead (the next frame's disocclusion
             // test then compares against an older depth, which is safe:
             // clipping still bounds the history).
-            if target_size == render_size {
+            if targets.size == render_size {
+                let extent = Extent3d::new(render_size.0, Some(render_size.1), Some(1));
                 ctx.command_encoder.copy_texture_to_texture(
                     &TexelCopyTextureInfo::new(&inner.depth).into(),
-                    &TexelCopyTextureInfo::new(target).into(),
-                    &Extent3d::new(render_size.0, Some(render_size.1), Some(1)).into(),
+                    &TexelCopyTextureInfo::new(targets.depth).into(),
+                    &extent.clone().into(),
                 )?;
-                // And this frame's vectors, for the next resolve's
-                // own-surface test (`prev_velocity_tex`).
-                if let Some(velocity) = inner.velocity.as_ref() {
+                // And this frame's vectors, for the next resolve's motion
+                // test (`prev_velocity_tex`), at the levels that keep them.
+                if let (Some(velocity), Some(target)) = (inner.velocity.as_ref(), targets.velocity)
+                {
                     ctx.command_encoder.copy_texture_to_texture(
                         &TexelCopyTextureInfo::new(velocity).into(),
-                        &TexelCopyTextureInfo::new(velocity_target).into(),
-                        &Extent3d::new(render_size.0, Some(render_size.1), Some(1)).into(),
+                        &TexelCopyTextureInfo::new(target).into(),
+                        &extent.clone().into(),
                     )?;
                 }
-                copied_into_next = into_next;
+                // And this frame's visibility (its mesh ids), for the next
+                // resolve's object-id test, at `DepthMotionAndId`.
+                if let Some(target) = targets.visibility {
+                    ctx.command_encoder.copy_texture_to_texture(
+                        &TexelCopyTextureInfo::new(&inner.visibility_data).into(),
+                        &TexelCopyTextureInfo::new(target).into(),
+                        &extent.into(),
+                    )?;
+                }
+                copied_into_next = targets.into_next;
             }
         }
         self.bookkeeping.resolve_recorded(copied_into_next);
@@ -518,6 +548,23 @@ impl AwsmRenderer {
     /// resets the temporal history (03 §8: an AA-mode change); a change of
     /// TAA tuning or render scale while TAA stays on keeps it.
     pub(crate) async fn sync_taa_pass(&mut self) -> Result<()> {
+        // A different disocclusion level is a different pass (its resolve
+        // variant, bindings and previous-frame targets): drop it and build
+        // the new one below. The history restarts.
+        let wanted = self.anti_aliasing.taa.as_ref().map(|t| t.disocclusion);
+        if let (Some(wanted), Some(pass)) = (wanted, self.render_passes.taa.as_ref()) {
+            if pass.disocclusion != wanted {
+                if let Some(pass) = self.render_passes.taa.take() {
+                    self.pipelines
+                        .compute
+                        .release_reserved(pass.pipelines.keys());
+                    if let Some(seed) = pass.reactive_seed.as_ref() {
+                        self.pipelines.render.release_reserved(seed.pipelines());
+                    }
+                    pass.destroy();
+                }
+            }
+        }
         match (
             self.anti_aliasing.taa.is_some(),
             self.render_passes.taa.is_some(),
@@ -595,7 +642,13 @@ impl AwsmRenderer {
                     crate::render_passes::material_opaque::edge_buffers::DEFAULT_MAX_EDGE_BUDGET_DESKTOP,
                 ),
         };
-        let pipelines = TaaPipelines::new(&mut ctx, &pass.bind_groups, REACTIVE_MASK).await?;
+        let pipelines = TaaPipelines::new(
+            &mut ctx,
+            &pass.bind_groups,
+            REACTIVE_MASK,
+            pass.disocclusion,
+        )
+        .await?;
         let new_keys = pipelines.keys();
         let old = match self.render_passes.taa.as_mut() {
             Some(pass) => std::mem::replace(&mut pass.pipelines, pipelines),
@@ -668,8 +721,12 @@ impl AwsmRenderer {
         }
         if pass.textures.ensure_render_size(
             &self.gpu,
-            views.render_size,
-            velocity_format(views.prep_velocity),
+            PrevKey {
+                size: views.render_size,
+                velocity_format: velocity_format(views.prep_velocity),
+                motion: pass.disocclusion.motion(),
+                id: pass.disocclusion.id(),
+            },
         )? {
             self.bind_groups.mark_create(BindGroupCreate::TaaResources);
         }

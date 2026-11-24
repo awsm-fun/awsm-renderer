@@ -904,10 +904,23 @@ impl RenderTexturesInner {
         // 1. Create all textures
         let visibility_data = gpu
             .create_texture(
-                &maybe_multisample_texture(
-                    render_texture_formats.visiblity_data,
-                    "Visibility Data",
-                )
+                &{
+                    let mut descriptor = maybe_multisample_texture(
+                        render_texture_formats.visiblity_data,
+                        "Visibility Data",
+                    );
+                    // TAA's object-id disocclusion test keeps last frame's
+                    // visibility (its mesh id) with a copy after the
+                    // resolve. Usage flag only, and only at that level.
+                    if anti_aliasing
+                        .taa
+                        .as_ref()
+                        .is_some_and(|taa| taa.disocclusion.id())
+                    {
+                        descriptor.usage = descriptor.usage.with_copy_src();
+                    }
+                    descriptor
+                }
                 .into(),
             )
             .map_err(AwsmRenderTextureError::CreateTexture)?;

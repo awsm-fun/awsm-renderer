@@ -29,6 +29,11 @@ pub struct ShaderCacheKeyTaa {
     /// the views' branch, even never taken, costs the resolve about 0.12 ms
     /// at 1920x1435.
     pub debug_views: bool,
+    /// The disocclusion tests (`TaaDisocclusion`): the motion test and its
+    /// previous-velocity binding exist from `DepthAndMotion` on, the object-
+    /// id test, its two visibility bindings and same-surface reconstruction
+    /// only at `DepthMotionAndId`.
+    pub disocclusion: crate::taa::TaaDisocclusion,
 }
 
 impl From<ShaderCacheKeyTaa> for ShaderCacheKey {

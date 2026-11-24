@@ -15,7 +15,11 @@
 //!   velocity target in its own format (`rg16float` from the geometry pass,
 //!   `rg32float` from the prep fallback). The own-surface disocclusion test
 //!   reads it where depth cannot tell two surfaces apart: an object resting
-//!   on the surface behind it (03 §4.7, the contact line).
+//!   on the surface behind it (03 §4.7, the contact line). Only at
+//!   `TaaDisocclusion::DepthAndMotion` and above.
+//! - **prev_visibility**: last frame's visibility target (`rgba16uint`, its
+//!   BA = the per-pixel mesh id), same size. Only at
+//!   `TaaDisocclusion::DepthMotionAndId`: the object-id test.
 //!
 //! The history lives at post size, not render size, so a render-scale change
 //! (the resolution governor, plan phase 5) neither recreates it nor resets
@@ -70,29 +74,56 @@ pub struct TaaTextures {
     retired: Vec<(web_sys::GpuTexture, u32)>,
 }
 
-/// Last frame's depth and velocity, always the same size.
+/// What the previous-frame targets are allocated for: they are rebuilt (via
+/// the pending pair) when any of it changes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct PrevKey {
+    pub size: (u32, u32),
+    pub velocity_format: TextureFormat,
+    /// Keep last frame's motion vectors (`TaaDisocclusion::motion`).
+    pub motion: bool,
+    /// Keep last frame's visibility / mesh ids (`TaaDisocclusion::id`).
+    pub id: bool,
+}
+
+/// Last frame's depth, and per level its velocity and visibility, always the
+/// same size.
 struct PrevTargets {
     texture: web_sys::GpuTexture,
     view: web_sys::GpuTextureView,
-    velocity: web_sys::GpuTexture,
-    velocity_view: web_sys::GpuTextureView,
-    velocity_format: TextureFormat,
-    size: (u32, u32),
+    velocity: Option<(web_sys::GpuTexture, web_sys::GpuTextureView)>,
+    visibility: Option<(web_sys::GpuTexture, web_sys::GpuTextureView)>,
+    key: PrevKey,
+}
+
+/// This frame's copy targets (see [`TaaTextures::prev_copy_targets`]).
+pub struct PrevCopyTargets<'a> {
+    pub depth: &'a web_sys::GpuTexture,
+    pub velocity: Option<&'a web_sys::GpuTexture>,
+    pub visibility: Option<&'a web_sys::GpuTexture>,
+    pub size: (u32, u32),
+    /// The pending pair (`next_prev_depth`).
+    pub into_next: bool,
 }
 
 impl TaaTextures {
     pub fn new(
         gpu: &AwsmRendererWebGpu,
         post_size: (u32, u32),
-        render_size: (u32, u32),
         depth_format: TextureFormat,
-        velocity_format: TextureFormat,
+        prev_key: PrevKey,
     ) -> Result<Self> {
         let post_size = clamp_size(post_size);
         let (history, history_views) = create_history(gpu, post_size)?;
         let (out, out_view) = create_out(gpu, post_size)?;
-        let prev_depth =
-            PrevTargets::new(gpu, depth_format, velocity_format, clamp_size(render_size))?;
+        let prev_depth = PrevTargets::new(
+            gpu,
+            depth_format,
+            PrevKey {
+                size: clamp_size(prev_key.size),
+                ..prev_key
+            },
+        )?;
         Ok(Self {
             history,
             history_views,
@@ -156,44 +187,40 @@ impl TaaTextures {
     /// Keep the previous-depth pair in step with the render size (see the
     /// module doc). Returns `true` when the BOUND previous depth changed, so
     /// the resolve's bind groups must be rebuilt.
-    pub fn ensure_render_size(
-        &mut self,
-        gpu: &AwsmRendererWebGpu,
-        render_size: (u32, u32),
-        velocity_format: TextureFormat,
-    ) -> Result<bool> {
-        let render_size = clamp_size(render_size);
+    pub fn ensure_render_size(&mut self, gpu: &AwsmRendererWebGpu, key: PrevKey) -> Result<bool> {
+        let wanted = PrevKey {
+            size: clamp_size(key.size),
+            ..key
+        };
         let mut rebound = false;
         // A submitted frame copied its depth into the pending target: that is
         // now "last frame's depth".
         if self.next_prev_depth_filled.replace(false) {
             if let Some(next) = self.next_prev_depth.take() {
                 let old = std::mem::replace(&mut self.prev_depth, next);
-                self.retire(old.texture);
-                self.retire(old.velocity);
+                self.retire_prev(old);
                 rebound = true;
             }
         }
-        let wanted = (render_size, velocity_format);
-        if (self.prev_depth.size, self.prev_depth.velocity_format) == wanted {
-            // Back at the bound size before a pending target was filled.
+        if self.prev_depth.key == wanted {
+            // Back at the bound key before a pending target was filled.
             if let Some(next) = self.next_prev_depth.take() {
-                self.retire(next.texture);
-                self.retire(next.velocity);
+                self.retire_prev(next);
             }
-        } else if self
-            .next_prev_depth
-            .as_ref()
-            .map(|n| (n.size, n.velocity_format))
-            != Some(wanted)
-        {
-            let next = PrevTargets::new(gpu, self.depth_format, velocity_format, render_size)?;
+        } else if self.next_prev_depth.as_ref().map(|n| n.key) != Some(wanted) {
+            let next = PrevTargets::new(gpu, self.depth_format, wanted)?;
             if let Some(old) = self.next_prev_depth.replace(next) {
-                self.retire(old.texture);
-                self.retire(old.velocity);
+                self.retire_prev(old);
             }
         }
         Ok(rebound)
+    }
+
+    /// Whether the bound previous-frame targets hold motion vectors and ids
+    /// (a level change allocates them through the pending pair; until a
+    /// submitted copy fills it the resolve must not read the missing ones).
+    pub fn prev_key(&self) -> PrevKey {
+        self.prev_depth.key
     }
 
     /// The previous depth the resolve reads (last frame's depth).
@@ -201,25 +228,30 @@ impl TaaTextures {
         &self.prev_depth.view
     }
 
-    /// The previous velocity the resolve reads (last frame's vectors).
-    pub fn prev_velocity_view(&self) -> &web_sys::GpuTextureView {
-        &self.prev_depth.velocity_view
+    /// The previous velocity the resolve reads (last frame's vectors), if
+    /// this level keeps it.
+    pub fn prev_velocity_view(&self) -> Option<&web_sys::GpuTextureView> {
+        self.prev_depth.velocity.as_ref().map(|(_, v)| v)
     }
 
-    /// Where this frame's depth and velocity are copied to, their size (this
-    /// frame's render size), and whether they are the pending targets
-    /// (`next_prev_depth`).
-    pub fn prev_copy_targets(
-        &self,
-    ) -> (&web_sys::GpuTexture, &web_sys::GpuTexture, (u32, u32), bool) {
-        match self.next_prev_depth.as_ref() {
-            Some(next) => (&next.texture, &next.velocity, next.size, true),
-            None => (
-                &self.prev_depth.texture,
-                &self.prev_depth.velocity,
-                self.prev_depth.size,
-                false,
-            ),
+    /// The previous visibility the resolve reads (last frame's mesh ids), if
+    /// this level keeps it.
+    pub fn prev_visibility_view(&self) -> Option<&web_sys::GpuTextureView> {
+        self.prev_depth.visibility.as_ref().map(|(_, v)| v)
+    }
+
+    /// Where this frame's depth (and velocity, visibility) is copied to.
+    pub fn prev_copy_targets(&self) -> PrevCopyTargets<'_> {
+        let (t, into_next) = match self.next_prev_depth.as_ref() {
+            Some(next) => (next, true),
+            None => (&self.prev_depth, false),
+        };
+        PrevCopyTargets {
+            depth: &t.texture,
+            velocity: t.velocity.as_ref().map(|(t, _)| t),
+            visibility: t.visibility.as_ref().map(|(t, _)| t),
+            size: t.key.size,
+            into_next,
         }
     }
 
@@ -239,11 +271,9 @@ impl TaaTextures {
             tex.destroy();
         }
         self.out.destroy();
-        self.prev_depth.texture.destroy();
-        self.prev_depth.velocity.destroy();
+        self.prev_depth.destroy();
         if let Some(next) = self.next_prev_depth {
-            next.texture.destroy();
-            next.velocity.destroy();
+            next.destroy();
         }
         for (tex, _) in self.retired {
             tex.destroy();
@@ -253,15 +283,21 @@ impl TaaTextures {
     fn retire(&mut self, texture: web_sys::GpuTexture) {
         self.retired.push((texture, DESTROY_DELAY_FRAMES));
     }
+
+    fn retire_prev(&mut self, prev: PrevTargets) {
+        self.retire(prev.texture);
+        if let Some((t, _)) = prev.velocity {
+            self.retire(t);
+        }
+        if let Some((t, _)) = prev.visibility {
+            self.retire(t);
+        }
+    }
 }
 
 impl PrevTargets {
-    fn new(
-        gpu: &AwsmRendererWebGpu,
-        format: TextureFormat,
-        velocity_format: TextureFormat,
-        size: (u32, u32),
-    ) -> Result<Self> {
+    fn new(gpu: &AwsmRendererWebGpu, format: TextureFormat, key: PrevKey) -> Result<Self> {
+        let size = key.size;
         let texture = gpu.create_texture(
             &TextureDescriptor::new(
                 format,
@@ -274,26 +310,51 @@ impl PrevTargets {
             .into(),
         )?;
         let view = create_view(&texture, "TAA Previous Depth")?;
-        let velocity = gpu.create_texture(
-            &TextureDescriptor::new(
-                velocity_format,
-                Extent3d::new(size.0, Some(size.1), Some(1)),
-                // COPY_DST: a copy of the velocity target after the resolve.
-                // TEXTURE_BINDING: read with textureLoad.
-                TextureUsage::new().with_copy_dst().with_texture_binding(),
-            )
-            .with_label("TAA Previous Velocity")
-            .into(),
-        )?;
-        let velocity_view = create_view(&velocity, "TAA Previous Velocity")?;
+        // COPY_DST: a copy of the frame's target after the resolve.
+        // TEXTURE_BINDING: read with textureLoad.
+        let copy_of = |format: TextureFormat, label: &str| -> Result<_> {
+            let tex = gpu.create_texture(
+                &TextureDescriptor::new(
+                    format,
+                    Extent3d::new(size.0, Some(size.1), Some(1)),
+                    TextureUsage::new().with_copy_dst().with_texture_binding(),
+                )
+                .with_label(label)
+                .into(),
+            )?;
+            let view = create_view(&tex, label)?;
+            Ok((tex, view))
+        };
+        let velocity = if key.motion {
+            Some(copy_of(key.velocity_format, "TAA Previous Velocity")?)
+        } else {
+            None
+        };
+        let visibility = if key.id {
+            Some(copy_of(
+                TextureFormat::Rgba16uint,
+                "TAA Previous Visibility",
+            )?)
+        } else {
+            None
+        };
         Ok(Self {
             texture,
             view,
             velocity,
-            velocity_view,
-            velocity_format,
-            size,
+            visibility,
+            key,
         })
+    }
+
+    fn destroy(self) {
+        self.texture.destroy();
+        if let Some((t, _)) = self.velocity {
+            t.destroy();
+        }
+        if let Some((t, _)) = self.visibility {
+            t.destroy();
+        }
     }
 }
 

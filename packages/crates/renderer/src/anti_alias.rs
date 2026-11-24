@@ -75,13 +75,18 @@ impl AntiAliasing {
 
     /// Whether `self` and `other` need the same targets, pipelines and passes:
     /// equal except possibly inside `taa: Some(..)` (its tuning, sharpening
-    /// and render scale are live values). Render textures rebuild, and
+    /// and render scale are live values; its disocclusion level is not). Render textures rebuild, and
     /// `set_anti_aliasing` recompiles, only when this is false.
     pub fn same_structure(&self, other: &AntiAliasing) -> bool {
         self.msaa_sample_count == other.msaa_sample_count
             && self.smaa == other.smaa
             && self.mipmap == other.mipmap
             && self.taa.is_some() == other.taa.is_some()
+            // The disocclusion level is structural: its own resolve
+            // variant, previous-frame targets and (for the id test) a copy
+            // source on the visibility target.
+            && self.taa.as_ref().map(|t| t.disocclusion)
+                == other.taa.as_ref().map(|t| t.disocclusion)
     }
 
     /// Returns whether MSAA is enabled and supported.

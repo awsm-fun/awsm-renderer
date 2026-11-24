@@ -1020,7 +1020,7 @@ pub fn anti_aliasing_to_renderer(
 pub fn taa_settings_to_renderer(
     taa: &awsm_renderer_scene::TaaSettings,
 ) -> awsm_renderer::taa::TaaConfig {
-    use awsm_renderer::taa::{TaaConfig, TaaTuning};
+    use awsm_renderer::taa::{TaaConfig, TaaDisocclusion, TaaTuning};
     let t = &taa.tuning;
     let d = TaaTuning::default();
     // Every tuning value is a non-negative weight, width, speed or count —
@@ -1044,15 +1044,17 @@ pub fn taa_settings_to_renderer(
         } else {
             0.0
         },
-        // TODO(fb, review 17): `taa.disocclusion` is authored, saved and set
-        // over MCP / the editor panel, but not applied yet: the renderer's
-        // `TaaConfig::disocclusion` / `TaaDisocclusion` land with the senior's
-        // disocclusion commit. Then add here (and a pass-through test):
-        //     disocclusion: match taa.disocclusion {
-        //         Depth => TaaDisocclusion::Depth,
-        //         DepthAndMotion => TaaDisocclusion::DepthAndMotion,
-        //         DepthMotionAndId => TaaDisocclusion::DepthMotionAndId,
-        //     },
+        disocclusion: match taa.disocclusion {
+            awsm_renderer_scene::post_process::TaaDisocclusionSetting::Depth => {
+                TaaDisocclusion::Depth
+            }
+            awsm_renderer_scene::post_process::TaaDisocclusionSetting::DepthAndMotion => {
+                TaaDisocclusion::DepthAndMotion
+            }
+            awsm_renderer_scene::post_process::TaaDisocclusionSetting::DepthMotionAndId => {
+                TaaDisocclusion::DepthMotionAndId
+            }
+        },
         tuning: TaaTuning {
             gamma_still: pos(t.gamma_still, d.gamma_still),
             gamma_moving: pos(t.gamma_moving, d.gamma_moving),
