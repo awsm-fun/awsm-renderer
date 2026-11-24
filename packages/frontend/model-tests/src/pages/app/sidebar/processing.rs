@@ -6,6 +6,7 @@ use crate::{
         checkbox::{Checkbox, CheckboxStyle},
         text_input::{TextInput, TextInputKind},
     },
+    config::AntiAliasMode,
     pages::app::{
         context::AppContext,
         sidebar::{render_dropdown_label, render_input_label},
@@ -40,8 +41,7 @@ impl SidebarProcessing {
             .child(state.render_exposure_input())
             .child(state.render_bloom_selector())
             .child(state.render_dof_selector())
-            .child(state.render_msaa_selector())
-            .child(state.render_smaa_selector())
+            .child(state.render_anti_alias_selector())
         })
     }
 
@@ -70,68 +70,29 @@ impl SidebarProcessing {
         )
     }
 
-    fn render_msaa_selector(self: &Arc<Self>) -> Dom {
+    fn render_anti_alias_selector(self: &Arc<Self>) -> Dom {
         let state = self;
+        render_dropdown_label(
+            "Anti-aliasing",
+            Dropdown::new()
+                .with_intial_selected(AntiAliasMode::from_anti_aliasing(
+                    &state.ctx.anti_alias.get_cloned(),
+                ))
+                .with_bg_color(ColorBackground::Dropdown)
+                .with_on_change(clone!(state => move |mode: &AntiAliasMode| {
+                    state.ctx.anti_alias.set_neq(mode.anti_aliasing());
 
-        Checkbox::new(CheckboxStyle::Dark)
-            .with_content_after(html!("span", {
-                .text("MSAA Anti-Aliasing")
-            }))
-            .with_selected_signal(
-                state
-                    .ctx
-                    .anti_alias
-                    .signal_ref(|anti_alias| anti_alias.msaa_sample_count.is_some()),
-            )
-            .with_on_click(clone!(state => move || {
-                {
-                    let mut lock = state.ctx.anti_alias.lock_mut();
-                    lock.msaa_sample_count = if lock.msaa_sample_count.is_some() {
-                        None
-                    } else {
-                        Some(4)
-                    };
-                }
-
-                spawn_local(clone!(state => async move {
-                    if let Some(scene) = state.ctx.scene.get_cloned() {
-                        if let Err(err) = scene.reset_anti_aliasing().await {
-                            tracing::error!("Error resetting anti_aliasing: {}", err);
+                    spawn_local(clone!(state => async move {
+                        if let Some(scene) = state.ctx.scene.get_cloned() {
+                            if let Err(err) = scene.reset_anti_aliasing().await {
+                                tracing::error!("Error resetting anti_aliasing: {}", err);
+                            }
                         }
-                    }
-                }));
-            }))
-            .render()
-    }
-
-    fn render_smaa_selector(self: &Arc<Self>) -> Dom {
-        let state = self;
-
-        Checkbox::new(CheckboxStyle::Dark)
-            .with_content_after(html!("span", {
-                .text("SMAA Anti-Aliasing")
-            }))
-            .with_selected_signal(
-                state
-                    .ctx
-                    .anti_alias
-                    .signal_ref(|anti_alias| anti_alias.smaa),
-            )
-            .with_on_click(clone!(state => move || {
-                {
-                    let mut lock = state.ctx.anti_alias.lock_mut();
-                    lock.smaa = !lock.smaa;
-                }
-
-                spawn_local(clone!(state => async move {
-                    if let Some(scene) = state.ctx.scene.get_cloned() {
-                        if let Err(err) = scene.reset_anti_aliasing().await {
-                            tracing::error!("Error resetting anti_aliasing: {}", err);
-                        }
-                    }
-                }));
-            }))
-            .render()
+                    }));
+                }))
+                .with_options(AntiAliasMode::ALL.map(|mode| (mode.label().to_string(), mode)))
+                .render(),
+        )
     }
 
     fn render_bloom_selector(self: &Arc<Self>) -> Dom {

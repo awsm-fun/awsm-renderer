@@ -384,6 +384,10 @@ pub async fn run_all() {
         );
     }
 
+    // ── 24. the AA mode changed while a load is open, then live. ───────────
+    set_hud("player-tests: aa-switch-during-load");
+    report.emit_result("aa-switch-during-load", aa_switch_during_load().await);
+
     // ── 19. a rejected SSR composite is not forgotten by a commit that
     //        failed for another reason. ───────────────────────────────────────
     let composite_retry_enabled = filter
@@ -2247,6 +2251,188 @@ async fn aa_toggle_pipelines_stable(origin: &str) -> Result<String> {
     Ok(format!(
         "{transparent} transparent meshes; (compute, render, shaders) = {:?} after each of three MSAA off/on round trips",
         rounds[0]
+    ))
+}
+
+/// Check 24 — `aa-switch-during-load`. An embedder that sets the AA mode
+/// while a load is open — meshes declared, `commit_load` not yet run — and
+/// then switches live (none → TAA → TAA 0.67 → MSAA, each followed by a
+/// commit) must get every setter and commit through, a transparent pipeline
+/// for every transparent mesh, and frames without a GPU validation error.
+///
+/// Locks the bug the model tester hit when it started in a non-MSAA mode on
+/// a model with transparent meshes: `set_anti_aliasing` asked each
+/// transparent mesh for its buffer info, an unresolved mesh has none, the
+/// setter failed with `MeshNotFound` half-way and the effects pass was left
+/// bound to the old mode's layout (a validation error every frame after).
+async fn aa_switch_during_load() -> Result<String> {
+    use awsm_renderer::anti_alias::AntiAliasing;
+    use awsm_renderer::lights::Light;
+    use awsm_renderer::materials::pbr::PbrMaterial;
+    use awsm_renderer::materials::{Material, MaterialAlphaMode};
+    use awsm_renderer::raw_mesh::{AddMeshOpts, RawMeshData};
+    use awsm_renderer::taa::{TaaConfig, TaaPreset};
+    use awsm_renderer::transforms::Transform;
+    use awsm_renderer_core::pipeline::primitive::FrontFace;
+    use glam::Vec3;
+
+    let (mut renderer, _canvas) = create_renderer(base_features()).await?;
+    renderer.begin_load();
+    renderer
+        .insert_light(
+            Light::Directional {
+                color: [1.0, 1.0, 1.0],
+                intensity: 2.0,
+                direction: [-0.2, -0.4, -1.0],
+                volumetric_intensity: 0.0,
+            },
+            None,
+        )
+        .map_err(|e| anyhow!("insert_light: {e}"))?;
+
+    // Two opaque quads and two blended ones behind / in front of them,
+    // declared into the open load (no geometry is uploaded until the commit).
+    let mut transparent = Vec::new();
+    for (index, blend) in [false, true, false, true].into_iter().enumerate() {
+        let alpha_mode = if blend {
+            MaterialAlphaMode::Blend
+        } else {
+            MaterialAlphaMode::Opaque
+        };
+        let mut pbr = PbrMaterial::new(alpha_mode, false);
+        pbr.base_color_factor = if blend {
+            [0.2, 0.5, 0.9, 0.5]
+        } else {
+            [0.8, 0.3, 0.2, 1.0]
+        };
+        let material = renderer.materials.insert(
+            Material::Pbr(Box::new(pbr)),
+            &renderer.textures,
+            &renderer.dynamic_materials,
+            &renderer.extras_pool,
+        );
+        let transform = renderer.transforms.insert(
+            Transform {
+                translation: Vec3::new(
+                    (index % 2) as f32 * 0.6 - 0.3,
+                    0.0,
+                    (index / 2) as f32 * 0.5,
+                ),
+                ..Transform::IDENTITY
+            },
+            None,
+        );
+        let quad = RawMeshData {
+            positions: vec![
+                [-0.5, -0.5, 0.0],
+                [0.5, -0.5, 0.0],
+                [0.5, 0.5, 0.0],
+                [-0.5, 0.5, 0.0],
+            ],
+            normals: Some(vec![[0.0, 0.0, 1.0]; 4]),
+            uv_sets: vec![vec![[0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0]]],
+            indices: vec![0, 1, 2, 0, 2, 3],
+            ..Default::default()
+        };
+        let geometry = renderer.register_geometry(quad.into_geometry_source(FrontFace::Ccw));
+        let mesh = renderer
+            .add_mesh(geometry, material, transform, AddMeshOpts::default())
+            .map_err(|e| anyhow!("add_mesh: {e}"))?;
+        if blend {
+            transparent.push(mesh);
+        }
+    }
+
+    let device: wasm_bindgen::JsValue = renderer.gpu.device.clone().into();
+    let call = |name: &str, args: &js_sys::Array| -> Result<wasm_bindgen::JsValue> {
+        let f: js_sys::Function = js_sys::Reflect::get(&device, &name.into())
+            .map_err(|e| anyhow!("device.{name}: {e:?}"))?
+            .into();
+        js_sys::Reflect::apply(&f, &device, args).map_err(|e| anyhow!("device.{name}(): {e:?}"))
+    };
+    call("pushErrorScope", &js_sys::Array::of1(&"validation".into()))?;
+
+    let center = Vec3::new(0.0, 0.0, 0.25);
+    let radius = 1.0;
+    let eye = |_| Vec3::new(0.3, 0.4, 3.0);
+    let steps: [(&str, AntiAliasing); 4] = [
+        ("none (load open)", AntiAliasing::none()),
+        ("TAA native", AntiAliasing::taa(TaaConfig::native())),
+        (
+            "TAA 0.67",
+            AntiAliasing::taa(TaaConfig::preset(TaaPreset::Quality)),
+        ),
+        ("MSAA", AntiAliasing::msaa4()),
+    ];
+    let mut detail = Vec::new();
+    let mut outcome: Result<()> = Ok(());
+    for (label, aa) in steps {
+        let step = async {
+            renderer
+                .set_anti_aliasing(aa)
+                .await
+                .map_err(|e| anyhow!("set_anti_aliasing({label}): {e}"))?;
+            renderer
+                .commit_load(|_| {})
+                .await
+                .map_err(|e| anyhow!("commit_load after {label}: {e}"))?;
+            renderer.update_transforms();
+            run_frames(&mut renderer, center, radius, 4, eye).await?;
+            let unkeyed = transparent
+                .iter()
+                .filter(|mesh| {
+                    renderer
+                        .render_passes
+                        .material_transparent
+                        .pipelines
+                        .get_render_pipeline_key(**mesh)
+                        .is_none()
+                })
+                .count();
+            if unkeyed > 0 {
+                return Err(anyhow!(
+                    "after {label}: {unkeyed} of {} transparent meshes have no pipeline",
+                    transparent.len()
+                ));
+            }
+            Ok(())
+        };
+        if let Err(err) = step.await {
+            outcome = Err(err);
+            break;
+        }
+        let mode = if renderer.anti_aliasing.taa.is_some() {
+            "taa"
+        } else if renderer.anti_aliasing.msaa_sample_count.is_some() {
+            "msaa"
+        } else {
+            "none"
+        };
+        detail.push(format!("{label} -> {mode}"));
+    }
+
+    let error = wasm_bindgen_futures::JsFuture::from(js_sys::Promise::from(call(
+        "popErrorScope",
+        &js_sys::Array::new(),
+    )?))
+    .await
+    .map_err(|e| anyhow!("popErrorScope: {e:?}"))?;
+    destroy_renderer(renderer);
+    outcome?;
+    if !(error.is_null() || error.is_undefined()) {
+        let message = js_sys::Reflect::get(&error, &"message".into())
+            .ok()
+            .and_then(|m| m.as_string())
+            .unwrap_or_else(|| format!("{error:?}"));
+        return Err(anyhow!(
+            "every switch went through ({}), but a GPU validation error was raised: {message}",
+            detail.join(", ")
+        ));
+    }
+    Ok(format!(
+        "{} transparent meshes declared into an open load; {}; 4 frames each, no GPU validation error",
+        transparent.len(),
+        detail.join(", ")
     ))
 }
 

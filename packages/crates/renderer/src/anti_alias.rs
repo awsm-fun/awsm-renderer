@@ -739,6 +739,15 @@ impl AwsmRenderer {
             if !self.materials.is_transparency_pass(mesh.material_key) {
                 continue;
             }
+            // A mesh added during an open load (`begin_load`, before
+            // `commit_load`) has no geometry resource yet: the commit resolves
+            // it and then warms its transparent pipeline for the AA mode that
+            // is current by then. Skip it here; asking for its buffer info
+            // fails with `MeshNotFound` and aborts this setter half-way (the
+            // effects pipelines are then never rebuilt for the new mode).
+            if self.meshes.resource_key(mesh_key).is_err() {
+                continue;
+            }
             let buffer_info_key = self.meshes.buffer_info_key(mesh_key)?;
             let writes_depth = self.materials.transparent_writes_depth(mesh.material_key);
             let (base, pbr_features) = self.materials.transparent_variant(mesh.material_key);
