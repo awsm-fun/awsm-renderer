@@ -188,6 +188,28 @@ async fn reactive_trail(p: &Params, scene: &str, r: &mut Report) -> Result<()> {
         if mi < 2 {
             let ok = tr[mi][0].frames > 0 && tr[mi][0].failing.is_empty();
             r.emit(&name, ok, &detail);
+            // The restated form (05 §4.4, "Restated"): reactive pixels keep
+            // no history by design, and MSAA and no-AA miss the original
+            // thresholds on this content too. TAA is held against them: its
+            // run average may not exceed MSAA 4x's, and its worst frame may
+            // not exceed no-AA's worst frame.
+            let avg = |t: &Track| t.sum / t.frames.max(1) as f64;
+            let (taa, msaa, none) = (&tr[mi][0], &tr[mi][1], &tr[mi][2]);
+            let ok_restated =
+                taa.frames > 0 && avg(taa) <= avg(msaa) && taa.worst_mean.0 <= none.worst_mean.0;
+            r.emit(
+                &format!("{name}-restated"),
+                ok_restated,
+                &format!(
+                    "TAA run average {:.3} <= MSAA's {:.3} and TAA worst frame {:.3} <= no-AA's worst {:.3} (MSAA worst {:.3}, no-AA average {:.3})",
+                    avg(taa),
+                    avg(msaa),
+                    taa.worst_mean.0,
+                    none.worst_mean.0,
+                    msaa.worst_mean.0,
+                    avg(none),
+                ),
+            );
         } else {
             r.info(&name, &detail);
         }

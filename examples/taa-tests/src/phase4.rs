@@ -62,6 +62,13 @@ pub async fn scale_change_mode(p: &Params, r: &mut Report) {
         let mut over = Vec::new();
         let mut worst_excess = (f64::NEG_INFINITY, 0u32);
         let mut around = Vec::new();
+        // Restated form (05 §4.5, "Restated"): against each scale's own
+        // steady state. No frame may exceed the constant-scale run at the
+        // same scale and frame by more than 1.5, and from 8 frames after a
+        // step on, by more than 0.25 (no reset pop, and it settles).
+        let mut over_control = Vec::new();
+        let mut unsettled = Vec::new();
+        let mut worst_settled = (f64::NEG_INFINITY, 0u32);
         while t.next_k <= 160 {
             let k = t.next_k;
             let step = match k {
@@ -93,6 +100,18 @@ pub async fn scale_change_mode(p: &Params, r: &mut Report) {
                 if s.mean > 3.0 {
                     over.push(k);
                 }
+                if excess > 1.5 {
+                    over_control.push(k);
+                }
+                let settled = (68..120).contains(&k) || k >= 128;
+                if settled {
+                    if excess > worst_settled.0 {
+                        worst_settled = (excess, k);
+                    }
+                    if excess > 0.25 {
+                        unsettled.push(k);
+                    }
+                }
                 if (58..=66).contains(&k) || (118..=126).contains(&k) {
                     around.push(format!("k{k} {:.3} (constant-scale {:.3})", s.mean, sc.mean));
                 }
@@ -118,6 +137,14 @@ pub async fn scale_change_mode(p: &Params, r: &mut Report) {
                 worst_excess.0,
                 worst_excess.1,
                 around.join(", ")
+            ),
+        );
+        r.emit(
+            &format!("scale-change-restated:{scene}"),
+            over_control.is_empty() && unsettled.is_empty(),
+            &format!(
+                "switched minus the constant-scale run at the same scale and frame: worst {:+.3} @k{} (bound +1.5; frames over: {over_control:?}); from 8 frames after each step: worst {:+.3} @k{} (bound +0.25; frames over: {unsettled:?})",
+                worst_excess.0, worst_excess.1, worst_settled.0, worst_settled.1
             ),
         );
         Ok(())

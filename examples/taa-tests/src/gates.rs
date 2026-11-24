@@ -317,6 +317,15 @@ async fn freeze_jitter_error(
 
 /// 05 §4.2 trail: error vs the reference inside the trail band (covered within
 /// the last 0.5 s, not now): mean < 2 and max < 16 at every evaluated frame.
+/// "k31 3.79/3.81, …" for a list of (frame, TAA mean, ORACLE mean).
+fn frames_list(v: &[(u32, f64, f64)]) -> String {
+    v.iter()
+        .take(24)
+        .map(|(k, t, o)| format!("k{k} {t:.2}/{o:.2}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// The trail band of every evaluated frame against methods without history
 /// (MSAA 4x, no-AA) and the perfect-information ORACLE (INFO lines).
 #[derive(Default)]
@@ -665,6 +674,47 @@ async fn trail(p: &Params, scene: &str, r: &mut Report) -> Result<()> {
         thr(p, 16.0),
     );
     stride_verdict(p, r, &format!("trail:{scene}"), ok, &detail);
+    // The two halves of the gate on their own lines. The mean is 05 §4.2 as
+    // written. The maximum is the restated form (05 §4.2, "Restated"): "max
+    // < 16" is below what a perfect-information oracle reads on a freshly
+    // uncovered pixel, so the band maximum is held against methods that keep
+    // no history and therefore cannot ghost: it may not exceed the larger of
+    // MSAA 4x's and no-AA's maximum on the same band and frame.
+    let mean_fail = cmp.mean_over_oracle.len() + cmp.mean_oracle_floor.len();
+    stride_verdict(
+        p,
+        r,
+        &format!("trail-mean:{scene}"),
+        mean_fail == 0,
+        &format!(
+            "band mean < {:.1} on every frame: {mean_fail} of {} frames at or above it; of those, {} where the ORACLE is below it (TAA/ORACLE: [{}]) and {} where the ORACLE is at or above it too (the oracle floor, TAA/ORACLE: [{}])",
+            thr(p, 2.0),
+            cmp.frames,
+            cmp.mean_over_oracle.len(),
+            frames_list(&cmp.mean_over_oracle),
+            cmp.mean_oracle_floor.len(),
+            frames_list(&cmp.mean_oracle_floor),
+        ),
+    );
+    stride_verdict(
+        p,
+        r,
+        &format!("trail-max-restated:{scene}"),
+        cmp.max_over.is_empty(),
+        &format!(
+            "band max <= max(MSAA 4x, no-AA) band max on the same frame: exceeded on {} of {} frames; worst TAA max {} @k{} (MSAA {}, no-AA {}, ORACLE {} there); original bound max < {:.0}: worst {} @k{}",
+            cmp.max_over.len(),
+            cmp.frames,
+            cmp.worst_taa_max.0,
+            cmp.worst_taa_max.1,
+            cmp.worst_taa_max.2,
+            cmp.worst_taa_max.3,
+            cmp.worst_taa_max.4,
+            thr(p, 16.0),
+            worst.worst_max.0,
+            worst.worst_max.1,
+        ),
+    );
     r.info(
         &format!("trail-band-minus-ring:{scene}"),
         &format!(

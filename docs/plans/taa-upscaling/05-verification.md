@@ -43,6 +43,14 @@ the same Blackman-Harris weights the resolve uses. That is what a perfect TAA
 would converge to for that instant, and it works for any scene and any frame,
 including mid-motion. Build it as a harness mode in phase 0.
 
+**Which average decides.** The frames are averaged as displayed
+(display-linear), which is the literal reading of the paragraph above. Since
+round 2 the resolve averages in the display's space too (`docs/TAA.md`
+§3.5), so this is also "the reference in the resolve's own space", the rule
+round 1 judged by when the resolve averaged Karis-weighted scene colour.
+The Karis-weighted reference (`ref=karis`, round 1's deciding one) is
+reported beside every number.
+
 ## 4. Tests
 
 All colour errors are measured on the tonemapped, display-encoded image in
@@ -64,6 +72,22 @@ All colour errors are measured on the tonemapped, display-encoded image in
 - **Trail:** `taa-motion` and `taa-reveal`. The trail band is pixels the
   moving object covered within the last 0.5 s but not now. Error against
   the reference: mean < 2 and max < 16 inside the band, at every frame.
+  **Restated (maximum only; the mean is unchanged).** Round 1 showed "max
+  < 16" to be wrong as written: a perfect-information oracle (exact vectors,
+  exact disocclusion knowledge, the resolve's own kernel) reads a band
+  maximum of 18-39 on the first frame a pixel is uncovered, because one
+  sample cannot be within 16 of a 64-sample reference on a high-contrast
+  edge. The maximum is therefore held against methods that keep no history
+  and so cannot ghost: on every frame, TAA's band maximum may not exceed the
+  larger of MSAA 4×'s and no-AA's maximum on the same band. (That bound is
+  generous on a checker, where no AA aliases by 55-60 on every frame, and
+  strict on a smooth background, 13-33 on `taa-skin`: it follows the
+  content.) The oracle's
+  maximum is printed beside it, and the original "max < 16" number stays in
+  every report (`trail-max-restated`, `trail-max-compare`, `trail-ghosts`).
+  The mean bound is not restated: where the oracle itself is at or above 2
+  (a band made only of first-frame pixels) the line fails and says so
+  (`trail-mean`, `trail-mean-vs-oracle`).
 - **Stop:** after motion stops, the whole image is within mean < 1 of the
   reference after 8 frames. A slower settle is history surviving that
   shouldn't.
@@ -88,6 +112,15 @@ All colour errors are measured on the tonemapped, display-encoded image in
 
 - `taa-transparent`: the trail test over particle, glass and UV-flow regions
   passes with the same thresholds.
+  **Restated.** Round 1 showed that MSAA 4× and no AA miss these thresholds
+  on this content too (worst frame 10.8 and 18.1 against TAA's 12.7), and
+  reactive pixels keep no history by design, so "the same thresholds"
+  measures the content, not the AA. TAA is held against the other modes
+  instead, over the band ∩ content and over the content's own trail: its
+  run average may not exceed MSAA 4×'s, and its worst frame may not exceed
+  no-AA's worst frame (`phase3-trail:…-restated`): the same logic as the
+  trail maximum, a method without history can be no worse than no AA. The original line and
+  its numbers stay in every report.
 - `taa-hud`: HUD pixels match a TAA-off render (mean < 1).
 
 ### 4.5 Upscaling (phase 4 gate)
@@ -97,6 +130,13 @@ All colour errors are measured on the tonemapped, display-encoded image in
 - At 0.5: same, 2×.
 - Changing the scale mid-run (0.67 → 0.5 → 0.67) causes no frame with mean
   error > 3 (no reset pop).
+  **Restated.** The line was meant to catch a reset pop, but "mean > 3" is
+  exceeded by the 0.5 steady state itself on this scene (round 1: a
+  constant-0.5 run reads 4.4-4.6). It is restated against each scale's own
+  steady state: no frame may exceed a constant-scale run at the same scale
+  and frame by more than 1.5, and from 8 frames after a step on by more than
+  0.25 (`scale-change-restated`). The original line and its number stay in
+  every report.
 - `taa-thin` moiré: no visible moiré at the chosen `extra` mip bias; flicker
   test still passes.
 
