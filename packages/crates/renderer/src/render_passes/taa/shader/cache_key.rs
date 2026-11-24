@@ -5,7 +5,10 @@
 //! cap, motion alpha, debug view, reset) is a live uniform in `TaaParams` and
 //! never recompiles.
 
-use crate::{render_passes::shader_cache_key::ShaderCacheKeyRenderPass, shaders::ShaderCacheKey};
+use crate::{
+    post_process::ToneMapping, render_passes::shader_cache_key::ShaderCacheKeyRenderPass,
+    shaders::ShaderCacheKey,
+};
 
 /// Cache key for the TAA resolve (`taa_wgsl/resolve.wgsl`).
 #[derive(Hash, Debug, Clone, PartialEq, Eq)]
@@ -16,6 +19,11 @@ pub struct ShaderCacheKeyTaa {
     /// Binds the reactive mask (plan phase 3) and takes its 3x3 max into the
     /// blend weight. Without it the shader binds and reads nothing extra.
     pub reactive: bool,
+    /// The display's tonemapper: the resolve averages in what the display
+    /// shows (its working space), so it compiles that curve and its inverse.
+    /// A tonemapping change rebuilds the resolve pipeline (no history reset:
+    /// the stored history does not depend on it).
+    pub tonemapping: ToneMapping,
 }
 
 impl From<ShaderCacheKeyTaa> for ShaderCacheKey {

@@ -85,6 +85,9 @@ pub struct TaaParamsValues {
     pub motion_edge_speed: f32,
     /// Current weight per unit of clip amount (03 §4.8: 0.5).
     pub clip_alpha: f32,
+    /// The display's exposure multiplier, `exp2(post_processing.exposure)`:
+    /// the resolve's working space is what the display shows.
+    pub exposure: f32,
 }
 
 impl TaaParamsValues {
@@ -121,6 +124,7 @@ impl TaaParamsValues {
             motion_edge_alpha: tuning.motion_edge_alpha,
             motion_edge_speed: tuning.motion_edge_speed,
             clip_alpha: crate::taa::CLIP_ALPHA,
+            exposure: 1.0,
         }
     }
 
@@ -149,8 +153,7 @@ impl TaaParamsValues {
             self.motion_edge_alpha,
             self.motion_edge_speed,
             self.clip_alpha,
-            // `_pad`: the struct stays a multiple of 8 bytes.
-            0.0,
+            self.exposure,
         ];
         let mut out = [0u8; TaaParams::BYTE_SIZE];
         for (i, f) in floats.iter().enumerate() {
@@ -500,6 +503,44 @@ impl AwsmRenderer {
         Ok(())
     }
 
+    /// Recompile the resolve for the current tonemapper (its working space,
+    /// `ShaderCacheKeyTaa::tonemapping`), keeping the pass, its textures and
+    /// the history: the stored history does not depend on the tonemapper.
+    /// Called by `set_post_processing` when the tonemapper changes under TAA.
+    pub(crate) async fn rebuild_taa_resolve_pipeline(&mut self) -> Result<()> {
+        let Some(pass) = self.render_passes.taa.as_ref() else {
+            return Ok(());
+        };
+        let mut ctx = RenderPassInitContext {
+            gpu: &self.gpu,
+            bind_group_layouts: &mut self.bind_group_layouts,
+            pipeline_layouts: &mut self.pipeline_layouts,
+            pipelines: &mut self.pipelines,
+            shaders: &mut self.shaders,
+            render_texture_formats: &mut self.render_textures.formats,
+            textures: &mut self.textures,
+            features: &self.features,
+            anti_aliasing: &self.anti_aliasing,
+            post_processing: &self.post_processing,
+            prep_config: &self.prep_config,
+            max_edge_budget: self
+                .material_edge_buffers
+                .as_ref()
+                .map(|b| b.max_edge_budget)
+                .unwrap_or(
+                    crate::render_passes::material_opaque::edge_buffers::DEFAULT_MAX_EDGE_BUDGET_DESKTOP,
+                ),
+        };
+        let pipelines = TaaPipelines::new(&mut ctx, &pass.bind_groups, REACTIVE_MASK).await?;
+        let new_keys = pipelines.keys();
+        let old = match self.render_passes.taa.as_mut() {
+            Some(pass) => std::mem::replace(&mut pass.pipelines, pipelines),
+            None => return Ok(()),
+        };
+        self.release_replaced_pass_slots(old.keys(), &new_keys);
+        Ok(())
+    }
+
     /// Build the RCAS pass when TAA sharpening turns on (`sharpen > 0`) and
     /// drop it when it turns off. Called by `set_anti_aliasing`, on both its
     /// structural and its light path (a sharpen change alone is light: no
@@ -586,6 +627,7 @@ impl AwsmRenderer {
             reset,
         );
         values.reactive_valid = pass.params.reactive_valid();
+        values.exposure = self.post_processing.exposure.exp2();
         if let Some([clip_alpha, _]) = self.taa.experimental {
             values.clip_alpha = clip_alpha;
         }
@@ -718,7 +760,7 @@ mod tests {
         let t = &config.tuning;
         assert_eq!(bytes.len(), 88);
         assert_eq!(f(20), crate::taa::CLIP_ALPHA);
-        assert_eq!(f(21), 0.0, "padding");
+        assert_eq!(f(21), 1.0, "exposure (EV 0)");
         assert_eq!(f(16), t.max_history_moving);
         assert_eq!(f(17), t.max_history_moving_speed);
         assert_eq!(f(18), t.motion_edge_alpha);
@@ -797,7 +839,7 @@ mod tests {
                 "motion_edge_alpha",
                 "motion_edge_speed",
                 "clip_alpha",
-                "_pad",
+                "exposure",
             ]
         );
     }

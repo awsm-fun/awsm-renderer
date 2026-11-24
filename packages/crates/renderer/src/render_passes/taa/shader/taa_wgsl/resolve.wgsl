@@ -13,6 +13,10 @@
 //       both unjittered.
 //   n = history length, in the history's alpha.
 //
+// Two colour spaces (see "Spaces" below): the history is STORED in the Karis
+// map of linear HDR; everything that averages works in the display's own
+// space (`to_work` / `from_work`).
+//
 // Every rule below exists because breaking it ghosts or blurs. The list is
 // G1-G12 in docs/TAA.md; the tags in the comments refer to it.
 //
@@ -58,8 +62,9 @@ struct TaaParams {
     motion_edge_speed: f32,
     // Current weight per unit of clip amount.
     clip_alpha: f32,
-    // Keeps the struct a multiple of 8 bytes (88).
-    _pad: f32,
+    // The display's exposure multiplier (exp2 of the scene's EV), so the
+    // working space below is the display's (G11).
+    exposure: f32,
 };
 
 @group(0) @binding(0) var<uniform> camera_raw: CameraRaw;
@@ -92,9 +97,18 @@ struct TaaParams {
 const HUD_REACTIVE: f32 = 0.999;
 {% endif %}
 
-// ---- Working space (G11) --------------------------------------------------
-// Blend, clip and filter on tonemapped colour, so one saturated highlight
-// weighs about as much as a white pixel instead of fifty of them.
+// ---- Spaces (G11) ----------------------------------------------------------
+// Two spaces. The history is STORED in `tonemap` space (c / (1 + max), the
+// Karis map of the linear HDR colour): exposure-independent, and its
+// rgba16float steps stay fine up to very bright highlights, which bloom
+// reads back from `out_tex`. Everything that AVERAGES (the reconstruction,
+// the clip box, the blend) happens in the WORKING space: what the display
+// will show, `display_curve(exposure * c)`. An anti-aliased pixel is the
+// average of what is seen over its area, so averaging scene-linear colour
+// and tonemapping afterwards leaves every high-contrast edge biased (a
+// checker edge converged one to several 8-bit levels off). The display
+// tonemapper also bounds highlights, which is what a Karis weight is for;
+// with no tonemapper the working space keeps the Karis map.
 
 // The largest tonemapped value the rgba16float history can hold below 1.0 is
 // 1 - 2^-11; `untonemap` divides by (1 - max3), so nothing may reach 1.
@@ -104,12 +118,105 @@ fn max3(c: vec3<f32>) -> f32 {
     return max(c.r, max(c.g, c.b));
 }
 
+fn min3(c: vec3<f32>) -> f32 {
+    return min(c.r, min(c.g, c.b));
+}
+
 fn tonemap(c: vec3<f32>) -> vec3<f32> {
     return c / (1.0 + max3(c));
 }
 
 fn untonemap(t: vec3<f32>) -> vec3<f32> {
     return t / (1.0 - min(max3(t), TONEMAPPED_MAX));
+}
+
+{% match tonemapping %}
+{% when ToneMapping::KhronosNeutralPbr %}
+// Khronos PBR Neutral, exactly as the display pass applies it
+// (display_wgsl/helpers/tonemap.wgsl), and its exact inverse.
+const KN_START: f32 = 0.76;
+const KN_D: f32 = 0.24;
+const KN_DESATURATION: f32 = 0.15;
+// Output stays below 1; the working space's upper bound.
+const WORK_MAX: f32 = 1.0;
+
+fn display_curve(color: vec3<f32>) -> vec3<f32> {
+    let x = min3(color);
+    let offset = select(0.04, x - 6.25 * x * x, x < 0.08);
+    let result = color - vec3<f32>(offset);
+    let peak = max3(result);
+    if (peak < KN_START) {
+        return result;
+    }
+    let new_peak = 1.0 - KN_D * KN_D / (peak + KN_D - KN_START);
+    let g = 1.0 - 1.0 / (KN_DESATURATION * (peak - new_peak) + 1.0);
+    return mix(result * (new_peak / peak), vec3<f32>(new_peak), g);
+}
+
+// max3 of the output is the compressed peak; it gives back the peak, then
+// the desaturation weight, then the colour before compression. The offset's
+// toe (x - 6.25 x^2 below 0.08) leaves min3 = 6.25 x^2 there and x - 0.04
+// above, which inverts to the offset.
+fn display_curve_inverse(y_in: vec3<f32>) -> vec3<f32> {
+    let y = max(y_in, vec3<f32>(0.0));
+    let new_peak = clamp(max3(y), KN_START, 0.99999988);
+    let peak = KN_D * KN_D / (1.0 - new_peak) - KN_D + KN_START;
+    let g = 1.0 - 1.0 / (KN_DESATURATION * (peak - new_peak) + 1.0);
+    let uncompressed = (y - vec3<f32>(g * new_peak)) / (1.0 - g) * (peak / max(new_peak, 1.0e-6));
+    let c = select(uncompressed, y, max3(y) < KN_START);
+    let m = max(min3(c), 0.0);
+    let x_toe = sqrt(m / 6.25);
+    let offset = select(0.04, x_toe - m, m < 0.04);
+    return max(c + vec3<f32>(offset), vec3<f32>(0.0));
+}
+{% when ToneMapping::Aces %}
+// Narkowicz's ACES fit as the display pass applies it, WITHOUT its clamp to
+// 1: the rational is monotonic with asymptote a / c, so it inverts exactly
+// and keeps highlights above the display's white distinct (bloom reads
+// them back). Below 1 it is the displayed value.
+const ACES_A: f32 = 2.51;
+const ACES_B: f32 = 0.03;
+const ACES_C: f32 = 2.43;
+const ACES_D: f32 = 0.59;
+const ACES_E: f32 = 0.14;
+const WORK_MAX: f32 = 1.0329;
+
+fn display_curve(x: vec3<f32>) -> vec3<f32> {
+    return x * (ACES_A * x + ACES_B) / (x * (ACES_C * x + ACES_D) + ACES_E);
+}
+
+// (a - c y) x^2 + (b - d y) x - e y = 0, the positive root, in the form
+// without cancellation for each sign of (b - d y).
+fn display_curve_inverse(y_in: vec3<f32>) -> vec3<f32> {
+    let y = clamp(y_in, vec3<f32>(0.0), vec3<f32>(ACES_A / ACES_C - 1.0e-4));
+    let qa = ACES_A - ACES_C * y;
+    let qb = ACES_B - ACES_D * y;
+    let root = sqrt(qb * qb + 4.0 * qa * ACES_E * y);
+    let small = 2.0 * ACES_E * y / max(qb + root, vec3<f32>(1.0e-12));
+    let large = (root - qb) / (2.0 * qa);
+    return select(large, small, qb > vec3<f32>(0.0));
+}
+{% when _ %}
+// No tonemapper: the display shows exposure * c (clipped at white), which
+// is unbounded, so the working space keeps the Karis map of it.
+const WORK_MAX: f32 = 1.0;
+
+fn display_curve(c: vec3<f32>) -> vec3<f32> {
+    return tonemap(c);
+}
+
+fn display_curve_inverse(t: vec3<f32>) -> vec3<f32> {
+    return untonemap(t);
+}
+{% endmatch %}
+
+// Linear HDR -> working space and back.
+fn to_work(c: vec3<f32>) -> vec3<f32> {
+    return display_curve(c * params.exposure);
+}
+
+fn from_work(w: vec3<f32>) -> vec3<f32> {
+    return display_curve_inverse(w) / params.exposure;
 }
 
 fn rgb_to_ycocg(c: vec3<f32>) -> vec3<f32> {
@@ -305,7 +412,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         {% else %}
         let keep = 1.0;
         {% endif %}
-        let t = tonemap(sanitize(textureLoad(color_tex, p, 0).rgb));
+        let t = to_work(sanitize(textureLoad(color_tex, p, 0).rgb));
         // This sample really sits at p + 0.5 - j (G2: the jitter is removed
         // here, where the current frame is sampled, never in the vector).
         let d = vec2<f32>(p) + 0.5 - jitter - r_pos;
@@ -339,7 +446,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // No sample kept: every pixel of the 3x3 is HUD, and the pass-through
     // below replaces the result. Keep the arithmetic finite until then.
     if (weight_sum <= 0.0) {
-        current = tonemap(sanitize(textureLoad(color_tex, p0, 0).rgb));
+        current = to_work(sanitize(textureLoad(color_tex, p0, 0).rgb));
         weight_sum = 1.0;
         m1 = rgb_to_ycocg(current);
         m2 = m1 * m1;
@@ -382,7 +489,8 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let on_screen = all(uv_hist >= vec2<f32>(0.0)) && all(uv_hist <= vec2<f32>(1.0));
     let hist_texel = clamp(vec2<i32>(floor(uv_hist * O)), vec2<i32>(0), post_dims - 1);
     let n_prev = textureLoad(history_prev_tex, hist_texel, 0).a;
-    let history_rgb = sample_history(uv_hist, O);
+    // Fetched in the stored space, then moved to the working space.
+    let history_rgb = to_work(untonemap(sample_history(uv_hist, O)));
 
     // ---- 4.7 Disocclusion (G6) -------------------------------------------
     // Both sides compare two PREVIOUS-frame distances: where a surface point
@@ -468,7 +576,7 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     // ---- 4.6 Variance clip (G5). UNCONDITIONAL: wgsl_validation pins it. -
     // The box comes from the current frame's plain 3x3, in YCoCg of the
-    // tonemapped colour, so one HDR outlier cannot open it. The history is
+    // working space (bounded: one HDR outlier cannot open it). The history is
     // clipped along the line to the mean (not clamped per channel, which
     // lands on a box corner: a colour that may occur nowhere nearby).
     let mean = m1 / kept;
@@ -480,10 +588,21 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     );
     let history_y = rgb_to_ycocg(history_rgb);
     let to_history = history_y - mean;
-    // The floor is a few steps of the rgba16float history's quantisation
-    // (2.4e-4 just below 1.0): below it a flat area would read its own
-    // rounding as a clipped history and forget everything.
-    let box_extent = max(gamma * sigma, vec3<f32>(1.5e-3));
+    // The floor: a few steps of the STORED history's rgba16float
+    // quantisation, in working-space units, or a flat area reads its own
+    // rounding as a clipped history and forgets everything. 1.5e-3 covers it
+    // up to an HDR value of about 9 (the display curve's slope is <= 1, so
+    // a stored step is at most ~8e-4 there); above, a stored step grows to
+    // 3e-3 near white, so the floor follows three steps of the stored value
+    // at the box mean.
+    let mean_linear = from_work(max(ycocg_to_rgb(mean), vec3<f32>(0.0)));
+    let mean_peak = max(max3(mean_linear), 1.0e-6);
+    let t_peak = max3(tonemap(mean_linear));
+    // Three f16 steps (2^-11 of the value) of the stored peak, back in HDR.
+    let t_up = min(t_peak * (1.0 + 3.0 * 4.8828125e-4), TONEMAPPED_MAX);
+    let peak_up = t_up / (1.0 - t_up);
+    let quant = max3(abs(to_work(mean_linear * (peak_up / mean_peak)) - ycocg_to_rgb(mean)));
+    let box_extent = max(gamma * sigma, vec3<f32>(max(1.5e-3, quant)));
     let over = abs(to_history) / box_extent;
     let clip_scale = max(max(over.x, max(over.y, over.z)), 1.0);
     let history_clipped = max(ycocg_to_rgb(mean + to_history / clip_scale), vec3<f32>(0.0));
@@ -539,13 +658,13 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let is_hud = params.reactive_valid > 0.5 && r_hud >= HUD_REACTIVE;
     if (is_hud) {
         let top = mix(
-            tonemap(sanitize(textureLoad(color_tex, h00, 0).rgb)),
-            tonemap(sanitize(textureLoad(color_tex, h10, 0).rgb)),
+            to_work(sanitize(textureLoad(color_tex, h00, 0).rgb)),
+            to_work(sanitize(textureLoad(color_tex, h10, 0).rgb)),
             hud_f.x,
         );
         let bottom = mix(
-            tonemap(sanitize(textureLoad(color_tex, h01, 0).rgb)),
-            tonemap(sanitize(textureLoad(color_tex, h11, 0).rgb)),
+            to_work(sanitize(textureLoad(color_tex, h01, 0).rgb)),
+            to_work(sanitize(textureLoad(color_tex, h11, 0).rgb)),
             hud_f.x,
         );
         result = mix(top, bottom, hud_f.y);
@@ -555,21 +674,27 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     // NaN / Inf guard: one bad value in the history would spread through the
     // clip box forever.
-    let finite = all(result >= vec3<f32>(0.0)) && all(result <= vec3<f32>(1.0)) && n_next >= 0.0 && n_next <= 1024.0;
+    // The blend of two working-space colours can land an ulp or two above
+    // WORK_MAX (the display curve approaches it); only a real overflow or a
+    // NaN (every comparison false) is "not finite". Then clamp back.
+    let finite = all(result >= vec3<f32>(0.0)) && all(result <= vec3<f32>(WORK_MAX * 1.001)) && n_next >= 0.0 && n_next <= 1024.0;
     if (!finite) {
         result = current;
         n_next = 0.0;
     }
-    result = min(result, vec3<f32>(TONEMAPPED_MAX));
+    result = min(result, vec3<f32>(WORK_MAX));
+    // Back to linear HDR (out_tex) and to the stored space (the history).
+    let result_linear = sanitize(from_work(result));
+    let stored = min(tonemap(result_linear), vec3<f32>(TONEMAPPED_MAX));
 
     // ---- 4.9 Outputs -----------------------------------------------------
     // Both stores go through `taa_round_f16`: a truncating store would darken
     // the history a little more every frame (see f16_round.wgsl). The
     // history length is left as it is: a truncated `n` is at most one step
     // short and is rebuilt from the cap every frame, so it does not compound.
-    textureStore(history_curr_tex, q, vec4<f32>(taa_round_f16(result), n_next));
+    textureStore(history_curr_tex, q, vec4<f32>(taa_round_f16(stored), n_next));
 
-    var out_color = untonemap(result);
+    var out_color = result_linear;
     let view = u32(params.debug_view + 0.5);
     if (view != 0u) {
         if (view == 1u) {
@@ -598,9 +723,9 @@ fn cs_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         } else if (view == 6u) {
             out_color = vec3<f32>(confidence);
         } else if (view == 8u) {
-            out_color = untonemap(history_clipped);
+            out_color = from_work(history_clipped);
         } else if (view == 9u) {
-            out_color = untonemap(current);
+            out_color = from_work(current);
         } else if (view == 10u) {
             // Previous depth against where this surface was: 0.5 = the same
             // surface, darker = something nearer was there (disocclusion),

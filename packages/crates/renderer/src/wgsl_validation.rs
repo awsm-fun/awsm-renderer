@@ -3670,12 +3670,22 @@ fn taa_resolve_shader_validates() {
     use crate::render_passes::taa::shader::{
         cache_key::ShaderCacheKeyTaa, template::ShaderTemplateTaa,
     };
-    for reverse_z in [false, true] {
-        for reactive in [false, true] {
-            let label = format!("taa resolve reverse_z={reverse_z} reactive={reactive}");
+    use crate::post_process::ToneMapping;
+    for (reverse_z, reactive, tonemapping) in [false, true].into_iter().flat_map(|z| {
+        [false, true].into_iter().flat_map(move |r| {
+            [ToneMapping::None, ToneMapping::KhronosNeutralPbr, ToneMapping::Aces]
+                .into_iter()
+                .map(move |t| (z, r, t))
+        })
+    }) {
+        {
+            let label = format!(
+                "taa resolve reverse_z={reverse_z} reactive={reactive} tonemapping={tonemapping:?}"
+            );
             let src = ShaderTemplateTaa::try_from(&ShaderCacheKeyTaa {
                 reverse_z,
                 reactive,
+                tonemapping,
             })
             .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
             .into_source()
@@ -3693,7 +3703,7 @@ fn taa_resolve_shader_validates() {
             for line in [
                 "let mean = m1 / kept;",
                 "let sigma = sqrt(max(m2 / kept - mean * mean, vec3<f32>(0.0)));",
-                "let box_extent = max(gamma * sigma, vec3<f32>(1.5e-3));",
+                "let box_extent = max(gamma * sigma, vec3<f32>(max(1.5e-3, quant)));",
                 "let clip_scale = max(max(over.x, max(over.y, over.z)), 1.0);",
                 "let history_clipped = max(ycocg_to_rgb(mean + to_history / clip_scale), vec3<f32>(0.0));",
                 "var result = mix(history_clipped, current, alpha);",
@@ -3719,11 +3729,25 @@ fn taa_resolve_shader_validates() {
                 !src.contains("clamp(history_y") && !src.contains("clamp(history_rgb, nb_"),
                 "{label}: history must be clipped towards the mean, not clamped per channel"
             );
-            // G11 — the box and the blend live in tonemapped space.
+            // G11 — the box and the blend live in the working space (what
+            // the display shows): the current 3×3 and the history are moved
+            // there before the moments, the clip and the blend.
             assert!(
-                src.contains("let t = tonemap(sanitize(textureLoad(color_tex, p, 0).rgb));"),
-                "{label}: the current 3×3 must be tonemapped before the moments"
+                src.contains("let t = to_work(sanitize(textureLoad(color_tex, p, 0).rgb));"),
+                "{label}: the current 3×3 must be in the working space before the moments"
             );
+            assert!(
+                src.contains("let history_rgb = to_work(untonemap(sample_history(uv_hist, O)));"),
+                "{label}: the history must be in the working space before the clip"
+            );
+            // The working space is the display's own curve for this
+            // tonemapper.
+            let curve = match tonemapping {
+                ToneMapping::KhronosNeutralPbr => "let new_peak = 1.0 - KN_D * KN_D / (peak + KN_D - KN_START);",
+                ToneMapping::Aces => "return x * (ACES_A * x + ACES_B) / (x * (ACES_C * x + ACES_D) + ACES_E);",
+                ToneMapping::None => "return tonemap(c);",
+            };
+            assert!(src.contains(curve), "{label}: working space is not the display curve");
             // G2 — jitter removed where the current frame is sampled.
             assert!(
                 src.contains("let d = vec2<f32>(p) + 0.5 - jitter - r_pos;"),
@@ -3836,6 +3860,7 @@ fn taa_rgba16float_stores_are_rounded() {
         let src = ShaderTemplateTaa::try_from(&ShaderCacheKeyTaa {
             reverse_z: true,
             reactive,
+            tonemapping: crate::post_process::ToneMapping::KhronosNeutralPbr,
         })
         .unwrap()
         .into_source()
@@ -3891,4 +3916,102 @@ fn taa_rgba16float_stores_are_rounded() {
     assert_eq!(round_f16(f32::INFINITY), f32::INFINITY);
     // The largest value below 1 the history may hold stays below 1.
     assert!(round_f16(0.9995) < 1.0);
+}
+
+#[test]
+fn taa_working_space_curves_invert() {
+    // The resolve averages in the display's working space and converts back
+    // every frame (history stored in Karis(HDR)), so the inverse must undo
+    // the curve closely, or the history drifts a little every frame. CPU
+    // mirrors of `display_curve` / `display_curve_inverse` in resolve.wgsl;
+    // the WGSL is pinned to the same formulas by
+    // `taa_resolve_shader_validates`.
+    fn max3(c: [f32; 3]) -> f32 {
+        c[0].max(c[1]).max(c[2])
+    }
+    fn min3(c: [f32; 3]) -> f32 {
+        c[0].min(c[1]).min(c[2])
+    }
+    const S: f32 = 0.76;
+    const D: f32 = 0.24;
+    const DS: f32 = 0.15;
+    fn kn(c: [f32; 3]) -> [f32; 3] {
+        let x = min3(c);
+        let offset = if x < 0.08 { x - 6.25 * x * x } else { 0.04 };
+        let r = c.map(|v| v - offset);
+        let peak = max3(r);
+        if peak < S {
+            return r;
+        }
+        let np = 1.0 - D * D / (peak + D - S);
+        let g = 1.0 - 1.0 / (DS * (peak - np) + 1.0);
+        r.map(|v| v * (np / peak) * (1.0 - g) + np * g)
+    }
+    fn kn_inv(y: [f32; 3]) -> [f32; 3] {
+        let y = y.map(|v| v.max(0.0));
+        let np = max3(y).clamp(S, 0.999_999_9);
+        let peak = D * D / (1.0 - np) - D + S;
+        let g = 1.0 - 1.0 / (DS * (peak - np) + 1.0);
+        let c = if max3(y) < S {
+            y
+        } else {
+            y.map(|v| (v - g * np) / (1.0 - g) * (peak / np.max(1e-6)))
+        };
+        let m = min3(c).max(0.0);
+        let offset = if m < 0.04 { (m / 6.25).sqrt() - m } else { 0.04 };
+        c.map(|v| (v + offset).max(0.0))
+    }
+    const A: f32 = 2.51;
+    const B: f32 = 0.03;
+    const C: f32 = 2.43;
+    const DD: f32 = 0.59;
+    const E: f32 = 0.14;
+    fn aces(x: [f32; 3]) -> [f32; 3] {
+        x.map(|x| x * (A * x + B) / (x * (C * x + DD) + E))
+    }
+    fn aces_inv(y: [f32; 3]) -> [f32; 3] {
+        y.map(|y| {
+            let y = y.clamp(0.0, A / C - 1e-4);
+            let qa = A - C * y;
+            let qb = B - DD * y;
+            let root = (qb * qb + 4.0 * qa * E * y).sqrt();
+            if qb > 0.0 {
+                2.0 * E * y / (qb + root).max(1e-12)
+            } else {
+                (root - qb) / (2.0 * qa)
+            }
+        })
+    }
+    // What matters is what the display shows: the curve of the round trip
+    // against the curve of the colour (a strongly compressed, saturated
+    // highlight's weakest channel is poorly conditioned in HDR but invisible
+    // after the curve). Below the knee the round trip is exact in HDR too.
+    let mut worst = (0.0f32, 0.0f32, 0.0f32);
+    for i in 0..2000 {
+        let t = i as f32 / 2000.0;
+        for c in [
+            [t * 0.1, t * 0.1, t * 0.1],
+            [t * 3.0, t * 1.0, t * 0.2],
+            [t * 40.0, t * 30.0, t * 35.0],
+            [0.01, t * 8.0, 0.5 * t],
+            [t * 0.7, t * 0.3, t * 0.05],
+        ] {
+            let (k1, a1) = (kn(kn_inv(kn(c))), kn(c));
+            let (k2, a2) = (aces(aces_inv(aces(c))), aces(c));
+            for k in 0..3 {
+                worst.0 = worst.0.max((k1[k] - a1[k]).abs());
+                worst.1 = worst.1.max((k2[k] - a2[k]).abs());
+            }
+            if max3(c) < 0.7 {
+                let back = kn_inv(kn(c));
+                for k in 0..3 {
+                    worst.2 = worst.2.max((back[k] - c[k]).abs());
+                }
+            }
+        }
+    }
+    // A thousandth of an 8-bit display level.
+    assert!(worst.0 < 4e-6, "Khronos neutral round trip, display space: {}", worst.0);
+    assert!(worst.1 < 4e-6, "ACES round trip, display space: {}", worst.1);
+    assert!(worst.2 < 1e-5, "Khronos neutral below the knee, HDR: {}", worst.2);
 }

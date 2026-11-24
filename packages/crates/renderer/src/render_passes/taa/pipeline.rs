@@ -19,7 +19,11 @@ impl TaaPipelines {
         bind_groups: &TaaBindGroups,
         reactive: bool,
     ) -> Result<Self> {
-        let key = Self::shader_cache_key(ctx.features.reverse_z, reactive);
+        let key = Self::shader_cache_key(
+            ctx.features.reverse_z,
+            reactive,
+            ctx.post_processing.tonemapping,
+        );
         ctx.shaders
             .ensure_keys(ctx.gpu, vec![ShaderCacheKey::from(key.clone())])
             .await?;
@@ -47,10 +51,15 @@ impl TaaPipelines {
         vec![self.resolve]
     }
 
-    pub fn shader_cache_key(reverse_z: bool, reactive: bool) -> ShaderCacheKeyTaa {
+    pub fn shader_cache_key(
+        reverse_z: bool,
+        reactive: bool,
+        tonemapping: crate::post_process::ToneMapping,
+    ) -> ShaderCacheKeyTaa {
         ShaderCacheKeyTaa {
             reverse_z,
             reactive,
+            tonemapping,
         }
     }
 }

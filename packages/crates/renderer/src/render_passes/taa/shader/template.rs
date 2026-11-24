@@ -4,6 +4,7 @@
 use askama::Template;
 
 use crate::{
+    post_process::ToneMapping,
     render_passes::taa::shader::cache_key::{ShaderCacheKeyTaa, ShaderCacheKeyTaaReactiveSeed},
     shaders::{AwsmShaderError, Result},
 };
@@ -16,6 +17,8 @@ pub struct ShaderTemplateTaa {
     pub reverse_z: bool,
     /// Reactive-mask binding (plan phase 3).
     pub reactive: bool,
+    /// The display tonemapper (the working space).
+    pub tonemapping: ToneMapping,
 }
 
 impl TryFrom<&ShaderCacheKeyTaa> for ShaderTemplateTaa {
@@ -25,6 +28,7 @@ impl TryFrom<&ShaderCacheKeyTaa> for ShaderTemplateTaa {
         Ok(Self {
             reverse_z: value.reverse_z,
             reactive: value.reactive,
+            tonemapping: value.tonemapping,
         })
     }
 }
