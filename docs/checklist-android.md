@@ -44,6 +44,23 @@ rejection.
 - [ ] Add a shadow-casting directional light. EVSM + ShadowGen
       submit and resolve; shadows render.
 
+## TAA ([TAA](TAA.md))
+
+- [ ] Switch to TAA (scene settings or `set_anti_aliasing`). Note
+      `taa_velocity_path()`: `PrepReconstruction` on a device with
+      fewer than 36 bytes per sample or fewer than 10 storage buffers
+      per stage, else `GeometryTarget`.
+- [ ] No driver rejection on the recompile; `taa_fallback_reason()`
+      is `None` (otherwise the renderer is on MSAA 4×: record the
+      reason).
+- [ ] Orbit and stop: edges converge within a few frames of stopping,
+      no trails on static geometry, no GPU validation errors in the
+      log.
+- [ ] Skinned and morphed meshes animate without smearing (on the
+      fallback path they are reactive while they deform).
+- [ ] Quality preset (0.67): the image is sharp after a still second;
+      a governor step (`set_taa_render_scale`) does not flash or reset.
+
 ## Dynamic-materials cross-device
 
 - [ ] On desktop: register a dynamic material via material-editor,

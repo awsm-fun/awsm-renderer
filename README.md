@@ -39,6 +39,10 @@ The core rendering is done in these main passes:
 
 There's a few more implmentation details around msaa, hooks, and hud rendering as well, but those are the main passes.
 
+## Anti-aliasing
+
+Four modes: MSAA 4× (the default), SMAA, MSAA + SMAA, and TAA. With TAA on, a resolve pass after the transparent pass (and SSR) jitters and accumulates the image over frames, which also smooths shading and specular aliasing; below a render scale of 1 it upscales (presets at 0.67, 0.58 and 0.5 of the width and height). Effects and display then run at the output size. See [TAA](docs/TAA.md).
+
 ## Buffers
 
 The overall idea is that we load all the data we need for rendering into GPU buffers ahead of time, and then reference that data via offsets when issuing draw calls. 

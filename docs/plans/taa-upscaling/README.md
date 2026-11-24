@@ -1,6 +1,8 @@
 # TAA + temporal upscaling
 
-**Status:** designed, not started (2026-11-23).
+**Status:** implemented on `feat/taa-upscaling` (phases 0-5); gates: see
+[05 Results](05-verification.md#results); not all met. The durable reference
+is [`docs/TAA.md`](../../TAA.md).
 
 Temporal anti-aliasing that also upscales: render fewer pixels each frame,
 jitter them, and rebuild a full-resolution image from this frame plus the
@@ -55,20 +57,20 @@ Separate, not part of the phases:
 
 ## The decisions, in one place
 
-| Question | Decision | Where |
-|---|---|---|
-| Jitter | Halton(2,3), ±0.5 render pixel, constant amplitude, 8 phases × upscale² | 03 §1 |
-| Motion vectors | Per-surface, unjittered, from the geometry pass (5th target, `rg16float`) | 03 §2 |
-| Devices at 32 B/sample | Camera + rigid-object motion reconstructed in the prep pass; non-rigid meshes reactive | 03 §2.4 |
-| Previous transforms, skins, morphs | New `prev_*` GPU buffers, copied at the end of each frame | 03 §2.3 |
-| History | Output resolution, `rgba16float`, alpha = accumulated frame count | 03 §3 |
-| History sampling | 5-tap Catmull-Rom | 03 §4.5 |
-| Rejection | Variance clip in YCoCg, in tonemapped space; depth disocclusion test; off-screen reset | 03 §4.6–4.7 |
-| Blend | 1/(n+1), n capped at 16 (TAA) / 24 (upscaling); raised by motion, reactivity, low confidence | 03 §4.8 |
-| Things without motion vectors | Reactive mask: transparents, particles, UV-flow, the HUD | 03 §5 |
-| Placement | After SSR composite, before bloom / DoF / effects / display | 03 §6 |
-| MSAA / SMAA | Off while TAA is on (`AntiAliasing::Taa`) | 03 §6 |
-| Texture LOD | Gradients scaled by render/output (negative mip bias) | 03 §7 |
+| Question | Decision | Where | As implemented |
+|---|---|---|---|
+| Jitter | Halton(2,3), ±0.5 render pixel, constant amplitude, 8 phases × upscale² | 03 §1 | as designed; SSR and volumetric jitter indices offset by 7 under TAA |
+| Motion vectors | Per-surface, unjittered, from the geometry pass (5th target, `rg16float`) | 03 §2 | as designed |
+| Devices at 32 B/sample | Camera + rigid-object motion reconstructed in the prep pass; non-rigid meshes reactive | 03 §2.4 | `rg32float` storage texture (`rg16float` is not a core storage format); non-rigid meshes reactive at 0.5 only while they deform; device test is 36 B/sample **and** 10 storage buffers per stage |
+| Previous transforms, skins, morphs | New `prev_*` GPU buffers, copied at the end of each frame | 03 §2.3 | one `prev_state` buffer with three regions (10 storage buffers per stage on the M1); transforms at the full 112 B stride; new / reused ranges fixed up at frame start |
+| History | Output resolution, `rgba16float`, alpha = accumulated frame count | 03 §3 | as designed; previous depth is a depth-format copy (`depth32float` cannot copy to `r32float`) |
+| History sampling | 5-tap Catmull-Rom | 03 §4.5 | as designed |
+| Rejection | Variance clip in YCoCg, in tonemapped space; depth disocclusion test; off-screen reset | 03 §4.6–4.7 | plus a clip-box floor (1.5e-3) and a second, own-surface disocclusion test; both disocclusion distances are previous-frame distances |
+| Blend | 1/(n+1), n capped at 16 (TAA) / 24 (upscaling); raised by motion, reactivity, low confidence | 03 §4.8 | upscaling cap = 16 × pixel ratio (35.6 at 0.67, 64 at 0.5); cap shortened to 2 with speed; motion-boundary weight; clip weight 1.0 (not 0.5); still γ widened when upscaling |
+| Things without motion vectors | Reactive mask: transparents, particles, UV-flow, the HUD | 03 §5 | transparents 0.3 per unit alpha (not 0.8), reactive materials 0.2 (not 0.6) written by a seed draw; `temporal: Auto / Stable / Reactive`; HUD drawn after the resolve (transparent-pipeline HUD) or passed through (opaque-path HUD) |
+| Placement | After SSR composite, before bloom / DoF / effects / display | 03 §6 | as designed; RCAS and the HUD-after-resolve pass follow the resolve |
+| MSAA / SMAA | Off while TAA is on (`AntiAliasing::Taa`) | 03 §6 | `AntiAliasing { taa: Option<TaaConfig>, .. }`; MSAA + SMAA kept as a mode; TAA falls back to MSAA 4x if its pipelines fail |
+| Texture LOD | Gradients scaled by render/output (negative mip bias) | 03 §7 | via the geometry pass's stored derivatives (a `mip_bias` variant), `mip_bias_extra` 0 by sweep |
 
 ## Phases
 

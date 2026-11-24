@@ -79,7 +79,8 @@ Instrumented passes: **Geometry**, **Shadow Generation** (summed over every
 shadow view), **Shadow EVSM Moments / Blur H / Blur V**, **Light Culling**,
 **Material Classify**, **Material Prep**, **Material Prep Edge**, **Shadow
 Denoise Blur H / V**, **Material Opaque** (unified shade) + **Final Blend**,
-**Material Transparent** (+ HUD), **Lines**, **SSR**, **Smaa**, **Volumetrics**, **Bloom**,
+**Material Transparent** (+ HUD), **Lines**, **SSR**, **Smaa**, **Taa** (the TAA resolve) and
+**TaaRcas** (its sharpening, when on), **Volumetrics**, **Bloom**,
 **Effects**, and **Display** — render *and* compute passes. A name timed more
 than once in a frame is summed first, so every row reads "per frame". Zero-cost
 when off: no query set is created, no timestamp writes are attached.

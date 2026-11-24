@@ -490,7 +490,7 @@ AwsmRendererBuilder::new(gpu)
         indirect_first_instance: FeatureToggle::Auto,
     })
     .with_shadows_config(ShadowsConfig { ... })
-    .with_anti_aliasing(AntiAliasing { msaa_sample_count, mipmap })
+    .with_anti_aliasing(AntiAliasing::msaa4()) // or ::none(), ::smaa(), ::taa(TaaConfig::..)
     .build()
     .await?;
 ```
@@ -509,6 +509,8 @@ AwsmRendererBuilder::new(gpu)
 | `ShadowsConfig::evsm_atlas_size` | shadows/config.rs | 2048 | EVSM moment-write atlas (directional cascades only). |
 | `AntiAliasing::msaa_sample_count` | anti_alias.rs | `Some(4)` | 4× MSAA on visibility-buffer + transparent target. `None` skips MSAA entirely. |
 | `AntiAliasing::mipmap` | anti_alias.rs | varies | Mipmap-derivatives mode for the visibility decode. |
+| `AntiAliasing::smaa` | anti_alias.rs | `false` | SMAA post-process. Alone (`AntiAliasing::smaa()`) or on top of MSAA. |
+| `AntiAliasing::taa` | anti_alias.rs | `None` | TAA (`AntiAliasing::taa(TaaConfig)`), exclusive with MSAA and SMAA. `TaaConfig::render_scale` below 1 upscales: 0.67 shades 45% of the pixels, 0.5 shades 25%. See [TAA](TAA.md) for costs and quality per scale. |
 | `default_cheap_material_pixel_threshold` | lib.rs | 64 | Global default for `Mesh::cheap_material_pixel_threshold`. Override per-frame from your quality system if you want tier-tied behaviour. |
 
 ### Per-light shadow knobs (`shadows::LightShadowParams`)
