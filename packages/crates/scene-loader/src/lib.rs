@@ -5267,6 +5267,48 @@ mod anti_aliasing_tests {
             .collect()
     }
 
+    /// Every authored disocclusion level reaches the renderer as itself, and a
+    /// scene file naming one loads it through the anti-aliasing path the
+    /// player and the editor's settings_sync both use.
+    #[test]
+    fn every_disocclusion_level_passes_through() {
+        use awsm_renderer::taa::TaaDisocclusion as R;
+        use awsm_renderer_scene::TaaDisocclusionSetting as S;
+        for (authored, expected) in [
+            (S::Depth, R::Depth),
+            (S::DepthAndMotion, R::DepthAndMotion),
+            (S::DepthMotionAndId, R::DepthMotionAndId),
+        ] {
+            let cfg = taa_settings_to_renderer(&TaaSettings {
+                disocclusion: authored,
+                ..TaaSettings::default()
+            });
+            assert_eq!(cfg.disocclusion, expected);
+            let aa = anti_aliasing_to_renderer(
+                &pp(AntiAliasingConfig {
+                    msaa: false,
+                    smaa: false,
+                    taa: Some(TaaSettings {
+                        disocclusion: authored,
+                        ..TaaSettings::default()
+                    }),
+                }),
+                &AntiAliasing::default(),
+            );
+            assert_eq!(aa.taa.expect("taa").disocclusion, expected);
+        }
+    }
+
+    /// The schema's default disocclusion level is the renderer's (each layer
+    /// has ONE default site).
+    #[test]
+    fn schema_disocclusion_default_is_the_renderers() {
+        assert_eq!(
+            taa_settings_to_renderer(&TaaSettings::default()).disocclusion,
+            awsm_renderer::taa::TaaDisocclusion::default()
+        );
+    }
+
     /// The schema's tuning defaults are the renderer's, field by field (the
     /// values may change while tuning; each layer has ONE default site).
     #[test]

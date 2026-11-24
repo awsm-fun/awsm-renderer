@@ -192,6 +192,10 @@ async fn build_runtime(
         }
     };
     let _ = renderer.set_mesh_billboard_mode(mesh_key, BillboardMode::Full);
+    // TAA: nothing reprojects a particle, so its pixels take the particle
+    // reactive weight (`TaaTuning::reactive_particles`), as the scene loader's
+    // emitters do. Inert without TAA.
+    let _ = renderer.set_mesh_taa_particles(mesh_key, true);
     let _ = renderer.set_mesh_shadow_flags(
         mesh_key,
         awsm_renderer::shadows::MeshShadowFlags {

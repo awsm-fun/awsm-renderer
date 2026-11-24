@@ -143,6 +143,7 @@ scale is `TaaConfig::render_scale`.
 |---|--:|---|
 | `render_scale` | 1.0 | Render size / output size, `0.5..=1.0`. Quantised to 0.01 (`RENDER_SCALE_STEP`); NaN becomes 1.0. |
 | `sharpen` | 0.0 | RCAS strength after the resolve, `0..=1`. 0 = no pass. |
+| `disocclusion` | `DepthMotionAndId` | `TaaDisocclusion`: which tests drop a pixel's history: `Depth`, `DepthAndMotion` (adds last frame's motion vectors), `DepthMotionAndId` (adds last frame's object id). Structural: a change rebuilds the TAA pass and restarts history. A level that is off allocates and binds nothing. |
 | `tuning` | `TaaTuning::default()` | The resolve's tuning, §2.4. |
 
 `TaaConfig::native()`, `TaaConfig::preset(p)`, `matching_preset()`,
@@ -180,8 +181,9 @@ output pixels per frame.
 | `max_history_moving` | 2.0 | History cap for a pixel moving at `max_history_moving_speed` or faster | Smoother motion, slower to sharpen after stopping | Sharpens again faster after motion stops |
 | `max_history_moving_speed` | 1.0 | The speed at which the cap reaches `max_history_moving` | | |
 | `motion_edge_alpha` | 1.0 | Minimum current-frame weight on a motion boundary (3x3 with surfaces moving differently) | | Smoother moving silhouettes, more trail on them |
-| `motion_edge_speed` | 2.0 | The relative speed at which `motion_edge_alpha` is reached | | |
-| `reactive_transparent` | 0.3 | Reactive value per unit of alpha written by transparent surfaces, particles and lines | Fewer trails behind and on particles, more shimmer on still glass and water | More trail, steadier glass |
+| `motion_edge_speed` | 0.5 | The relative speed at which `motion_edge_alpha` is reached | | |
+| `reactive_transparent` | 0.3 | Reactive value per unit of alpha written by transparent surfaces and lines (glass, water; not particles) | Fewer trails behind transparents, more shimmer on still glass and water | More trail, steadier glass |
+| `reactive_particles` | 1.0 | Reactive value on every pixel a particle mesh covers, whatever the sprite's alpha (meshes flagged by `set_mesh_taa_particles`; the scene loader flags every emitter). Nothing reprojects a particle (§3.6) | | Particles and their soft skirts keep some history (trails behind them) |
 | `reactive_material` | 0.2 | Reactive value of materials resolved `Reactive` (§2.6) | Less smearing of animated colour, more aliasing on those surfaces | More smearing |
 | `reactive_ssr` | 0.0 | Extra reactivity from SSR reflectivity | For mirrors that trail under camera motion | |
 | `mip_bias_extra` | 0.0 | Added to `log2(render_scale)` for the texture LOD bias | Blurrier textures | Sharper textures, more shimmer (−0.5 raised flicker p99 from 4 to 6 at 0.67) |
