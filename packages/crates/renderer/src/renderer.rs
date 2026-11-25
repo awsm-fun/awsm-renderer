@@ -3102,6 +3102,7 @@ impl AwsmRendererBuilder {
             evsm_pipeline_cache_keys,
         )?;
         render_passes.effects.pipelines.install_resolved(
+            &anti_aliasing,
             &post_processing,
             compute_keys[effects_compute_range].to_vec(),
         );
@@ -3289,6 +3290,7 @@ impl AwsmRendererBuilder {
         // ...and its RCAS pass when the boot config sharpens (a preset other
         // than native). No-op without TAA or at sharpen 0.
         _self.sync_taa_rcas().await?;
+        _self.sync_taa_dof_pre().await?;
 
         // Apply the configured registration ceiling (§2). Validated +
         // clamped in `with_bucket_config`, so this only sets the field; it

@@ -37,6 +37,52 @@ pub struct TaaConfig {
     /// What bloom reads under TAA: this frame's HDR render or the resolved
     /// image. See [`TaaBloomSource`] and `docs/TAA.md` §1, §6.
     pub bloom_source: TaaBloomSource,
+    /// Where depth of field runs relative to the resolve, while DoF is on.
+    /// See [`TaaDofOrder`] and `docs/TAA.md` §1, §6.
+    pub dof_order: TaaDofOrder,
+}
+
+/// Where depth of field runs while TAA is on (`docs/TAA.md` §1, §3.12, §6).
+///
+/// Structural only while `PostProcessing::dof` is on: with DoF off both
+/// orders compile, allocate and dispatch exactly the same.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum TaaDofOrder {
+    /// On this frame's HDR render (`composite`, jittered, at render size),
+    /// before the resolve, which then accumulates the blurred image: the
+    /// order Unreal's temporal upscalers and FidelityFX (with upscaling)
+    /// use. The default. Out-of-focus discs of small bright sources keep
+    /// their energy, slight defocus is steadier, and the blur costs less (it
+    /// runs at render size). Costs one render-size rgba16f target while DoF
+    /// is on. At render scales below 1 the blur is computed at render
+    /// resolution: whole-frame error against the reference about 3% higher
+    /// than `AfterResolve` on Dreidel Derby's title at 0.67, though the
+    /// out-of-focus highlights are closer.
+    ///
+    /// A transparent-pipeline HUD mesh is drawn after the resolve and so is
+    /// never blurred, where with no AA (and `AfterResolve`) the effects pass
+    /// blurs it by the scene depth behind it. Deliberate: a HUD should stay
+    /// sharp. Opaque-path HUD meshes are blurred as with no AA.
+    #[default]
+    BeforeResolve,
+    /// On the resolved image, at output size, in the effects pass (as with
+    /// no AA or MSAA). The resolve has already averaged small bright sources
+    /// in display space, so their out-of-focus discs are dimmer than the
+    /// reference's (18-20% on Dreidel Derby's title menorah), and the CoC,
+    /// read through a 2x2 depth footprint that moves with the jitter,
+    /// changes from frame to frame at depth edges with nothing to average
+    /// it (slight defocus flickers).
+    AfterResolve,
+}
+
+impl TaaDofOrder {
+    /// The name the scene format and the editor use.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AfterResolve => "after_resolve",
+            Self::BeforeResolve => "before_resolve",
+        }
+    }
 }
 
 /// What bloom's prefilter reads while TAA is on (`docs/TAA.md` §1, §6).
@@ -55,11 +101,17 @@ pub enum TaaBloomSource {
     /// sources, and averaged over the jitter its halo is the reference's.
     /// The default. In a still image the halo of a source smaller than a
     /// pixel pulses with the 8-frame jitter cycle (a few percent of the
-    /// halo; `docs/TAA.md` §6).
+    /// halo; `docs/TAA.md` §6). A transparent-pipeline HUD, drawn after the
+    /// resolve, is not in this image and does not bloom (it does with no AA,
+    /// MSAA and `Resolved`); opaque-path HUD meshes do. With depth of field
+    /// before the resolve (`TaaDofOrder::BeforeResolve`) this is the image
+    /// before DoF, the no-AA order (bloom is added over the blur).
     #[default]
     CurrentFrame,
     /// The resolved image (`taa_out`): a steady halo, but thin or small very
-    /// bright sources lose 12-25% of it (more for thinner ones).
+    /// bright sources lose 12-25% of it (more for thinner ones). With
+    /// `TaaDofOrder::BeforeResolve` it is also blurred by depth of field, so
+    /// defocused sources bloom less than with no AA.
     Resolved,
 }
 
@@ -133,6 +185,7 @@ impl TaaConfig {
             tuning: TaaTuning::default(),
             disocclusion: TaaDisocclusion::default(),
             bloom_source: TaaBloomSource::default(),
+            dof_order: TaaDofOrder::default(),
         }
     }
 
@@ -144,6 +197,7 @@ impl TaaConfig {
             tuning: TaaTuning::default(),
             disocclusion: TaaDisocclusion::default(),
             bloom_source: TaaBloomSource::default(),
+            dof_order: TaaDofOrder::default(),
         }
     }
 

@@ -908,6 +908,11 @@ pub enum EditorCommand {
         /// What bloom reads under TAA (`current_frame` | `resolved`). Live.
         #[serde(default)]
         taa_bloom_source: Option<crate::TaaBloomSourceSetting>,
+        /// Where depth of field runs under TAA (`after_resolve` |
+        /// `before_resolve`). With DoF on, recompiles the effects pass (no
+        /// history reset); with DoF off, changes nothing.
+        #[serde(default)]
+        taa_dof_order: Option<crate::TaaDofOrderSetting>,
         #[serde(default)]
         taa_tuning: Option<crate::TaaTuningPatch>,
         /// TAA debug view (transient, never persisted or undone).

@@ -89,6 +89,16 @@ impl AntiAliasing {
                 == other.taa.as_ref().map(|t| t.disocclusion)
     }
 
+    /// Whether depth of field runs before the TAA resolve
+    /// (`TaaDofOrder::BeforeResolve`). Says nothing about DoF being on: the
+    /// effects pass compiles its DoF only when DoF is on and this is false
+    /// ([`crate::post_process::PostProcessing::dof`]).
+    pub fn dof_before_resolve(&self) -> bool {
+        self.taa
+            .as_ref()
+            .is_some_and(|t| t.dof_order == crate::taa::TaaDofOrder::BeforeResolve)
+    }
+
     /// Returns whether MSAA is enabled and supported.
     pub fn has_msaa_checked(&self) -> crate::error::Result<bool> {
         match self.msaa_sample_count {
@@ -312,7 +322,32 @@ impl AwsmRenderer {
         if self.anti_aliasing.same_structure(&aa) && !path_changed {
             let bloom_source_changed = self.anti_aliasing.taa.as_ref().map(|t| t.bloom_source)
                 != aa.taa.as_ref().map(|t| t.bloom_source);
+            let dof_order_changed =
+                self.anti_aliasing.dof_before_resolve() != aa.dof_before_resolve();
             self.anti_aliasing = aa;
+            // DoF before / after the resolve, while DoF is on: the effects
+            // pass compiles its DoF in or out, the pre-resolve DoF pass is
+            // built or dropped, and the resolve's input moves between
+            // `composite` and that pass's output. Nothing else rebuilds; with
+            // DoF off nothing happens at all.
+            if dof_order_changed && self.post_processing.dof {
+                self.render_passes
+                    .effects
+                    .pipelines
+                    .set_render_pipeline_keys(
+                        &self.anti_aliasing,
+                        &self.post_processing,
+                        &self.gpu,
+                        &mut self.shaders,
+                        &mut self.pipelines,
+                        &self.pipeline_layouts,
+                        &self.render_textures.formats,
+                        self.features.reverse_z,
+                    )
+                    .await?;
+                self.bind_groups
+                    .mark_create(crate::bind_groups::BindGroupCreate::TextureViewRecreate);
+            }
             // Bloom's source moves between `composite` and `taa_out`: its
             // prefilter bind group only.
             if bloom_source_changed {
@@ -322,6 +357,8 @@ impl AwsmRenderer {
             // Sharpening on <-> off builds / drops the RCAS pass (its own
             // pipeline only; the frame's pipelines are untouched).
             self.sync_taa_rcas().await?;
+            // DoF before the resolve: builds / drops its pass.
+            self.sync_taa_dof_pre().await?;
             return Ok(());
         }
         // On a committed scene: drain anything still reserved first, so the

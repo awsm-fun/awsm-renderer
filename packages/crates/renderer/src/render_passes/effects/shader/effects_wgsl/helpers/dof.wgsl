@@ -59,7 +59,7 @@ fn calculate_signed_coc(linear_depth: f32, camera: Camera) -> f32 {
     // `viewport_size` is the render size.{% endif +%}
     let coc_pixels = coc_world * screen_height / SENSOR_HEIGHT;
 
-    return clamp(coc_pixels, -DOF_MAX_BLUR, DOF_MAX_BLUR);
+    return clamp(coc_pixels, -{% if dof_pre %}dof_pre_params.max_blur{% else %}DOF_MAX_BLUR{% endif %}, {% if dof_pre %}dof_pre_params.max_blur{% else %}DOF_MAX_BLUR{% endif %});
 }
 
 // ── `dof_data` ──────────────────────────────────────────────────────────────

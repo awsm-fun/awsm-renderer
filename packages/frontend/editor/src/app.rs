@@ -1544,6 +1544,7 @@ fn anti_aliasing_section() -> Dom {
                             taa_sharpen: None,
                             taa_disocclusion: None,
                             taa_bloom_source: None,
+                            taa_dof_order: None,
                             taa_tuning: None,
                             taa_debug_view: None,
                         })
@@ -1646,6 +1647,26 @@ fn anti_aliasing_section() -> Dom {
         }).await;
     }));
 
+    // DoF order: a select riding a Mutable like the bloom source (with DoF
+    // on, the effects pass recompiles; no history reset).
+    let dof_order = Mutable::new(knobs.dof_order.as_str().to_string());
+    spawn_local(clone!(dof_order => async move {
+        let mut first = true;
+        dof_order.signal_cloned().for_each(move |v| {
+            let fire = !first;
+            first = false;
+            async move {
+                if fire {
+                    if let Some(order) =
+                        awsm_renderer_editor_protocol::TaaDofOrderSetting::from_name(&v)
+                    {
+                        dispatch_dof_order(order);
+                    }
+                }
+            }
+        }).await;
+    }));
+
     // Disocclusion level: structural (the TAA pass is rebuilt and history
     // restarts), so like the mode it rides a Mutable and dispatches on change.
     let disocclusion = Mutable::new(knobs.disocclusion.as_str().to_string());
@@ -1711,6 +1732,25 @@ fn anti_aliasing_section() -> Dom {
                     "Render scale (render size / output size) and sharpening: Native 1.0, \
                      Quality 0.67, Balanced 0.58, Performance 0.5. Below 1 the scene renders \
                      smaller and TAA reconstructs the full resolution (temporal upscaling).",
+                ),
+                (
+                    "TAA bloom source",
+                    "What bloom reads under TAA. This frame (HDR, the default): this frame's \
+                     render before the resolve, as with no AA or MSAA, so thin and small very \
+                     bright sources keep their glow (in a still image the glow around a source \
+                     smaller than a pixel pulses slightly with the jitter). Resolved image: a \
+                     steady glow, but such sources lose part of it. A HUD drawn with a \
+                     transparent material does not bloom with This frame. Live.",
+                ),
+                (
+                    "TAA depth of field",
+                    "Where depth of field runs under TAA, while DoF is on. Before the resolve \
+                     (the default): on this frame's HDR render, so out-of-focus bright \
+                     highlights keep their energy, slight defocus is steadier, and the blur is \
+                     cheaper (it runs at render size); a HUD drawn with a transparent material \
+                     stays sharp. After the resolve: on the resolved image, as with no AA; \
+                     bright out-of-focus highlights come out dimmer. With DoF on a change \
+                     recompiles the effects pass. Costs: docs/TAA.md.",
                 ),
                 (
                     "TAA disocclusion test",
@@ -1788,6 +1828,19 @@ fn anti_aliasing_section() -> Dom {
                 vec![
                     ("current_frame".to_string(), "This frame (HDR)".to_string()),
                     ("resolved".to_string(), "Resolved image".to_string()),
+                ],
+            ),
+        ))
+        .child(row(
+            "TAA depth of field",
+            select(
+                dof_order,
+                vec![
+                    (
+                        "before_resolve".to_string(),
+                        "Before the resolve (HDR)".to_string(),
+                    ),
+                    ("after_resolve".to_string(), "After the resolve".to_string()),
                 ],
             ),
         ))
@@ -2001,8 +2054,32 @@ fn dispatch_aa(
                 taa_sharpen,
                 taa_disocclusion,
                 taa_bloom_source: None,
+                taa_dof_order: None,
                 taa_tuning,
                 taa_debug_view,
+            })
+            .await
+        {
+            Toast::error(format!("Anti-aliasing: {e}"));
+        }
+    });
+}
+
+/// Dispatch a change of where DoF runs under TAA (`SetAntiAliasing`, that
+/// field only).
+fn dispatch_dof_order(order: awsm_renderer_editor_protocol::TaaDofOrderSetting) {
+    spawn_local(async move {
+        if let Err(e) = controller()
+            .dispatch(EditorCommand::SetAntiAliasing {
+                mode: None,
+                taa_preset: None,
+                taa_render_scale: None,
+                taa_sharpen: None,
+                taa_disocclusion: None,
+                taa_bloom_source: None,
+                taa_dof_order: Some(order),
+                taa_tuning: None,
+                taa_debug_view: None,
             })
             .await
         {
@@ -2023,6 +2100,7 @@ fn dispatch_bloom_source(src: awsm_renderer_editor_protocol::TaaBloomSourceSetti
                 taa_sharpen: None,
                 taa_disocclusion: None,
                 taa_bloom_source: Some(src),
+                taa_dof_order: None,
                 taa_tuning: None,
                 taa_debug_view: None,
             })

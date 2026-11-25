@@ -121,6 +121,11 @@ pub struct TaaSettings {
     /// frame's HDR render keeps the glow of thin and small very bright
     /// sources; the resolved image loses most of it. See docs/TAA.md.
     pub bloom_source: TaaBloomSourceSetting,
+    /// Where depth of field runs under TAA (`"before_resolve"` |
+    /// `"after_resolve"`), while DoF is on: on this frame's HDR render before
+    /// the resolve (the default: bright out-of-focus highlights keep their
+    /// energy), or on the resolved image. See docs/TAA.md.
+    pub dof_order: TaaDofOrderSetting,
     /// Resolve tuning. Default = the shipped tuning.
     pub tuning: TaaTuningSettings,
 }
@@ -132,8 +137,50 @@ impl Default for TaaSettings {
             sharpen: 0.0,
             disocclusion: TaaDisocclusionSetting::default(),
             bloom_source: TaaBloomSourceSetting::default(),
+            dof_order: TaaDofOrderSetting::default(),
             tuning: TaaTuningSettings::default(),
         }
+    }
+}
+
+/// Where depth of field runs while TAA is on. Mirrors
+/// `awsm_renderer::taa::TaaDofOrder` (same default; a scene-loader test pins
+/// the two together). With DoF on, a change recompiles the effects pass and
+/// builds or drops the pre-resolve DoF pass (no history reset); with DoF
+/// off it changes nothing.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub enum TaaDofOrderSetting {
+    /// On this frame's HDR render, at render size, before the resolve: the
+    /// out-of-focus discs of small bright sources keep their energy, slight
+    /// defocus is steadier and the blur costs less. One extra render-size
+    /// target. A transparent-pipeline HUD stays sharp. The default.
+    #[default]
+    BeforeResolve,
+    /// On the resolved image, at output size, as with no AA or MSAA. Small
+    /// very bright sources out of focus come out dimmer than without TAA,
+    /// and slight defocus flickers more.
+    AfterResolve,
+}
+
+impl TaaDofOrderSetting {
+    /// Both orders.
+    pub const ALL: [TaaDofOrderSetting; 2] = [Self::BeforeResolve, Self::AfterResolve];
+
+    /// The schema / wire name (`"before_resolve"`, `"after_resolve"`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AfterResolve => "after_resolve",
+            Self::BeforeResolve => "before_resolve",
+        }
+    }
+
+    /// The order with that schema / wire name.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|d| d.as_str() == name)
     }
 }
 
@@ -708,6 +755,7 @@ gamma_moving = 0.6
                     sharpen: 0.25,
                     disocclusion: TaaDisocclusionSetting::Depth,
                     bloom_source: TaaBloomSourceSetting::CurrentFrame,
+                    dof_order: TaaDofOrderSetting::AfterResolve,
                     tuning: TaaTuningSettings {
                         max_history_native: 12.0,
                         ..TaaTuningSettings::default()
@@ -724,6 +772,60 @@ gamma_moving = 0.6
     /// The disocclusion level is written by its snake_case name, read back
     /// as itself, and a file without it (written before the option existed)
     /// takes the default.
+    #[test]
+    fn taa_bloom_source_and_dof_order_names_and_roundtrip() {
+        for (src, order) in TaaBloomSourceSetting::ALL
+            .into_iter()
+            .zip(TaaDofOrderSetting::ALL)
+        {
+            let authored = PostProcessConfig {
+                anti_aliasing: AntiAliasingConfig {
+                    msaa: false,
+                    smaa: false,
+                    taa: Some(TaaSettings {
+                        bloom_source: src,
+                        dof_order: order,
+                        ..TaaSettings::default()
+                    }),
+                },
+                ..PostProcessConfig::default()
+            };
+            let written = toml::to_string(&authored).unwrap();
+            assert!(
+                written.contains(&format!("bloom_source = \"{}\"", src.as_str())),
+                "{written}"
+            );
+            assert!(
+                written.contains(&format!("dof_order = \"{}\"", order.as_str())),
+                "{written}"
+            );
+            let read: PostProcessConfig = toml::from_str(&written).unwrap();
+            assert_eq!(read.anti_aliasing, authored.anti_aliasing);
+            assert_eq!(TaaBloomSourceSetting::from_name(src.as_str()), Some(src));
+            assert_eq!(TaaDofOrderSetting::from_name(order.as_str()), Some(order));
+        }
+        // A file written before the two fields existed reads the defaults.
+        let older: PostProcessConfig = toml::from_str(
+            r#"
+[anti_aliasing]
+msaa = false
+[anti_aliasing.taa]
+render_scale = 0.67
+disocclusion = "depth"
+"#,
+        )
+        .unwrap();
+        let taa = older.anti_aliasing.taa.unwrap();
+        assert_eq!(taa.bloom_source, TaaBloomSourceSetting::CurrentFrame);
+        assert_eq!(taa.dof_order, TaaDofOrderSetting::BeforeResolve);
+        for bad in [
+            "[anti_aliasing.taa]\nbloom_source = \"glow\"\n",
+            "[anti_aliasing.taa]\ndof_order = \"never\"\n",
+        ] {
+            assert!(toml::from_str::<PostProcessConfig>(bad).is_err(), "{bad}");
+        }
+    }
+
     #[test]
     fn taa_disocclusion_names_and_roundtrip() {
         for level in TaaDisocclusionSetting::ALL {

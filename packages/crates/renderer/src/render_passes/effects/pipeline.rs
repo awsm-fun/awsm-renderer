@@ -67,6 +67,14 @@ fn atmosphere_phase(post_processing: &PostProcessing) -> AtmospherePhase {
     }
 }
 
+/// Whether the effects pass compiles depth of field: DoF is on and does not
+/// run before the TAA resolve instead (`TaaDofOrder::BeforeResolve`, where
+/// the TAA pass's `dof_pre` blurs `composite` and this pass keeps only haze
+/// and bloom).
+pub fn effects_dof(anti_aliasing: &AntiAliasing, post_processing: &PostProcessing) -> bool {
+    post_processing.dof && !anti_aliasing.dof_before_resolve()
+}
+
 impl EffectsPipelines {
     /// Drops the pass's reference to its bloom-blend variant (the caller
     /// releases the slot). For a variant that failed to compile: the field
@@ -147,13 +155,14 @@ impl EffectsPipelines {
     ) -> Result<Vec<ShaderCacheKey>> {
         let slot_inputs = Self::slot_inputs_for(post_processing);
         let multisampled_geometry = anti_aliasing.has_msaa_checked()?;
+        let dof = effects_dof(anti_aliasing, post_processing);
         Ok(slot_inputs
             .iter()
             .map(|&bloom_phase| {
                 ShaderCacheKey::from(ShaderCacheKeyEffects {
                     smaa_anti_alias: anti_aliasing.smaa,
                     bloom_phase,
-                    dof: post_processing.dof,
+                    dof,
                     atmosphere: atmosphere_phase(post_processing),
                     multisampled_geometry,
                     reverse_z,
@@ -202,7 +211,7 @@ impl EffectsPipelines {
                 ComputePipelineCacheKey::new(shader_key, layout_key).with_entry_point("main"),
             );
         }
-        if post_processing.dof {
+        if effects_dof(anti_aliasing, post_processing) {
             // `dof_prepare` is the same in every slot's module. The no-bloom
             // one is always there, so a bloom toggle keeps this pipeline.
             let shader_key = shaders.get_key(gpu, shader_cache_keys[0].clone()).await?;
@@ -232,20 +241,15 @@ impl EffectsPipelines {
     /// post-processing before the first commit) must not be compiled.
     pub fn install_resolved(
         &mut self,
+        anti_aliasing: &AntiAliasing,
         post_processing: &PostProcessing,
         mut resolved: Vec<ComputePipelineKey>,
     ) -> Vec<ComputePipelineKey> {
         let slot_inputs = Self::slot_inputs_for(post_processing);
-        debug_assert_eq!(
-            resolved.len(),
-            slot_inputs.len() + usize::from(post_processing.dof)
-        );
+        let dof = effects_dof(anti_aliasing, post_processing);
+        debug_assert_eq!(resolved.len(), slot_inputs.len() + usize::from(dof));
         let mut displaced = Vec::new();
-        let dof_prepare = if post_processing.dof {
-            resolved.pop()
-        } else {
-            None
-        };
+        let dof_prepare = if dof { resolved.pop() } else { None };
         if let Some(old) = self.dof_prepare_pipeline {
             if dof_prepare != Some(old) {
                 displaced.push(old);
@@ -300,7 +304,7 @@ impl EffectsPipelines {
             .compute
             .ensure_keys(gpu, shaders, pipeline_layouts, descs.pipeline_cache_keys)
             .await?;
-        let displaced = self.install_resolved(post_processing, resolved);
+        let displaced = self.install_resolved(anti_aliasing, post_processing, resolved);
         pipelines.compute.release_reserved(displaced);
         Ok(())
     }

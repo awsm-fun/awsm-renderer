@@ -2093,6 +2093,11 @@ impl AwsmRenderer {
             if let Some(taa) = self.render_passes.taa.as_ref() {
                 let _maybe_span_guard =
                     crate::profiling::cpu_scope(&self.logging, "TAA RenderPass", true);
+                // Depth of field before the resolve (`TaaDofOrder::
+                // BeforeResolve`): `composite` blurred into the resolve's input.
+                if let Some(dof_pre) = taa.dof_pre.as_ref() {
+                    dof_pre.render(&ctx)?;
+                }
                 taa.render(&ctx)?;
                 // RCAS sharpening (only while `sharpen > 0`), before the HUD
                 // is drawn over the result.

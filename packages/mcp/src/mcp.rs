@@ -1593,6 +1593,13 @@ pub struct AntiAliasingParams {
     /// resolved image). LIVE.
     #[serde(default)]
     pub taa_bloom_source: Option<String>,
+    /// Where depth of field runs under TAA: 'before_resolve' (default; on
+    /// this frame's HDR render, at render size: bright out-of-focus
+    /// highlights keep their energy, slight defocus is steadier, cheaper) |
+    /// 'after_resolve' (on the resolved image). With DoF on, recompiles the
+    /// effects pass (no history reset).
+    #[serde(default)]
+    pub taa_dof_order: Option<String>,
     /// TAA debug view (transient): 'none' | 'velocity' | 'reprojection_error' |
     /// 'history_length' | 'rejection' | 'reactive' | 'confidence' |
     /// 'freeze_jitter' | 'history_only' | 'current_only'.
@@ -5113,7 +5120,7 @@ impl EditorMcp {
     }
 
     #[tool(
-        description = "Set the anti-aliasing. mode: 'none' | 'msaa' (4x) | 'smaa' | 'msaa_smaa' (the pre-TAA combination) | 'taa' (temporal AA: smooths geometric edges AND shading/specular aliasing; can upscale below taa_render_scale 1). The modes are EXCLUSIVE; changing the mode is STRUCTURAL (pipelines recompile — wait_render_settled after). TAA settings: taa_preset ('native' 1.0 | 'quality' 0.67 | 'balanced' 0.58 | 'performance' 0.5; sets taa_render_scale + taa_sharpen), taa_render_scale (0.5..=1.0), taa_sharpen (0..=1), taa_disocclusion ('depth' | 'depth_and_motion' | 'depth_motion_and_id' (default): which tests drop a pixel's history when another surface now covers it; each level costs more GPU time than the one before; STRUCTURAL while TAA is on — the TAA pass is rebuilt and history restarts, wait_render_settled after), taa_bloom_source ('current_frame' | 'resolved': what bloom reads under TAA; this frame's HDR render keeps the glow of thin and small very bright sources; LIVE), and the advanced tuning knobs taa_gamma_still / taa_gamma_moving / taa_gamma_moving_speed / taa_disocclusion_threshold / taa_max_history_native / taa_max_history_upscaling / taa_motion_alpha / taa_motion_alpha_speed / taa_reactive_transparent / taa_reactive_material / taa_reactive_particles / taa_reactive_lines / taa_edge_release (depth_motion_and_id only) / taa_reactive_new_objects / taa_reactive_ssr / taa_mip_bias_extra / taa_max_history_moving / taa_max_history_moving_speed / taa_motion_edge_alpha / taa_motion_edge_speed (defaults: the renderer's shipped tuning, readable via get_post_process; the weights motion_alpha, motion_edge_alpha, edge_release and reactive_* are 0..=1, larger values are clamped) — all LIVE (no recompile, no history reset); TAA settings sent while another mode is active are kept for when TAA is selected. taa_debug_view (transient, never saved): 'none' | 'velocity' | 'reprojection_error' | 'history_length' | 'rejection' | 'reactive' | 'confidence' | 'freeze_jitter' | 'history_only' | 'current_only'. Persisted on scene.post_process.anti_aliasing (project + player bundle); read back with get_post_process (anti_aliasing block) and get_view_options (anti_aliasing mode, taa_debug_view). Errors: TAA on a device without its motion-vector path. Selecting TAA turns supersampling (set_view_options render_scale) back to 1.0 — the two are exclusive. Every field optional (patch semantics)."
+        description = "Set the anti-aliasing. mode: 'none' | 'msaa' (4x) | 'smaa' | 'msaa_smaa' (the pre-TAA combination) | 'taa' (temporal AA: smooths geometric edges AND shading/specular aliasing; can upscale below taa_render_scale 1). The modes are EXCLUSIVE; changing the mode is STRUCTURAL (pipelines recompile — wait_render_settled after). TAA settings: taa_preset ('native' 1.0 | 'quality' 0.67 | 'balanced' 0.58 | 'performance' 0.5; sets taa_render_scale + taa_sharpen), taa_render_scale (0.5..=1.0), taa_sharpen (0..=1), taa_disocclusion ('depth' | 'depth_and_motion' | 'depth_motion_and_id' (default): which tests drop a pixel's history when another surface now covers it; each level costs more GPU time than the one before; STRUCTURAL while TAA is on — the TAA pass is rebuilt and history restarts, wait_render_settled after), taa_bloom_source ('current_frame' | 'resolved': what bloom reads under TAA; this frame's HDR render keeps the glow of thin and small very bright sources; LIVE), taa_dof_order ('before_resolve' (default) | 'after_resolve': where depth of field runs under TAA; before the resolve, bright out-of-focus highlights keep their energy and slight defocus is steadier; with DoF on it recompiles the effects pass), and the advanced tuning knobs taa_gamma_still / taa_gamma_moving / taa_gamma_moving_speed / taa_disocclusion_threshold / taa_max_history_native / taa_max_history_upscaling / taa_motion_alpha / taa_motion_alpha_speed / taa_reactive_transparent / taa_reactive_material / taa_reactive_particles / taa_reactive_lines / taa_edge_release (depth_motion_and_id only) / taa_reactive_new_objects / taa_reactive_ssr / taa_mip_bias_extra / taa_max_history_moving / taa_max_history_moving_speed / taa_motion_edge_alpha / taa_motion_edge_speed (defaults: the renderer's shipped tuning, readable via get_post_process; the weights motion_alpha, motion_edge_alpha, edge_release and reactive_* are 0..=1, larger values are clamped) — all LIVE (no recompile, no history reset); TAA settings sent while another mode is active are kept for when TAA is selected. taa_debug_view (transient, never saved): 'none' | 'velocity' | 'reprojection_error' | 'history_length' | 'rejection' | 'reactive' | 'confidence' | 'freeze_jitter' | 'history_only' | 'current_only'. Persisted on scene.post_process.anti_aliasing (project + player bundle); read back with get_post_process (anti_aliasing block) and get_view_options (anti_aliasing mode, taa_debug_view). Errors: TAA on a device without its motion-vector path. Selecting TAA turns supersampling (set_view_options render_scale) back to 1.0 — the two are exclusive. Every field optional (patch semantics)."
     )]
     async fn set_anti_aliasing(
         &self,
@@ -5189,6 +5196,13 @@ impl EditorMcp {
                 None => return bad("taa_bloom_source", v, "'current_frame' or 'resolved'"),
             },
         };
+        let taa_dof_order = match p.taa_dof_order.as_deref() {
+            None => None,
+            Some(v) => match awsm_renderer_editor_protocol::TaaDofOrderSetting::from_name(v) {
+                Some(order) => Some(order),
+                None => return bad("taa_dof_order", v, "'before_resolve' or 'after_resolve'"),
+            },
+        };
         let tuning = TaaTuningPatch {
             gamma_still: p.taa_gamma_still,
             gamma_moving: p.taa_gamma_moving,
@@ -5218,6 +5232,7 @@ impl EditorMcp {
             taa_sharpen: p.taa_sharpen,
             taa_disocclusion,
             taa_bloom_source,
+            taa_dof_order,
             taa_tuning: (tuning != TaaTuningPatch::default()).then_some(tuning),
             taa_debug_view,
         })

@@ -562,10 +562,17 @@ impl AwsmRenderer {
             .await?;
         // The effects bind group holds the DoF buffer, sized only while DoF
         // is on.
-        if had_dof_prepare != self.post_processing.dof {
+        if had_dof_prepare
+            != crate::render_passes::effects::pipeline::effects_dof(
+                &self.anti_aliasing,
+                &self.post_processing,
+            )
+        {
             self.bind_groups
                 .mark_create(crate::bind_groups::BindGroupCreate::TextureViewRecreate);
         }
+        // DoF before the TAA resolve: its pass exists only while DoF is on.
+        self.sync_taa_dof_pre().await?;
 
         self.render_passes
             .display

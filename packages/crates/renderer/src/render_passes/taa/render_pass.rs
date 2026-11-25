@@ -337,6 +337,11 @@ pub struct TaaRenderPass {
     /// `AwsmRenderer::sync_taa_rcas`). Bloom, effects and the HUD-after-TAA
     /// pass then use its output instead of `textures.out`.
     pub rcas: Option<super::rcas::TaaRcas>,
+    /// Depth of field before the resolve (`TaaDofOrder::BeforeResolve`):
+    /// `Some` only while that order is chosen AND DoF is on (built and
+    /// dropped by `AwsmRenderer::sync_taa_dof_pre`). The resolve then reads
+    /// its output instead of `composite`.
+    pub dof_pre: Option<super::dof_pre::TaaDofPre>,
     /// Resolve dispatches per frame (`AwsmRenderer::set_taa_debug_repeat`).
     /// 1 normally; N > 1 only to measure the pass's cost.
     repeat: u32,
@@ -393,6 +398,7 @@ impl TaaRenderPass {
             textures,
             reactive_seed,
             rcas: None,
+            dof_pre: None,
             repeat: 1,
             bookkeeping: ResolveBookkeeping::new(),
             view_projections: Cell::new([None, None]),
@@ -425,6 +431,9 @@ impl TaaRenderPass {
         }
         if let Some(rcas) = self.rcas {
             rcas.destroy();
+        }
+        if let Some(dof_pre) = self.dof_pre {
+            dof_pre.destroy();
         }
         self.textures.destroy();
     }
@@ -597,6 +606,7 @@ impl AwsmRenderer {
                 self.render_passes.taa = Some(pass);
                 self.reset_temporal_history();
                 self.sync_taa_rcas().await?;
+                self.sync_taa_dof_pre().await?;
             }
             (false, true) => {
                 if let Some(pass) = self.render_passes.taa.take() {
@@ -695,6 +705,37 @@ impl AwsmRenderer {
         Ok(())
     }
 
+    /// Build the pre-resolve DoF pass when DoF runs before the resolve
+    /// (TAA on, `TaaDofOrder::BeforeResolve`, `PostProcessing::dof`) and drop
+    /// it otherwise. Called by `set_anti_aliasing` (both paths),
+    /// `set_post_processing` and the TAA pass's construction. Either change
+    /// moves the resolve's input between `composite` and this pass's output,
+    /// so the view-dependent bind groups are rebuilt. Zero cost otherwise: no
+    /// pass, no texture, no dispatch.
+    pub(crate) async fn sync_taa_dof_pre(&mut self) -> Result<()> {
+        let want = self.post_processing.dof && self.anti_aliasing.dof_before_resolve();
+        let reverse_z = self.features.reverse_z;
+        let Some(pass) = self.render_passes.taa.as_mut() else {
+            return Ok(());
+        };
+        match (want, pass.dof_pre.is_some()) {
+            (true, false) => {
+                pass.dof_pre = Some(super::dof_pre::TaaDofPre::new(&self.gpu, reverse_z).await?);
+                // Its target is created (and the resolve rebound) by the next
+                // `prepare_taa_frame`.
+            }
+            (false, true) => {
+                if let Some(dof_pre) = pass.dof_pre.take() {
+                    dof_pre.destroy();
+                }
+                self.bind_groups
+                    .mark_create(BindGroupCreate::TextureViewRecreate);
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     /// Per-frame TAA upkeep, before the bind-group ledger runs: size the
     /// textures, decide whether this frame's resolve resets, and upload the
     /// params. No-op (and no cost) when TAA is off.
@@ -741,6 +782,13 @@ impl AwsmRenderer {
                     .mark_create(BindGroupCreate::TextureViewRecreate);
             }
             rcas.write_strength(&self.gpu, config.sharpen)?;
+        }
+        if let Some(dof_pre) = pass.dof_pre.as_mut() {
+            if dof_pre.ensure_size(&self.gpu, views.render_size, views.post_size)? {
+                // A new target: its own group and the resolve's input.
+                self.bind_groups
+                    .mark_create(BindGroupCreate::TextureViewRecreate);
+            }
         }
         if self.taa.debug_shader_id() != 0 {
             pass.pipelines.ensure_debug(

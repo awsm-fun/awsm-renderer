@@ -979,9 +979,26 @@ impl BindGroups {
                             textures,
                             reactive_seed,
                             rcas,
+                            dof_pre,
                             ..
                         } = taa;
-                        bind_groups.recreate(&ctx, textures, &params.gpu_buffer)?;
+                        // DoF before the resolve: the resolve reads its output
+                        // instead of `composite` (bloom's `CurrentFrame` source
+                        // still reads `composite`, pre-DoF).
+                        if let Some(dof_pre) = dof_pre.as_mut() {
+                            dof_pre.recreate(
+                                ctx.gpu,
+                                &ctx.render_texture_views.composite,
+                                &ctx.render_texture_views.depth,
+                                &ctx.camera.gpu_buffer,
+                            )?;
+                        }
+                        bind_groups.recreate(
+                            &ctx,
+                            textures,
+                            &params.gpu_buffer,
+                            dof_pre.as_ref().and_then(|d| d.out_view()),
+                        )?;
                         if let Some(seed) = reactive_seed.as_mut() {
                             seed.recreate(&ctx)?;
                         }

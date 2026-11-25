@@ -1069,6 +1069,14 @@ pub fn taa_settings_to_renderer(
                 awsm_renderer::taa::TaaBloomSource::Resolved
             }
         },
+        dof_order: match taa.dof_order {
+            awsm_renderer_scene::post_process::TaaDofOrderSetting::AfterResolve => {
+                awsm_renderer::taa::TaaDofOrder::AfterResolve
+            }
+            awsm_renderer_scene::post_process::TaaDofOrderSetting::BeforeResolve => {
+                awsm_renderer::taa::TaaDofOrder::BeforeResolve
+            }
+        },
         tuning: TaaTuning {
             gamma_still: pos(t.gamma_still, d.gamma_still),
             gamma_moving: pos(t.gamma_moving, d.gamma_moving),
@@ -5314,6 +5322,30 @@ mod anti_aliasing_tests {
             );
             assert_eq!(aa.taa.expect("taa").disocclusion, expected);
         }
+    }
+
+    /// Both DoF orders pass through, the names agree, and the schema's
+    /// default is the renderer's.
+    #[test]
+    fn every_dof_order_passes_through_and_defaults_agree() {
+        use awsm_renderer::taa::TaaDofOrder;
+        use awsm_renderer_scene::post_process::TaaDofOrderSetting as S;
+        for (authored, expected) in [
+            (S::AfterResolve, TaaDofOrder::AfterResolve),
+            (S::BeforeResolve, TaaDofOrder::BeforeResolve),
+        ] {
+            let cfg = taa_settings_to_renderer(&TaaSettings {
+                dof_order: authored,
+                ..TaaSettings::default()
+            });
+            assert_eq!(cfg.dof_order, expected);
+            assert_eq!(authored.as_str(), expected.as_str());
+            assert_eq!(S::from_name(authored.as_str()), Some(authored));
+        }
+        assert_eq!(
+            taa_settings_to_renderer(&TaaSettings::default()).dof_order,
+            TaaDofOrder::default()
+        );
     }
 
     /// The schema's default disocclusion level is the renderer's (each layer

@@ -13,6 +13,7 @@
 //! in `crate::taa`; the resolve's WGSL in `shader/taa_wgsl/resolve.wgsl`.
 
 pub mod bind_group;
+pub mod dof_pre;
 pub mod pipeline;
 pub mod rcas;
 pub mod reactive_seed;

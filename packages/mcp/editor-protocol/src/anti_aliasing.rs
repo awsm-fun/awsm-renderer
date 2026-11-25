@@ -340,6 +340,7 @@ mod tests {
             EditorCommand::SetAntiAliasing {
                 taa_disocclusion: None,
                 taa_bloom_source: None,
+                taa_dof_order: None,
                 ..
             }
         ));

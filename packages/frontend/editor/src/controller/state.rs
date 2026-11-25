@@ -4021,6 +4021,7 @@ impl EditorController {
                 taa_sharpen,
                 taa_disocclusion,
                 taa_bloom_source,
+                taa_dof_order,
                 taa_tuning,
                 taa_debug_view,
             } => {
@@ -4071,6 +4072,12 @@ impl EditorController {
                 if let Some(src) = taa_bloom_source {
                     knobs.bloom_source = src;
                 }
+                // With DoF on: the effects pass recompiles without (or with)
+                // its DoF and the pre-resolve DoF pass is built (or dropped);
+                // no history reset.
+                if let Some(order) = taa_dof_order {
+                    knobs.dof_order = order;
+                }
                 if let Some(patch) = taa_tuning {
                     patch.apply(&mut knobs.tuning);
                 }
@@ -4105,6 +4112,7 @@ impl EditorController {
                     taa_sharpen: Some(prev_knobs.sharpen),
                     taa_disocclusion: Some(prev_knobs.disocclusion),
                     taa_bloom_source: Some(prev_knobs.bloom_source),
+                    taa_dof_order: Some(prev_knobs.dof_order),
                     taa_tuning: Some(awsm_renderer_editor_protocol::TaaTuningPatch::replace(
                         &prev_knobs.tuning,
                     )),

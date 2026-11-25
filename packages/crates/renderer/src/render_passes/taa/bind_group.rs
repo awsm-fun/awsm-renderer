@@ -129,8 +129,12 @@ impl TaaBindGroups {
         ctx: &BindGroupRecreateContext<'_>,
         textures: &TaaTextures,
         params_buffer: &web_sys::GpuBuffer,
+        dof_pre: Option<&web_sys::GpuTextureView>,
     ) -> Result<()> {
         let views = ctx.render_texture_views;
+        // The resolve's input: this frame's HDR render, or (DoF before the
+        // resolve) the same image blurred, also render size.
+        let color = dof_pre.unwrap_or(&views.composite);
         // Allocated with the velocity target whenever TAA is on.
         let reactive = if self.bindings.reactive.is_some() {
             Some(
@@ -160,10 +164,7 @@ impl TaaBindGroups {
                     1,
                     BindGroupResource::Buffer(BufferBinding::new(params_buffer)),
                 ),
-                BindGroupEntry::new(
-                    2,
-                    BindGroupResource::TextureView(Cow::Borrowed(&views.composite)),
-                ),
+                BindGroupEntry::new(2, BindGroupResource::TextureView(Cow::Borrowed(color))),
                 BindGroupEntry::new(
                     3,
                     BindGroupResource::TextureView(Cow::Borrowed(&views.depth)),

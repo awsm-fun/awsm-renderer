@@ -67,6 +67,9 @@ pub struct ShaderTemplateEffectsCompute {
     pub reverse_z: bool,
     /// See [`ShaderCacheKeyEffects::taa_post`].
     pub taa_post: bool,
+    /// Always false here: `helpers/dof.wgsl` is shared with the TAA pass's
+    /// pre-resolve DoF (`taa_wgsl/dof_pre.wgsl`), which sets it.
+    pub dof_pre: bool,
     pub debug: ShaderTemplateEffectsDebug,
 }
 
@@ -84,6 +87,7 @@ impl ShaderTemplateEffectsCompute {
             atmosphere_volumetric: cache_key.atmosphere == AtmospherePhase::Volumetric,
             reverse_z: cache_key.reverse_z,
             taa_post: cache_key.taa_post,
+            dof_pre: false,
             debug: ShaderTemplateEffectsDebug::new(),
         }
     }
