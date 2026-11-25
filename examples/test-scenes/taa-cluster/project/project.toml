@@ -1,0 +1,390 @@
+name = "untitled.awsm"
+custom_materials = []
+custom_animations = []
+editor_animations = []
+
+[environment]
+skybox = "built_in_default"
+specular = "built_in_default"
+irradiance = "built_in_default"
+
+[environment.probe]
+enabled = false
+center = [
+    0.0,
+    0.0,
+    0.0,
+]
+half_extents = [
+    10.0,
+    10.0,
+    10.0,
+]
+
+[environment.stream]
+skybox = []
+specular = []
+irradiance = []
+
+[environment.rotation]
+skybox = [
+    0.0,
+    0.0,
+    0.0,
+]
+specular = [
+    0.0,
+    0.0,
+    0.0,
+]
+irradiance = [
+    0.0,
+    0.0,
+    0.0,
+]
+
+[shadows]
+sscs_enabled = false
+sscs_step_count = 16
+sscs_step_world = 0.03999999910593033
+sscs_thickness = 0.05000000074505806
+sscs_directional_darkening = 0.3499999940395355
+sscs_punctual_darkening = 0.8999999761581421
+atlas_size = 4096
+evsm_atlas_size = 2048
+evsm_exponent = 10.0
+evsm_blur_radius = 6
+max_point_shadows = 8
+point_shadow_resolution = 1024
+debug_cascade_colors = false
+
+[post_process]
+tonemapping = "khronos_neutral_pbr"
+bloom = false
+dof = false
+exposure = 0.0
+bloom_threshold = 1.0
+bloom_knee = 0.5
+bloom_intensity = 1.0
+bloom_scatter = 1.0
+
+[post_process.ssr]
+enabled = false
+intensity = 1.0
+max_distance = 100.0
+thickness = 1.0
+max_steps = 96
+spread_cutoff = 0.6000000238418579
+edge_fade = 0.03999999910593033
+resolution_scale = 0.5
+temporal = false
+temporal_weight = 0.8999999761581421
+bvh_reflections = false
+
+[post_process.atmosphere]
+mode = "off"
+color = [
+    0.5,
+    0.6000000238418579,
+    0.699999988079071,
+]
+density = 0.019999999552965164
+base_height = 0.0
+height_falloff = 0.0
+scattering_anisotropy = 0.30000001192092896
+volumetric_distance = 80.0
+volumetric_temporal = false
+
+[post_process.anti_aliasing]
+msaa = true
+smaa = false
+
+[assets.5c1d1ea2-4b11-4f0a-a531-6674cb00ac47]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = "2dc95e87aeb0cd7c8a65ef0eb8b23212388da0534ca379811427a9a8780511f5"
+
+[assets.5c1d1ea2-4b11-4f0a-a531-6674cb00ac47.source.texture.raster]
+display_name = "Material_MR · base color.jpg"
+color_kind = "albedo"
+
+[assets.80b4b651-980b-4700-8e2c-cb04b89cadb6]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = "dd0057989f22f93a4ab796d06ebf85a7c12fbfae1d59a86ae8b0c54770dc1159"
+
+[assets.80b4b651-980b-4700-8e2c-cb04b89cadb6.source.texture.raster]
+display_name = "Material_MR · emissive.jpg"
+color_kind = "emissive"
+
+[assets.628ad1e6-7bef-4545-a3c2-a11beb98b80f]
+gltf_material_asset_ids = ["a38870a6-ed4e-47ed-a61a-2baf715263f7"]
+gltf_image_asset_ids = [
+    "5c1d1ea2-4b11-4f0a-a531-6674cb00ac47",
+    "6793792d-1735-4869-be64-21cce1903d75",
+    "92e5b6ec-9cf2-408a-8003-69d31b0b4364",
+    "c53250ca-e802-49ef-965d-e099dffc6788",
+    "80b4b651-980b-4700-8e2c-cb04b89cadb6",
+]
+content_hash = ""
+
+[assets.628ad1e6-7bef-4545-a3c2-a11beb98b80f.source]
+filename = "DamagedHelmet.glb"
+
+[assets.817dbcd9-7aaf-49e3-bd38-1930168e41bd]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+
+[assets.817dbcd9-7aaf-49e3-bd38-1930168e41bd.source.mesh]
+label = "node_damagedHelmet_-6514"
+editable = true
+
+[assets.817dbcd9-7aaf-49e3-bd38-1930168e41bd.source.mesh.source.imported]
+source = "628ad1e6-7bef-4545-a3c2-a11beb98b80f"
+
+[assets.817dbcd9-7aaf-49e3-bd38-1930168e41bd.source.mesh.stack]
+modifiers = []
+
+[assets.817dbcd9-7aaf-49e3-bd38-1930168e41bd.source.mesh.stack.base]
+captured = "817dbcd9-7aaf-49e3-bd38-1930168e41bd"
+
+[assets.817dbcd9-7aaf-49e3-bd38-1930168e41bd.source.mesh.overrides.positions]
+
+[assets.817dbcd9-7aaf-49e3-bd38-1930168e41bd.source.mesh.overrides.colors]
+
+[assets.817dbcd9-7aaf-49e3-bd38-1930168e41bd.source.mesh.overrides.normals]
+
+[assets.817dbcd9-7aaf-49e3-bd38-1930168e41bd.source.mesh.overrides.uvs]
+
+[assets.92e5b6ec-9cf2-408a-8003-69d31b0b4364]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = "f253ba09a90a86ffd8a807dc45d7953111f8b3421e15d7a21d1e915b01dd33c1"
+
+[assets.92e5b6ec-9cf2-408a-8003-69d31b0b4364.source.texture.raster]
+display_name = "Material_MR · normal.jpg"
+color_kind = "normal"
+
+[assets.c53250ca-e802-49ef-965d-e099dffc6788]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = "7024051b65ed2ead8d24ebc9bd5ea61d4c21639a57b15dab29870668bcc6b90f"
+
+[assets.c53250ca-e802-49ef-965d-e099dffc6788.source.texture.raster]
+display_name = "Material_MR · occlusion.jpg"
+color_kind = "occlusion"
+
+[assets.6793792d-1735-4869-be64-21cce1903d75]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = "0f05e7ffbeaa974f7d2c83436b04109969966d64ab188cbc3a19a265a0a69ae0"
+
+[assets.6793792d-1735-4869-be64-21cce1903d75.source.texture.raster]
+display_name = "Material_MR · metal/rough.jpg"
+color_kind = "metallic_roughness"
+
+[[editor_materials]]
+id = "a38870a6-ed4e-47ed-a61a-2baf715263f7"
+name = "Material_MR"
+wgsl = """
+// Opaque material. Inputs arrive as fields on `input` (declare them in Pass
+// Dependencies): input.world_normal, input.surface_to_camera (normalized),
+// input.world_position, input.coords. Time: frame_globals_from_raw(frame_globals_raw).
+// `color` is linear HDR (tonemap is a later pass); it is UNLIT — to light it,
+// declare `light_access` and walk lights yourself (get_lights_info / get_light /
+// light_sample). Must end in `return OpaqueShadingOutput(color, ao)`.
+let n = normalize(input.world_normal);
+let v = input.surface_to_camera;          // already normalized (surface -> camera)
+let fresnel = pow(1.0 - max(dot(n, v), 0.0), 3.0);
+let base = vec3<f32>(0.1, 0.12, 0.2);
+let color = base + vec3<f32>(0.6, 0.7, 1.0) * fresnel;
+return OpaqueShadingOutput(color, 1.0);"""
+alpha_wgsl = ""
+vertex_wgsl = ""
+alpha = "opaque"
+cutoff = 0.5
+double_sided = false
+color = "#ffffff"
+uniforms = []
+textures = []
+buffers = []
+registered = true
+shader_includes = []
+fragment_inputs = [
+    "normals",
+    "view_dir",
+]
+
+[editor_materials.builtin]
+label = "Material_MR"
+base_color = [
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+]
+metallic = 1.0
+roughness = 1.0
+emissive = [
+    1.0,
+    1.0,
+    1.0,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[editor_materials.builtin.base_color_texture]
+asset = "5c1d1ea2-4b11-4f0a-a531-6674cb00ac47"
+
+[editor_materials.builtin.metallic_roughness_texture]
+asset = "6793792d-1735-4869-be64-21cce1903d75"
+
+[editor_materials.builtin.emissive_texture]
+asset = "80b4b651-980b-4700-8e2c-cb04b89cadb6"
+
+[editor_materials.builtin.normal_texture]
+asset = "92e5b6ec-9cf2-408a-8003-69d31b0b4364"
+
+[editor_materials.builtin.occlusion_texture]
+asset = "c53250ca-e802-49ef-965d-e099dffc6788"
+
+[editor_materials.builtin.extensions]
+
+[anim_mixer]
+layers = []
+
+[bundle_options]
+mesh_compression = "meshopt"
+mesh_quantization = "smart"
+smart_threshold_mm = 0.10000000149011612
+texture_compression = "ktx2"
+
+[[nodes]]
+id = "817dbcd9-7aaf-49e3-bd38-1930168e41bd"
+name = "helmet"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    0.0,
+    0.0,
+    0.0,
+]
+rotation = [
+    0.7071067690849304,
+    0.0,
+    0.0,
+    0.7071067094802856,
+]
+scale = [
+    1.0,
+    1.0000001192092896,
+    1.0000001192092896,
+]
+
+[nodes.kind.mesh]
+mesh = "817dbcd9-7aaf-49e3-bd38-1930168e41bd"
+selected_variant = "56d6d32b-2b80-45b2-85e1-ffd871c30186"
+
+[[nodes.kind.mesh.material_variants]]
+id = "56d6d32b-2b80-45b2-85e1-ffd871c30186"
+name = "Material_MR"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "a38870a6-ed4e-47ed-a61a-2baf715263f7"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = "Material_MR"
+base_color = [
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+]
+metallic = 1.0
+roughness = 1.0
+emissive = [
+    1.0,
+    1.0,
+    1.0,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.base_color_texture]
+asset = "5c1d1ea2-4b11-4f0a-a531-6674cb00ac47"
+
+[nodes.kind.mesh.material_variants.instance.inline.metallic_roughness_texture]
+asset = "6793792d-1735-4869-be64-21cce1903d75"
+
+[nodes.kind.mesh.material_variants.instance.inline.emissive_texture]
+asset = "80b4b651-980b-4700-8e2c-cb04b89cadb6"
+
+[nodes.kind.mesh.material_variants.instance.inline.normal_texture]
+asset = "92e5b6ec-9cf2-408a-8003-69d31b0b4364"
+
+[nodes.kind.mesh.material_variants.instance.inline.occlusion_texture]
+asset = "c53250ca-e802-49ef-965d-e099dffc6788"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions]
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = true
+receive = true
+
+[nodes.kind.mesh.lod]
+kind = "cluster"
+
+[[nodes]]
+id = "89c2a594-c0ac-4803-8766-cf82b388fa34"
+name = "camera"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    0.0,
+    0.20000000298023224,
+    3.5,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.camera]
+near = 0.10000000149011612
+far = 200.0
+behavior = "static"
+
+[nodes.kind.camera.projection.perspective]
+fov_y_rad = 1.0471975803375244

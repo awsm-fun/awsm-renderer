@@ -58,6 +58,15 @@ thread_local! {
     /// (`animation_sync` ends every re-lower with an explicit `pin_pose`), so
     /// the paused viewport still updates immediately on those.
     static LAST_PIN: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+
+    /// What drove the view on the previous frame: the scene Camera node in
+    /// use (`None` = the free camera) and whether its projection was
+    /// orthographic. A change is a camera cut, which resets the renderer's
+    /// temporal history (TAA, `docs/TAA.md` §2.7 / G9): its camera-jump guard
+    /// sees only position and direction, so it would miss a switch between
+    /// cameras that happen to sit close together, or a projection flip.
+    static LAST_VIEW_SOURCE: std::cell::Cell<Option<(Option<NodeId>, bool)>> =
+        const { std::cell::Cell::new(None) };
 }
 
 fn request_frame() {
@@ -306,12 +315,30 @@ fn render_one_frame(dt_ms: f64) {
             scene_camera_view_params(renderer, id)
                 .or_else(|| super::player_preview::camera_view_params(renderer, id))
         });
+        // The camera actually in use: a vanished node falls back to the free
+        // camera (None).
+        let source_camera = scene_camera.is_some().then_some(active).flatten();
         let (view, params) = match scene_camera
             .or_else(|| context::try_with_camera_mut(|c| (c.view(), c.params())))
         {
             Some(vp) => vp,
             None => return, // context not ready yet
         };
+        let source = (
+            source_camera,
+            matches!(
+                params.projection,
+                awsm_renderer::camera::CameraProjectionParams::Orthographic { .. }
+            ),
+        );
+        if LAST_VIEW_SOURCE
+            .with(|last| last.replace(Some(source)))
+            .is_some_and(|prev| prev != source)
+        {
+            // A cut: switched to another camera (or the free one), or flipped
+            // projection. Free while TAA is off.
+            renderer.reset_temporal_history();
+        }
         if let Err(err) = renderer.set_camera(view, params) {
             tracing::error!("set_camera failed: {err}");
         }

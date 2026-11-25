@@ -8,7 +8,7 @@ use crate::materials::MaterialKey;
 use crate::meshes::error::AwsmMeshError;
 use crate::meshes::MeshKey;
 use crate::render::RenderContext;
-use crate::render_passes::geometry::bind_group::GeometryBindGroups;
+use crate::render_passes::geometry::bind_group::GeometryMetaGroups;
 use crate::render_passes::geometry::pipeline::GeometryRenderPipelineKeyOpts;
 use crate::transforms::TransformKey;
 use crate::{bounds::Aabb, pipelines::render_pipeline::RenderPipelineKey};
@@ -106,6 +106,12 @@ pub struct Mesh {
     /// volume test for non-receiving meshes — useful for sky-domes,
     /// HUD-like geometry, or surfaces the artist wants kept clean.
     pub receive_decals: bool,
+    /// A particle mesh (TAA): its covered pixels take
+    /// `TaaTuning::reactive_particles` in the reactive mask, since nothing
+    /// reprojects a particle. Default `false`; the scene loader sets it on
+    /// every emitter (`AwsmRenderer::set_mesh_taa_particles`). Inert
+    /// without TAA.
+    pub taa_particles: bool,
     /// Whether this mesh was built with VISIBILITY geometry (the exploded
     /// per-pixel stream the geometry/opaque + shadow passes draw from).
     ///
@@ -162,6 +168,7 @@ impl Mesh {
             cheap_material_key: None,
             cheap_material_pixel_threshold: None,
             receive_decals: true,
+            taa_particles: false,
             // Placeholders only — `Meshes::insert` derives both from the
             // geometry data actually provided, overwriting whatever is set here.
             // A constructor can't know the mesh's real geometry shape, so it
@@ -214,6 +221,7 @@ impl Mesh {
             .pipelines
             .get_render_pipeline_key(GeometryRenderPipelineKeyOpts {
                 anti_aliasing: ctx.anti_aliasing,
+                formats: &ctx.render_textures.formats,
                 instancing: self.instanced,
                 // Only non-instanced meshes branch on the meta-binding
                 // shape; the instanced path always uses
@@ -250,13 +258,20 @@ impl Mesh {
     /// `instance_index` range across the actual instances would
     /// collide with neighbouring meshes' meta slots in a shared
     /// storage array).
+    ///
+    /// `meta` is group 2 (the geometry pass's, or the TAA velocity overlay's,
+    /// which adds its own bindings beside the meta). `prev_instances`: the
+    /// pipeline reads last frame's instance transforms at
+    /// `PREV_INSTANCE_VERTEX_SLOT` (TAA geometry-target pipelines and the
+    /// fallback's velocity overlay).
     pub fn push_geometry_pass_commands(
         &self,
         ctx: &RenderContext,
         mesh_key: MeshKey,
         render_pass: &RenderPassEncoder,
-        bind_groups: &GeometryBindGroups,
+        meta: &dyn GeometryMetaGroups,
         masked: bool,
+        prev_instances: bool,
     ) -> Result<()> {
         let meta_offset = ctx.meshes.meta.geometry_buffer_offset(mesh_key)? as u32;
         // Mesh slot index = byte offset / aligned slot size. The
@@ -273,13 +288,9 @@ impl Mesh {
         let use_storage_meta =
             !masked && !self.instanced && ctx.features.indirect_first_instance_enabled();
         if use_storage_meta {
-            render_pass.set_bind_group(2, bind_groups.meta.get_storage_bind_group()?, None)?;
+            render_pass.set_bind_group(2, meta.storage_meta_group()?, None)?;
         } else {
-            render_pass.set_bind_group(
-                2,
-                bind_groups.meta.get_uniform_bind_group()?,
-                Some(&[meta_offset]),
-            )?;
+            render_pass.set_bind_group(2, meta.uniform_meta_group()?, Some(&[meta_offset]))?;
         }
 
         render_pass.set_vertex_buffer(
@@ -300,6 +311,18 @@ impl Mesh {
                 Some(offset as u64),
                 None,
             );
+            // TAA: last frame's instance transforms at the same offset, at the
+            // slot every instanced TAA geometry pipeline declares them.
+            if prev_instances {
+                if let Some(prev) = ctx.instances.prev_gpu_transform_buffer() {
+                    render_pass.set_vertex_buffer(
+                        crate::render_passes::geometry::pipeline::PREV_INSTANCE_VERTEX_SLOT,
+                        prev,
+                        Some(offset as u64),
+                        None,
+                    );
+                }
+            }
         }
 
         // Cluster-LOD per-cluster cut (Phase B, B.3): if this is the cluster
@@ -443,18 +466,14 @@ impl Mesh {
         ctx: &RenderContext,
         mesh_key: MeshKey,
         render_pass: &RenderPassEncoder,
-        bind_groups: &GeometryBindGroups,
+        meta: &dyn GeometryMetaGroups,
         uv0_zero_buffer: &web_sys::GpuBuffer,
     ) -> Result<()> {
         let meta_offset = ctx.meshes.meta.geometry_buffer_offset(mesh_key)? as u32;
 
         // Uniform-with-dynamic-offset meta (the shape the custom-vertex pipeline
         // is compiled against), pointed at this mesh's slot.
-        render_pass.set_bind_group(
-            2,
-            bind_groups.meta.get_uniform_bind_group()?,
-            Some(&[meta_offset]),
-        )?;
+        render_pass.set_bind_group(2, meta.uniform_meta_group()?, Some(&[meta_offset]))?;
 
         // Slot 0: visibility geometry (locations 0-5).
         render_pass.set_vertex_buffer(

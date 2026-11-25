@@ -33,15 +33,15 @@ thread_local! {
     /// Serializes the WHOLE of [`register`] / [`unregister`] so their thread-local
     /// bookkeeping (REGISTRY / LAST_HASH / DELETED) and renderer mutations can't
     /// interleave across the multiple `await`s each holds (renderer lock,
-    /// `finalize_gpu_textures`, …). The renderer's own `AsyncMutex` only serializes
+    /// `finalize_gpu_textures`, …). The renderer's own async lock only serializes
     /// the renderer ops, not the bookkeeping around them — e.g. `register` inserts
     /// into REGISTRY only AFTER `finalize_gpu_textures().await`, so a delete that
     /// runs during that await found no REGISTRY entry to unregister and left a
     /// permanent orphan (the sub-second-churn "aw snap" tail + "duplicate name"
     /// errors). Holding this guard for the entire op closes every such window.
     /// Always acquired BEFORE the renderer lock — consistent ordering, no deadlock.
-    static BRIDGE_OP_LOCK: std::sync::Arc<xutex::AsyncMutex<()>> =
-        std::sync::Arc::new(xutex::AsyncMutex::new(()));
+    static BRIDGE_OP_LOCK: std::sync::Arc<crate::engine::context::AsyncLock<()>> =
+        std::sync::Arc::new(crate::engine::context::AsyncLock::new(()));
 
     /// `material id → registered shader id`, populated by [`register`]. Keyed by
     /// the material's **stable id** (not its display name) so renaming a material
@@ -662,6 +662,9 @@ pub fn material_definition(
         shader_includes: mat.shader_includes.get_cloned(),
         fragment_inputs: mat.fragment_inputs.get_cloned(),
         has_vertex_wgsl: !mat.vertex_wgsl.get_cloned().trim().is_empty(),
+        // TAA temporal: auto (the editor does not author it for custom
+        // materials yet).
+        temporal: None,
     }
 }
 

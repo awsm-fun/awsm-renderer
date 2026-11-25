@@ -24,11 +24,14 @@ use crate::{
     shaders::Shaders,
 };
 
-/// Pipeline-variant axes: depth-test mode × MSAA on/off.
+/// Pipeline-variant axes: depth-test mode × MSAA on/off, plus the TAA
+/// `reactive` axis (single-sampled only: TAA excludes MSAA).
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub(super) struct LineVariantKey {
     pub depth_test_always: bool,
     pub msaa: bool,
+    /// TAA: also write the reactive mask (colour target 1).
+    pub reactive: bool,
 }
 
 /// All 4 line-pipeline variants (`(depth_test_always, msaa)` cross
@@ -37,18 +40,37 @@ pub(super) const VARIANT_KEYS: [LineVariantKey; 4] = [
     LineVariantKey {
         depth_test_always: false,
         msaa: false,
+        reactive: false,
     },
     LineVariantKey {
         depth_test_always: false,
         msaa: true,
+        reactive: false,
     },
     LineVariantKey {
         depth_test_always: true,
         msaa: false,
+        reactive: false,
     },
     LineVariantKey {
         depth_test_always: true,
         msaa: true,
+        reactive: false,
+    },
+];
+
+/// The 2 TAA line-pipeline variants (`depth_test_always` false / true),
+/// compiled only while TAA is on and a line exists.
+pub(super) const REACTIVE_VARIANT_KEYS: [LineVariantKey; 2] = [
+    LineVariantKey {
+        depth_test_always: false,
+        msaa: false,
+        reactive: true,
+    },
+    LineVariantKey {
+        depth_test_always: true,
+        msaa: false,
+        reactive: true,
     },
 ];
 
@@ -64,6 +86,9 @@ pub(super) const VARIANT_KEYS: [LineVariantKey; 4] = [
 pub(super) struct LinePipelines {
     pub bind_group_layout_key: BindGroupLayoutKey,
     pub variants: Option<[RenderPipelineKey; 4]>,
+    /// The TAA variants ([`REACTIVE_VARIANT_KEYS`] order). `None` until TAA
+    /// is on with a line registered; never built without TAA.
+    pub reactive_variants: Option<[RenderPipelineKey; 2]>,
 }
 
 /// Pre-resolved layouts + descriptors for the line renderer's 4
@@ -89,6 +114,7 @@ impl LinePipelines {
         Ok(Self {
             bind_group_layout_key,
             variants: None,
+            reactive_variants: None,
         })
     }
 
@@ -110,7 +136,7 @@ impl LinePipelines {
         // Route through the shared `Shaders` cache. The line shader is
         // pre-warmed by `RenderPasses::new`'s cross-pass shader
         // ensure_keys, so this is a sync cache hit.
-        let shader_key = shaders.get_key(gpu, ShaderCacheKeyLine).await?;
+        let shader_key = shaders.get_key(gpu, ShaderCacheKeyLine::default()).await?;
 
         let pipeline_layout_key = pipeline_layouts.get_key(
             gpu,
@@ -144,6 +170,7 @@ impl LinePipelines {
     /// boot, so the caller resolves it via `Shaders::get_cached_key` with
     /// no await). Returns the 4 variant `RenderPipelineCacheKey`s in
     /// `VARIANT_KEYS` order.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn build_cache_keys_sync(
         &self,
         gpu: &AwsmRendererWebGpu,
@@ -152,13 +179,14 @@ impl LinePipelines {
         shader_key: crate::shaders::ShaderKey,
         formats: &RenderTextureFormats,
         depth_compare_strict: CompareFunction,
+        variant_keys: &[LineVariantKey],
     ) -> Result<Vec<RenderPipelineCacheKey>> {
         let pipeline_layout_key = pipeline_layouts.get_key(
             gpu,
             bind_group_layouts,
             PipelineLayoutCacheKey::new(vec![self.bind_group_layout_key]),
         )?;
-        Ok(VARIANT_KEYS
+        Ok(variant_keys
             .iter()
             .map(|v| {
                 build_pipeline_cache_key(
@@ -185,6 +213,7 @@ impl LinePipelines {
         Self {
             bind_group_layout_key: descs.bind_group_layout_key,
             variants: Some(variants),
+            reactive_variants: None,
         }
     }
 
@@ -201,9 +230,22 @@ impl LinePipelines {
         self.variants = Some(variants);
     }
 
+    /// Installs the resolved TAA variants ([`REACTIVE_VARIANT_KEYS`] order).
+    pub(super) fn install_reactive(&mut self, resolved: Vec<RenderPipelineKey>) {
+        debug_assert_eq!(resolved.len(), 2);
+        self.reactive_variants = Some([resolved[0], resolved[1]]);
+    }
+
     /// Returns the resolved pipeline key for `variant`, or `None` if
-    /// the lazy compile hasn't run yet (no line primitives inserted).
+    /// the lazy compile hasn't run yet (no line primitives inserted, or the
+    /// TAA variants not built yet).
     pub(super) fn get(&self, variant: LineVariantKey) -> Option<RenderPipelineKey> {
+        if variant.reactive {
+            return self
+                .reactive_variants
+                .as_ref()
+                .map(|v| v[variant.depth_test_always as usize]);
+        }
         self.variants.as_ref().map(|v| v[variant_index(variant)])
     }
 }
@@ -285,7 +327,14 @@ fn build_pipeline_cache_key(
     let mut pipeline_cache_key = RenderPipelineCacheKey::new(shader_key, pipeline_layout_key)
         .with_primitive(primitive)
         .with_depth_stencil(depth_stencil)
-        .with_push_fragment_targets(vec![color_target]);
+        .with_push_fragment_targets(if variant.reactive {
+            vec![
+                color_target,
+                crate::render_passes::material_transparent::pipeline::reactive_target(formats),
+            ]
+        } else {
+            vec![color_target]
+        });
 
     if variant.msaa {
         pipeline_cache_key =

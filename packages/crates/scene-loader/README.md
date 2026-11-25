@@ -40,6 +40,18 @@ session, `export_player_bundle` → `populate_awsm_scene` → screenshot, compar
 against the source render. The loader only LOADS clips; the consumer drives the
 clock (a player's `update_animations`, or the editor round-trip's playhead pin).
 
+## Anti-aliasing
+
+A scene carries the anti-aliasing it was authored with
+(`post_process.anti_aliasing`: MSAA, SMAA, MSAA + SMAA, or TAA with its
+settings), and the load applies it, replacing whatever AA the renderer was
+built with. A scene without an AA block gets MSAA 4× (the schema default, as
+in 0.45), so a renderer built with TAA leaves TAA unless the scene asks for
+it. On a device without TAA support an authored TAA falls back to MSAA 4× with
+a warning. To impose an app-level choice, call `set_anti_aliasing` and
+`commit_load` after the load; `anti_aliasing_to_renderer` returns to the
+authored one.
+
 ## Companion crates
 
 - `awsm-renderer-scene` — the runtime schema this loads.

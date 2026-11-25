@@ -122,12 +122,20 @@ pub struct BindGroupRecreateContext<'a> {
 #[derive(Hash, Debug, Clone, PartialEq, Eq, EnumIter)]
 pub enum BindGroupCreate {
     CameraInitOnly,
+    /// TAA: the unjittered HUD camera twin was created or dropped
+    /// (`CameraBuffer::hud_gpu_buffer`). The geometry camera group and the
+    /// masked group 0 carry a HUD variant. Never fires without TAA.
+    CameraHud,
     LightsResize,
     LightsInfoCreate,
     BrdfLutTextures,
     IblTextures,
     EnvironmentSkyboxCreate,
     TransformsResize,
+    /// TAA: the shared previous-frame buffer (transforms, joint matrices,
+    /// morph weights) was created, regrown or dropped. The geometry pass's
+    /// TAA-variant group 1 binds it. Never fires with TAA off.
+    MotionHistoryBuffers,
     GeometryMorphTargetWeightsResize,
     GeometryMorphTargetValuesResize,
     MaterialMorphTargetWeightsResize,
@@ -218,6 +226,10 @@ pub enum BindGroupCreate {
     /// MSAA on/off by `AntiAliasingChange` — this variant is only the
     /// edge-buffer-grow trigger.)
     MaterialEdgeResize,
+    /// TAA: the resolve's previous-depth texture was swapped in after a
+    /// render-size change (`TaaTextures::ensure_render_size`). Only the TAA
+    /// resolve binds it. Never fires with TAA off.
+    TaaResources,
 }
 
 /// Tracks pending bind group recreations.
@@ -309,6 +321,10 @@ impl BindGroups {
             Volumetrics,
             Smaa,
             Ssr,
+            Taa,
+            /// TAA fallback velocity overlay's group 2 (meta, identity
+            /// targets, velocity; no-op while the pass is `None`).
+            TaaOverlay,
             Effects,
             Display,
             Picker,
@@ -318,6 +334,10 @@ impl BindGroups {
 
         for create in self.create_list.drain() {
             match create {
+                BindGroupCreate::CameraHud => {
+                    functions_to_call.insert(FunctionToCall::GeometryCamera);
+                    functions_to_call.insert(FunctionToCall::GeometryMasked);
+                }
                 BindGroupCreate::CameraInitOnly => {
                     functions_to_call.insert(FunctionToCall::GeometryCamera);
                     functions_to_call.insert(FunctionToCall::GeometryMasked);
@@ -340,6 +360,8 @@ impl BindGroups {
                     functions_to_call.insert(FunctionToCall::GeometryTransformMaterials);
                     functions_to_call.insert(FunctionToCall::TransparentMain);
                     functions_to_call.insert(FunctionToCall::TransparentMeshMaterial);
+                    // TAA prep-pass fallback: cs_prep binds the transforms.
+                    functions_to_call.insert(FunctionToCall::MaterialPrep);
                 }
                 BindGroupCreate::MaterialResize => {
                     functions_to_call.insert(FunctionToCall::GeometryTransformMaterials);
@@ -359,8 +381,15 @@ impl BindGroups {
                     // resize) rebuilds the classify bind group.
                     functions_to_call.insert(FunctionToCall::MaterialClassify);
                 }
+                BindGroupCreate::MotionHistoryBuffers => {
+                    functions_to_call.insert(FunctionToCall::GeometryTransformMaterials);
+                    // TAA prep-pass fallback: cs_prep binds the previous
+                    // transforms.
+                    functions_to_call.insert(FunctionToCall::MaterialPrep);
+                }
                 BindGroupCreate::GeometryMeshMetaResize => {
                     functions_to_call.insert(FunctionToCall::GeometryMeta);
+                    functions_to_call.insert(FunctionToCall::TaaOverlay);
                     functions_to_call.insert(FunctionToCall::TransparentMeshMaterial);
                 }
                 BindGroupCreate::GeometryMorphTargetWeightsResize
@@ -402,6 +431,11 @@ impl BindGroups {
                     // SSR binds depth + normal + transparent (read) + the ssr
                     // target (write); all recreated on resize.
                     functions_to_call.insert(FunctionToCall::Ssr);
+                    // TAA binds composite + depth + velocity (read) and its
+                    // own textures; bloom / effects (above) bind its `out`.
+                    // No-op while the pass is `None` (TAA off).
+                    functions_to_call.insert(FunctionToCall::Taa);
+                    functions_to_call.insert(FunctionToCall::TaaOverlay);
                     functions_to_call.insert(FunctionToCall::OpaqueMain);
                     functions_to_call.insert(FunctionToCall::TransparentMain);
                     functions_to_call.insert(FunctionToCall::Picker);
@@ -439,6 +473,10 @@ impl BindGroups {
                 BindGroupCreate::SsrBvhBuffers => {
                     functions_to_call.insert(FunctionToCall::Ssr);
                 }
+                BindGroupCreate::TaaResources => {
+                    functions_to_call.insert(FunctionToCall::Taa);
+                    functions_to_call.insert(FunctionToCall::TaaOverlay);
+                }
                 BindGroupCreate::IblTextures => {
                     functions_to_call.insert(FunctionToCall::OpaqueMain);
                     functions_to_call.insert(FunctionToCall::TransparentLights);
@@ -464,6 +502,11 @@ impl BindGroups {
                     functions_to_call.insert(FunctionToCall::TransparentMain);
                 }
                 BindGroupCreate::MaterialMeshMetaResize => {
+                    // The TAA reactive seed reads the material meta (no-op
+                    // while TAA is off); the overlay's debug counters are
+                    // sized to it.
+                    functions_to_call.insert(FunctionToCall::Taa);
+                    functions_to_call.insert(FunctionToCall::TaaOverlay);
                     functions_to_call.insert(FunctionToCall::OpaqueMain);
                     functions_to_call.insert(FunctionToCall::GeometryMasked);
                     functions_to_call.insert(FunctionToCall::ShadowMasked);
@@ -869,6 +912,20 @@ impl BindGroups {
                     // Lazy pass: `None` until bloom is first enabled — its
                     // eventual construction marks `TextureViewRecreate`, so
                     // this arm runs against the live views right after.
+                    // In TAA mode bloom reads the resolve's output (RCAS's
+                    // while sharpening is on) instead of
+                    // `composite` (cheap JS-handle clone, as for SMAA below).
+                    // Unless `TaaConfig::bloom_source` says this frame's HDR
+                    // render (`composite`): see `TaaBloomSource`.
+                    let resolved =
+                        ctx.anti_aliasing.taa.as_ref().is_some_and(|t| {
+                            t.bloom_source == crate::taa::TaaBloomSource::Resolved
+                        });
+                    let taa_out = render_passes
+                        .taa
+                        .as_ref()
+                        .filter(|_| resolved)
+                        .map(|t| t.final_view().clone());
                     if let Some(bloom) = render_passes.bloom.as_mut() {
                         // Split-borrow: bind_groups (mut) vs texture/params (shared).
                         let crate::render_passes::bloom::render_pass::BloomRenderPass {
@@ -877,7 +934,12 @@ impl BindGroups {
                             params,
                             ..
                         } = bloom;
-                        bind_groups.recreate(&ctx, texture, &params.gpu_buffer)?;
+                        bind_groups.recreate(
+                            &ctx,
+                            texture,
+                            &params.gpu_buffer,
+                            taa_out.as_ref(),
+                        )?;
                     }
                 }
                 FunctionToCall::Volumetrics => {
@@ -908,6 +970,50 @@ impl BindGroups {
                         composite.recreate(&ctx)?;
                     }
                 }
+                FunctionToCall::Taa => {
+                    // Lazy pass: `None` while TAA is off (dropped on disable).
+                    if let Some(taa) = render_passes.taa.as_mut() {
+                        let crate::render_passes::taa::render_pass::TaaRenderPass {
+                            bind_groups,
+                            params,
+                            textures,
+                            reactive_seed,
+                            rcas,
+                            dof_pre,
+                            ..
+                        } = taa;
+                        // DoF before the resolve: the resolve reads its output
+                        // instead of `composite` (bloom's `CurrentFrame` source
+                        // still reads `composite`, pre-DoF).
+                        if let Some(dof_pre) = dof_pre.as_mut() {
+                            dof_pre.recreate(
+                                ctx.gpu,
+                                &ctx.render_texture_views.composite,
+                                &ctx.render_texture_views.depth,
+                                &ctx.camera.gpu_buffer,
+                            )?;
+                        }
+                        bind_groups.recreate(
+                            &ctx,
+                            textures,
+                            &params.gpu_buffer,
+                            dof_pre.as_ref().and_then(|d| d.out_view()),
+                        )?;
+                        if let Some(seed) = reactive_seed.as_mut() {
+                            seed.recreate(&ctx)?;
+                        }
+                        if let (Some(rcas), Some(reactive)) =
+                            (rcas.as_mut(), ctx.render_texture_views.reactive.as_ref())
+                        {
+                            rcas.recreate(ctx.gpu, &textures.out_view, reactive)?;
+                        }
+                    }
+                }
+                FunctionToCall::TaaOverlay => {
+                    if let Some(overlay) = render_passes.taa_overlay.as_mut() {
+                        overlay.recreate(&ctx)?;
+                    }
+                }
                 FunctionToCall::Effects => {
                     // Cheap JS-handle clone dodges the smaa/effects split borrow.
                     let weights_view = render_passes
@@ -920,6 +1026,10 @@ impl BindGroups {
                         .volumetrics
                         .as_ref()
                         .map(|v| v.texture.integrated_sample_view.clone());
+                    // In TAA mode effects reads the resolve's output (RCAS's
+                    // while sharpening is on; post
+                    // size) instead of `composite`.
+                    let taa_out = render_passes.taa.as_ref().map(|t| t.final_view().clone());
                     // Destructure so the atmosphere uniform and the bind groups
                     // borrow disjointly (same shape as the SSR arm above).
                     let crate::render_passes::effects::render_pass::EffectsRenderPass {
@@ -933,6 +1043,7 @@ impl BindGroups {
                         &atmosphere_params.gpu_buffer,
                         volume_view.as_ref(),
                         pipelines.dof_prepare_pipeline().is_some(),
+                        taa_out.as_ref(),
                     )?;
                 }
                 FunctionToCall::Display => {

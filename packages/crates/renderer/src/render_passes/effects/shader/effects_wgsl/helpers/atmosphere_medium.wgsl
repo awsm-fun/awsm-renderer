@@ -99,7 +99,11 @@ fn atmosphere_view_ray(
 ) -> vec3<f32> {
     // Pixel → NDC. Y flips: NDC is +up, texel coords are +down.
     let uv = pixel_center / screen_dims_f32;
-    let ndc = vec2<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
+    let ndc = vec2<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0){% if taa_post %} + vec2<f32>(2.0 * camera.jitter.x, -2.0 * camera.jitter.y) / camera.viewport_size{% endif %};{% if taa_post %}
+    // TAA: the output is unjittered but `inv_proj` is this frame's JITTERED
+    // inverse. A point at unjittered NDC n is at n + 2j/R (y flipped) under
+    // the jittered projection, so offset the NDC by that before unprojecting,
+    // or the haze ray wobbles by up to half a render pixel every frame.{% endif +%}
     // Any depth gives the same ray direction under a perspective projection.
     let view_h = camera.inv_proj * vec4<f32>(ndc.x, ndc.y, 1.0, 1.0);
     let view_dir = normalize(view_h.xyz / view_h.w);

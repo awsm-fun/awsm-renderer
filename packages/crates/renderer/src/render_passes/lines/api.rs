@@ -223,7 +223,11 @@ impl AwsmRenderer {
     /// either is set. Until compile completes, the line dispatch
     /// warn-skips via `pipeline_scheduler::warn_pipeline_not_compiled`.
     pub async fn ensure_line_pipelines_compiled(&mut self) -> Result<()> {
-        if self.lines.pipelines.variants.is_some() && !self.lines.pipelines_compile_requested {
+        let reactive = self.anti_aliasing.taa.is_some();
+        if self.lines.pipelines.variants.is_some()
+            && !self.lines.pipelines_compile_requested
+            && (!reactive || self.lines.pipelines.reactive_variants.is_some())
+        {
             return Ok(());
         }
         // Nothing to do if no entries AND no explicit request — keep
@@ -240,6 +244,7 @@ impl AwsmRenderer {
                 &mut self.shaders,
                 &self.render_textures.formats,
                 self.features.depth().compare_strict(),
+                reactive,
             )
             .await
     }

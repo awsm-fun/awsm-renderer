@@ -59,8 +59,8 @@ impl CoverageRenderPass {
         ));
         compute_pass.set_pipeline(ctx.pipelines.compute.get(pipelines.compute)?);
         compute_pass.set_bind_group(0, bind_groups.get_bind_group()?, None)?;
-        let workgroups_x = ctx.render_texture_views.width.div_ceil(8);
-        let workgroups_y = ctx.render_texture_views.height.div_ceil(8);
+        let workgroups_x = ctx.render_texture_views.render_size.0.div_ceil(8);
+        let workgroups_y = ctx.render_texture_views.render_size.1.div_ceil(8);
         compute_pass.dispatch_workgroups(workgroups_x, Some(workgroups_y), Some(1));
         compute_pass.end();
 

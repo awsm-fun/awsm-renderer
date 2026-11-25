@@ -71,7 +71,7 @@ use awsm_renderer_materials::{
 impl AwsmRenderer {
     /// Updates a material in place.
     pub fn update_material(&mut self, key: MaterialKey, f: impl FnMut(&mut Material)) {
-        self.materials.update(
+        let temporal_changed = self.materials.update(
             key,
             &self.textures,
             &self.dynamic_materials,
@@ -82,6 +82,111 @@ impl AwsmRenderer {
         // (e.g. added a normal map) → its variant bucket may differ. Flag
         // the reconcile pass to re-resolve on the next frame.
         self.materials.mark_variants_dirty();
+        // Its TAA temporal class changed (e.g. moved to a re-registered
+        // custom material whose WGSL now reads the clock): the users' mesh
+        // meta carries the flag. Rare; never on a plain parameter edit.
+        if temporal_changed {
+            if let Err(err) = self.refresh_temporal_meta(&[key]) {
+                tracing::warn!("material temporal: mesh meta refresh failed: {err:?}");
+            }
+        }
+    }
+
+    /// Sets how TAA treats the material's colour over time (see
+    /// [`MaterialTemporal`]; `Auto` by default). Refreshes the mesh meta of
+    /// every mesh using it when its resolved class changes. No effect (and
+    /// nothing read) without TAA.
+    pub fn set_material_temporal(
+        &mut self,
+        key: MaterialKey,
+        temporal: MaterialTemporal,
+    ) -> crate::error::Result<()> {
+        if !self
+            .materials
+            .set_temporal(key, temporal, &self.dynamic_materials)
+        {
+            return Ok(());
+        }
+        self.refresh_temporal_meta(&[key])
+    }
+
+    /// Sets what `MaterialTemporal::Auto` resolves to for every instance of
+    /// the custom material `shader_id` (its authored default; `Auto` = by
+    /// whether its WGSL reads `frame_globals`). Refreshes the mesh meta of the
+    /// meshes whose class changed. No effect without TAA.
+    pub fn set_custom_material_temporal(
+        &mut self,
+        shader_id: MaterialShaderId,
+        temporal: MaterialTemporal,
+    ) -> crate::error::Result<()> {
+        let changed =
+            self.materials
+                .set_custom_temporal(shader_id, temporal, &self.dynamic_materials);
+        if changed.is_empty() {
+            return Ok(());
+        }
+        self.refresh_temporal_meta(&changed)
+    }
+
+    /// TAA (03 §5.2): resolves every material an animation clip drives
+    /// (built-in factors, texture transforms, custom uniforms; per instance or
+    /// asset-wide) to `MaterialTemporal::Reactive`, unless the material or
+    /// its registration was set explicitly. An animated factor changes the
+    /// colour of a still surface, which no motion vector explains. Call it
+    /// with each clip before inserting it (the scene loader and the editor
+    /// do). Sticky: removing the clip later leaves the materials reactive.
+    /// No effect without TAA beyond the flag.
+    ///
+    /// Every target is marked before any mesh meta is rewritten, so a mesh
+    /// that cannot be refreshed never leaves a later target unmarked. During
+    /// a load the meshes are bound but not yet wired to their geometry; their
+    /// meta is written at the commit, from the class set here.
+    pub fn mark_animated_materials_reactive(
+        &mut self,
+        group: &crate::animation::AnimationClipGroup,
+    ) -> crate::error::Result<()> {
+        use crate::animation::AnimationTarget;
+        let targets: Vec<AnimatedMaterialTarget> = group
+            .channels
+            .iter()
+            .filter_map(|channel| match channel.target {
+                AnimationTarget::BuiltinParam { material, .. }
+                | AnimationTarget::TextureUv { material, .. }
+                | AnimationTarget::Uniform { material, .. } => {
+                    Some(AnimatedMaterialTarget::Material(material))
+                }
+                AnimationTarget::SharedUniform { shader, .. } => {
+                    Some(AnimatedMaterialTarget::Shader(shader))
+                }
+                _ => None,
+            })
+            .collect();
+        mark_targets_reactive(self, &targets)
+    }
+
+    /// Rewrites the mesh meta of every mesh using one of `materials`. A mesh
+    /// not yet wired to its geometry (bound during a load) is skipped: its
+    /// meta is written when the commit wires it, from the materials' current
+    /// class. Any other failure does not stop the rest; the first is
+    /// returned.
+    fn refresh_temporal_meta(&mut self, materials: &[MaterialKey]) -> crate::error::Result<()> {
+        let users: Vec<(crate::meshes::MeshKey, bool)> = self
+            .meshes
+            .iter()
+            .filter(|(_, mesh)| materials.contains(&mesh.material_key))
+            .map(|(mesh_key, _)| (mesh_key, self.meshes.is_wired(mesh_key)))
+            .collect();
+        let (not_wired, first_err) = refresh_each(users, |mesh_key| {
+            self.meshes
+                .refresh_meta_for_mesh_public(mesh_key, &self.materials, &self.transforms)
+        });
+        if not_wired > 0 {
+            tracing::debug!(
+                "material temporal: {not_wired} mesh(es) not wired to their geometry yet; \
+                 their meta is written at the commit"
+            );
+        }
+        first_err.map_or(Ok(()), |err| Err(err.into()))
     }
 
     /// Removes a material and frees its slot in the materials storage
@@ -372,6 +477,28 @@ impl Material {
     }
 }
 
+/// How TAA treats a material's colour over time (plan 03 §5.2).
+///
+/// Colour that changes on a still surface (UV flow, flipbooks, animated
+/// emissive, custom shaders reading time) has no motion vector that explains
+/// it, so the resolve must not trust its history: `Reactive` writes
+/// `reactive = k_material` (`TaaTuning::reactive_material`) for the
+/// material's opaque pixels. Transparent materials are reactive by their
+/// alpha regardless. No effect without TAA.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum MaterialTemporal {
+    /// `Reactive` for flipbook materials and for custom materials whose WGSL
+    /// reads the frame clock (`frame_globals`) unless their registration's
+    /// default says otherwise (`AwsmRenderer::set_custom_material_temporal`);
+    /// `Stable` otherwise. (The scene loader resolves UV flow to `Reactive`.)
+    #[default]
+    Auto,
+    /// The colour is stable over time: TAA accumulates it normally.
+    Stable,
+    /// The colour changes over time: TAA distrusts its history.
+    Reactive,
+}
+
 const INITIAL_SIZE: usize = 8192; //Why not
 static BUFFER_USAGE: LazyLock<BufferUsage> =
     LazyLock::new(|| BufferUsage::new().with_copy_dst().with_storage());
@@ -402,6 +529,20 @@ pub struct Materials {
     /// pass (Blend/Mask/transmission), kept in sync on insert/update/remove.
     /// Read by [`Self::is_transparency_pass`].
     transparency_pass_keys: SecondaryMap<MaterialKey, ()>,
+    /// Per-material TAA temporal override (absent = `Auto`).
+    temporal: SecondaryMap<MaterialKey, MaterialTemporal>,
+    /// Membership set of the materials that resolve to reactive (see
+    /// [`MaterialTemporal`]); read by the mesh meta packer and the TAA
+    /// reactive seed's per-frame gate.
+    temporal_reactive_keys: SecondaryMap<MaterialKey, ()>,
+    /// Per custom material (registration) default for its instances' `Auto`
+    /// (`AwsmRenderer::set_custom_material_temporal`).
+    custom_temporal: std::collections::HashMap<MaterialShaderId, MaterialTemporal>,
+    /// Custom materials with a vertex hook (`wgsl_vertex`): their surface
+    /// moves with more than the node's matrix. Read by the mesh meta packer
+    /// for TAA's prep-pass fallback (03 §2.4: such meshes get the rigid
+    /// motion only and are marked reactive).
+    vertex_hook_keys: SecondaryMap<MaterialKey, ()>,
     uploader: crate::buffer::mapped_uploader::MappedUploader,
     /// Sticky: set to true the first time a material implementing
     /// `KHR_materials_transmission` enters the registry, and never
@@ -541,6 +682,10 @@ impl Materials {
             resolved_shader_id: SecondaryMap::new(),
             variants_dirty: true,
             transparency_pass_keys: SecondaryMap::new(),
+            temporal: SecondaryMap::new(),
+            temporal_reactive_keys: SecondaryMap::new(),
+            vertex_hook_keys: SecondaryMap::new(),
+            custom_temporal: std::collections::HashMap::new(),
             uploader: crate::buffer::mapped_uploader::MappedUploader::new("Materials"),
             has_seen_transmission: false,
             masked_builtin: MaskedBuiltinCounts::default(),
@@ -693,6 +838,9 @@ impl Materials {
         };
         if removed {
             self.transparency_pass_keys.remove(key);
+            self.temporal.remove(key);
+            self.temporal_reactive_keys.remove(key);
+            self.vertex_hook_keys.remove(key);
             self.resolved_shader_id.remove(key);
             self.buffer.remove(key);
             self.gpu_dirty = true;
@@ -736,7 +884,8 @@ impl Materials {
         dynamic_materials: &crate::dynamic_materials::DynamicMaterials,
         extras_pool: &crate::dynamic_materials::extras_pool::ExtrasPool,
         mut f: impl FnMut(&mut Material),
-    ) {
+    ) -> bool {
+        let mut temporal_changed = false;
         if let Some(material) = self.lookup.get_mut(key) {
             let was_transparent = material.is_transparency_pass();
             let was_masked = MaskedBuiltinCounts::slot(material);
@@ -773,6 +922,36 @@ impl Materials {
             if material.has_transmission() {
                 self.has_seen_transmission = true;
             }
+            let temporal = self.temporal.get(key).copied().unwrap_or_default();
+            let was_reactive = self.temporal_reactive_keys.contains_key(key);
+            let reactive = resolve_temporal_reactive(
+                temporal,
+                material,
+                &self.custom_temporal,
+                dynamic_materials,
+            );
+            if reactive {
+                self.temporal_reactive_keys.insert(key, ());
+            } else {
+                self.temporal_reactive_keys.remove(key);
+            }
+            // E.g. an instance moved to a re-registered custom material whose
+            // new WGSL reads the clock: the caller refreshes the users' mesh
+            // meta (the TAA seed reads the flag from there).
+            temporal_changed = was_reactive != reactive;
+            let vertex_hook = matches!(material, Material::Custom(m)
+                if dynamic_materials
+                    .get(m.shader_id)
+                    .is_some_and(|reg| reg.wgsl_vertex.is_some()));
+            // The vertex-hook class feeds the mesh meta's non-rigid flag (TAA
+            // prep-pass fallback): a change also needs the users' meta
+            // refreshed, the same as a temporal change.
+            let had_vertex_hook = if vertex_hook {
+                self.vertex_hook_keys.insert(key, ()).is_some()
+            } else {
+                self.vertex_hook_keys.remove(key).is_some()
+            };
+            temporal_changed |= had_vertex_hook != vertex_hook;
 
             let dynamic_ctx =
                 crate::dynamic_materials::DynamicMaterialPackContext::new(dynamic_materials)
@@ -803,6 +982,7 @@ impl Materials {
                 }
             }
         }
+        temporal_changed
     }
 
     /// Returns true if the material uses the transparency pass.
@@ -856,6 +1036,102 @@ impl Materials {
     /// from a validated `Mesh`).
     pub fn alpha_cutoff(&self, key: MaterialKey) -> Option<f32> {
         self.lookup.get(key).and_then(|m| m.alpha_mask())
+    }
+
+    /// The material's TAA temporal setting (`Auto` unless set).
+    pub fn temporal(&self, key: MaterialKey) -> MaterialTemporal {
+        self.temporal.get(key).copied().unwrap_or_default()
+    }
+
+    /// Sets the material's TAA temporal setting. Returns whether its
+    /// resolved class (reactive or not) changed: the caller then refreshes
+    /// the mesh meta of the meshes using it.
+    pub fn set_temporal(
+        &mut self,
+        key: MaterialKey,
+        temporal: MaterialTemporal,
+        dynamic_materials: &crate::dynamic_materials::DynamicMaterials,
+    ) -> bool {
+        let Some(material) = self.lookup.get(key) else {
+            return false;
+        };
+        if temporal == MaterialTemporal::Auto {
+            self.temporal.remove(key);
+        } else {
+            self.temporal.insert(key, temporal);
+        }
+        let was = self.temporal_reactive_keys.contains_key(key);
+        let now =
+            resolve_temporal_reactive(temporal, material, &self.custom_temporal, dynamic_materials);
+        if now {
+            self.temporal_reactive_keys.insert(key, ());
+        } else {
+            self.temporal_reactive_keys.remove(key);
+        }
+        was != now
+    }
+
+    /// Sets the default `Auto` resolves to for instances of the custom
+    /// material `shader_id` (`Auto` = by its WGSL). Returns the instances
+    /// whose resolved class changed.
+    pub fn set_custom_temporal(
+        &mut self,
+        shader_id: MaterialShaderId,
+        temporal: MaterialTemporal,
+        dynamic_materials: &crate::dynamic_materials::DynamicMaterials,
+    ) -> Vec<MaterialKey> {
+        if temporal == MaterialTemporal::Auto {
+            self.custom_temporal.remove(&shader_id);
+        } else {
+            self.custom_temporal.insert(shader_id, temporal);
+        }
+        let mut changed = Vec::new();
+        for (key, material) in self.lookup.iter() {
+            if !matches!(material, Material::Custom(m) if m.shader_id == shader_id) {
+                continue;
+            }
+            let own = self.temporal.get(key).copied().unwrap_or_default();
+            let now =
+                resolve_temporal_reactive(own, material, &self.custom_temporal, dynamic_materials);
+            if now != self.temporal_reactive_keys.contains_key(key) {
+                changed.push(key);
+            }
+        }
+        for &key in &changed {
+            if self.temporal_reactive_keys.contains_key(key) {
+                self.temporal_reactive_keys.remove(key);
+            } else {
+                self.temporal_reactive_keys.insert(key, ());
+            }
+        }
+        changed
+    }
+
+    /// The default `Auto` resolves to for instances of the custom material
+    /// `shader_id` (`Auto` unless set).
+    pub fn custom_temporal(&self, shader_id: MaterialShaderId) -> MaterialTemporal {
+        self.custom_temporal
+            .get(&shader_id)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// Whether the material is a custom material with a vertex hook (packed
+    /// into the mesh meta for TAA's prep-pass fallback).
+    pub fn has_vertex_hook(&self, key: MaterialKey) -> bool {
+        self.vertex_hook_keys.contains_key(key)
+    }
+
+    /// Whether the material resolves to temporally reactive (packed into the
+    /// mesh meta for the TAA reactive seed).
+    pub fn is_temporal_reactive(&self, key: MaterialKey) -> bool {
+        self.temporal_reactive_keys.contains_key(key)
+    }
+
+    /// Whether any live material is temporally reactive: gates the TAA
+    /// reactive seed draw.
+    pub fn has_temporal_reactive(&self) -> bool {
+        !self.temporal_reactive_keys.is_empty()
     }
 
     /// Iterates `(key, &Material)` for materials that may route to a
@@ -1014,6 +1290,212 @@ pub enum AwsmMaterialError {
 
     #[error("[material] buffer slot missing {0:?}")]
     BufferSlotMissing(MaterialKey),
+}
+
+/// [`MaterialTemporal`] resolved for `material`.
+fn resolve_temporal_reactive(
+    temporal: MaterialTemporal,
+    material: &Material,
+    custom_temporal: &std::collections::HashMap<MaterialShaderId, MaterialTemporal>,
+    dynamic_materials: &crate::dynamic_materials::DynamicMaterials,
+) -> bool {
+    match temporal {
+        MaterialTemporal::Reactive => true,
+        MaterialTemporal::Stable => false,
+        MaterialTemporal::Auto => match material {
+            Material::FlipBook(_) => true,
+            Material::Custom(m) => match custom_temporal.get(&m.shader_id) {
+                Some(MaterialTemporal::Reactive) => true,
+                Some(MaterialTemporal::Stable) => false,
+                // Scanned once at registration, not per insert / update.
+                Some(MaterialTemporal::Auto) | None => {
+                    dynamic_materials.reads_frame_clock(m.shader_id)
+                }
+            },
+            _ => false,
+        },
+    }
+}
+
+/// A material an animation clip drives, or a custom material whose uniform
+/// it drives for every instance (`SharedUniform`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AnimatedMaterialTarget {
+    Material(MaterialKey),
+    Shader(MaterialShaderId),
+}
+
+/// What [`mark_targets_reactive`] needs from the renderer (a trait so the
+/// order of marking and refreshing is testable without a GPU).
+pub(crate) trait TemporalMarkingHost {
+    /// The target's temporal setting is `Auto` (not set explicitly).
+    fn temporal_is_auto(&self, target: AnimatedMaterialTarget) -> bool;
+    /// Sets the target reactive; returns the materials whose class changed.
+    fn mark_reactive(&mut self, target: AnimatedMaterialTarget) -> Vec<MaterialKey>;
+    /// Rewrites the mesh meta of the meshes using `changed`.
+    fn refresh(&mut self, changed: &[MaterialKey]) -> crate::error::Result<()>;
+}
+
+/// Marks EVERY `Auto` target reactive, then refreshes the mesh meta once.
+pub(crate) fn mark_targets_reactive(
+    host: &mut impl TemporalMarkingHost,
+    targets: &[AnimatedMaterialTarget],
+) -> crate::error::Result<()> {
+    let mut changed: Vec<MaterialKey> = Vec::new();
+    for &target in targets {
+        if host.temporal_is_auto(target) {
+            for key in host.mark_reactive(target) {
+                if !changed.contains(&key) {
+                    changed.push(key);
+                }
+            }
+        }
+    }
+    if changed.is_empty() {
+        return Ok(());
+    }
+    host.refresh(&changed)
+}
+
+/// Refreshes each `(mesh, wired)` that is wired; skips (and counts) the
+/// rest; a failure does not stop the others. Returns (skipped, first error).
+pub(crate) fn refresh_each<K: Copy, E>(
+    users: Vec<(K, bool)>,
+    mut refresh: impl FnMut(K) -> std::result::Result<(), E>,
+) -> (usize, Option<E>) {
+    let mut not_wired = 0;
+    let mut first_err = None;
+    for (key, wired) in users {
+        if !wired {
+            not_wired += 1;
+            continue;
+        }
+        if let Err(err) = refresh(key) {
+            first_err.get_or_insert(err);
+        }
+    }
+    (not_wired, first_err)
+}
+
+impl TemporalMarkingHost for AwsmRenderer {
+    fn temporal_is_auto(&self, target: AnimatedMaterialTarget) -> bool {
+        match target {
+            AnimatedMaterialTarget::Material(key) => {
+                self.materials.temporal(key) == MaterialTemporal::Auto
+            }
+            AnimatedMaterialTarget::Shader(shader) => {
+                self.materials.custom_temporal(shader) == MaterialTemporal::Auto
+            }
+        }
+    }
+
+    fn mark_reactive(&mut self, target: AnimatedMaterialTarget) -> Vec<MaterialKey> {
+        match target {
+            AnimatedMaterialTarget::Material(key) => {
+                if self.materials.set_temporal(
+                    key,
+                    MaterialTemporal::Reactive,
+                    &self.dynamic_materials,
+                ) {
+                    vec![key]
+                } else {
+                    Vec::new()
+                }
+            }
+            AnimatedMaterialTarget::Shader(shader) => self.materials.set_custom_temporal(
+                shader,
+                MaterialTemporal::Reactive,
+                &self.dynamic_materials,
+            ),
+        }
+    }
+
+    fn refresh(&mut self, changed: &[MaterialKey]) -> crate::error::Result<()> {
+        self.refresh_temporal_meta(changed)
+    }
+}
+
+#[cfg(test)]
+mod animated_temporal_tests {
+    use super::*;
+
+    fn keys(n: usize) -> Vec<MaterialKey> {
+        let mut map: slotmap::SlotMap<MaterialKey, ()> = slotmap::SlotMap::with_key();
+        (0..n).map(|_| map.insert(())).collect()
+    }
+
+    /// A host whose mesh-meta refresh fails, as it does for a mesh that a
+    /// load has bound but not yet wired (`MeshNotFound`).
+    struct Host {
+        marked: Vec<AnimatedMaterialTarget>,
+        refreshed: Vec<Vec<MaterialKey>>,
+        refresh_fails: bool,
+    }
+
+    impl TemporalMarkingHost for Host {
+        fn temporal_is_auto(&self, _: AnimatedMaterialTarget) -> bool {
+            true
+        }
+        fn mark_reactive(&mut self, target: AnimatedMaterialTarget) -> Vec<MaterialKey> {
+            self.marked.push(target);
+            match target {
+                AnimatedMaterialTarget::Material(key) => vec![key],
+                AnimatedMaterialTarget::Shader(_) => Vec::new(),
+            }
+        }
+        fn refresh(&mut self, changed: &[MaterialKey]) -> crate::error::Result<()> {
+            self.refreshed.push(changed.to_vec());
+            if self.refresh_fails {
+                Err(crate::meshes::error::AwsmMeshError::MeshNotFound(Default::default()).into())
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    /// Dreidel Derby's warning: one mesh that cannot be refreshed must not
+    /// leave the clip's later materials unmarked (they would never be
+    /// reactive). Every target is marked, then the meta refreshed once.
+    #[test]
+    fn a_failing_refresh_leaves_no_target_unmarked() {
+        let k = keys(3);
+        let targets = [
+            AnimatedMaterialTarget::Material(k[0]),
+            AnimatedMaterialTarget::Shader(MaterialShaderId::PBR),
+            AnimatedMaterialTarget::Material(k[1]),
+            AnimatedMaterialTarget::Material(k[2]),
+            AnimatedMaterialTarget::Material(k[1]),
+        ];
+        let mut host = Host {
+            marked: Vec::new(),
+            refreshed: Vec::new(),
+            refresh_fails: true,
+        };
+        assert!(mark_targets_reactive(&mut host, &targets).is_err());
+        assert_eq!(host.marked, targets.to_vec());
+        assert_eq!(host.refreshed, vec![vec![k[0], k[1], k[2]]]);
+    }
+
+    /// A mesh bound but not wired is skipped (its meta is written at the
+    /// commit), and a failing mesh does not stop the ones after it.
+    #[test]
+    fn refresh_skips_unwired_meshes_and_continues_after_a_failure() {
+        let mut refreshed = Vec::new();
+        let (skipped, err) = refresh_each(
+            vec![(1, false), (2, true), (3, true), (4, false), (5, true)],
+            |key| {
+                refreshed.push(key);
+                if key == 3 {
+                    Err("mesh 3")
+                } else {
+                    Ok(())
+                }
+            },
+        );
+        assert_eq!(skipped, 2);
+        assert_eq!(err, Some("mesh 3"));
+        assert_eq!(refreshed, vec![2, 3, 5]);
+    }
 }
 
 #[cfg(test)]

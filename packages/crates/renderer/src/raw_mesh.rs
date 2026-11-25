@@ -170,7 +170,12 @@ impl RawMeshData {
     /// per-pass visibility/transparency reps + tangents are derived at commit from
     /// the retained positions/normals/UV0/indices (tangents gated on the bound
     /// material), so this carries NO kind decision — that's `geometry_kind` at commit.
-    pub(crate) fn into_geometry_source(
+    ///
+    /// Public so an embedder can declare raw geometry into an open load and
+    /// let the next `commit_load` upload it (the deferred twin of
+    /// [`AwsmRenderer::add_raw_mesh`]). Skin and morph data are NOT carried:
+    /// `add_raw_mesh` inserts those into the shared stores first.
+    pub fn into_geometry_source(
         mut self,
         front_face: awsm_renderer_core::pipeline::primitive::FrontFace,
     ) -> crate::meshes::geometry::GeometrySource {

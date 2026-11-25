@@ -153,6 +153,8 @@ impl EffectsBindGroups {
     /// the integrated froxel volume when the volumetrics pass exists; `None`
     /// binds the internal 1×1×1 dummy, same discipline as the SMAA weights.
     /// `dof` says whether the installed shader variant uses the DoF buffer.
+    /// `taa_out` is the TAA resolve's output when TAA is on: the scene colour
+    /// the pass reads (binding 0) instead of `composite`.
     pub fn recreate(
         &mut self,
         ctx: &BindGroupRecreateContext<'_>,
@@ -160,11 +162,15 @@ impl EffectsBindGroups {
         atmosphere_params: &web_sys::GpuBuffer,
         volumetric_view: Option<&web_sys::GpuTextureView>,
         dof: bool,
+        taa_out: Option<&web_sys::GpuTextureView>,
     ) -> Result<()> {
+        // TAA mode: the scene colour is the resolve's output (post size), not
+        // `composite` (render size).
+        let scene_color = taa_out.unwrap_or(&ctx.render_texture_views.composite);
         let dof_data_size = if dof {
             dof_data_byte_size(
-                ctx.render_texture_views.width,
-                ctx.render_texture_views.height,
+                ctx.render_texture_views.post_size.0,
+                ctx.render_texture_views.post_size.1,
             )
         } else {
             4
@@ -186,7 +192,7 @@ impl EffectsBindGroups {
 
         entries.push(BindGroupEntry::new(
             entries.len() as u32,
-            BindGroupResource::TextureView(Cow::Borrowed(&ctx.render_texture_views.composite)),
+            BindGroupResource::TextureView(Cow::Borrowed(scene_color)),
         ));
         entries.push(BindGroupEntry::new(
             entries.len() as u32,

@@ -1,8 +1,8 @@
 //! Editor view-settings → renderer sync.
 //!
 //! The Settings drawer toggles live on `controller().settings`; these observers
-//! push the renderer-affecting ones (MSAA, light-culling debug heatmap) into the
-//! renderer. (Grid is handled by `engine::grid`; gizmo visibility by
+//! push the renderer-affecting ones (anti-aliasing, light-culling debug
+//! heatmap) into the renderer. (Grid is handled by `engine::grid`; gizmo visibility by
 //! `engine::gizmo`.) Started once at boot.
 
 use crate::controller::controller;
@@ -49,7 +49,7 @@ pub fn start() {
     // COMPILED (not just dispatched), so an off→on flip must drain the config
     // pipelines to build the pair — otherwise render_blur warn-skips until an
     // unrelated commit_load. Async + guarded against redundant re-applies,
-    // mirroring the MSAA observer below.
+    // like the anti-aliasing observer below.
     spawn_local(async {
         let mut first = true;
         controller()
@@ -80,48 +80,81 @@ pub fn start() {
             .await;
     });
 
-    // MSAA on/off — recompiles the affected pipelines, so it's async + guarded
-    // against redundant re-applies.
+    // Anti-aliasing: the authored, persisted `scene.post_process.anti_aliasing`
+    // (MSAA / SMAA / TAA and its settings) → renderer, through the loader's
+    // mapping (`anti_aliasing_to_renderer`), so the viewport and a player load
+    // agree. A MODE change recompiles: `set_anti_aliasing` then `commit_load`
+    // (the one compile path; it also rebuilds the MSAA edge-resolve set). A
+    // change of TAA settings while TAA stays on takes the renderer's light path
+    // (`AntiAliasing::same_structure`): no recompile, no history reset, no
+    // commit. Guarded on equality, so the initial emission (defaults vs the
+    // renderer's boot config) is a no-op and a project load applies here.
     spawn_local(async {
-        let mut first = true;
         controller()
-            .settings
-            .msaa
-            .signal()
-            .for_each(move |on| {
-                let skip = first;
-                first = false;
-                async move {
-                    if skip {
-                        return;
-                    }
-                    let want = if on { Some(4) } else { None };
-                    let handle = renderer_handle();
-                    let mut r = handle.lock().await;
-                    if r.anti_aliasing.msaa_sample_count != want {
-                        let mut aa = r.anti_aliasing.clone();
-                        aa.msaa_sample_count = want;
-                        if let Err(e) = r.set_anti_aliasing(aa).await {
-                            tracing::warn!("set_anti_aliasing: {e}");
-                        }
-                        // An AA flip needs the MSAA edge-resolve set rebuilt;
-                        // that routes through the one compile path now, not the
-                        // deleted render preamble. Live (no begin_load).
-                        if let Err(e) = r.commit_load(|_| {}).await {
-                            tracing::warn!("commit_load after set_anti_aliasing: {e}");
-                            crate::engine::context::surface_commit_error(&e);
-                        }
+            .scene
+            .post_process
+            .signal_ref(|pp| pp.anti_aliasing)
+            .dedupe()
+            .for_each(|authored| async move {
+                let handle = renderer_handle();
+                let mut r = handle.lock().await;
+                let pp = awsm_renderer_editor_protocol::PostProcessConfig {
+                    anti_aliasing: authored,
+                    ..Default::default()
+                };
+                let want =
+                    awsm_renderer_scene_loader::anti_aliasing_to_renderer(&pp, &r.anti_aliasing);
+                if want == r.anti_aliasing {
+                    return;
+                }
+                let structural = !want.same_structure(&r.anti_aliasing);
+                let _guard = structural.then(crate::controller::CompileGuard::new);
+                // Selecting TAA also turns supersampling off (`SetAntiAliasing`
+                // sets `render_scale` 1). Its own observer may not have run
+                // yet, and the renderer rejects TAA while supersampling, so
+                // apply it here first.
+                if want.taa.is_some() && r.render_scale() > 1.0 {
+                    if let Err(e) = r.set_render_scale(1.0).await {
+                        tracing::warn!("set_render_scale before TAA: {e}");
                     }
                 }
+                if let Err(e) = r.set_anti_aliasing(want).await {
+                    tracing::warn!("set_anti_aliasing: {e}");
+                    TAA_UNAVAILABLE.with(|m| m.set(r.taa_fallback_reason().map(str::to_string)));
+                    return;
+                }
+                if structural {
+                    if let Err(e) = r.commit_load(|_| {}).await {
+                        tracing::warn!("commit_load after set_anti_aliasing: {e}");
+                        crate::engine::context::surface_commit_error(&e);
+                    }
+                }
+                // A TAA pipeline that failed in the commit fell back to MSAA.
+                TAA_UNAVAILABLE.with(|m| m.set(r.taa_fallback_reason().map(str::to_string)));
             })
             .await;
     });
 
-    // SMAA on/off — post-process AA on `AntiAliasing::smaa`. Recompiles the
-    // effects/display pipelines (via `set_anti_aliasing`), so it's async + guarded
-    // against redundant re-applies, mirroring the MSAA observer above. Transient
-    // (not persisted) — a debug-only editor view of what a player might enable.
-    //
+    // TAA availability, for the Post-processing panel and the
+    // `SetAntiAliasing` handler. Every device has a motion-vector path (the
+    // prep-pass fallback covers the rest), so TAA is unavailable only after
+    // the renderer had to fall back from it (its pipelines failed here).
+    spawn_local(async {
+        refresh_taa_unavailable().await;
+    });
+
+    // TAA debug view (transient view state).
+    spawn_local(async {
+        controller()
+            .settings
+            .taa_debug_view
+            .signal()
+            .for_each(|view| async move {
+                with_renderer_mut(move |r| r.set_taa_debug_view(taa_debug_view(view))).await;
+            })
+            .await;
+    });
+
     // Anisotropic filtering — swaps pool samplers to no-aniso twins when off
     // (one TexturePool bind-group rebuild; no pipeline work).
     spawn_local(async {
@@ -154,37 +187,6 @@ pub fn start() {
                 if (r.render_scale() - scale).abs() > f32::EPSILON {
                     if let Err(e) = r.set_render_scale(scale).await {
                         tracing::warn!("set_render_scale: {e}");
-                    }
-                }
-            })
-            .await;
-    });
-
-    // The INITIAL emission is NOT skipped (unlike the MSAA observer): defaults
-    // are aligned (both OFF), so the initial fire is normally a no-op via the
-    // `!=` guard — but not skipping it keeps the pair self-healing if either
-    // default ever drifts.
-    spawn_local(async {
-        controller()
-            .settings
-            .smaa
-            .signal()
-            .for_each(move |on| {
-                async move {
-                    let handle = renderer_handle();
-                    let mut r = handle.lock().await;
-                    if r.anti_aliasing.smaa != on {
-                        let mut aa = r.anti_aliasing.clone();
-                        aa.smaa = on;
-                        if let Err(e) = r.set_anti_aliasing(aa).await {
-                            tracing::warn!("set_anti_aliasing (smaa): {e}");
-                        }
-                        // Same as the MSAA flip: route the material-variant
-                        // reconcile through the one compile path.
-                        if let Err(e) = r.commit_load(|_| {}).await {
-                            tracing::warn!("commit_load after smaa toggle: {e}");
-                            crate::engine::context::surface_commit_error(&e);
-                        }
                     }
                 }
             })
@@ -277,4 +279,42 @@ pub fn start() {
             })
             .await;
     });
+}
+
+thread_local! {
+    /// Why TAA is unavailable on this device (`None` = available, or not
+    /// determined yet). Set once at boot.
+    static TAA_UNAVAILABLE: Mutable<Option<String>> = Mutable::new(None);
+}
+
+/// Why TAA is unavailable on this device, or `None` when it is available.
+pub fn taa_unavailable_reason() -> Option<String> {
+    TAA_UNAVAILABLE.with(|m| m.get_cloned())
+}
+
+/// Re-read [`taa_unavailable_reason`] from the renderer
+/// (`AwsmRenderer::taa_fallback_reason`).
+async fn refresh_taa_unavailable() {
+    let reason = with_renderer_mut(|r| r.taa_fallback_reason().map(str::to_string)).await;
+    TAA_UNAVAILABLE.with(|m| m.set(reason));
+}
+
+/// The renderer's debug view for the wire name.
+fn taa_debug_view(
+    view: awsm_renderer_editor_protocol::TaaDebugViewName,
+) -> awsm_renderer::taa::TaaDebugView {
+    use awsm_renderer::taa::TaaDebugView as R;
+    use awsm_renderer_editor_protocol::TaaDebugViewName as N;
+    match view {
+        N::None => R::None,
+        N::Velocity => R::Velocity,
+        N::ReprojectionError => R::ReprojectionError,
+        N::HistoryLength => R::HistoryLength,
+        N::Rejection => R::Rejection,
+        N::Reactive => R::Reactive,
+        N::Confidence => R::Confidence,
+        N::FreezeJitter => R::FreezeJitter,
+        N::HistoryOnly => R::HistoryOnly,
+        N::CurrentOnly => R::CurrentOnly,
+    }
 }

@@ -80,6 +80,46 @@ pub struct MaterialDef {
     /// extension uses a different material.
     #[serde(default)]
     pub extensions: PbrExtensions,
+    /// How TAA treats this material's colour over time. `None` (the default)
+    /// = auto: `Reactive` when any texture slot has a UV `flow`, the shading
+    /// is `FlipBook`, or an animation clip drives one of its factors, texture
+    /// transforms or uniforms; else `Stable`. Set `Reactive` for colour an
+    /// APP changes at runtime (per-frame uniform or factor writes the scene
+    /// cannot see); `Stable` to opt a flowing or animated material out. No
+    /// effect without TAA.
+    #[serde(default)]
+    pub temporal: Option<MaterialTemporal>,
+}
+
+/// How TAA treats a material's colour over time (a material asset's
+/// `temporal`). See the renderer's `MaterialTemporal`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub enum MaterialTemporal {
+    /// The colour is stable over time: TAA accumulates it normally.
+    Stable,
+    /// The colour changes over time on a still surface (UV flow, flipbook,
+    /// animated emissive, time-driven shader): TAA distrusts its history
+    /// there (ghost-free, but aliases like no AA).
+    Reactive,
+}
+
+impl MaterialDef {
+    /// `temporal` resolved: an explicit setting, else `Reactive` when any
+    /// texture slot flows or the shading is a flipbook.
+    pub fn temporal_reactive(&self) -> bool {
+        match self.temporal {
+            Some(t) => t == MaterialTemporal::Reactive,
+            None => {
+                matches!(self.shading, MaterialShading::FlipBook { .. })
+                    || self
+                        .texture_refs()
+                        .iter()
+                        .any(|t| t.flow.is_some_and(|f| f != [0.0, 0.0]))
+            }
+        }
+    }
 }
 
 fn default_one() -> f32 {
@@ -216,6 +256,7 @@ impl Default for MaterialDef {
             alpha_mode: MaterialAlphaMode::Opaque,
             shading: MaterialShading::Pbr,
             extensions: PbrExtensions::default(),
+            temporal: None,
         }
     }
 }

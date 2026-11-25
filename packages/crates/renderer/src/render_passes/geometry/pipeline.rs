@@ -85,6 +85,113 @@ pub static VERTEX_BUFFER_LAYOUT_INSTANCING: LazyLock<VertexBufferLayout> = LazyL
     vertex_buffer_layout_instancing
 });
 
+/// TAA's previous-instance-transform buffer: the instancer's prev mirror,
+/// bound at vertex slot 2 with the same offset as the current one, read as
+/// `@location(11..14)` (`prev_instance_transform_row_*`).
+pub static VERTEX_BUFFER_LAYOUT_PREV_INSTANCING: LazyLock<VertexBufferLayout> =
+    LazyLock::new(|| {
+        let mut layout = VertexBufferLayout {
+            array_stride: MeshBufferVertexInfo::INSTANCING_BYTE_SIZE as u64,
+            step_mode: Some(VertexStepMode::Instance),
+            attributes: Vec::new(),
+        };
+        for i in 0..4u32 {
+            layout.attributes.push(VertexAttribute {
+                format: VertexFormat::Float32x4,
+                offset: (i * 16) as u64,
+                shader_location: PREV_INSTANCE_FIRST_LOCATION + i,
+            });
+        }
+        layout
+    });
+
+/// Vertex-buffer slot of the previous instance transforms in every TAA
+/// geometry pipeline that is instanced (slot 0 = geometry, 1 = instances).
+pub const PREV_INSTANCE_VERTEX_SLOT: u32 = 2;
+
+/// First vertex location of the previous instance transform rows (after the
+/// custom-vertex `uv0` at 10).
+pub const PREV_INSTANCE_FIRST_LOCATION: u32 = 11;
+
+/// Format of the TAA motion-vector target (03 §2.2): `uv_now - uv_prev`.
+pub const VELOCITY_FORMAT: awsm_renderer_core::texture::TextureFormat =
+    awsm_renderer_core::texture::TextureFormat::Rg16float;
+
+/// Which set of geometry targets a pipeline writes, from the AA mode. Every
+/// geometry-family pipeline pool keys on this.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum GeometryTargets {
+    /// Four single-sampled targets (no AA, SMAA).
+    Single,
+    /// Four 4x multisampled targets.
+    Msaa4,
+    /// TAA: four single-sampled targets plus the `rg16float` motion vector,
+    /// and the previous-frame vertex evaluation.
+    Velocity,
+    /// TAA with the prep-pass fallback (03 §2.4): the four single-sampled
+    /// targets (the prep pass writes the vectors), plus the texture LOD bias.
+    TaaPrep,
+}
+
+impl GeometryTargets {
+    /// The targets the given AA mode renders the geometry pass into. TAA with
+    /// the prep-pass fallback (03 §2.4) keeps the plain 4-target layout: the
+    /// prep pass writes the vectors.
+    ///
+    /// `formats` carries the renderer's motion-vector path
+    /// ([`RenderTextureFormats::taa_prep_velocity`]).
+    pub fn from_aa(
+        anti_aliasing: &AntiAliasing,
+        formats: &crate::render_textures::RenderTextureFormats,
+    ) -> Self {
+        if formats.taa_prep_velocity(anti_aliasing) {
+            Self::TaaPrep
+        } else if anti_aliasing.taa.is_some() {
+            Self::Velocity
+        } else if anti_aliasing.msaa_sample_count == Some(4) {
+            Self::Msaa4
+        } else {
+            Self::Single
+        }
+    }
+
+    /// Multisample count of the targets (`None` = single-sampled).
+    pub fn msaa_samples(self) -> Option<u32> {
+        match self {
+            Self::Msaa4 => Some(4),
+            Self::Single | Self::Velocity | Self::TaaPrep => None,
+        }
+    }
+
+    /// Whether the pipelines write the motion-vector target.
+    pub fn velocity(self) -> bool {
+        matches!(self, Self::Velocity)
+    }
+
+    /// Whether the pipelines apply TAA's texture LOD bias (TAA on, either
+    /// velocity path).
+    pub fn mip_bias(self) -> bool {
+        matches!(self, Self::Velocity | Self::TaaPrep)
+    }
+
+    /// The colour targets of the geometry pass, in attachment order.
+    pub fn color_targets(
+        self,
+        formats: &crate::render_textures::RenderTextureFormats,
+    ) -> Vec<ColorTargetState> {
+        let mut targets = vec![
+            ColorTargetState::new(formats.visiblity_data),
+            ColorTargetState::new(formats.barycentric),
+            ColorTargetState::new(formats.normal_tangent),
+            ColorTargetState::new(formats.barycentric_derivatives),
+        ];
+        if self.velocity() {
+            targets.push(ColorTargetState::new(VELOCITY_FORMAT));
+        }
+        targets
+    }
+}
+
 /// Pipeline layout and render pipelines for the geometry pass.
 pub struct GeometryPipelines {
     pub pipeline_layout_key_storage: PipelineLayoutKey,
@@ -121,7 +228,7 @@ impl GeometryCullKey {
 /// fold a flat result vec into the nested struct.
 #[derive(Clone, Copy, Debug)]
 pub struct GeometryLeafSlot {
-    pub msaa_4: bool,
+    pub targets: GeometryTargets,
     pub shape: GeometryPipelineShape,
     pub cull: GeometryCullKey,
 }
@@ -149,12 +256,12 @@ impl GeometryPipelines {
     pub async fn new(
         ctx: &mut RenderPassInitContext<'_>,
         bind_groups: &GeometryBindGroups,
-        multisampled_geometry: bool,
+        targets: GeometryTargets,
     ) -> Result<Self> {
         ctx.shaders
-            .ensure_keys(ctx.gpu, Self::shader_cache_keys(multisampled_geometry))
+            .ensure_keys(ctx.gpu, Self::shader_cache_keys(targets))
             .await?;
-        let descs = Self::build_descriptors(ctx, bind_groups, multisampled_geometry).await?;
+        let descs = Self::build_descriptors(ctx, bind_groups, targets).await?;
         let pipeline_keys = ctx
             .pipelines
             .render
@@ -171,6 +278,8 @@ impl GeometryPipelines {
             render_pipeline_keys: GeometryRenderPipelineKeys {
                 no_anti_alias: None,
                 msaa_4_anti_alias: None,
+                velocity: None,
+                taa_prep: None,
             },
         };
         empty.merge_resolved(&descs, pipeline_keys)?;
@@ -180,12 +289,8 @@ impl GeometryPipelines {
     /// Shader cache keys for **one MSAA branch** — 3 variants:
     /// `(instancing × meta_storage)`, collapsed across cull mode
     /// (cull has no shader effect).
-    pub fn shader_cache_keys(multisampled_geometry: bool) -> Vec<crate::shaders::ShaderCacheKey> {
-        let msaa_samples = if multisampled_geometry {
-            Some(4u32)
-        } else {
-            None
-        };
+    pub fn shader_cache_keys(targets: GeometryTargets) -> Vec<crate::shaders::ShaderCacheKey> {
+        let msaa_samples = targets.msaa_samples();
         let mut keys = Vec::with_capacity(3);
         for (instancing, meta_storage_array) in [(false, true), (false, false), (true, false)] {
             keys.push(
@@ -193,6 +298,8 @@ impl GeometryPipelines {
                     instancing_transforms: instancing,
                     meta_storage_array,
                     msaa_samples,
+                    velocity: targets.velocity(),
+                    mip_bias: targets.mip_bias(),
                     // The shared fast geometry pipelines — never custom-vertex.
                     dynamic_vertex_shader: None,
                 }
@@ -206,12 +313,17 @@ impl GeometryPipelines {
     /// Level1 for the requested anti-aliasing state. Used by
     /// `set_anti_aliasing` to skip the recompile when toggling back
     /// to a previously-active branch.
-    pub fn has_branch_for(&self, anti_aliasing: &AntiAliasing) -> bool {
-        match anti_aliasing.has_msaa_checked() {
-            Ok(true) => self.render_pipeline_keys.msaa_4_anti_alias.is_some(),
-            Ok(false) => self.render_pipeline_keys.no_anti_alias.is_some(),
-            Err(_) => false,
+    pub fn has_branch_for(
+        &self,
+        anti_aliasing: &AntiAliasing,
+        formats: &crate::render_textures::RenderTextureFormats,
+    ) -> bool {
+        if anti_aliasing.has_msaa_checked().is_err() {
+            return false;
         }
+        self.render_pipeline_keys
+            .branch(GeometryTargets::from_aa(anti_aliasing, formats))
+            .is_some()
     }
 
     /// Forgets one MSAA branch and returns its nine pipeline keys (empty if
@@ -219,12 +331,8 @@ impl GeometryPipelines {
     /// before anything was drawn with it: the caller releases whichever of
     /// the keys were only reserved. A later flip back rebuilds the branch
     /// (a cache hit for anything that did compile).
-    pub(crate) fn take_branch(&mut self, msaa_4: bool) -> Vec<RenderPipelineKey> {
-        let branch = if msaa_4 {
-            self.render_pipeline_keys.msaa_4_anti_alias.take()
-        } else {
-            self.render_pipeline_keys.no_anti_alias.take()
-        };
+    pub(crate) fn take_branch(&mut self, targets: GeometryTargets) -> Vec<RenderPipelineKey> {
+        let branch = self.render_pipeline_keys.branch_mut(targets).take();
         let Some(branch) = branch else {
             return Vec::new();
         };
@@ -252,21 +360,21 @@ impl GeometryPipelines {
     pub async fn build_descriptors(
         ctx: &mut RenderPassInitContext<'_>,
         bind_groups: &GeometryBindGroups,
-        multisampled_geometry: bool,
+        targets: GeometryTargets,
     ) -> Result<GeometryPrewarmDescriptors> {
-        let msaa_samples = if multisampled_geometry {
-            Some(4u32)
-        } else {
-            None
-        };
+        let msaa_samples = targets.msaa_samples();
+        // The TAA variant binds the previous-state buffers next to the
+        // current ones (groups 1 and 3 gain entries); every other variant
+        // uses the pre-TAA layouts.
+        let (transforms_layout, animation_layout) = bind_groups.layout_keys(ctx, targets)?;
         let pipeline_layout_key_storage = ctx.pipeline_layouts.get_key(
             ctx.gpu,
             ctx.bind_group_layouts,
             PipelineLayoutCacheKey::new(vec![
                 bind_groups.camera.bind_group_layout_key,
-                bind_groups.transforms.bind_group_layout_key,
+                transforms_layout,
                 bind_groups.meta.storage_layout_key,
-                bind_groups.animation.bind_group_layout_key,
+                animation_layout,
             ]),
         )?;
         let pipeline_layout_key_uniform = ctx.pipeline_layouts.get_key(
@@ -274,18 +382,13 @@ impl GeometryPipelines {
             ctx.bind_group_layouts,
             PipelineLayoutCacheKey::new(vec![
                 bind_groups.camera.bind_group_layout_key,
-                bind_groups.transforms.bind_group_layout_key,
+                transforms_layout,
                 bind_groups.meta.uniform_layout_key,
-                bind_groups.animation.bind_group_layout_key,
+                animation_layout,
             ]),
         )?;
 
-        let color_targets = [
-            ColorTargetState::new(ctx.render_texture_formats.visiblity_data),
-            ColorTargetState::new(ctx.render_texture_formats.barycentric),
-            ColorTargetState::new(ctx.render_texture_formats.normal_tangent),
-            ColorTargetState::new(ctx.render_texture_formats.barycentric_derivatives),
-        ];
+        let color_targets = targets.color_targets(ctx.render_texture_formats);
         let depth_format = ctx.render_texture_formats.depth;
 
         const CULL_MODES: &[CullMode] = &[CullMode::None, CullMode::Back, CullMode::Front];
@@ -311,6 +414,8 @@ impl GeometryPipelines {
                 instancing_transforms: instancing,
                 meta_storage_array,
                 msaa_samples,
+                velocity: targets.velocity(),
+                mip_bias: targets.mip_bias(),
                 // The shared fast geometry pipelines — never custom-vertex.
                 dynamic_vertex_shader: None,
             };
@@ -324,10 +429,11 @@ impl GeometryPipelines {
                     &color_targets,
                     msaa_samples,
                     instancing,
+                    targets.velocity(),
                     cull_mode,
                 ));
                 slots.push(GeometryLeafSlot {
-                    msaa_4: msaa_samples == Some(4),
+                    targets,
                     shape,
                     cull: GeometryCullKey::from_cull_mode(cull_mode)?,
                 });
@@ -359,22 +465,21 @@ impl GeometryPipelines {
             );
         }
 
-        // Group keys by msaa branch. Within a single submitted batch,
-        // every slot will share the same `msaa_4` flag (we only build
+        // Group keys by target branch. Within a single submitted batch,
+        // every slot will share the same targets (we only build
         // descriptors for one branch at a time), but we tolerate
         // mixed input for forward-compat.
-        let mut by_msaa: HashMap<bool, Vec<(GeometryLeafSlot, RenderPipelineKey)>> = HashMap::new();
+        let mut by_targets: HashMap<GeometryTargets, Vec<(GeometryLeafSlot, RenderPipelineKey)>> =
+            HashMap::new();
         for (slot, key) in descs.slots.iter().zip(pipeline_keys) {
-            by_msaa.entry(slot.msaa_4).or_default().push((*slot, key));
+            by_targets
+                .entry(slot.targets)
+                .or_default()
+                .push((*slot, key));
         }
 
-        for (msaa_4, entries) in by_msaa {
-            let level1 = build_level1(&entries);
-            if msaa_4 {
-                self.render_pipeline_keys.msaa_4_anti_alias = Some(level1);
-            } else {
-                self.render_pipeline_keys.no_anti_alias = Some(level1);
-            }
+        for (targets, entries) in by_targets {
+            *self.render_pipeline_keys.branch_mut(targets) = Some(build_level1(&entries));
         }
 
         // Refresh layout keys if they weren't set yet (cold-boot calls
@@ -406,12 +511,26 @@ impl GeometryPipelines {
         descs: &GeometryPrewarmDescriptors,
         pipeline_keys: Vec<RenderPipelineKey>,
     ) -> Result<Self> {
-        let mut by_msaa: HashMap<bool, Vec<(GeometryLeafSlot, RenderPipelineKey)>> = HashMap::new();
+        let mut by_targets: HashMap<GeometryTargets, Vec<(GeometryLeafSlot, RenderPipelineKey)>> =
+            HashMap::new();
         for (slot, key) in descs.slots.iter().zip(pipeline_keys) {
-            by_msaa.entry(slot.msaa_4).or_default().push((*slot, key));
+            by_targets
+                .entry(slot.targets)
+                .or_default()
+                .push((*slot, key));
         }
-        let no_anti_alias = by_msaa.remove(&false).map(|e| build_level1(&e));
-        let msaa_4_anti_alias = by_msaa.remove(&true).map(|e| build_level1(&e));
+        let no_anti_alias = by_targets
+            .remove(&GeometryTargets::Single)
+            .map(|e| build_level1(&e));
+        let msaa_4_anti_alias = by_targets
+            .remove(&GeometryTargets::Msaa4)
+            .map(|e| build_level1(&e));
+        let velocity = by_targets
+            .remove(&GeometryTargets::Velocity)
+            .map(|e| build_level1(&e));
+        let taa_prep = by_targets
+            .remove(&GeometryTargets::TaaPrep)
+            .map(|e| build_level1(&e));
 
         Ok(Self {
             pipeline_layout_key_storage: descs.pipeline_layout_key_storage,
@@ -419,6 +538,8 @@ impl GeometryPipelines {
             render_pipeline_keys: GeometryRenderPipelineKeys {
                 no_anti_alias,
                 msaa_4_anti_alias,
+                velocity,
+                taa_prep,
             },
         })
     }
@@ -434,16 +555,16 @@ impl GeometryPipelines {
         &self,
         opts: GeometryRenderPipelineKeyOpts<'_>,
     ) -> Result<RenderPipelineKey> {
-        let level = match opts.anti_aliasing.has_msaa_checked()? {
-            true => self.render_pipeline_keys.msaa_4_anti_alias.as_ref().ok_or(
-                AwsmError::PipelineVariantNotCompiled("geometry: msaa_4 branch not yet compiled"),
-            )?,
-            false => self.render_pipeline_keys.no_anti_alias.as_ref().ok_or(
-                AwsmError::PipelineVariantNotCompiled(
-                    "geometry: no_anti_alias branch not yet compiled",
-                ),
-            )?,
-        };
+        opts.anti_aliasing.has_msaa_checked()?;
+        let targets = GeometryTargets::from_aa(opts.anti_aliasing, opts.formats);
+        let level = self.render_pipeline_keys.branch(targets).as_ref().ok_or(
+            AwsmError::PipelineVariantNotCompiled(match targets {
+                GeometryTargets::Single => "geometry: no_anti_alias branch not yet compiled",
+                GeometryTargets::Msaa4 => "geometry: msaa_4 branch not yet compiled",
+                GeometryTargets::Velocity => "geometry: TAA velocity branch not yet compiled",
+                GeometryTargets::TaaPrep => "geometry: TAA (prep velocity) branch not yet compiled",
+            }),
+        )?;
         let level = if opts.instancing {
             &level.instancing
         } else if opts.meta_storage_array {
@@ -500,6 +621,8 @@ fn build_level1(
 
 pub struct GeometryRenderPipelineKeyOpts<'a> {
     pub anti_aliasing: &'a AntiAliasing,
+    /// The renderer's motion-vector path (see [`GeometryTargets::from_aa`]).
+    pub formats: &'a crate::render_textures::RenderTextureFormats,
     pub instancing: bool,
     pub cull_mode: CullMode,
     pub meta_storage_array: bool,
@@ -512,6 +635,35 @@ pub struct GeometryRenderPipelineKeys {
     /// `set_anti_aliasing` flip.
     pub no_anti_alias: Option<GeometryRenderPipelineKeysLevel1>,
     pub msaa_4_anti_alias: Option<GeometryRenderPipelineKeysLevel1>,
+    /// TAA branch (single-sampled + motion-vector target). `None` until TAA
+    /// is first switched on.
+    pub velocity: Option<GeometryRenderPipelineKeysLevel1>,
+    /// TAA with the prep-pass fallback (single-sampled, texture LOD bias, no
+    /// motion-vector target). `None` until used.
+    pub taa_prep: Option<GeometryRenderPipelineKeysLevel1>,
+}
+
+impl GeometryRenderPipelineKeys {
+    fn branch(&self, targets: GeometryTargets) -> &Option<GeometryRenderPipelineKeysLevel1> {
+        match targets {
+            GeometryTargets::Single => &self.no_anti_alias,
+            GeometryTargets::Msaa4 => &self.msaa_4_anti_alias,
+            GeometryTargets::Velocity => &self.velocity,
+            GeometryTargets::TaaPrep => &self.taa_prep,
+        }
+    }
+
+    fn branch_mut(
+        &mut self,
+        targets: GeometryTargets,
+    ) -> &mut Option<GeometryRenderPipelineKeysLevel1> {
+        match targets {
+            GeometryTargets::Single => &mut self.no_anti_alias,
+            GeometryTargets::Msaa4 => &mut self.msaa_4_anti_alias,
+            GeometryTargets::Velocity => &mut self.velocity,
+            GeometryTargets::TaaPrep => &mut self.taa_prep,
+        }
+    }
 }
 
 pub struct GeometryRenderPipelineKeysLevel1 {
@@ -538,6 +690,7 @@ fn build_geometry_cache_key(
     color_targets: &[ColorTargetState],
     msaa_samples: Option<u32>,
     instancing: bool,
+    velocity: bool,
     cull_mode: CullMode,
 ) -> RenderPipelineCacheKey {
     let primitive_state = PrimitiveState::new()
@@ -554,6 +707,13 @@ fn build_geometry_cache_key(
     let mut vertex_buffer_layouts = vec![VERTEX_BUFFER_LAYOUT.clone()];
     if instancing {
         vertex_buffer_layouts.push(VERTEX_BUFFER_LAYOUT_INSTANCING.clone());
+        if velocity {
+            debug_assert_eq!(
+                vertex_buffer_layouts.len() as u32,
+                PREV_INSTANCE_VERTEX_SLOT
+            );
+            vertex_buffer_layouts.push(VERTEX_BUFFER_LAYOUT_PREV_INSTANCING.clone());
+        }
     }
 
     let mut key = RenderPipelineCacheKey::new(shader_key, pipeline_layout_key)

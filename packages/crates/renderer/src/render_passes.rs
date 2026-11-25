@@ -25,6 +25,8 @@ pub mod shadow_masked_custom_vertex;
 pub mod shared;
 pub mod smaa;
 pub mod ssr;
+pub mod taa;
+pub mod taa_overlay;
 pub mod volumetrics;
 
 use std::ops::Range;
@@ -150,6 +152,15 @@ pub struct RenderPasses {
     /// first enable. Kept `Some` after a later disable (targets shrink back to
     /// 1×1; `set_anti_aliasing` keeps the layouts fresh while it exists).
     pub ssr: Option<SsrRenderPass>,
+    /// TAA resolve (+ temporal upscaling). LAZY like SMAA: `None` unless
+    /// `anti_aliasing.taa` is `Some`; built by `set_anti_aliasing` (or at boot
+    /// when the boot AA config has TAA) and DROPPED on disable, textures
+    /// destroyed, so TAA off is zero-cost.
+    pub taa: Option<crate::render_passes::taa::render_pass::TaaRenderPass>,
+    /// TAA's deforming-mesh velocity overlay on the 32 B/sample fallback.
+    /// `None` unless TAA runs on the fallback path with a storage-buffer limit
+    /// that fits it (`AwsmRenderer::sync_taa_overlay_pass`).
+    pub taa_overlay: Option<crate::render_passes::taa_overlay::render_pass::TaaOverlayRenderPass>,
     pub display: DisplayRenderPass,
 }
 
@@ -269,6 +280,9 @@ pub struct RenderPassesDescriptors {
     /// Fully-constructed SMAA pre-pass — self-contained + lazy on
     /// `anti_aliasing.smaa` like bloom is on `post_processing.bloom`.
     smaa: Option<crate::render_passes::smaa::render_pass::SmaaRenderPass>,
+    /// Fully-constructed TAA pass — self-contained + lazy on
+    /// `anti_aliasing.taa` like SMAA.
+    taa: Option<crate::render_passes::taa::render_pass::TaaRenderPass>,
 }
 
 impl RenderPassesDescriptors {
@@ -556,7 +570,12 @@ impl RenderPasses {
         // at cold-boot. Inactive branch fills on first
         // set_anti_aliasing flip.
         let multisampled_geometry = ctx.anti_aliasing.has_msaa_checked()?;
-        shader_cache_keys.extend(GeometryPipelines::shader_cache_keys(multisampled_geometry));
+        shader_cache_keys.extend(GeometryPipelines::shader_cache_keys(
+            crate::render_passes::geometry::pipeline::GeometryTargets::from_aa(
+                ctx.anti_aliasing,
+                ctx.render_texture_formats,
+            ),
+        ));
         // Light culling: one module, two entry points, MSAA-agnostic.
         shader_cache_keys.extend(LightCullingPipelines::shader_cache_keys(
             ctx.features.reverse_z,
@@ -568,6 +587,8 @@ impl RenderPasses {
             multisampled_geometry,
             ctx.prep_config,
             ctx.features.reverse_z,
+            ctx.render_texture_formats
+                .taa_prep_velocity(ctx.anti_aliasing),
         ));
         if features.gpu_culling {
             shader_cache_keys.extend(HzbPipelines::shader_cache_keys(
@@ -673,9 +694,15 @@ impl RenderPasses {
 
         // Geometry MSAA-lazy: only the active branch's 9 descriptors.
         let multisampled_geometry = ctx.anti_aliasing.has_msaa_checked()?;
-        let geometry_descs =
-            GeometryPipelines::build_descriptors(ctx, &bindings.geometry_bg, multisampled_geometry)
-                .await?;
+        let geometry_descs = GeometryPipelines::build_descriptors(
+            ctx,
+            &bindings.geometry_bg,
+            crate::render_passes::geometry::pipeline::GeometryTargets::from_aa(
+                ctx.anti_aliasing,
+                ctx.render_texture_formats,
+            ),
+        )
+        .await?;
         let geometry_range =
             render_pool.len()..render_pool.len() + geometry_descs.pipeline_cache_keys.len();
         render_pool.extend(geometry_descs.pipeline_cache_keys.iter().cloned());
@@ -845,6 +872,22 @@ impl RenderPasses {
             None
         };
 
+        // TAA resolve — self-contained + lazy like SMAA: built at boot only when
+        // the boot AA config has TAA (`set_anti_aliasing` builds / drops it
+        // mid-session). Textures start 1×1; the first frame sizes them (and
+        // that first frame resets the history).
+        let taa = if ctx.anti_aliasing.taa.is_some() {
+            Some(
+                crate::render_passes::taa::render_pass::TaaRenderPass::new(
+                    ctx,
+                    crate::render_passes::taa::render_pass::REACTIVE_MASK,
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
+
         Ok(RenderPassesDescriptors {
             bindings,
             compute_pipeline_cache_keys: compute_pool,
@@ -876,6 +919,7 @@ impl RenderPasses {
             volumetrics,
             ssr,
             smaa,
+            taa,
         })
     }
 
@@ -910,6 +954,7 @@ impl RenderPasses {
             volumetrics,
             ssr,
             smaa,
+            taa,
             ..
         } = descs;
         let RenderPassesBindings {
@@ -1119,6 +1164,8 @@ impl RenderPasses {
             volumetrics,
             ssr,
             smaa,
+            taa,
+            taa_overlay: None,
             display,
         })
     }

@@ -1,4 +1,4 @@
-{% include "shared_wgsl/math.wgsl" %}
+{% include "shared_wgsl/math.wgsl" %}{% if velocity %}{% include "shared_wgsl/motion_vector.wgsl" %}{% endif %}
 
 // Fragment input from vertex shader
 struct FragmentInput {
@@ -32,7 +32,11 @@ struct FragmentInput {
     // still points to the FRONT — so we flip it below. Correct two-sided
     // shading (and the only way diffuse-transmission undersides light up:
     // the back lobe needs the light on the −N side).
-    @builtin(front_facing) front_facing: bool,
+    @builtin(front_facing) front_facing: bool,{% if velocity %}
+    // TAA: unjittered clip positions now / last frame (see vertex.wgsl).
+    @location(7) @interpolate(perspective, center) clip_now: vec4<f32>,
+    @location(8) @interpolate(perspective, center) clip_prev: vec4<f32>,
+    {% endif +%}
 }
 
 struct FragmentOutput {
@@ -45,7 +49,10 @@ struct FragmentOutput {
     // RGBA16float
     @location(2) normal_tangent: vec4<f32>,
     // RGBA16float
-    @location(3) barycentric_derivatives: vec4<f32>,
+    @location(3) barycentric_derivatives: vec4<f32>,{% if velocity %}
+    // RG16Float: motion vector in UV units, uv_now - uv_prev (TAA, 03 §2).
+    @location(4) velocity: vec2<f32>,
+    {% endif +%}
 }
 
 @fragment
@@ -105,7 +112,19 @@ fn fs_main(input: FragmentInput) -> FragmentOutput {
     let ddy = clamp(dpdy(input.barycentric_center),
         vec2<f32>(-BARY_DERIV_LIMIT), vec2<f32>(BARY_DERIV_LIMIT)); // (db1/dy, db2/dy)
 
-    out.barycentric_derivatives = vec4<f32>(ddx.x, ddy.x, ddx.y, ddy.y);
+    out.barycentric_derivatives = vec4<f32>(ddx.x, ddy.x, ddx.y, ddy.y);{% if mip_bias %}
+    // TAA texture LOD bias (03 §7): the stored derivatives feed ONLY the
+    // shading's texture gradients, so scaling them by 2^bias (camera
+    // `prev_position.w` = log2(render / post) + mip_bias_extra) biases every
+    // gradient sample of every material, custom ones included, in one place.
+    // On both velocity paths (the prep-pass fallback has no velocity block).
+    out.barycentric_derivatives = clamp(
+        out.barycentric_derivatives * exp2(camera_raw.prev_position.w),
+        vec4<f32>(-BARY_DERIV_LIMIT),
+        vec4<f32>(BARY_DERIV_LIMIT),
+    );{% endif %}{% if velocity %}
+    out.velocity = taa_motion_vector(input.clip_now, input.clip_prev);
+    {% endif +%}
 
     return out;
 }

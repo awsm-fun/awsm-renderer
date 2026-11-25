@@ -297,6 +297,24 @@ impl SceneSpatial {
         }
     }
 
+    /// The bounds of the whole indexed scene as `(center, radius)` of the
+    /// BVH root box (O(1): the union of the root's two children; leaves are
+    /// margin-fattened, and it lags mutations until the next
+    /// [`Self::maintain`]). `None` when the index is empty. Used as the scene
+    /// scale of TAA's camera-jump guard.
+    pub fn root_bounds(&self) -> Option<(glam::Vec3, f32)> {
+        if self.bvh.leaf_count() == 0 {
+            return None;
+        }
+        let aabb = self.bvh.root_aabb();
+        let min = glam::Vec3::new(aabb.mins.x, aabb.mins.y, aabb.mins.z);
+        let max = glam::Vec3::new(aabb.maxs.x, aabb.maxs.y, aabb.maxs.z);
+        if !(min.is_finite() && max.is_finite()) || min.cmpgt(max).any() {
+            return None;
+        }
+        Some(((min + max) * 0.5, (max - min).length() * 0.5))
+    }
+
     /// Iterate every node in the index. Order is unspecified. Reads the
     /// exact mirror — safe regardless of maintenance state.
     pub fn iter_all(&self) -> impl Iterator<Item = &SceneNode> {

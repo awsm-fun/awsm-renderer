@@ -15,9 +15,31 @@ struct FragmentInput {
     {% endfor %}
 }
 
+{% if reactive %}
+// TAA's reactive value for a transparent fragment of coverage `alpha`:
+// `alpha * k_transparent` (camera `dof_params.z`) for glass, water, lines and
+// the like; for a particle mesh (`Mesh::taa_particles`, bit 1 of mesh-meta
+// word 22) `k_particles` (camera `position.w`) on every covered pixel, since
+// nothing reprojects a particle and a soft sprite's low-alpha skirt would
+// otherwise keep a stale colour (a negative `position.w` is the harness's
+// alpha-scaled comparison). Below 1.0 always.
+fn taa_reactive(alpha: f32) -> f32 {
+    if ((material_mesh_meta._reserved2 & 2u) != 0u) {
+        let k = camera_raw.position.w;
+        let covered = select(0.0, 1.0, alpha > 1.0 / 255.0);
+        return min(select(abs(k) * alpha, k * covered, k >= 0.0), 0.99);
+    }
+    return min(alpha * camera_raw.dof_params.z, 0.99);
+}
+{% endif %}
+
 struct FragmentOutput {
     // Rgba16float
-    @location(0) color: vec4<f32>,
+    @location(0) color: vec4<f32>,{% if reactive %}
+    // TAA reactive mask (R8unorm, MAX blended): how much to distrust the
+    // history here (03 §5.1).
+    @location(1) reactive: f32,
+{% endif +%}
 }
 
 // Sample transmission background from the opaque render with screen-space refraction
@@ -200,7 +222,18 @@ fn fs_main(input: FragmentInput) -> FragmentOutput {
     var out: FragmentOutput;
 
     // Convert raw camera uniform to friendly structure
-    let camera = camera_from_raw(camera_raw);
+    let camera = camera_from_raw(camera_raw);{% if hud_post %}
+    // TAA HUD after the resolve: drawn at OUTPUT size, so `frag_pos` is in
+    // output pixels, while the opaque image (transmission) and the light-cull
+    // tiles are render size. Re-derive the render-pixel position from the
+    // world position through the same unjittered projection the vertex used.
+    let hud_clip = camera.view_proj_unjittered * vec4<f32>(input.world_position, 1.0);
+    let hud_ndc = hud_clip.xy / hud_clip.w;
+    let hud_frag_pos = vec4<f32>(
+        vec2<f32>(hud_ndc.x * 0.5 + 0.5, 0.5 - hud_ndc.y * 0.5) * camera.viewport_size,
+        input.frag_pos.z,
+        input.frag_pos.w,
+    );{% endif +%}
     let frame_globals = frame_globals_from_raw(frame_globals_raw);
 
     // Handle double-sided materials: flip normal and tangent handedness for back faces
@@ -297,7 +330,11 @@ fn fs_main(input: FragmentInput) -> FragmentOutput {
             dyn_material,
         );
         let dyn_out = custom_shade_transparent_dynamic(dyn_input);
-        out.color = dyn_out.color;
+        out.color = dyn_out.color;{% if reactive %}
+        // TAA: see `taa_reactive` (below 1.0: exactly 1.0 means "HUD
+        // pixel, pass through" to the resolve).
+        out.reactive = taa_reactive(dyn_out.color.a);
+{% endif +%}
         return out;
     {% else %}
         // PBR material path (default)
@@ -324,7 +361,7 @@ fn fs_main(input: FragmentInput) -> FragmentOutput {
             // Sample transmission background from opaque render
             let roughness = max(clamp(material_color.metallic_roughness.y, 0.0, 1.0), 0.04);
             let transmission_background = sample_transmission_background(
-                input.frag_pos,
+                {%+ if hud_post %}hud_frag_pos{% else %}input.frag_pos{% endif %},
                 input.world_position,
                 material_color.normal,
                 -surface_to_camera,  // view direction (towards surface)
@@ -347,7 +384,7 @@ fn fs_main(input: FragmentInput) -> FragmentOutput {
                 lights_info,
                 transmission_background,
                 (material_mesh_meta.receive_shadows & material_mesh_meta.shadow_receiver_gate),
-                input.frag_pos.xy,
+                {%+ if hud_post %}hud_frag_pos{% else %}input.frag_pos{% endif %}.xy,
             );
         } else {
             // Standard lighting without transmission.
@@ -357,7 +394,7 @@ fn fs_main(input: FragmentInput) -> FragmentOutput {
                 input.world_position,
                 lights_info,
                 (material_mesh_meta.receive_shadows & material_mesh_meta.shadow_receiver_gate),
-                input.frag_pos.xy,
+                {%+ if hud_post %}hud_frag_pos{% else %}input.frag_pos{% endif %}.xy,
             );
         }
 
@@ -374,7 +411,11 @@ fn fs_main(input: FragmentInput) -> FragmentOutput {
 
     // Output final color with alpha
     let premult_rgb = color * base_alpha;
-    out.color = vec4<f32>(premult_rgb, base_alpha);
+    out.color = vec4<f32>(premult_rgb, base_alpha);{% if reactive %}
+    // TAA: see `taa_reactive` (below 1.0: exactly 1.0 means "HUD pixel,
+    // pass through" to the resolve).
+    out.reactive = taa_reactive(base_alpha);
+{% endif +%}
 
     return out;
 }

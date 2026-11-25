@@ -81,7 +81,7 @@ pub fn invalidate(id: AssetId) {
 }
 
 struct Gen {
-    renderer: Arc<xutex::AsyncMutex<AwsmRenderer>>,
+    renderer: Arc<crate::engine::context::AsyncLock<AwsmRenderer>>,
     camera: Arc<Mutex<Camera>>,
     canvas: web_sys::HtmlCanvasElement,
     mesh: MeshKey,
@@ -135,7 +135,7 @@ fn make_hidden_canvas() -> web_sys::HtmlCanvasElement {
 
 async fn build(canvas: web_sys::HtmlCanvasElement) -> Result<Arc<Gen>, String> {
     let renderer = preview::build_renderer(canvas.clone()).await?;
-    let renderer = Arc::new(xutex::AsyncMutex::new(renderer));
+    let renderer = Arc::new(crate::engine::context::AsyncLock::new(renderer));
     // Frame tightly on the 0.85-radius preview sphere (not the 80 m default cube).
     // Depth convention (003): thumbnails follow the main renderer's flag —
     // the camera only uses it for its clip-plane policy.

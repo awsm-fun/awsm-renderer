@@ -61,8 +61,22 @@ impl MaterialTransparentRenderPass {
                 Some("Material Transparent"),
                 keep_color,
                 false,
+                true,
             )?
         };
+        self.draw(ctx, &render_pass, renderables)?;
+        render_pass.end();
+        Ok(())
+    }
+
+    /// TAA: the HUD's lit pass after the resolve, into `taa_out` (see
+    /// [`RenderContext::begin_hud_post_pass_timed`]). The HUD meshes carry
+    /// `hud_post` pipelines under TAA.
+    pub fn render_hud_post(&self, ctx: &RenderContext, renderables: &[Renderable]) -> Result<()> {
+        let render_pass = ctx.begin_hud_post_pass_timed(
+            Some("Material Transparent Pass (HUD, after TAA)"),
+            Some("Material Transparent (HUD)"),
+        )?;
         self.draw(ctx, &render_pass, renderables)?;
         render_pass.end();
         Ok(())

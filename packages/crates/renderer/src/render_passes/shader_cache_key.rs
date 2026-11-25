@@ -27,6 +27,8 @@ use crate::render_passes::{
     },
     smaa::shader::cache_key::ShaderCacheKeySmaa,
     ssr::shader::cache_key::ShaderCacheKeySsr,
+    taa::shader::cache_key::{ShaderCacheKeyTaa, ShaderCacheKeyTaaReactiveSeed},
+    taa_overlay::shader::cache_key::ShaderCacheKeyTaaOverlay,
     volumetrics::shader::cache_key::ShaderCacheKeyVolumetrics,
 };
 
@@ -79,6 +81,13 @@ pub enum ShaderCacheKeyRenderPass {
     /// Screen-space reflections trace (linear-DDA march). Permutes on mode
     /// (mirror/glossy) × temporal × half-res.
     Ssr(ShaderCacheKeySsr),
+    /// TAA resolve (+ temporal upscaling). Permutes on reverse_z × reactive.
+    Taa(ShaderCacheKeyTaa),
+    /// TAA reactive seed: flags `temporal: reactive` opaque pixels in the
+    /// reactive mask. One variant, TAA only.
+    TaaReactiveSeed(ShaderCacheKeyTaaReactiveSeed),
+    /// TAA deforming-mesh velocity overlay (32 B/sample fallback only).
+    TaaOverlay(ShaderCacheKeyTaaOverlay),
     /// Froxel volumetric scattering (inject / integrate).
     Volumetrics(ShaderCacheKeyVolumetrics),
 }

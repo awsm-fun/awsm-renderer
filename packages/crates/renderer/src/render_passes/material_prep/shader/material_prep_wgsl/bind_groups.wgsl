@@ -124,4 +124,16 @@ struct EdgeBufferLayout {
 // 2D via EDGE_SHADOW_TEX_WIDTH).
 @group(3) @binding(2) var edge_shadow_out: texture_storage_2d_array<rgba8unorm, write>;
 {% endif %}
-{% endif %}
+{% endif %}{% if velocity %}
+
+// ── TAA prep-pass fallback (03 §2.4): motion-vector reconstruction ─────────
+// Current and previous node transforms (the 112-byte packed layout: model
+// matrix, then the inverse-transpose normal matrix as three padded columns),
+// read as vec4 rows; the previous copy is the transforms region (base 0) of
+// the shared previous-frame buffer. The output is the velocity texture the
+// TAA resolve reads (rg32float, UV units, uv_now - uv_prev).
+@group(0) @binding(10) var<storage, read> prep_transforms: array<vec4<f32>>;
+@group(0) @binding(11) var<storage, read> prep_prev_state: array<vec4<f32>>;
+@group(0) @binding(12) var velocity_out: texture_storage_2d<rg32float, write>;
+{% include "shared_wgsl/motion_vector.wgsl" %}
+{% endif +%}

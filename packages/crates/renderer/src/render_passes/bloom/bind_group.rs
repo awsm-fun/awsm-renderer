@@ -120,23 +120,25 @@ impl BloomBindGroups {
     /// Rebuilds all bloom bind groups against the current `BloomTexture`, the
     /// live composite / bloom render-texture views, and the params uniform.
     /// Called on viewport resize and any `TextureViewRecreate` event.
+    ///
+    /// `taa_out` is the TAA resolve's output when TAA is on and
+    /// `TaaConfig::bloom_source` is `Resolved`: bloom then prefilters it
+    /// (post size) instead of `composite` (this frame's HDR render, render
+    /// size; the prefilter samples by UV, so either size works).
     pub fn recreate(
         &mut self,
         ctx: &BindGroupRecreateContext<'_>,
         tex: &BloomTexture,
         params_buffer: &web_sys::GpuBuffer,
+        taa_out: Option<&web_sys::GpuTextureView>,
     ) -> Result<()> {
+        let source = taa_out.unwrap_or(&ctx.render_texture_views.composite);
         let layout = ctx.bind_group_layouts.get(self.layout_key)?;
 
         // Prefilter — composite (full-res) → pyramid mip 0.
         {
             let entries = vec![
-                BindGroupEntry::new(
-                    0,
-                    BindGroupResource::TextureView(Cow::Borrowed(
-                        &ctx.render_texture_views.composite,
-                    )),
-                ),
+                BindGroupEntry::new(0, BindGroupResource::TextureView(Cow::Borrowed(source))),
                 BindGroupEntry::new(1, BindGroupResource::Sampler(&self.sampler)),
                 BindGroupEntry::new(
                     2,

@@ -29,6 +29,13 @@ pub const MAX_PREP_UV_SETS: u32 = 4;
 /// vanishingly rare; 2 is generous.
 pub const MAX_PREP_COLOR_SETS: u32 = 2;
 
+/// Format of the TAA velocity texture when the prep pass reconstructs it
+/// (`TaaVelocityPath::PrepReconstruction`, 03 §2.4). `rg32float`: the
+/// geometry path's `rg16float` is not a core storage format. Same UV-unit
+/// convention (`uv_now - uv_prev`); the resolve reads either.
+pub const PREP_VELOCITY_FORMAT: awsm_renderer_core::texture::TextureFormat =
+    awsm_renderer_core::texture::TextureFormat::Rg32float;
+
 /// Build-time configuration for the shared prep + deferred-shadow path.
 ///
 /// Stored on the renderer at construction (mirrors `AntiAliasing` /

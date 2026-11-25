@@ -369,7 +369,6 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
- "xutex",
 ]
 
 [[package]]
@@ -741,6 +740,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "awsm-renderer-taa-tests-example"
+version = "0.45.0"
+dependencies = [
+ "anyhow",
+ "awsm-renderer",
+ "awsm-renderer-codec-basis",
+ "awsm-renderer-core",
+ "awsm-renderer-scene",
+ "awsm-renderer-scene-loader",
+ "glam 0.32.1",
+ "gloo-net",
+ "image",
+ "js-sys",
+ "tracing",
+ "tracing-subscriber",
+ "tracing-web",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
 name = "awsm-renderer-tangents"
 version = "0.45.0"
 dependencies = [
@@ -957,15 +978,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3078c7629b62d3f0439517fa394996acacc5cbc91c5a20d8c658e77abd503a71"
 dependencies = [
  "generic-array",
-]
-
-[[package]]
-name = "branches"
-version = "0.4.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e426eb5cc1900033930ec955317b302e68f19f326cc7bb0c8a86865a826cdf0c"
-dependencies = [
- "rustc_version",
 ]
 
 [[package]]
@@ -1207,15 +1219,6 @@ name = "crossbeam-epoch"
 version = "0.9.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5b82ac4a3c2ca9c3460964f020e1402edd5753411d7737aa39c3714ad1b5420e"
-dependencies = [
- "crossbeam-utils",
-]
-
-[[package]]
-name = "crossbeam-queue"
-version = "0.3.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0f58bbc28f91df819d0aa2a2c00cd19754769c2fad90579b3592b1c9ba7a3115"
 dependencies = [
  "crossbeam-utils",
 ]
@@ -4795,16 +4798,6 @@ name = "writeable"
 version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
-
-[[package]]
-name = "xutex"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5e179a55fe12a8d75c182e1ea63814a4b2b6262b1291d9016e3e1c7f59a1be94"
-dependencies = [
- "branches",
- "crossbeam-queue",
-]
 
 [[package]]
 name = "yoke"

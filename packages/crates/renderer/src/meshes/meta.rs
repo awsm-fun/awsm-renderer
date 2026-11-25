@@ -2,6 +2,7 @@
 
 pub mod geometry_meta;
 pub mod material_meta;
+pub mod new_objects;
 
 use awsm_renderer_core::{buffers::BufferDescriptor, renderer::AwsmRendererWebGpu};
 
@@ -57,6 +58,67 @@ pub struct MeshMeta {
     /// spend an unreasonable chunk of its budget on a u32 that hasn't
     /// changed since N frames ago.
     shadow_receiver_gate_cache: slotmap::SecondaryMap<MeshKey, u32>,
+    /// Meshes whose material meta carries the non-rigid flag
+    /// (`MaterialMeshMeta::non_rigid`). Gates the TAA reactive seed in the
+    /// prep-pass fallback: no non-rigid mesh, no seed draw.
+    non_rigid: slotmap::SecondaryMap<MeshKey, NonRigidMesh>,
+    /// How many of `non_rigid` currently have their meta flag set.
+    non_rigid_gated: usize,
+    /// Calls of `update_non_rigid_gates` (its own clock: the renderer's
+    /// `frame_index` is public and test harnesses rewind it).
+    non_rigid_clock: u64,
+    /// TAA fallback velocity overlay: the meshes it draws this frame (those
+    /// it covers that deformed this frame, vertex hooks always). Rebuilt by
+    /// `update_non_rigid_gates`.
+    overlay_draws: std::collections::HashSet<MeshKey>,
+    /// TAA "new object" flags (`TaaTuning::reactive_new_objects`): which
+    /// meshes are in their first rendered frame. Marked only while
+    /// `new_objects_on` (TAA on, weight above 0).
+    new_objects: new_objects::NewObjects,
+    new_objects_on: bool,
+    /// Material-meta word 22 (the TAA flags) as last written in full, so the
+    /// per-frame new-object patch can set and clear its bit.
+    taa_flags: slotmap::SecondaryMap<MeshKey, u32>,
+}
+
+/// Which non-rigid meshes the TAA fallback's velocity overlay gives exact
+/// vectors this frame (see [`MeshMeta::update_non_rigid_gates`]).
+pub struct OverlayCoverage<'a> {
+    /// Skinned, morphed and instanced meshes without a vertex hook.
+    pub plain: bool,
+    /// Vertex-hook meshes whose overlay variant is compiled.
+    pub vertex_hooks: &'a std::collections::HashSet<MeshKey>,
+}
+
+/// A mesh whose surface can move with more than its node's matrix (TAA
+/// prep-pass fallback, 03 §2.4) and what makes it deform. Its meta flag
+/// (word 23) is set only while it actually deforms: a vertex hook always
+/// (unknowable), a skin / morph / instanced mesh for
+/// [`NON_RIGID_LINGER_FRAMES`] frames after its joint matrices / weights /
+/// instance transforms were written. At rest the prep vector is exact.
+#[derive(Clone, Copy, Debug)]
+struct NonRigidMesh {
+    skin: Option<SkinKey>,
+    morph: Option<GeometryMorphKey>,
+    /// The instance transforms' key (the mesh's node), when instanced.
+    instances: Option<crate::transforms::TransformKey>,
+    vertex_hook: bool,
+    /// `MeshMeta::non_rigid_clock` at the last deformation seen.
+    last_deformed: Option<u64>,
+    /// The flag as packed into the meta.
+    gate: bool,
+}
+
+/// Frames a deformation keeps a mesh flagged (the frame of the write plus
+/// two: the history it would otherwise accumulate across the change).
+pub const NON_RIGID_LINGER_FRAMES: u64 = 2;
+
+/// What deformed this frame (see [`MeshMeta::update_non_rigid_gates`]).
+#[derive(Default)]
+pub struct DeformedThisFrame {
+    pub skins: Vec<SkinKey>,
+    pub morphs: Vec<GeometryMorphKey>,
+    pub instances: Vec<crate::transforms::TransformKey>,
 }
 
 impl MeshMeta {
@@ -98,6 +160,13 @@ impl MeshMeta {
                 "MaterialMeshMetaData",
             ),
             shadow_receiver_gate_cache: slotmap::SecondaryMap::new(),
+            non_rigid: slotmap::SecondaryMap::new(),
+            non_rigid_gated: 0,
+            non_rigid_clock: 0,
+            overlay_draws: std::collections::HashSet::new(),
+            new_objects: new_objects::NewObjects::default(),
+            new_objects_on: false,
+            taa_flags: slotmap::SecondaryMap::new(),
         })
     }
 
@@ -135,6 +204,14 @@ impl MeshMeta {
         let transform_offset = transforms.buffer_offset(transform_key)?;
         let normal_matrix_offset = transforms.normals_buffer_offset(transform_key)?;
 
+        let vertex_hook = materials.has_vertex_hook(material_key);
+        let non_rigid_class =
+            skin_key.is_some() || geometry_morph_key.is_some() || mesh.instanced || vertex_hook;
+        // A re-insert (meta refresh) keeps the live gate; a new entry starts
+        // flagged only for a vertex hook (the rest flag on their first write).
+        let previous = self.non_rigid.get(mesh_key).copied();
+        let gate = vertex_hook || previous.is_some_and(|p| p.gate && non_rigid_class);
+        let non_rigid = gate;
         let meta_data = MaterialMeshMeta {
             mesh_key,
             material_morph_key,
@@ -148,10 +225,48 @@ impl MeshMeta {
             materials,
             morphs,
             mesh,
+            non_rigid,
         }
         .to_bytes()?;
+        if previous.is_some_and(|p| p.gate) {
+            self.non_rigid_gated -= 1;
+        }
+        if non_rigid_class {
+            self.non_rigid.insert(
+                mesh_key,
+                NonRigidMesh {
+                    skin: skin_key,
+                    morph: geometry_morph_key,
+                    instances: mesh.instanced.then_some(transform_key),
+                    vertex_hook,
+                    last_deformed: previous.and_then(|p| p.last_deformed),
+                    gate,
+                },
+            );
+            if gate {
+                self.non_rigid_gated += 1;
+            }
+        } else {
+            self.non_rigid.remove(mesh_key);
+        }
+        let new_entry = !self.material_buffers.contains_key(mesh_key);
+        let off = material_meta::MATERIAL_MESH_META_TAA_FLAGS_OFFSET;
+        let taa_flags = u32::from_le_bytes([
+            meta_data[off],
+            meta_data[off + 1],
+            meta_data[off + 2],
+            meta_data[off + 3],
+        ]);
         self.material_buffers.update(mesh_key, &meta_data);
         self.material_dirty = true;
+        self.taa_flags.insert(mesh_key, taa_flags);
+        if new_entry && self.new_objects_on {
+            self.new_objects.mark(mesh_key);
+        }
+        if self.new_objects.is_live(mesh_key) {
+            // A full rewrite during the mesh's first frame keeps the flag.
+            self.write_taa_flags(mesh_key, taa_flags | new_objects::TAA_FLAG_NEW_OBJECT);
+        }
 
         // Seed the gate cache with the initial packed value
         // (`MaterialMeshMeta::to_bytes` writes `1u` into the
@@ -329,6 +444,181 @@ impl MeshMeta {
         // Drop the cached shadow-gate value so a recycled MeshKey
         // doesn't inherit a stale "no change since last frame" hit.
         self.shadow_receiver_gate_cache.remove(mesh_key);
+        if self.non_rigid.remove(mesh_key).is_some_and(|n| n.gate) {
+            self.non_rigid_gated -= 1;
+        }
+        self.overlay_draws.remove(&mesh_key);
+        self.new_objects.remove(mesh_key);
+        self.taa_flags.remove(mesh_key);
+    }
+
+    /// TAA: a mesh became visible again (`set_mesh_hidden(false)` on a
+    /// hidden mesh): flag it as new for its next frame. No-op while the new
+    /// object weight is off.
+    pub fn mark_new_object(&mut self, mesh_key: MeshKey) {
+        if self.new_objects_on && self.material_buffers.contains_key(mesh_key) {
+            self.new_objects.mark(mesh_key);
+        }
+    }
+
+    /// The meshes marked as new and not yet flagged (see
+    /// [`Self::update_new_objects`]).
+    pub fn pending_new_objects(&self) -> impl Iterator<Item = MeshKey> + '_ {
+        self.new_objects.pending()
+    }
+
+    /// The meshes marked or flagged as new (whose bounds the frame step
+    /// reads).
+    pub fn new_object_candidates(&self) -> impl Iterator<Item = MeshKey> + '_ {
+        self.new_objects.candidates()
+    }
+
+    /// TAA, once per frame before the meta upload: flag the marked meshes
+    /// that draw this frame (their first frame) and unflag last frame's
+    /// (material-meta word 22, bit 2). `enabled`: TAA on and
+    /// `reactive_new_objects` above 0; `reset`: this frame's resolve discards
+    /// all history anyway; `state`: whether a marked mesh draws this frame.
+    /// Returns whether any mesh is flagged this frame (the reactive seed must
+    /// draw). O(marked + flag changes).
+    pub fn update_new_objects(
+        &mut self,
+        enabled: bool,
+        reset: bool,
+        state: impl Fn(MeshKey) -> new_objects::NewObjectState,
+        bounds: impl Fn(MeshKey) -> Option<new_objects::Bounds>,
+    ) -> bool {
+        if !enabled && !self.new_objects_on && !self.new_objects.any_live() {
+            return false;
+        }
+        self.new_objects_on = enabled;
+        let step = self.new_objects.advance(enabled, reset, state, bounds);
+        for key in step.clear {
+            if let Some(flags) = self.taa_flags.get(key).copied() {
+                self.write_taa_flags(key, flags);
+            }
+        }
+        for key in step.set {
+            if let Some(flags) = self.taa_flags.get(key).copied() {
+                self.write_taa_flags(key, flags | new_objects::TAA_FLAG_NEW_OBJECT);
+            }
+        }
+        self.new_objects.any_live()
+    }
+
+    fn write_taa_flags(&mut self, mesh_key: MeshKey, flags: u32) {
+        self.material_buffers.update_offset(
+            mesh_key,
+            material_meta::MATERIAL_MESH_META_TAA_FLAGS_OFFSET,
+            &flags.to_le_bytes(),
+        );
+        self.material_dirty = true;
+    }
+
+    /// Whether any live mesh is flagged non-rigid right now (see
+    /// [`Self::update_non_rigid_gates`]): gates the TAA reactive seed in the
+    /// prep-pass fallback.
+    pub fn has_non_rigid(&self) -> bool {
+        self.non_rigid_gated > 0
+    }
+
+    /// The vertex-hook meshes among the non-rigid ones (the caller decides
+    /// which of them the velocity overlay covers).
+    pub fn non_rigid_vertex_hook_meshes(&self) -> impl Iterator<Item = MeshKey> + '_ {
+        self.non_rigid
+            .iter()
+            .filter(|(_, n)| n.vertex_hook)
+            .map(|(k, _)| k)
+    }
+
+    /// The TAA fallback's velocity overlay draws this mesh this frame.
+    pub fn overlay_draws(&self, mesh_key: MeshKey) -> bool {
+        self.overlay_draws.contains(&mesh_key)
+    }
+
+    /// How many meshes the overlay draws this frame (visible or not).
+    pub fn non_rigid_overlay_draws(&self) -> usize {
+        self.overlay_draws.len()
+    }
+
+    /// The overlay has anything to draw this frame (visible or not).
+    pub fn has_overlay_draws(&self) -> bool {
+        !self.overlay_draws.is_empty()
+    }
+
+    /// Forget the overlay's draw set (TAA left the fallback path).
+    pub fn clear_overlay_draws(&mut self) {
+        self.overlay_draws.clear();
+    }
+
+    /// TAA prep-pass fallback, once per frame.
+    ///
+    /// A non-rigid mesh the velocity overlay covers (`overlay`) is drawn by
+    /// it on every frame it deformed (a vertex hook: every frame) and is
+    /// never flagged: its vectors are exact. One frame after its last
+    /// deformation the previous state equals the current one and the prep's
+    /// rigid vector is exact, so no linger is needed.
+    ///
+    /// Every other non-rigid mesh is flagged (meta word 23, reactive) while
+    /// it deformed within the last [`NON_RIGID_LINGER_FRAMES`] frames (a
+    /// vertex hook: always). Only transitions are patched into the meta.
+    /// O(non-rigid meshes).
+    pub fn update_non_rigid_gates(
+        &mut self,
+        deformed: &DeformedThisFrame,
+        overlay: &OverlayCoverage<'_>,
+    ) {
+        self.overlay_draws.clear();
+        if self.non_rigid.is_empty() {
+            return;
+        }
+        self.non_rigid_clock += 1;
+        let frame_index = self.non_rigid_clock;
+        let skins: std::collections::HashSet<SkinKey> = deformed.skins.iter().copied().collect();
+        let morphs: std::collections::HashSet<GeometryMorphKey> =
+            deformed.morphs.iter().copied().collect();
+        let instances: std::collections::HashSet<crate::transforms::TransformKey> =
+            deformed.instances.iter().copied().collect();
+        let mut patches: Vec<(MeshKey, bool)> = Vec::new();
+        for (mesh_key, entry) in self.non_rigid.iter_mut() {
+            let deformed_now = entry.skin.is_some_and(|k| skins.contains(&k))
+                || entry.morph.is_some_and(|k| morphs.contains(&k))
+                || entry.instances.is_some_and(|k| instances.contains(&k));
+            if deformed_now {
+                entry.last_deformed = Some(frame_index);
+            }
+            let covered = if entry.vertex_hook {
+                overlay.vertex_hooks.contains(&mesh_key)
+            } else {
+                overlay.plain
+            };
+            if covered && (entry.vertex_hook || deformed_now) {
+                self.overlay_draws.insert(mesh_key);
+            }
+            let gate = !covered
+                && (entry.vertex_hook
+                    || entry
+                        .last_deformed
+                        .is_some_and(|f| frame_index.saturating_sub(f) <= NON_RIGID_LINGER_FRAMES));
+            if gate != entry.gate {
+                entry.gate = gate;
+                patches.push((mesh_key, gate));
+            }
+        }
+        for (mesh_key, gate) in patches {
+            if gate {
+                self.non_rigid_gated += 1;
+            } else {
+                self.non_rigid_gated -= 1;
+            }
+            if self.material_buffers.contains_key(mesh_key) {
+                self.material_buffers.update_offset(
+                    mesh_key,
+                    material_meta::MATERIAL_MESH_META_NON_RIGID_OFFSET,
+                    &u32::from(gate).to_le_bytes(),
+                );
+                self.material_dirty = true;
+            }
+        }
     }
 
     /// Writes dirty metadata buffers to the GPU.

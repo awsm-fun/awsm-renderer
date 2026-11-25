@@ -367,7 +367,15 @@ impl AwsmRenderer {
         // (see the comment above). Both go through the same construction.
         let ssr_pass_build_needed = (pp.ssr.enabled && self.render_passes.ssr.is_none())
             || (ssr_pass_rebuild_needed && self.render_passes.ssr.is_some());
+        // The TAA resolve averages in the display's working space, so its
+        // shader is keyed on the tonemapper (exposure is a live uniform).
+        let taa_resolve_rebuild_needed =
+            self.post_processing.tonemapping != pp.tonemapping && self.render_passes.taa.is_some();
         self.post_processing = pp;
+
+        if taa_resolve_rebuild_needed {
+            self.rebuild_taa_resolve_pipeline().await?;
+        }
 
         if ssr_pass_build_needed {
             // (Re)construct the SSR pass against the NEW post-processing state
@@ -554,17 +562,24 @@ impl AwsmRenderer {
             .await?;
         // The effects bind group holds the DoF buffer, sized only while DoF
         // is on.
-        if had_dof_prepare != self.post_processing.dof {
+        if had_dof_prepare
+            != crate::render_passes::effects::pipeline::effects_dof(
+                &self.anti_aliasing,
+                &self.post_processing,
+            )
+        {
             self.bind_groups
                 .mark_create(crate::bind_groups::BindGroupCreate::TextureViewRecreate);
         }
+        // DoF before the TAA resolve: its pass exists only while DoF is on.
+        self.sync_taa_dof_pre().await?;
 
         self.render_passes
             .display
             .pipelines
             .set_render_pipeline_key(
                 &self.post_processing,
-                self.render_scale_supersamples(),
+                self.display_downsamples(),
                 &self.gpu,
                 &mut self.shaders,
                 &mut self.pipelines,

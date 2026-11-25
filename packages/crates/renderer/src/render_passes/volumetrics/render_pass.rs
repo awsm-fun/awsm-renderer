@@ -53,8 +53,21 @@ const JITTER_PERIOD: u32 = 16;
 /// NOT shared is the space it is applied in: TAA offsets a projection matrix
 /// in NDC pixels, this offsets a sample point in froxel units. Same sequence,
 /// different meaning.
-fn jitter_for_frame(frame: u64) -> [f32; 3] {
-    let i = (frame % JITTER_PERIOD as u64) as u32 + 1;
+///
+/// Under TAA (`taa`) the index is offset by
+/// [`TAA_JITTER_DECORRELATION_OFFSET`](crate::render_passes::taa::render_pass::TAA_JITTER_DECORRELATION_OFFSET):
+/// the camera then jitters with Halton(2, 3) by its own frame index, and
+/// this counter and that one both restart at 0 (a resize here, a history
+/// reset there) often enough to run in lock-step, which correlates the two
+/// patterns into visible structure (03 §1.4). Without TAA the sequence is
+/// exactly the one before TAA existed.
+fn jitter_for_frame(frame: u64, taa: bool) -> [f32; 3] {
+    let offset = if taa {
+        crate::render_passes::taa::render_pass::TAA_JITTER_DECORRELATION_OFFSET as u64
+    } else {
+        0
+    };
+    let i = (frame.wrapping_add(offset) % JITTER_PERIOD as u64) as u32 + 1;
     [
         crate::camera::halton(i, 2) - 0.5,
         crate::camera::halton(i, 3) - 0.5,
@@ -136,10 +149,12 @@ impl VolumetricParams {
             crate::render_passes::light_culling::buffers::FroxelDepthRange::default().z_near,
             0,
             false,
+            false,
         );
         Ok(params)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn pack(
         &mut self,
         atmosphere: &crate::post_process::Atmosphere,
@@ -148,6 +163,7 @@ impl VolumetricParams {
         z_near: f32,
         frame: u64,
         history_valid: bool,
+        taa: bool,
     ) {
         let d = &mut self.raw_data;
         d[0..4].copy_from_slice(&atmosphere.color[0].to_ne_bytes());
@@ -183,7 +199,7 @@ impl VolumetricParams {
         // makes the non-temporal variant bit-identical to what it rendered
         // before this feature existed — the froxel centre, no history.
         let (jitter, blend) = if atmosphere.volumetric_temporal {
-            let j = jitter_for_frame(frame);
+            let j = jitter_for_frame(frame, taa);
             // `history_valid` is false on the first frame after an enable or a
             // resize, when the history volume holds nothing. Blending against
             // a cleared volume would fade the medium in over ~12 frames, which
@@ -208,6 +224,10 @@ impl VolumetricParams {
     /// Packs + uploads. Unlike the other params buffers this one CANNOT skip an
     /// unchanged write while temporal is on — the jitter moves every frame by
     /// design, so "nothing moved" is only ever true with temporal off.
+    ///
+    /// `taa`: whether TAA is on, which offsets the jitter sequence (see
+    /// [`jitter_for_frame`]).
+    #[allow(clippy::too_many_arguments)]
     pub fn write(
         &mut self,
         gpu: &AwsmRendererWebGpu,
@@ -217,9 +237,18 @@ impl VolumetricParams {
         z_near: f32,
         frame: u64,
         history_valid: bool,
+        taa: bool,
     ) -> Result<()> {
         let prev = self.raw_data;
-        self.pack(atmosphere, grid_x, grid_y, z_near, frame, history_valid);
+        self.pack(
+            atmosphere,
+            grid_x,
+            grid_y,
+            z_near,
+            frame,
+            history_valid,
+            taa,
+        );
         if self.raw_data == prev {
             return Ok(());
         }

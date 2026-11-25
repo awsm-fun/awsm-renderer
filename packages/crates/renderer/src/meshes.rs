@@ -172,12 +172,30 @@ impl AwsmRenderer {
         Ok((new_transform_key, new_mesh_keys))
     }
 
-    /// Sets mesh visibility state.
+    /// Sets mesh visibility state. Under TAA, showing a hidden mesh again
+    /// counts as a new object for its next frame
+    /// (`TaaTuning::reactive_new_objects`): what its pixels held meanwhile
+    /// is not its history.
     pub fn set_mesh_hidden(&mut self, mesh_key: MeshKey, hidden: bool) -> crate::error::Result<()> {
+        self.set_mesh_hidden_inner(mesh_key, hidden, true)
+    }
+
+    /// `set_mesh_hidden`; `new_object: false` for a discrete-LOD swap (the
+    /// level shown replaces the same object, whose history is still right).
+    pub(crate) fn set_mesh_hidden_inner(
+        &mut self,
+        mesh_key: MeshKey,
+        hidden: bool,
+        new_object: bool,
+    ) -> crate::error::Result<()> {
         let mesh = self.meshes.get_mut(mesh_key)?;
+        let shown = mesh.hidden && !hidden;
         mesh.hidden = hidden;
         self.meshes.bvh_tlas_revision += 1;
         self.sync_spatial_for_mesh(mesh_key);
+        if shown && new_object {
+            self.meshes.meta.mark_new_object(mesh_key);
+        }
         Ok(())
     }
 
@@ -531,6 +549,28 @@ impl AwsmRenderer {
 
     /// Sets the per-mesh camera-facing billboard mode and refreshes geometry
     /// meta so the next frame's vertex shader picks up the new mode.
+    /// Mark a mesh as particles for TAA (see [`crate::meshes::mesh::Mesh::taa_particles`]):
+    /// its covered pixels take `TaaTuning::reactive_particles` in the
+    /// reactive mask. The scene loader sets it on every emitter; apps that
+    /// build particle meshes themselves call it once. Inert without TAA.
+    pub fn set_mesh_taa_particles(
+        &mut self,
+        mesh_key: MeshKey,
+        particles: bool,
+    ) -> crate::error::Result<()> {
+        if let Ok(mesh) = self.meshes.get_mut(mesh_key) {
+            if mesh.taa_particles == particles {
+                return Ok(());
+            }
+            mesh.taa_particles = particles;
+        } else {
+            return Err(AwsmMeshError::MeshNotFound(mesh_key).into());
+        }
+        self.meshes
+            .refresh_meta_for_mesh_public(mesh_key, &self.materials, &self.transforms)?;
+        Ok(())
+    }
+
     pub fn set_mesh_billboard_mode(
         &mut self,
         mesh_key: MeshKey,
@@ -2363,6 +2403,12 @@ impl Meshes {
     }
 
     /// Returns the resource key for a mesh.
+    /// The mesh is wired to its GPU geometry resource (and has mesh meta). A
+    /// mesh bound during a load is not until the commit's `resolve_geometry`.
+    pub fn is_wired(&self, mesh_key: MeshKey) -> bool {
+        self.mesh_to_resource.contains_key(mesh_key)
+    }
+
     pub fn resource_key(&self, mesh_key: MeshKey) -> Result<MeshResourceKey> {
         self.mesh_to_resource
             .get(mesh_key)

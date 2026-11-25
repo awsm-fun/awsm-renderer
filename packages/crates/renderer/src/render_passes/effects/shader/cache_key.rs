@@ -43,6 +43,13 @@ pub struct ShaderCacheKeyEffects {
     pub atmosphere: AtmospherePhase,
     /// Depth convention (003).
     pub reverse_z: bool,
+    /// TAA (03 §6): the effects pass runs at post (output) size on the
+    /// UNJITTERED resolved image, while the depth buffer is render size and
+    /// jittered. Depth is then read through `load_depth_post` (the nearest of
+    /// the 2x2 render texels around the output pixel's unjittered position),
+    /// DoF's CoC is in output pixels and the haze view ray drops the jitter.
+    /// `false` renders exactly the pre-TAA shader.
+    pub taa_post: bool,
 }
 
 impl From<ShaderCacheKeyEffects> for ShaderCacheKey {

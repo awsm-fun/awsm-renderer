@@ -54,10 +54,12 @@ fn calculate_signed_coc(linear_depth: f32, camera: Camera) -> f32 {
     let coc_world = A * f * (1.0 / D - 1.0 / S);
 
     // Convert from world units to pixels
-    let screen_height = camera.viewport_size.y;
+    let screen_height = {% if taa_post %}f32(textureDimensions(composite_tex).y){% else %}camera.viewport_size.y{% endif %};{% if taa_post %}
+    // TAA: the CoC is in OUTPUT pixels (the gather runs at post size);
+    // `viewport_size` is the render size.{% endif +%}
     let coc_pixels = coc_world * screen_height / SENSOR_HEIGHT;
 
-    return clamp(coc_pixels, -DOF_MAX_BLUR, DOF_MAX_BLUR);
+    return clamp(coc_pixels, -{% if dof_pre %}dof_pre_params.max_blur{% else %}DOF_MAX_BLUR{% endif %}, {% if dof_pre %}dof_pre_params.max_blur{% else %}DOF_MAX_BLUR{% endif %});
 }
 
 // ── `dof_data` ──────────────────────────────────────────────────────────────
@@ -103,7 +105,7 @@ fn dof_prepare(
     for (var i = 0u; i < 2u; i = i + 1u) {
         let p = first + vec2<u32>(i, 0u);
         if (p.x < dims.x && p.y < dims.y) {
-            let depth = load_depth(vec2<i32>(p));
+            let depth = load_depth{% if taa_post %}_post{% endif %}(vec2<i32>(p));
             let coc = calculate_signed_coc(linearize_depth(depth, camera), camera);
             let fixed = i32(round(coc * DOF_FIXED));
             word = insertBits(word, bitcast<u32>(fixed), i * 16u, 16u);

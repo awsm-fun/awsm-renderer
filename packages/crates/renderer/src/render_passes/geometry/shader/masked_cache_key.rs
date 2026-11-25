@@ -51,6 +51,12 @@ pub struct ShaderCacheKeyGeometryMasked {
     /// `@builtin(sample_mask)` of analytic cutout coverage (instead of a binary
     /// `discard`) so the existing MSAA edge-resolve anti-aliases the cutout edge.
     pub msaa_samples: Option<u32>,
+    /// TAA variant (motion-vector target). See
+    /// [`ShaderCacheKeyGeometry::velocity`](super::cache_key::ShaderCacheKeyGeometry::velocity).
+    pub velocity: bool,
+    /// TAA texture LOD bias. See
+    /// [`ShaderCacheKeyGeometry::mip_bias`](super::cache_key::ShaderCacheKeyGeometry::mip_bias).
+    pub mip_bias: bool,
     /// Which material this masked variant alpha-tests for. Built-in ids
     /// (PBR/Unlit/Toon) take the base-color path; a dynamic id takes the
     /// custom alpha-only path via [`Self::dynamic_alpha`].

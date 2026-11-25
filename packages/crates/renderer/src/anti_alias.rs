@@ -10,9 +10,95 @@ pub struct AntiAliasing {
     pub msaa_sample_count: Option<u32>,
     pub smaa: bool,
     pub mipmap: bool,
+    /// Temporal anti-aliasing (and temporal upscaling when its
+    /// `render_scale` is below 1). `Some` requires `msaa_sample_count: None`
+    /// and `smaa: false`: the three are independent modes, and
+    /// [`Self::validate`] rejects a combination rather than picking one
+    /// silently. `None` costs nothing: no targets, buffers, copies, passes
+    /// or shader work.
+    pub taa: Option<crate::taa::TaaConfig>,
 }
 
 impl AntiAliasing {
+    /// No anti-aliasing at all.
+    pub fn none() -> Self {
+        Self {
+            msaa_sample_count: None,
+            smaa: false,
+            mipmap: true,
+            taa: None,
+        }
+    }
+
+    /// MSAA 4×.
+    pub fn msaa4() -> Self {
+        Self {
+            msaa_sample_count: Some(4),
+            ..Self::none()
+        }
+    }
+
+    /// SMAA (post-process, no MSAA).
+    pub fn smaa() -> Self {
+        Self {
+            smaa: true,
+            ..Self::none()
+        }
+    }
+
+    /// TAA with `config` (MSAA and SMAA off).
+    pub fn taa(config: crate::taa::TaaConfig) -> Self {
+        Self {
+            taa: Some(config),
+            ..Self::none()
+        }
+    }
+
+    /// Checks the mode is one the renderer supports: a supported MSAA count,
+    /// and TAA neither combined with MSAA or SMAA nor given a render scale
+    /// outside `0.5..=1.0`.
+    pub fn validate(&self) -> crate::error::Result<()> {
+        self.has_msaa_checked()?;
+        if let Some(taa) = &self.taa {
+            if self.msaa_sample_count.is_some() || self.smaa {
+                return Err(crate::error::AwsmError::TaaCombinedWithOtherAa);
+            }
+            let scale = taa.render_scale;
+            if !(scale.is_finite()
+                && (crate::taa::TaaConfig::MIN_RENDER_SCALE..=1.0).contains(&scale))
+            {
+                return Err(crate::error::AwsmError::TaaRenderScale(scale));
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether `self` and `other` need the same targets, pipelines and passes:
+    /// equal except possibly inside `taa: Some(..)` (its tuning, sharpening
+    /// and render scale are live values; its disocclusion level is not). Render textures rebuild, and
+    /// `set_anti_aliasing` recompiles, only when this is false.
+    pub fn same_structure(&self, other: &AntiAliasing) -> bool {
+        self.msaa_sample_count == other.msaa_sample_count
+            && self.smaa == other.smaa
+            && self.mipmap == other.mipmap
+            && self.taa.is_some() == other.taa.is_some()
+            // The disocclusion level is structural: its own resolve
+            // variant, previous-frame targets and (for the id test) a copy
+            // source on the visibility target.
+            && self.taa.as_ref().map(|t| t.disocclusion)
+                == other.taa.as_ref().map(|t| t.disocclusion)
+    }
+
+    /// Whether depth of field runs before the TAA resolve
+    /// (`TaaDofOrder::BeforeResolve`). Says nothing about DoF being on: the
+    /// effects pass compiles its DoF only when DoF is on and this is false
+    /// ([`crate::post_process::PostProcessing::dof`]).
+    pub fn dof_before_resolve(&self) -> bool {
+        self.taa
+            .as_ref()
+            .is_some_and(|t| t.dof_order == crate::taa::TaaDofOrder::BeforeResolve)
+    }
+
     /// Returns whether MSAA is enabled and supported.
     pub fn has_msaa_checked(&self) -> crate::error::Result<bool> {
         match self.msaa_sample_count {
@@ -20,6 +106,107 @@ impl AntiAliasing {
             None => Ok(false),
             Some(sample_count) => Err(crate::error::AwsmError::UnsupportedMsaaCount(sample_count)),
         }
+    }
+}
+
+/// Bytes per sample of the geometry targets with TAA's motion-vector target:
+/// 4 × 8 (visibility, barycentric, normal/tangent, derivatives) + 4
+/// (`rg16float` velocity).
+pub const TAA_COLOR_ATTACHMENT_BYTES_PER_SAMPLE: u32 = 36;
+
+/// Storage buffers visible to the vertex stage in the largest TAA geometry
+/// variant (masked + custom-vertex): materials, material meta, the geometry
+/// pool, texture transforms (group 0), transforms + the shared previous-frame
+/// buffer (group 1), morph weights + values, joint matrices + joint weights
+/// (group 3). Chrome on Apple GPUs allows exactly 10, which is why the
+/// previous transforms, joint matrices and morph weights share one buffer.
+pub const TAA_GEOMETRY_STORAGE_BUFFERS: u32 = 10;
+
+/// Where TAA's motion vectors come from on this device
+/// ([`AwsmRenderer::taa_velocity_path`]).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum TaaVelocityPath {
+    /// A fifth geometry-pass target, written per surface with the previous
+    /// frame's vertex evaluation (03 §2.2). Exact for every kind of motion.
+    #[default]
+    GeometryTarget,
+    /// Reconstructed in the prep pass from depth and the previous object
+    /// matrix (03 §2.4): devices at 32 bytes per sample. Phase 5.
+    PrepReconstruction,
+}
+
+/// Storage buffers visible to the vertex stage of the largest plain variant
+/// of the fallback's deforming-mesh velocity overlay
+/// ([`TaaFallbackOverlay`]): transforms + the shared previous-frame buffer
+/// (group 1), the mesh-meta storage array (group 2, non-instanced draws under
+/// `indirect-first-instance`), morph weights + values, joint matrices + joint
+/// weights (group 3). The uniform-meta and instanced variants need 6.
+/// `wgsl_validation` counts them in the generated shaders.
+pub const TAA_OVERLAY_STORAGE_BUFFERS: u32 = 7;
+
+/// The same for the overlay's vertex-hook (custom-vertex) variant: the four
+/// buffers a hook may read on group 0 (materials, material meta, the geometry
+/// pool, texture transforms: a hook can sample textures in the vertex stage),
+/// plus groups 1 and 3 (the meta is a uniform). Equal to
+/// [`TAA_GEOMETRY_STORAGE_BUFFERS`].
+pub const TAA_OVERLAY_CUSTOM_VERTEX_STORAGE_BUFFERS: u32 = 10;
+
+/// On the 32 B/sample fallback ([`TaaVelocityPath::PrepReconstruction`]),
+/// which deforming meshes get exact vectors from the velocity overlay (a
+/// re-draw of just those meshes with the geometry vertex stage's current and
+/// previous evaluation, docs/TAA.md §3.10). The rest are reactive at 0.5
+/// while they deform, as before the overlay.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum TaaFallbackOverlay {
+    /// No overlay: every skinned, morphed or instanced mesh is reactive while
+    /// it deforms, vertex hooks always (fewer than
+    /// [`TAA_OVERLAY_STORAGE_BUFFERS`] per stage, or not on the fallback).
+    #[default]
+    Off,
+    /// Skins, morphs and per-instance motion get exact vectors; vertex-hook
+    /// meshes stay reactive (fewer than
+    /// [`TAA_OVERLAY_CUSTOM_VERTEX_STORAGE_BUFFERS`] per stage).
+    NoVertexHooks,
+    /// Every deforming mesh gets exact vectors.
+    All,
+}
+
+impl TaaFallbackOverlay {
+    /// The overlay this many storage buffers per shader stage allows. A
+    /// pure function of the limit (docs/TAA.md §3.10).
+    pub fn for_storage_buffer_limit(max_storage_buffers_per_shader_stage: u32) -> Self {
+        if max_storage_buffers_per_shader_stage >= TAA_OVERLAY_CUSTOM_VERTEX_STORAGE_BUFFERS {
+            Self::All
+        } else if max_storage_buffers_per_shader_stage >= TAA_OVERLAY_STORAGE_BUFFERS {
+            Self::NoVertexHooks
+        } else {
+            Self::Off
+        }
+    }
+
+    /// The overlay is built (some deforming meshes get exact vectors).
+    pub fn enabled(self) -> bool {
+        self != Self::Off
+    }
+
+    /// Vertex-hook meshes get exact vectors.
+    pub fn vertex_hooks(self) -> bool {
+        self == Self::All
+    }
+}
+
+/// The motion-vector path this device supports (see
+/// [`AwsmRenderer::taa_velocity_path`]).
+pub(crate) fn velocity_path_for_device(
+    gpu: &awsm_renderer_core::renderer::AwsmRendererWebGpu,
+) -> TaaVelocityPath {
+    let limits = gpu.device.limits();
+    if limits.max_color_attachment_bytes_per_sample() >= TAA_COLOR_ATTACHMENT_BYTES_PER_SAMPLE
+        && limits.max_storage_buffers_per_shader_stage() >= TAA_GEOMETRY_STORAGE_BUFFERS
+    {
+        TaaVelocityPath::GeometryTarget
+    } else {
+        TaaVelocityPath::PrepReconstruction
     }
 }
 
@@ -39,6 +226,7 @@ impl Default for AntiAliasing {
             // MSAA-less configurations, where it earns its keep.
             smaa: false,
             mipmap: true,
+            taa: None,
         }
     }
 }
@@ -65,7 +253,31 @@ impl AwsmRenderer {
     /// Already-compiled variants from previous MSAA states stay cached,
     /// so toggling back-and-forth pays the compile cost only on the first
     /// transition in each direction.
+    ///
+    /// TAA that cannot be built on this device (its pass failed to create)
+    /// leaves the renderer on MSAA 4x, with the reason in
+    /// [`Self::taa_fallback_reason`], and returns the error. (A TAA pipeline
+    /// that fails later, in the commit's compile, falls back the same way
+    /// there.)
     pub async fn set_anti_aliasing(&mut self, aa: AntiAliasing) -> Result<()> {
+        let result = self.set_anti_aliasing_inner(aa).await;
+        // Failed half-way into TAA: the config says TAA but there is no TAA
+        // pass to resolve with. Do not leave the renderer like that.
+        if result.is_err() && self.anti_aliasing.taa.is_some() && self.render_passes.taa.is_none() {
+            if let Err(err) = &result {
+                self.taa.fallback_reason = Some(err.to_string());
+                tracing::warn!("TAA unavailable, falling back to MSAA 4x: {err}");
+            }
+            let fallback = AntiAliasing {
+                mipmap: self.anti_aliasing.mipmap,
+                ..AntiAliasing::msaa4()
+            };
+            Box::pin(self.set_anti_aliasing_inner(fallback)).await?;
+        }
+        result
+    }
+
+    async fn set_anti_aliasing_inner(&mut self, aa: AntiAliasing) -> Result<()> {
         // Race policy per https://github.com/dakom/awsm-renderer/pull/99: config-change
         // APIs return NotReady when called before build() finishes its
         // eager batch. The frontends already structure their renderer
@@ -74,10 +286,79 @@ impl AwsmRenderer {
         if !self.build_complete {
             return Err(crate::error::AwsmError::NotReady);
         }
+        // The motion-vector path is renderer state (the device's, or the
+        // debug override), not part of the config: a change of it (the
+        // override) is structural like an AA-mode change (03 §2.4).
+        let prep_velocity_path = self.taa_velocity_path() == TaaVelocityPath::PrepReconstruction;
+        // Which deforming meshes the fallback's velocity overlay covers is
+        // renderer state of the same kind (the limit override).
+        let fallback_overlay = self.taa_fallback_overlay();
+        let path_changed = prep_velocity_path != self.render_textures.formats.prep_velocity_path
+            || fallback_overlay != self.render_textures.formats.fallback_overlay
+            || self
+                .render_passes
+                .taa_overlay
+                .as_ref()
+                .is_some_and(|p| p.debug() != self.taa_overlay_debug_check);
         // No-op fast path — caller asked for the state we're
         // already in. The bind-group recreate marks are skipped too;
         // there's nothing for them to invalidate.
-        if self.anti_aliasing == aa {
+        if self.anti_aliasing == aa && !path_changed {
+            return Ok(());
+        }
+        aa.validate()?;
+        if aa.taa.is_some() {
+            // Supersampling (`set_render_scale` > 1) with TAA is not supported
+            // in v1 (plan 04, "keep out of v1").
+            if self.render_scale_supersamples() {
+                return Err(crate::error::AwsmError::TaaCombinedWithOtherAa);
+            }
+        }
+        // TAA stays on and only its config changed (tuning, sharpening, render
+        // scale): nothing structural moves. No pipeline, texture or bind-group
+        // rebuild and NO history reset (03 §8: a render-scale change is not a
+        // reset); the resolve's params and the frame sizes follow the new
+        // config on the next frame.
+        if self.anti_aliasing.same_structure(&aa) && !path_changed {
+            let bloom_source_changed = self.anti_aliasing.taa.as_ref().map(|t| t.bloom_source)
+                != aa.taa.as_ref().map(|t| t.bloom_source);
+            let dof_order_changed =
+                self.anti_aliasing.dof_before_resolve() != aa.dof_before_resolve();
+            self.anti_aliasing = aa;
+            // DoF before / after the resolve, while DoF is on: the effects
+            // pass compiles its DoF in or out, the pre-resolve DoF pass is
+            // built or dropped, and the resolve's input moves between
+            // `composite` and that pass's output. Nothing else rebuilds; with
+            // DoF off nothing happens at all.
+            if dof_order_changed && self.post_processing.dof {
+                self.render_passes
+                    .effects
+                    .pipelines
+                    .set_render_pipeline_keys(
+                        &self.anti_aliasing,
+                        &self.post_processing,
+                        &self.gpu,
+                        &mut self.shaders,
+                        &mut self.pipelines,
+                        &self.pipeline_layouts,
+                        &self.render_textures.formats,
+                        self.features.reverse_z,
+                    )
+                    .await?;
+                self.bind_groups
+                    .mark_create(crate::bind_groups::BindGroupCreate::TextureViewRecreate);
+            }
+            // Bloom's source moves between `composite` and `taa_out`: its
+            // prefilter bind group only.
+            if bloom_source_changed {
+                self.bind_groups
+                    .mark_create(crate::bind_groups::BindGroupCreate::TextureViewRecreate);
+            }
+            // Sharpening on <-> off builds / drops the RCAS pass (its own
+            // pipeline only; the frame's pipelines are untouched).
+            self.sync_taa_rcas().await?;
+            // DoF before the resolve: builds / drops its pass.
+            self.sync_taa_dof_pre().await?;
             return Ok(());
         }
         // On a committed scene: drain anything still reserved first, so the
@@ -96,8 +377,22 @@ impl AwsmRenderer {
             self.compile_pending_pipelines().await?.into_result()?;
         }
         let prev_msaa_on = self.anti_aliasing.has_msaa_checked()?;
+        let prev_geometry_targets =
+            crate::render_passes::geometry::pipeline::GeometryTargets::from_aa(
+                &self.anti_aliasing,
+                &self.render_textures.formats,
+            );
         self.anti_aliasing = aa;
+        self.render_textures.formats.prep_velocity_path = prep_velocity_path;
+        self.render_textures.formats.fallback_overlay = fallback_overlay;
         let new_msaa_on = self.anti_aliasing.has_msaa_checked()?;
+        let new_geometry_targets =
+            crate::render_passes::geometry::pipeline::GeometryTargets::from_aa(
+                &self.anti_aliasing,
+                &self.render_textures.formats,
+            );
+        // TAA's previous-frame buffers exist only while TAA is on.
+        self.sync_motion_history();
 
         // ── SMAA lifecycle: build the pre-pass on enable, DROP it on disable
         //    (textures destroyed — SMAA off is zero-cost; the effects pass's
@@ -133,6 +428,15 @@ impl AwsmRenderer {
                 smaa.textures.destroy();
             }
         }
+
+        // ── TAA lifecycle: build the resolve pass (shader, pipeline,
+        //    textures) on enable and reset the temporal history, DROP it on
+        //    disable (textures destroyed — TAA off is zero-cost). Same shape
+        //    as SMAA above.
+        self.sync_taa_pass().await?;
+        // The fallback's deforming-mesh velocity overlay (03 §2.4, built only
+        // while TAA runs on the prep-pass fallback).
+        self.sync_taa_overlay_pass().await?;
 
         // MSAA off → on transition: allocate `material_edge_buffers`
         // + `material_edge_layout_uniform` if they're not already
@@ -336,12 +640,12 @@ impl AwsmRenderer {
             .render_passes
             .geometry
             .pipelines
-            .has_branch_for(&self.anti_aliasing)
+            .has_branch_for(&self.anti_aliasing, &self.render_textures.formats)
         {
             // Phase 4b.i: shader compile batch for the new branch's 3 keys.
             let geometry_shader_keys_needed =
                 crate::render_passes::geometry::pipeline::GeometryPipelines::shader_cache_keys(
-                    multisampled_geometry,
+                    new_geometry_targets,
                 );
             self.shaders
                 .ensure_keys(&self.gpu, geometry_shader_keys_needed)
@@ -368,7 +672,7 @@ impl AwsmRenderer {
                 crate::render_passes::geometry::pipeline::GeometryPipelines::build_descriptors(
                     &mut ctx,
                     &self.render_passes.geometry.bind_groups,
-                    multisampled_geometry,
+                    new_geometry_targets,
                 )
                 .await?;
 
@@ -392,6 +696,45 @@ impl AwsmRenderer {
                 .merge_resolved(&geometry_descs, geometry_pipeline_keys)?;
         }
 
+        // ── Phase 4b″: the masked / custom-vertex / combined geometry pools
+        //    build their TAA layout only while TAA is on (their variants for
+        //    the new targets compile at the follow-up commit, like an MSAA
+        //    flip's).
+        {
+            let mut ctx = crate::render_passes::RenderPassInitContext {
+                gpu: &self.gpu,
+                bind_group_layouts: &mut self.bind_group_layouts,
+                pipeline_layouts: &mut self.pipeline_layouts,
+                pipelines: &mut self.pipelines,
+                shaders: &mut self.shaders,
+                render_texture_formats: &mut self.render_textures.formats,
+                textures: &mut self.textures,
+                features: &self.features,
+                anti_aliasing: &self.anti_aliasing,
+                post_processing: &self.post_processing,
+                prep_config: &self.prep_config,
+                max_edge_budget: self.material_edge_buffers.as_ref().map(|b| b.max_edge_budget).unwrap_or(crate::render_passes::material_opaque::edge_buffers::DEFAULT_MAX_EDGE_BUDGET_DESKTOP),
+            };
+            let geometry = &mut self.render_passes.geometry;
+            geometry.masked_pipelines.sync_velocity_layout(
+                &mut ctx,
+                &geometry.masked_bind_group,
+                &geometry.bind_groups,
+            )?;
+            geometry.custom_vertex_pipelines.sync_velocity_layout(
+                &mut ctx,
+                &geometry.masked_bind_group,
+                &geometry.bind_groups,
+            )?;
+            geometry
+                .masked_custom_vertex_pipelines
+                .sync_velocity_layout(
+                    &mut ctx,
+                    &geometry.masked_bind_group,
+                    &geometry.bind_groups,
+                )?;
+        }
+
         // ── Phase 4b′: before the first commit, give back the branch being
         //    left. `build()` reserved the geometry pipelines and the HZB seed
         //    for the MSAA mode the renderer was built with; an embedder that
@@ -400,13 +743,15 @@ impl AwsmRenderer {
         //    pipelines and a seed that nothing has drawn with or will. On a
         //    committed scene both branches are kept, so a toggle back is a
         //    cache hit.
-        if self.pipelines.is_deferred() && prev_msaa_on != new_msaa_on {
+        if self.pipelines.is_deferred() && prev_geometry_targets != new_geometry_targets {
             let stale = self
                 .render_passes
                 .geometry
                 .pipelines
-                .take_branch(prev_msaa_on);
+                .take_branch(prev_geometry_targets);
             self.pipelines.render.release_reserved(stale);
+        }
+        if self.pipelines.is_deferred() && prev_msaa_on != new_msaa_on {
             if let Some(hzb) = self.render_passes.hzb.as_mut() {
                 let seed = if prev_msaa_on {
                     hzb.pipelines.seed_msaa.take()
@@ -431,6 +776,9 @@ impl AwsmRenderer {
                 prep_edge_resolve,
                 prep_denoise,
                 self.prep_config.clamped_denoise_radius(),
+                self.render_textures
+                    .formats
+                    .taa_prep_velocity(&self.anti_aliasing),
             )
         });
         if prep_branch_missing {
@@ -445,6 +793,9 @@ impl AwsmRenderer {
                         new_msaa_on,
                         &self.prep_config,
                         self.features.reverse_z,
+                        self.render_textures
+                            .formats
+                            .taa_prep_velocity(&self.anti_aliasing),
                     ),
                 )
                 .await?;
@@ -509,6 +860,15 @@ impl AwsmRenderer {
             // opaque (incl. opaque-dynamic) material can't compile against the
             // transparent fragment contract.
             if !self.materials.is_transparency_pass(mesh.material_key) {
+                continue;
+            }
+            // A mesh added during an open load (`begin_load`, before
+            // `commit_load`) has no geometry resource yet: the commit resolves
+            // it and then warms its transparent pipeline for the AA mode that
+            // is current by then. Skip it here; asking for its buffer info
+            // fails with `MeshNotFound` and aborts this setter half-way (the
+            // effects pipelines are then never rebuilt for the new mode).
+            if self.meshes.resource_key(mesh_key).is_err() {
                 continue;
             }
             let buffer_info_key = self.meshes.buffer_info_key(mesh_key)?;
@@ -658,18 +1018,199 @@ impl AwsmRenderer {
         (self.render_scale - 1.0).abs() > f32::EPSILON
     }
 
-    /// The internal render resolution: swap-chain size scaled by
-    /// [`Self::render_scale`] (identical to the swap-chain size at 1.0).
-    /// Every viewport-derived consumer (render targets, light-culling
-    /// froxels, LOD screen-error, camera viewport uniform, picker) reads
-    /// THIS, never the raw swap-chain size — the display pass output and
-    /// swap-chain readbacks are the only canvas-sized stages.
-    pub(crate) fn render_size(&self) -> Result<(u32, u32)> {
-        let (w, h) = self.gpu.current_context_texture_size()?;
-        Ok((
-            crate::size::scale_extent(w, self.render_scale),
-            crate::size::scale_extent(h, self.render_scale),
+    /// Surface, render and post sizes for the live swap chain (see
+    /// [`crate::size::FrameSizes`]). The one place the swap-chain size is
+    /// turned into the sizes render textures are allocated and dispatched at;
+    /// `render()` snaps it once per frame.
+    pub(crate) fn frame_sizes(&self) -> Result<crate::size::FrameSizes> {
+        let surface = self.gpu.current_context_texture_size()?;
+        Ok(crate::size::FrameSizes::new(
+            surface,
+            self.scene_scale(),
+            self.post_is_surface(),
         ))
+    }
+
+    /// Scene size / surface size. Without TAA: the supersampling
+    /// [`Self::render_scale`] (`[1, 2]`). With TAA: the TAA render scale
+    /// (`0.5..=1`, quantised; below 1 the resolve upscales).
+    pub(crate) fn scene_scale(&self) -> f32 {
+        match &self.anti_aliasing.taa {
+            Some(taa) => taa.clamped_render_scale(),
+            None => self.render_scale,
+        }
+    }
+
+    /// Whether the display pass downsamples its input (post size larger than
+    /// the surface): supersampling without TAA. Under TAA post size IS the
+    /// surface size (the resolve writes the output resolution), so the
+    /// display always loads 1:1.
+    pub(crate) fn display_downsamples(&self) -> bool {
+        self.anti_aliasing.taa.is_none() && self.render_scale_supersamples()
+    }
+
+    /// Sets the TAA render scale (`0.5..=1`, quantised to
+    /// [`crate::taa::TaaConfig::RENDER_SCALE_STEP`]): the lever for a
+    /// resolution governor. Change THIS, never the canvas size: the output
+    /// (and the TAA history, bloom and effects) stays at the canvas size, and
+    /// a render-scale change is not a history reset (03 §8). Light: no
+    /// pipeline compile, no commit. Errors without TAA, or on a non-finite
+    /// scale.
+    ///
+    /// A governor should step it every few seconds at most, with hysteresis
+    /// (separate thresholds for lowering and raising, and a hold time after
+    /// each step), never per frame: a step is a one-frame hitch. On the next
+    /// frame, only when the quantised scale actually changed:
+    ///
+    /// - Rebuilt at the new size: every render-size target (visibility,
+    ///   barycentrics, normals, derivatives, velocity, reactive, depth,
+    ///   opaque, transparent, composite, the prep and SSR targets, HUD depth)
+    ///   with every bind group that views them, the HZB pyramid, the light
+    ///   culling and froxel volume grids. The old textures are destroyed a
+    ///   few frames later, so memory briefly holds both sizes. No pipeline
+    ///   compiles: sizes are not pipeline state.
+    /// - Kept: the TAA history (output size; the previous depth is carried
+    ///   across), bloom and the effects targets (output size), LOD and
+    ///   coverage LOD (measured in output pixels, so nothing pops), the jitter
+    ///   cycle (only its phase count follows the new ratio).
+    /// - Restarted: SSR's temporal accumulation (a render-size history;
+    ///   re-converges in about ten frames) and the volumetric haze's froxel
+    ///   history (its grid follows the render-size light-culling tiles).
+    /// - GPU occlusion culling: the HZB is rebuilt from that frame's depth
+    ///   before the occlusion test that frame reads it, and the test maps by
+    ///   the pyramid's own size, so a step culls exactly like any frame (with
+    ///   the usual one frame of latency), never against an empty pyramid.
+    pub fn set_taa_render_scale(&mut self, scale: f32) -> Result<()> {
+        if !scale.is_finite() {
+            return Err(crate::error::AwsmError::TaaRenderScale(scale));
+        }
+        let Some(taa) = self.anti_aliasing.taa.as_mut() else {
+            return Err(crate::error::AwsmError::TaaNotEnabled);
+        };
+        taa.render_scale = crate::taa::TaaConfig {
+            render_scale: scale,
+            ..crate::taa::TaaConfig::native()
+        }
+        .clamped_render_scale();
+        Ok(())
+    }
+
+    /// The TAA render scale in force (quantised), or `None` without TAA.
+    pub fn taa_render_scale(&self) -> Option<f32> {
+        self.anti_aliasing
+            .taa
+            .as_ref()
+            .map(|taa| taa.clamped_render_scale())
+    }
+
+    /// True when post-processing runs at surface size rather than render size:
+    /// with TAA, whose resolve writes the output resolution. Without TAA,
+    /// bloom / effects / display input run at render size (supersampling
+    /// included, exactly as 0.45).
+    fn post_is_surface(&self) -> bool {
+        self.anti_aliasing.taa.is_some()
+    }
+
+    /// How this device gets TAA motion vectors (03 §2.2, §2.4).
+    ///
+    /// [`TaaVelocityPath::GeometryTarget`] needs a fifth colour attachment
+    /// (`maxColorAttachmentBytesPerSample >= 36`) and the storage buffers of
+    /// the TAA geometry variants (current + previous transforms, morph
+    /// weights and joint matrices; [`TAA_GEOMETRY_STORAGE_BUFFERS`] in the
+    /// largest, masked + custom-vertex, variant). Otherwise the prep pass
+    /// reconstructs them ([`TaaVelocityPath::PrepReconstruction`], phase 5).
+    /// [`Self::set_taa_velocity_path_override`] forces
+    /// the fallback for testing it on a capable device.
+    pub fn taa_velocity_path(&self) -> TaaVelocityPath {
+        self.taa_velocity_path_override
+            .unwrap_or_else(|| velocity_path_for_device(&self.gpu))
+    }
+
+    /// Debug / test override for [`Self::taa_velocity_path`] (`None` = by the
+    /// device limits). Takes effect at the next `set_anti_aliasing`.
+    pub fn set_taa_velocity_path_override(&mut self, path: Option<TaaVelocityPath>) {
+        self.taa_velocity_path_override = path;
+    }
+
+    /// The deforming-mesh velocity overlay this device's storage-buffer limit
+    /// allows on the fallback path ([`TaaFallbackOverlay`]), whether or not
+    /// the fallback is in use. [`Self::set_taa_fallback_storage_limit_override`]
+    /// replaces the device limit in this decision.
+    pub fn taa_fallback_overlay(&self) -> TaaFallbackOverlay {
+        TaaFallbackOverlay::for_storage_buffer_limit(
+            self.taa_fallback_storage_limit_override.unwrap_or_else(|| {
+                self.gpu
+                    .device
+                    .limits()
+                    .max_storage_buffers_per_shader_stage()
+            }),
+        )
+    }
+
+    /// Debug / test override of the storage-buffer limit that decides
+    /// [`Self::taa_fallback_overlay`] (`None` = the device's), so a capable
+    /// device can exercise each outcome of the fallback. Takes effect at the
+    /// next `set_anti_aliasing`. Does not change the velocity path itself
+    /// (see [`Self::set_taa_velocity_path_override`]).
+    pub fn set_taa_fallback_storage_limit_override(&mut self, limit: Option<u32>) {
+        self.taa_fallback_storage_limit_override = limit;
+    }
+
+    /// Turns the previous-frame buffers (transforms, instances, joint
+    /// matrices, morph weights) on exactly while TAA is on.
+    ///
+    /// With the prep-pass fallback (03 §2.4) and no velocity overlay
+    /// (`TaaFallbackOverlay::Off`) only what prep reads is kept: the node
+    /// transforms. Instances, joint matrices and morph weights get no
+    /// previous copy there (prep gives their meshes the rigid motion of
+    /// their node and the seed marks them reactive). With the overlay they
+    /// are kept as on the geometry path: the overlay's vertex stage reads
+    /// them.
+    pub(crate) fn sync_motion_history(&mut self) {
+        let on = self.anti_aliasing.taa.is_some();
+        let formats = &self.render_textures.formats;
+        let prep = formats.taa_prep_velocity(&self.anti_aliasing);
+        let per_vertex =
+            on && (!prep || formats.taa_fallback_overlay(&self.anti_aliasing).enabled());
+        // The fallback records which of them deform (the overlay's draw set
+        // and the non-rigid marking, `update_non_rigid_gates`). Set before the
+        // early return: the geometry path and the fallback with the overlay
+        // keep the same buffers.
+        self.instances.set_track_deformed(prep);
+        self.meshes.skins.set_track_deformed(prep);
+        self.meshes.morphs.geometry.set_track_deformed(prep);
+        let was = (
+            self.transforms.motion_history_enabled(),
+            self.meshes.skins.motion_history_mut().0.enabled(),
+        );
+        if was == (on, per_vertex) {
+            return;
+        }
+        // Rebuild (on) / drop (off) the geometry pass's TAA bind groups: off,
+        // they would otherwise keep the dropped previous-frame buffers alive.
+        self.bind_groups
+            .mark_create(BindGroupCreate::MotionHistoryBuffers);
+        self.transforms.set_motion_history(on);
+        self.instances.set_motion_history(per_vertex);
+        self.meshes.skins.set_motion_history(per_vertex);
+        self.meshes.morphs.geometry.set_motion_history(per_vertex);
+    }
+
+    /// The scene resolution: swap-chain size scaled by
+    /// [`Self::render_scale`] (identical to the swap-chain size at 1.0).
+    /// Every scene-side consumer (geometry/shading targets, light-culling
+    /// froxels, LOD screen-error, camera viewport uniform, picker, SSR, HZB)
+    /// reads THIS, never the raw swap-chain size.
+    pub fn render_size(&self) -> Result<(u32, u32)> {
+        Ok(self.frame_sizes()?.render)
+    }
+
+    /// The post-processing resolution: what bloom, SMAA and the effects pass
+    /// (haze, DoF, bloom composite, SMAA blend) run at and what the display
+    /// pass reads. Equal to [`Self::render_size`] without TAA; the surface
+    /// size with TAA, where the resolve writes the output resolution.
+    pub fn post_size(&self) -> Result<(u32, u32)> {
+        Ok(self.frame_sizes()?.post)
     }
 
     /// Runtime anisotropic-filtering toggle (default ON). OFF rebinds every
@@ -697,18 +1238,22 @@ impl AwsmRenderer {
     /// pipeline (1:1 load vs downsample variant) recompiles here.
     pub async fn set_render_scale(&mut self, scale: f32) -> Result<()> {
         let scale = scale.clamp(1.0, 2.0);
+        if self.anti_aliasing.taa.is_some() && (scale - 1.0).abs() > f32::EPSILON {
+            // Supersampling with TAA is not supported in v1.
+            return Err(crate::error::AwsmError::TaaCombinedWithOtherAa);
+        }
         if (scale - self.render_scale).abs() <= f32::EPSILON {
             return Ok(());
         }
-        let was_supersampling = self.render_scale_supersamples();
+        let was_downsampling = self.display_downsamples();
         self.render_scale = scale;
-        if self.render_scale_supersamples() != was_supersampling {
+        if self.display_downsamples() != was_downsampling {
             self.render_passes
                 .display
                 .pipelines
                 .set_render_pipeline_key(
                     &self.post_processing,
-                    self.render_scale_supersamples(),
+                    self.display_downsamples(),
                     &self.gpu,
                     &mut self.shaders,
                     &mut self.pipelines,

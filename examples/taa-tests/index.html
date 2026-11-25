@@ -1,0 +1,23 @@
+<!doctype html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>awsm-renderer — TAA test harness</title>
+    <style>
+        html, body { margin: 0; padding: 0; background: #111; color: #ddd; font-family: ui-monospace, monospace; }
+        /* The canvas backing store is sized by the harness (default 960x720);
+           its CSS size is cosmetic and never feeds the render size. */
+        canvas { display: block; }
+        #hud { padding: 6px 8px; font-size: 13px; color: #fff; }
+        #log { padding: 0 8px 8px; font-size: 11px; white-space: pre-wrap; }
+    </style>
+</head>
+<body>
+    <div id="hud">taa-tests: booting…</div>
+    <pre id="log"></pre>
+    <link data-trunk rel="rust" data-wasm-opt="0" />
+    <link data-trunk rel="copy-file" href="../../web/vendor/basis/basis_transcoder.js" data-target-path="vendor/basis" />
+    <link data-trunk rel="copy-file" href="../../web/vendor/basis/basis_transcoder.wasm" data-target-path="vendor/basis" />
+    <link data-trunk rel="copy-file" href="../../web/workers/basis-worker.js" data-target-path="workers" />
+</body>
+</html>

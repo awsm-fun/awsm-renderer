@@ -65,6 +65,12 @@ pub struct PostProcessConfig {
 }
 
 /// Authored anti-aliasing choice. Nested in [`PostProcessConfig`].
+///
+/// Three modes: MSAA (optionally with SMAA on top, as before TAA existed),
+/// SMAA alone, or TAA. `taa: Some(..)` selects TAA and takes precedence: the
+/// loader then ignores `msaa` / `smaa` (the renderer rejects TAA combined
+/// with either), and the editor saves them `false` alongside it. A file
+/// without a `taa` field loads exactly as before.
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
@@ -75,6 +81,12 @@ pub struct AntiAliasingConfig {
     /// SMAA post-process anti-aliasing. Off by default; independent of MSAA.
     #[serde(default)]
     pub smaa: bool,
+    /// Temporal anti-aliasing (and temporal upscaling below render scale 1).
+    /// `None` (absent from the file) = not TAA. (No `skip_serializing_if`:
+    /// the editor's bitcode project format cannot skip fields; TOML omits a
+    /// `None` on its own, so scene files stay unchanged.)
+    #[serde(default)]
+    pub taa: Option<TaaSettings>,
 }
 
 impl Default for AntiAliasingConfig {
@@ -82,6 +94,267 @@ impl Default for AntiAliasingConfig {
         Self {
             msaa: true,
             smaa: false,
+            taa: None,
+        }
+    }
+}
+
+/// Authored TAA settings. Mirrors `awsm_renderer::taa::TaaConfig` (the schema
+/// stays renderer-independent); every field defaults to the renderer's
+/// shipped value, so a file may carry only what it changes.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case", default)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub struct TaaSettings {
+    /// Render size / output size, 0.5..=1.0. 1.0 = TAA at native resolution;
+    /// below it the scene renders smaller and TAA reconstructs the output
+    /// (presets: Quality 0.67, Balanced 0.58, Performance 0.5).
+    pub render_scale: f32,
+    /// Sharpening strength after the resolve (0 = off).
+    pub sharpen: f32,
+    /// Which tests decide that a pixel's history no longer belongs to it
+    /// (`"depth"` | `"depth_and_motion"` | `"depth_motion_and_id"`). Each
+    /// level costs more than the one before; changing it rebuilds the TAA
+    /// pass and restarts history. Costs and the recommendation: docs/TAA.md.
+    pub disocclusion: TaaDisocclusionSetting,
+    /// What bloom reads under TAA (`"current_frame"` | `"resolved"`): this
+    /// frame's HDR render keeps the glow of thin and small very bright
+    /// sources; the resolved image loses most of it. See docs/TAA.md.
+    pub bloom_source: TaaBloomSourceSetting,
+    /// Where depth of field runs under TAA (`"before_resolve"` |
+    /// `"after_resolve"`), while DoF is on: on this frame's HDR render before
+    /// the resolve (the default: bright out-of-focus highlights keep their
+    /// energy), or on the resolved image. See docs/TAA.md.
+    pub dof_order: TaaDofOrderSetting,
+    /// Resolve tuning. Default = the shipped tuning.
+    pub tuning: TaaTuningSettings,
+}
+
+impl Default for TaaSettings {
+    fn default() -> Self {
+        Self {
+            render_scale: 1.0,
+            sharpen: 0.0,
+            disocclusion: TaaDisocclusionSetting::default(),
+            bloom_source: TaaBloomSourceSetting::default(),
+            dof_order: TaaDofOrderSetting::default(),
+            tuning: TaaTuningSettings::default(),
+        }
+    }
+}
+
+/// Where depth of field runs while TAA is on. Mirrors
+/// `awsm_renderer::taa::TaaDofOrder` (same default; a scene-loader test pins
+/// the two together). With DoF on, a change recompiles the effects pass and
+/// builds or drops the pre-resolve DoF pass (no history reset); with DoF
+/// off it changes nothing.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub enum TaaDofOrderSetting {
+    /// On this frame's HDR render, at render size, before the resolve: the
+    /// out-of-focus discs of small bright sources keep their energy, slight
+    /// defocus is steadier and the blur costs less. One extra render-size
+    /// target. A transparent-pipeline HUD stays sharp. The default.
+    #[default]
+    BeforeResolve,
+    /// On the resolved image, at output size, as with no AA or MSAA. Small
+    /// very bright sources out of focus come out dimmer than without TAA,
+    /// and slight defocus flickers more.
+    AfterResolve,
+}
+
+impl TaaDofOrderSetting {
+    /// Both orders.
+    pub const ALL: [TaaDofOrderSetting; 2] = [Self::BeforeResolve, Self::AfterResolve];
+
+    /// The schema / wire name (`"before_resolve"`, `"after_resolve"`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AfterResolve => "after_resolve",
+            Self::BeforeResolve => "before_resolve",
+        }
+    }
+
+    /// The order with that schema / wire name.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|d| d.as_str() == name)
+    }
+}
+
+/// What bloom reads while TAA is on. Mirrors
+/// `awsm_renderer::taa::TaaBloomSource` (same default; a scene-loader test
+/// pins the two together). Live: no recompile, no history reset.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub enum TaaBloomSourceSetting {
+    /// This frame's HDR render, as with no AA or MSAA: thin and small very
+    /// bright sources keep their glow (in a still image, the glow of a
+    /// source smaller than a pixel pulses slightly with the jitter). The
+    /// default.
+    #[default]
+    CurrentFrame,
+    /// The resolved image: a steady glow, but thin and small very bright
+    /// sources lose part of it.
+    Resolved,
+}
+
+impl TaaBloomSourceSetting {
+    /// Both sources.
+    pub const ALL: [TaaBloomSourceSetting; 2] = [Self::CurrentFrame, Self::Resolved];
+
+    /// The schema / wire name (`"current_frame"`, `"resolved"`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::CurrentFrame => "current_frame",
+            Self::Resolved => "resolved",
+        }
+    }
+
+    /// The source with that schema / wire name.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|d| d.as_str() == name)
+    }
+}
+
+/// How the TAA resolve detects disocclusion: when a pixel's history shows a
+/// surface other than the one now at that pixel and must be dropped.
+/// Mirrors `awsm_renderer::taa::TaaDisocclusion` variant for variant (same
+/// default; a scene-loader test pins the two together). Structural: a change
+/// rebuilds the TAA pass and restarts history.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub enum TaaDisocclusionSetting {
+    /// Depth only: this frame's surface against last frame's depth (keeps
+    /// last frame's depth, 4 B per render pixel). The cheapest level; misses
+    /// the contact line under a moving object, where the two depths touch.
+    Depth,
+    /// Depth, plus last frame's motion where depth cannot tell two surfaces
+    /// apart (adds a copy of last frame's motion vectors, 4 B per render
+    /// pixel, 8 on the fallback path). Catches the contact line under an
+    /// object moving over a static surface.
+    DepthAndMotion,
+    /// Depth and motion, plus last frame's object id (adds a copy of the
+    /// visibility target, 8 B per render pixel): a different object at a
+    /// pixel last frame drops its history, also on a moving surface and
+    /// wherever two objects touch in depth. The recommended level.
+    #[default]
+    DepthMotionAndId,
+}
+
+impl TaaDisocclusionSetting {
+    /// Every level, cheapest first.
+    pub const ALL: [TaaDisocclusionSetting; 3] =
+        [Self::Depth, Self::DepthAndMotion, Self::DepthMotionAndId];
+
+    /// The schema / wire name (`"depth"`, `"depth_and_motion"`,
+    /// `"depth_motion_and_id"`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Depth => "depth",
+            Self::DepthAndMotion => "depth_and_motion",
+            Self::DepthMotionAndId => "depth_motion_and_id",
+        }
+    }
+
+    /// The level with that schema / wire name.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|d| d.as_str() == name)
+    }
+}
+
+/// TAA resolve tuning. Mirrors `awsm_renderer::taa::TaaTuning` field for
+/// field (same defaults; a scene-loader test pins the two together). Every
+/// value is a live uniform: changing one never recompiles or resets history.
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case", default)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub struct TaaTuningSettings {
+    /// Variance-clip half-width (standard deviations) when still.
+    pub gamma_still: f32,
+    /// Variance-clip half-width when moving.
+    pub gamma_moving: f32,
+    /// Speed (output px / frame) at which the clip box reaches `gamma_moving`.
+    pub gamma_moving_speed: f32,
+    /// Relative depth slack of the disocclusion test.
+    pub disocclusion_threshold: f32,
+    /// History-length cap at native resolution.
+    pub max_history_native: f32,
+    /// History-length cap when upscaling.
+    pub max_history_upscaling: f32,
+    /// Minimum current-frame weight at `motion_alpha_speed` px / frame.
+    pub motion_alpha: f32,
+    /// Speed (output px / frame) at which `motion_alpha` is reached.
+    pub motion_alpha_speed: f32,
+    /// Reactive value written by transparents per unit of alpha.
+    pub reactive_transparent: f32,
+    /// Reactive value for materials flagged `temporal: reactive`.
+    pub reactive_material: f32,
+    /// Reactive value on every pixel a particle emitter covers (particles are
+    /// fully reactive by default: they move and change too fast for history).
+    pub reactive_particles: f32,
+    /// Reactive value written by lines per unit of alpha (lines have no
+    /// motion vectors; raise it to 1.0 when lines are animated).
+    pub reactive_lines: f32,
+    /// Extra reactivity from SSR reflectivity.
+    pub reactive_ssr: f32,
+    /// Added to `log2(render_scale)` for the texture LOD bias.
+    pub mip_bias_extra: f32,
+    /// History-length cap for a pixel moving at `max_history_moving_speed`
+    /// or faster (a short memory keeps resampling blur from building up).
+    pub max_history_moving: f32,
+    /// Speed (output px / frame) at which the cap has dropped from the still
+    /// value to `max_history_moving`.
+    pub max_history_moving_speed: f32,
+    /// Minimum current-frame weight on a motion boundary (a 3×3 holding
+    /// surfaces that move differently, e.g. a moving silhouette).
+    pub motion_edge_alpha: f32,
+    /// Relative speed (output px / frame) between the nearest and farthest
+    /// surface of the 3×3 at which `motion_edge_alpha` is reached.
+    pub motion_edge_speed: f32,
+    /// At the `depth_motion_and_id` disocclusion level: current-frame weight
+    /// of a pixel whose history held an object now absent from its 3×3 (a
+    /// resting edge released by a sub-pixel move). 0 = off; 1.0 removes that
+    /// last ghost at some still-image flicker on thin wires.
+    pub edge_release: f32,
+    /// Current-frame weight on every pixel of a mesh in its first rendered
+    /// frame (inserted, or shown again after being hidden): a new object
+    /// starts from a history of itself, not of what was behind it. 1.0
+    /// (default); 0 = off.
+    pub reactive_new_objects: f32,
+}
+
+impl Default for TaaTuningSettings {
+    fn default() -> Self {
+        Self {
+            gamma_still: 1.25,
+            gamma_moving: 0.75,
+            gamma_moving_speed: 2.0,
+            disocclusion_threshold: 0.05,
+            max_history_native: 16.0,
+            max_history_upscaling: 64.0,
+            motion_alpha: 0.2,
+            motion_alpha_speed: 8.0,
+            reactive_transparent: 0.3,
+            reactive_material: 0.2,
+            reactive_particles: 1.0,
+            reactive_lines: 0.3,
+            reactive_ssr: 0.0,
+            mip_bias_extra: 0.0,
+            max_history_moving: 1.0,
+            max_history_moving_speed: 1.0,
+            motion_edge_alpha: 1.0,
+            motion_edge_speed: 0.5,
+            edge_release: 0.0,
+            reactive_new_objects: 1.0,
         }
     }
 }
@@ -419,5 +692,183 @@ exposure = 1.5
         let round_tripped: PostProcessConfig =
             toml::from_str(&toml::to_string(&authored).unwrap()).unwrap();
         assert_eq!(round_tripped.atmosphere, authored.atmosphere);
+    }
+
+    /// Scenes authored before TAA keep their AA exactly: no `taa` field
+    /// parses as `None`, and a non-TAA config writes no `taa` key, so their
+    /// files do not change on re-save.
+    #[test]
+    fn pre_taa_anti_aliasing_is_unchanged() {
+        let parsed: PostProcessConfig = toml::from_str(
+            r#"
+[anti_aliasing]
+msaa = false
+smaa = true
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            parsed.anti_aliasing,
+            AntiAliasingConfig {
+                msaa: false,
+                smaa: true,
+                taa: None
+            }
+        );
+        let absent: PostProcessConfig = toml::from_str("bloom = true").unwrap();
+        assert_eq!(absent.anti_aliasing, AntiAliasingConfig::default());
+        let written = toml::to_string(&PostProcessConfig::default()).unwrap();
+        assert!(!written.contains("taa"), "{written}");
+    }
+
+    /// A TAA block may carry only what it changes; the rest takes the shipped
+    /// defaults, and an authored one round-trips field for field.
+    #[test]
+    fn taa_settings_default_partially_and_roundtrip() {
+        let parsed: PostProcessConfig = toml::from_str(
+            r#"
+[anti_aliasing]
+msaa = false
+[anti_aliasing.taa]
+render_scale = 0.67
+[anti_aliasing.taa.tuning]
+gamma_moving = 0.6
+"#,
+        )
+        .unwrap();
+        let taa = parsed.anti_aliasing.taa.expect("taa block");
+        assert_eq!(taa.render_scale, 0.67);
+        assert_eq!(taa.sharpen, 0.0);
+        assert_eq!(taa.disocclusion, TaaDisocclusionSetting::default());
+        assert_eq!(taa.tuning.gamma_moving, 0.6);
+        assert_eq!(
+            taa.tuning.gamma_still,
+            TaaTuningSettings::default().gamma_still
+        );
+
+        let authored = PostProcessConfig {
+            anti_aliasing: AntiAliasingConfig {
+                msaa: false,
+                smaa: false,
+                taa: Some(TaaSettings {
+                    render_scale: 0.58,
+                    sharpen: 0.25,
+                    disocclusion: TaaDisocclusionSetting::Depth,
+                    bloom_source: TaaBloomSourceSetting::CurrentFrame,
+                    dof_order: TaaDofOrderSetting::AfterResolve,
+                    tuning: TaaTuningSettings {
+                        max_history_native: 12.0,
+                        ..TaaTuningSettings::default()
+                    },
+                }),
+            },
+            ..PostProcessConfig::default()
+        };
+        let round_tripped: PostProcessConfig =
+            toml::from_str(&toml::to_string(&authored).unwrap()).unwrap();
+        assert_eq!(round_tripped.anti_aliasing, authored.anti_aliasing);
+    }
+
+    /// The disocclusion level is written by its snake_case name, read back
+    /// as itself, and a file without it (written before the option existed)
+    /// takes the default.
+    #[test]
+    fn taa_bloom_source_and_dof_order_names_and_roundtrip() {
+        for (src, order) in TaaBloomSourceSetting::ALL
+            .into_iter()
+            .zip(TaaDofOrderSetting::ALL)
+        {
+            let authored = PostProcessConfig {
+                anti_aliasing: AntiAliasingConfig {
+                    msaa: false,
+                    smaa: false,
+                    taa: Some(TaaSettings {
+                        bloom_source: src,
+                        dof_order: order,
+                        ..TaaSettings::default()
+                    }),
+                },
+                ..PostProcessConfig::default()
+            };
+            let written = toml::to_string(&authored).unwrap();
+            assert!(
+                written.contains(&format!("bloom_source = \"{}\"", src.as_str())),
+                "{written}"
+            );
+            assert!(
+                written.contains(&format!("dof_order = \"{}\"", order.as_str())),
+                "{written}"
+            );
+            let read: PostProcessConfig = toml::from_str(&written).unwrap();
+            assert_eq!(read.anti_aliasing, authored.anti_aliasing);
+            assert_eq!(TaaBloomSourceSetting::from_name(src.as_str()), Some(src));
+            assert_eq!(TaaDofOrderSetting::from_name(order.as_str()), Some(order));
+        }
+        // A file written before the two fields existed reads the defaults.
+        let older: PostProcessConfig = toml::from_str(
+            r#"
+[anti_aliasing]
+msaa = false
+[anti_aliasing.taa]
+render_scale = 0.67
+disocclusion = "depth"
+"#,
+        )
+        .unwrap();
+        let taa = older.anti_aliasing.taa.unwrap();
+        assert_eq!(taa.bloom_source, TaaBloomSourceSetting::CurrentFrame);
+        assert_eq!(taa.dof_order, TaaDofOrderSetting::BeforeResolve);
+        for bad in [
+            "[anti_aliasing.taa]\nbloom_source = \"glow\"\n",
+            "[anti_aliasing.taa]\ndof_order = \"never\"\n",
+        ] {
+            assert!(toml::from_str::<PostProcessConfig>(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn taa_disocclusion_names_and_roundtrip() {
+        for level in TaaDisocclusionSetting::ALL {
+            let authored = PostProcessConfig {
+                anti_aliasing: AntiAliasingConfig {
+                    msaa: false,
+                    smaa: false,
+                    taa: Some(TaaSettings {
+                        disocclusion: level,
+                        ..TaaSettings::default()
+                    }),
+                },
+                ..PostProcessConfig::default()
+            };
+            let written = toml::to_string(&authored).unwrap();
+            assert!(
+                written.contains(&format!("disocclusion = \"{}\"", level.as_str())),
+                "{written}"
+            );
+            let read: PostProcessConfig = toml::from_str(&written).unwrap();
+            assert_eq!(read.anti_aliasing, authored.anti_aliasing);
+            assert_eq!(
+                TaaDisocclusionSetting::from_name(level.as_str()),
+                Some(level)
+            );
+        }
+        let older: PostProcessConfig = toml::from_str(
+            r#"
+[anti_aliasing]
+msaa = false
+[anti_aliasing.taa]
+render_scale = 0.67
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            older.anti_aliasing.taa.unwrap().disocclusion,
+            TaaDisocclusionSetting::DepthMotionAndId
+        );
+        assert!(toml::from_str::<PostProcessConfig>(
+            "[anti_aliasing.taa]\ndisocclusion = \"plane\"\n"
+        )
+        .is_err());
+        assert_eq!(TaaDisocclusionSetting::from_name("plane"), None);
     }
 }

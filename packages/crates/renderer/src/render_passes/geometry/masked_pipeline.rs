@@ -29,7 +29,9 @@ use crate::pipeline_layouts::{PipelineLayoutCacheKey, PipelineLayoutKey};
 use crate::pipelines::render_pipeline::{RenderPipelineCacheKey, RenderPipelineKey};
 use crate::render_passes::geometry::bind_group::GeometryBindGroups;
 use crate::render_passes::geometry::masked_bind_group::GeometryMaskedBindGroup;
-use crate::render_passes::geometry::pipeline::{GeometryCullKey, VERTEX_BUFFER_LAYOUT};
+use crate::render_passes::geometry::pipeline::{
+    GeometryCullKey, GeometryTargets, VERTEX_BUFFER_LAYOUT,
+};
 use crate::render_passes::geometry::shader::masked_cache_key::{
     DynamicAlphaShaderInfo, ShaderCacheKeyGeometryMasked,
 };
@@ -38,7 +40,7 @@ use crate::render_passes::RenderPassInitContext;
 /// Lookup key for one compiled masked pipeline.
 #[derive(Hash, Eq, PartialEq, Copy, Clone, Debug)]
 pub struct MaskedPipelineKeyId {
-    pub msaa_sample_count: Option<u32>,
+    pub targets: GeometryTargets,
     pub shader_id: MaterialShaderId,
     pub cull: GeometryCullKey,
 }
@@ -54,6 +56,9 @@ pub struct MaskedVariant {
 /// Lazy pool of masked geometry render pipelines.
 pub struct GeometryMaskedPipelines {
     pipeline_layout_key: PipelineLayoutKey,
+    /// TAA variant layout (previous-frame buffers in groups 1 and 3). Only
+    /// built while TAA is on.
+    velocity_pipeline_layout_key: Option<PipelineLayoutKey>,
     main: HashMap<MaskedPipelineKeyId, RenderPipelineKey>,
     /// Bumped every time the pool is emptied ([`Self::relayout`] /
     /// [`Self::clear`]). A compile issued against an earlier epoch was built
@@ -74,12 +79,33 @@ impl GeometryMaskedPipelines {
         masked_bind_group: &GeometryMaskedBindGroup,
         geometry_bind_groups: &GeometryBindGroups,
     ) -> Result<Self> {
-        let pipeline_layout_key = resolve_layout_key(ctx, masked_bind_group, geometry_bind_groups)?;
+        let pipeline_layout_key = resolve_layout_key(
+            ctx,
+            masked_bind_group,
+            geometry_bind_groups,
+            GeometryTargets::Single,
+        )?;
+        let velocity_pipeline_layout_key =
+            resolve_velocity_layout_key(ctx, masked_bind_group, geometry_bind_groups)?;
         Ok(Self {
             pipeline_layout_key,
+            velocity_pipeline_layout_key,
             main: HashMap::new(),
             epoch: 0,
         })
+    }
+    /// (Re)builds the TAA variant's pipeline layout for the live AA mode
+    /// (`None` unless TAA is on). Called when the AA mode changes; the
+    /// compiled pipelines are unaffected (they are keyed by their targets).
+    pub fn sync_velocity_layout(
+        &mut self,
+        ctx: &mut RenderPassInitContext<'_>,
+        masked_bind_group: &GeometryMaskedBindGroup,
+        geometry_bind_groups: &GeometryBindGroups,
+    ) -> Result<()> {
+        self.velocity_pipeline_layout_key =
+            resolve_velocity_layout_key(ctx, masked_bind_group, geometry_bind_groups)?;
+        Ok(())
     }
 
     /// See the `epoch` field.
@@ -93,10 +119,10 @@ impl GeometryMaskedPipelines {
     /// no texture change (e.g. the editor flipping a builtin's alpha mode to
     /// Mask) still gets its variant compiled instead of silently falling back
     /// to the solid pipeline forever.
-    pub fn has_variant(&self, msaa_sample_count: Option<u32>, shader_id: MaterialShaderId) -> bool {
+    pub fn has_variant(&self, targets: GeometryTargets, shader_id: MaterialShaderId) -> bool {
         self.main
             .keys()
-            .any(|k| k.msaa_sample_count == msaa_sample_count && k.shader_id == shader_id)
+            .any(|k| k.targets == targets && k.shader_id == shader_id)
     }
 
     /// Re-resolves the pipeline layout after the masked group-0 layout changed
@@ -108,8 +134,14 @@ impl GeometryMaskedPipelines {
         masked_bind_group: &GeometryMaskedBindGroup,
         geometry_bind_groups: &GeometryBindGroups,
     ) -> Result<()> {
-        self.pipeline_layout_key =
-            resolve_layout_key(ctx, masked_bind_group, geometry_bind_groups)?;
+        self.pipeline_layout_key = resolve_layout_key(
+            ctx,
+            masked_bind_group,
+            geometry_bind_groups,
+            GeometryTargets::Single,
+        )?;
+        self.velocity_pipeline_layout_key =
+            resolve_velocity_layout_key(ctx, masked_bind_group, geometry_bind_groups)?;
         self.main.clear();
         self.epoch += 1;
         Ok(())
@@ -172,7 +204,7 @@ impl GeometryMaskedPipelines {
         masked_bind_group: &GeometryMaskedBindGroup,
         variants: &[MaskedVariant],
     ) -> Vec<crate::shaders::ShaderCacheKey> {
-        let msaa_samples = active_msaa_samples(ctx);
+        let targets = GeometryTargets::from_aa(ctx.anti_aliasing, ctx.render_texture_formats);
         variants
             .iter()
             .map(|variant| {
@@ -182,7 +214,9 @@ impl GeometryMaskedPipelines {
                     shader_id: variant.shader_id,
                     base: variant.base,
                     dynamic_alpha: variant.dynamic_alpha.clone(),
-                    msaa_samples,
+                    msaa_samples: targets.msaa_samples(),
+                    velocity: targets.velocity(),
+                    mip_bias: targets.mip_bias(),
                 }
                 .into()
             })
@@ -198,13 +232,18 @@ impl GeometryMaskedPipelines {
         variants: &[MaskedVariant],
         shader_keys: &[crate::shaders::ShaderKey],
     ) -> Result<(Vec<RenderPipelineCacheKey>, Vec<MaskedPipelineKeyId>)> {
-        let msaa_samples = active_msaa_samples(ctx);
-        let color_targets = [
-            ColorTargetState::new(ctx.render_texture_formats.visiblity_data),
-            ColorTargetState::new(ctx.render_texture_formats.barycentric),
-            ColorTargetState::new(ctx.render_texture_formats.normal_tangent),
-            ColorTargetState::new(ctx.render_texture_formats.barycentric_derivatives),
-        ];
+        let targets = GeometryTargets::from_aa(ctx.anti_aliasing, ctx.render_texture_formats);
+        let msaa_samples = targets.msaa_samples();
+        let layout_key = if targets.velocity() {
+            self.velocity_pipeline_layout_key.ok_or(
+                crate::error::AwsmError::PipelineVariantNotCompiled(
+                    "geometry masked: TAA layout not built",
+                ),
+            )?
+        } else {
+            self.pipeline_layout_key
+        };
+        let color_targets = targets.color_targets(ctx.render_texture_formats);
         let depth_format = ctx.render_texture_formats.depth;
 
         let mut pipeline_cache_keys = Vec::with_capacity(variants.len() * CULL_MODES.len());
@@ -213,7 +252,7 @@ impl GeometryMaskedPipelines {
             for &cull_mode in CULL_MODES {
                 pipeline_cache_keys.push(build_masked_cache_key(
                     *shader_key,
-                    self.pipeline_layout_key,
+                    layout_key,
                     depth_format,
                     &color_targets,
                     msaa_samples,
@@ -221,7 +260,7 @@ impl GeometryMaskedPipelines {
                     ctx.features.depth().compare(),
                 ));
                 slots.push(MaskedPipelineKeyId {
-                    msaa_sample_count: msaa_samples,
+                    targets,
                     shader_id: variant.shader_id,
                     cull: GeometryCullKey::from_cull_mode(cull_mode)?,
                 });
@@ -254,14 +293,14 @@ impl GeometryMaskedPipelines {
     /// geometry pipeline so the mesh still draws, un-cut).
     pub fn get(
         &self,
-        msaa_sample_count: Option<u32>,
+        targets: GeometryTargets,
         shader_id: MaterialShaderId,
         cull_mode: CullMode,
     ) -> Option<RenderPipelineKey> {
         let cull = GeometryCullKey::from_cull_mode(cull_mode).ok()?;
         self.main
             .get(&MaskedPipelineKeyId {
-                msaa_sample_count,
+                targets,
                 shader_id,
                 cull,
             })
@@ -269,30 +308,47 @@ impl GeometryMaskedPipelines {
     }
 }
 
-/// The MSAA sample count the masked pipelines are built for (4 or none).
-fn active_msaa_samples(ctx: &RenderPassInitContext<'_>) -> Option<u32> {
-    match ctx.anti_aliasing.msaa_sample_count {
-        Some(4) => Some(4u32),
-        _ => None,
-    }
-}
-
-fn resolve_layout_key(
+/// The masked group 0 + the geometry groups 1-3 for `targets` (the TAA
+/// variant's groups 1 and 3 add the previous-frame buffers). Shared by the
+/// masked, custom-vertex and combined pools (same group-0 bind group).
+pub(crate) fn resolve_layout_key(
     ctx: &mut RenderPassInitContext<'_>,
     masked_bind_group: &GeometryMaskedBindGroup,
     geometry_bind_groups: &GeometryBindGroups,
+    targets: GeometryTargets,
 ) -> Result<PipelineLayoutKey> {
+    let (transforms_layout, animation_layout) = geometry_bind_groups.layout_keys(ctx, targets)?;
     Ok(ctx.pipeline_layouts.get_key(
         ctx.gpu,
         ctx.bind_group_layouts,
         PipelineLayoutCacheKey::new(vec![
             masked_bind_group.bind_group_layout_key,
-            geometry_bind_groups.transforms.bind_group_layout_key,
+            transforms_layout,
             // Masked meshes take the uniform-with-dynamic-offset meta path.
             geometry_bind_groups.meta.uniform_layout_key,
-            geometry_bind_groups.animation.bind_group_layout_key,
+            animation_layout,
         ]),
     )?)
+}
+
+/// The TAA variant's layout, built only while TAA is on (a renderer that
+/// never turns TAA on never creates it).
+pub(crate) fn resolve_velocity_layout_key(
+    ctx: &mut RenderPassInitContext<'_>,
+    masked_bind_group: &GeometryMaskedBindGroup,
+    geometry_bind_groups: &GeometryBindGroups,
+) -> Result<Option<PipelineLayoutKey>> {
+    if GeometryTargets::from_aa(ctx.anti_aliasing, ctx.render_texture_formats).velocity() {
+        resolve_layout_key(
+            ctx,
+            masked_bind_group,
+            geometry_bind_groups,
+            GeometryTargets::Velocity,
+        )
+        .map(Some)
+    } else {
+        Ok(None)
+    }
 }
 
 fn build_masked_cache_key(

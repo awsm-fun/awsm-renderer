@@ -166,6 +166,8 @@ fn transparent_defines_every_called_loader_per_base() {
             texture_pool_arrays_len: 1,
             texture_pool_samplers_len: 1,
             msaa_sample_count: None,
+            reactive: false,
+            hud_post: false,
             mipmaps: true,
             reverse_z: false,
             base,

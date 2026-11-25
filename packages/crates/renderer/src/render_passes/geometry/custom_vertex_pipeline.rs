@@ -46,12 +46,16 @@ use awsm_renderer_core::pipeline::vertex::{VertexAttribute, VertexBufferLayout, 
 use awsm_renderer_materials::MaterialShaderId;
 
 use crate::error::Result;
-use crate::pipeline_layouts::{PipelineLayoutCacheKey, PipelineLayoutKey};
+use crate::pipeline_layouts::PipelineLayoutKey;
 use crate::pipelines::render_pipeline::{RenderPipelineCacheKey, RenderPipelineKey};
 use crate::render_passes::geometry::bind_group::GeometryBindGroups;
 use crate::render_passes::geometry::masked_bind_group::GeometryMaskedBindGroup;
+use crate::render_passes::geometry::masked_pipeline::{
+    resolve_layout_key, resolve_velocity_layout_key,
+};
 use crate::render_passes::geometry::pipeline::{
-    GeometryCullKey, VERTEX_BUFFER_LAYOUT, VERTEX_BUFFER_LAYOUT_INSTANCING,
+    GeometryCullKey, GeometryTargets, PREV_INSTANCE_VERTEX_SLOT, VERTEX_BUFFER_LAYOUT,
+    VERTEX_BUFFER_LAYOUT_INSTANCING, VERTEX_BUFFER_LAYOUT_PREV_INSTANCING,
 };
 use crate::render_passes::geometry::shader::cache_key::DynamicVertexShaderInfo;
 use crate::render_passes::geometry::shader::custom_vertex_cache_key::ShaderCacheKeyGeometryCustomVertex;
@@ -65,7 +69,7 @@ pub const CUSTOM_VERTEX_UV0_LOCATION: u32 = 10;
 /// Lookup key for one compiled custom-vertex pipeline.
 #[derive(Hash, Eq, PartialEq, Copy, Clone, Debug)]
 pub struct CustomVertexPipelineKeyId {
-    pub msaa_sample_count: Option<u32>,
+    pub targets: GeometryTargets,
     pub shader_id: MaterialShaderId,
     pub cull: GeometryCullKey,
 }
@@ -83,6 +87,8 @@ pub struct CustomVertexVariant {
 /// Lazy pool of custom-vertex geometry render pipelines.
 pub struct GeometryCustomVertexPipelines {
     pipeline_layout_key: PipelineLayoutKey,
+    /// TAA variant layout. Only built while TAA is on.
+    velocity_pipeline_layout_key: Option<PipelineLayoutKey>,
     main: HashMap<CustomVertexPipelineKeyId, RenderPipelineKey>,
     /// Shared zero buffer bound at the uv0 slot (`array_stride: 0` → every
     /// vertex reads `vec2(0.0)`). Owned here so the draw path can bind it.
@@ -101,13 +107,34 @@ impl GeometryCustomVertexPipelines {
         masked_bind_group: &GeometryMaskedBindGroup,
         geometry_bind_groups: &GeometryBindGroups,
     ) -> Result<Self> {
-        let pipeline_layout_key = resolve_layout_key(ctx, masked_bind_group, geometry_bind_groups)?;
+        let pipeline_layout_key = resolve_layout_key(
+            ctx,
+            masked_bind_group,
+            geometry_bind_groups,
+            GeometryTargets::Single,
+        )?;
+        let velocity_pipeline_layout_key =
+            resolve_velocity_layout_key(ctx, masked_bind_group, geometry_bind_groups)?;
         let uv0_zero_buffer = create_uv0_zero_buffer(ctx)?;
         Ok(Self {
             pipeline_layout_key,
+            velocity_pipeline_layout_key,
             main: HashMap::new(),
             uv0_zero_buffer,
         })
+    }
+    /// (Re)builds the TAA variant's pipeline layout for the live AA mode
+    /// (`None` unless TAA is on). Called when the AA mode changes; the
+    /// compiled pipelines are unaffected (they are keyed by their targets).
+    pub fn sync_velocity_layout(
+        &mut self,
+        ctx: &mut RenderPassInitContext<'_>,
+        masked_bind_group: &GeometryMaskedBindGroup,
+        geometry_bind_groups: &GeometryBindGroups,
+    ) -> Result<()> {
+        self.velocity_pipeline_layout_key =
+            resolve_velocity_layout_key(ctx, masked_bind_group, geometry_bind_groups)?;
+        Ok(())
     }
 
     /// Re-resolves the pipeline layout after the masked group-0 layout changed
@@ -120,8 +147,14 @@ impl GeometryCustomVertexPipelines {
         masked_bind_group: &GeometryMaskedBindGroup,
         geometry_bind_groups: &GeometryBindGroups,
     ) -> Result<()> {
-        self.pipeline_layout_key =
-            resolve_layout_key(ctx, masked_bind_group, geometry_bind_groups)?;
+        self.pipeline_layout_key = resolve_layout_key(
+            ctx,
+            masked_bind_group,
+            geometry_bind_groups,
+            GeometryTargets::Single,
+        )?;
+        self.velocity_pipeline_layout_key =
+            resolve_velocity_layout_key(ctx, masked_bind_group, geometry_bind_groups)?;
         self.main.clear();
         Ok(())
     }
@@ -135,9 +168,16 @@ impl GeometryCustomVertexPipelines {
         masked_bind_group: &GeometryMaskedBindGroup,
         variant: &CustomVertexVariant,
     ) -> Result<()> {
-        let msaa_samples = match ctx.anti_aliasing.msaa_sample_count {
-            Some(4) => Some(4u32),
-            _ => None,
+        let targets = GeometryTargets::from_aa(ctx.anti_aliasing, ctx.render_texture_formats);
+        let msaa_samples = targets.msaa_samples();
+        let layout_key = if targets.velocity() {
+            self.velocity_pipeline_layout_key.ok_or(
+                crate::error::AwsmError::PipelineVariantNotCompiled(
+                    "geometry custom-vertex: TAA layout not built",
+                ),
+            )?
+        } else {
+            self.pipeline_layout_key
         };
 
         let shader_cache = ShaderCacheKeyGeometryCustomVertex {
@@ -146,6 +186,8 @@ impl GeometryCustomVertexPipelines {
             texture_pool_arrays_len: masked_bind_group.texture_pool_arrays_len,
             texture_pool_samplers_len: masked_bind_group.texture_pool_samplers_len,
             msaa_samples,
+            velocity: targets.velocity(),
+            mip_bias: targets.mip_bias(),
             instancing_transforms: variant.instancing_transforms,
             // The reused masked bind groups declare the uniform meta binding, so
             // the assembled module is only consistent with the uniform-meta shape.
@@ -156,12 +198,7 @@ impl GeometryCustomVertexPipelines {
             .await?;
         let shader_key = ctx.shaders.get_key(ctx.gpu, shader_cache).await?;
 
-        let color_targets = [
-            ColorTargetState::new(ctx.render_texture_formats.visiblity_data),
-            ColorTargetState::new(ctx.render_texture_formats.barycentric),
-            ColorTargetState::new(ctx.render_texture_formats.normal_tangent),
-            ColorTargetState::new(ctx.render_texture_formats.barycentric_derivatives),
-        ];
+        let color_targets = targets.color_targets(ctx.render_texture_formats);
         let depth_format = ctx.render_texture_formats.depth;
 
         let mut pipeline_cache_keys = Vec::with_capacity(CULL_MODES.len());
@@ -169,16 +206,17 @@ impl GeometryCustomVertexPipelines {
         for &cull_mode in CULL_MODES {
             pipeline_cache_keys.push(build_custom_vertex_cache_key(
                 shader_key,
-                self.pipeline_layout_key,
+                layout_key,
                 depth_format,
                 &color_targets,
                 msaa_samples,
                 variant.instancing_transforms,
+                targets.velocity(),
                 cull_mode,
                 ctx.features.depth().compare(),
             ));
             slots.push(CustomVertexPipelineKeyId {
-                msaa_sample_count: msaa_samples,
+                targets,
                 shader_id: variant.shader_id,
                 cull: GeometryCullKey::from_cull_mode(cull_mode)?,
             });
@@ -205,19 +243,26 @@ impl GeometryCustomVertexPipelines {
         self.main.clear();
     }
 
+    /// True when a variant for `(targets, shader_id)` is compiled.
+    pub fn has_variant(&self, targets: GeometryTargets, shader_id: MaterialShaderId) -> bool {
+        self.main
+            .keys()
+            .any(|k| k.targets == targets && k.shader_id == shader_id)
+    }
+
     /// Looks up a compiled custom-vertex pipeline for a mesh's `(msaa,
     /// shader_id, cull)`. `None` → not compiled yet (render path falls back to
     /// the plain geometry pipeline so the mesh still draws, un-displaced).
     pub fn get(
         &self,
-        msaa_sample_count: Option<u32>,
+        targets: GeometryTargets,
         shader_id: MaterialShaderId,
         cull_mode: CullMode,
     ) -> Option<RenderPipelineKey> {
         let cull = GeometryCullKey::from_cull_mode(cull_mode).ok()?;
         self.main
             .get(&CustomVertexPipelineKeyId {
-                msaa_sample_count,
+                targets,
                 shader_id,
                 cull,
             })
@@ -246,27 +291,9 @@ fn create_uv0_zero_buffer(ctx: &mut RenderPassInitContext<'_>) -> Result<web_sys
     Ok(buffer)
 }
 
-fn resolve_layout_key(
-    ctx: &mut RenderPassInitContext<'_>,
-    masked_bind_group: &GeometryMaskedBindGroup,
-    geometry_bind_groups: &GeometryBindGroups,
-) -> Result<PipelineLayoutKey> {
-    Ok(ctx.pipeline_layouts.get_key(
-        ctx.gpu,
-        ctx.bind_group_layouts,
-        PipelineLayoutCacheKey::new(vec![
-            masked_bind_group.bind_group_layout_key,
-            geometry_bind_groups.transforms.bind_group_layout_key,
-            // Custom-vertex meshes take the uniform-with-dynamic-offset meta path.
-            geometry_bind_groups.meta.uniform_layout_key,
-            geometry_bind_groups.animation.bind_group_layout_key,
-        ]),
-    )?)
-}
-
 /// The uv0 vertex-buffer layout: `array_stride: 0` so every vertex reads the
 /// single `vec2<f32>` at offset 0 of the shared zero buffer.
-fn uv0_vertex_buffer_layout() -> VertexBufferLayout {
+pub(crate) fn uv0_vertex_buffer_layout() -> VertexBufferLayout {
     VertexBufferLayout {
         array_stride: 0,
         step_mode: None,
@@ -285,6 +312,7 @@ fn build_custom_vertex_cache_key(
     color_targets: &[ColorTargetState],
     msaa_samples: Option<u32>,
     instancing: bool,
+    velocity: bool,
     cull_mode: CullMode,
     depth_compare: CompareFunction,
 ) -> RenderPipelineCacheKey {
@@ -299,11 +327,23 @@ fn build_custom_vertex_cache_key(
         .with_depth_compare(depth_compare);
 
     // Slot 0: plain visibility geometry. Slot 1: instancing (when instanced).
+    // TAA + instanced: the previous instance transforms at
+    // `PREV_INSTANCE_VERTEX_SLOT` (2), the same slot the plain geometry
+    // pipelines use and `Mesh::push_geometry_pass_commands` binds.
     // Final slot: the uv0 buffer (location 10) — kept LAST so it doesn't shift
-    // the instancing locations 6-9.
+    // the instancing locations. Every custom-vertex variant is compiled and
+    // drawn non-instanced today (uv0 at slot 1); an instanced draw path would
+    // bind uv0 at the last index (3 under TAA, 2 otherwise).
     let mut vertex_buffer_layouts = vec![VERTEX_BUFFER_LAYOUT.clone()];
     if instancing {
         vertex_buffer_layouts.push(VERTEX_BUFFER_LAYOUT_INSTANCING.clone());
+        if velocity {
+            debug_assert_eq!(
+                vertex_buffer_layouts.len() as u32,
+                PREV_INSTANCE_VERTEX_SLOT
+            );
+            vertex_buffer_layouts.push(VERTEX_BUFFER_LAYOUT_PREV_INSTANCING.clone());
+        }
     }
     vertex_buffer_layouts.push(uv0_vertex_buffer_layout());
 

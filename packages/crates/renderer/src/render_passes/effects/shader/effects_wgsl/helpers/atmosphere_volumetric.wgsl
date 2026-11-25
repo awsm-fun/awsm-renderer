@@ -50,7 +50,7 @@ fn apply_atmosphere_volumetric(
     screen_dims_f32: vec2<f32>,
     camera: Camera,
 ) -> vec3<f32> {
-    let depth = load_depth(coords);
+    let depth = load_depth{% if taa_post %}_post{% endif %}(coords);
     let dir = atmosphere_view_ray(pixel_center, screen_dims_f32, camera);
     let cos_theta = atmosphere_forward_cosine(dir, camera);
     let volume_far_z = atmosphere_params.froxel_z_far;

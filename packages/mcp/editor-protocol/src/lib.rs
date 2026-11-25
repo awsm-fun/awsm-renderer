@@ -24,6 +24,7 @@
 #![allow(hidden_glob_reexports)]
 
 mod anim_ui;
+mod anti_aliasing;
 mod assets;
 mod bake;
 mod command;
@@ -37,6 +38,7 @@ mod shadows_patch;
 mod transport;
 
 pub use anim_ui::{AnimSel, AnimView, StepKind};
+pub use anti_aliasing::{AntiAliasingMode, TaaDebugViewName, TaaPresetName, TaaTuningPatch};
 pub use assets::{
     asset_disk_path, asset_filename, resolve_texture_use, AssetEntry, AssetSource, AssetTable,
     BufferDef, Ktx2Profile, ResolvedTextureUse, TextureExport,

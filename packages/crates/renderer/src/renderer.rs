@@ -327,6 +327,21 @@ pub struct AwsmRenderer {
     /// clamped to [1.0, 2.0]. NOT persisted scene data — a player/editor
     /// quality option, same class as MSAA/SMAA.
     pub(crate) render_scale: f32,
+    /// TAA runtime state (jitter phase, pending reset, debug view). Plain
+    /// CPU values; see [`crate::taa`].
+    pub(crate) taa: crate::taa::TaaRuntime,
+    /// Test override of [`AwsmRenderer::taa_velocity_path`] (forces the
+    /// phase-5 prep-pass fallback on a capable device). `None` = by limits.
+    pub(crate) taa_velocity_path_override: Option<crate::anti_alias::TaaVelocityPath>,
+    /// Test override of the storage-buffer limit behind
+    /// [`AwsmRenderer::taa_fallback_overlay`]. `None` = the device's.
+    pub(crate) taa_fallback_storage_limit_override: Option<u32>,
+    /// TAA test hook: build the fallback's velocity overlay as its debug
+    /// check variant (`set_taa_debug_overlay_check`).
+    pub(crate) taa_overlay_debug_check: bool,
+    /// TAA test hook: the motion-history self-check
+    /// (`set_debug_motion_history_check`). `None` (no cost) unless enabled.
+    pub(crate) motion_check: Option<crate::buffer::history::MotionHistoryDebug>,
     /// Plan B shared-prep + deferred-shadow config, captured at build time
     /// (`docs/plans/deferred-shared-prep-pass.md`). The shared prep pass is
     /// unconditional; this only carries the `K` shadow-caster sizing knob.
@@ -572,6 +587,10 @@ impl AwsmRenderer {
     /// at a time, and the commit compiles the lot in a single batch.
     pub fn begin_load(&mut self) {
         self.scene_committed = false;
+        // The scene on screen is going away (teardown / reload): forget the
+        // temporal history now; `commit_load` resets again when the new scene
+        // lands (03 §8). Free with TAA off.
+        self.reset_temporal_history();
         self.pipelines.set_deferred(true);
         self.load_phase = crate::loading::LoadPhase::Idle;
     }
@@ -710,8 +729,33 @@ impl AwsmRenderer {
                     _ => pending.into_result(),
                 };
             }
-            self.degrade_failed_post_processing(pending, composite_error)
-                .await?;
+            // A failure post-processing cannot absorb, with TAA on: run the
+            // scene with MSAA 4x instead of not at all (TAA's variants are
+            // the newest, least driver-tested ones). The next round drains
+            // what the switch reserves; a failure that survives it is
+            // reported as before.
+            let failed_keys = (
+                pending
+                    .failed_compute
+                    .iter()
+                    .map(|(key, _)| *key)
+                    .collect::<Vec<_>>(),
+                pending
+                    .failed_render
+                    .iter()
+                    .map(|(key, _)| *key)
+                    .collect::<Vec<_>>(),
+            );
+            if let Err(err) = self
+                .degrade_failed_post_processing(pending, composite_error)
+                .await
+            {
+                if !self.taa_may_fall_back() {
+                    return Err(err);
+                }
+                self.fall_back_from_taa(err.to_string(), failed_keys.0, failed_keys.1)
+                    .await?;
+            }
         }
         let eager_ids = std::mem::take(&mut self.eager_pass_ids);
         for id in &eager_ids {
@@ -1247,6 +1291,9 @@ impl AwsmRenderer {
                     multisampled,
                     &self.prep_config,
                     self.features.reverse_z,
+                    self.render_textures
+                        .formats
+                        .taa_prep_velocity(&self.anti_aliasing),
                 ),
             )
             .await?;
@@ -1311,6 +1358,11 @@ impl AwsmRenderer {
         mut on_progress: impl FnMut(crate::loading::LoadingStats),
     ) -> crate::error::Result<crate::loading::LoadingStats> {
         use crate::loading::{LoadPhase, LoadingStats};
+
+        // A commit that ends a full load (after `begin_load`) puts a new scene
+        // on screen: TAA must not blend it with the old one (03 §8). A live
+        // add keeps the history.
+        let ends_full_load = !self.scene_committed;
 
         // ── Phase -1: the deferred boot pool — compile everything the current
         //    config needs that build() only reserved (plus any config re-keys
@@ -1412,6 +1464,10 @@ impl AwsmRenderer {
         self.pipelines.set_deferred(false);
         self.scene_committed = true;
         self.load_phase = LoadPhase::Ready;
+        if ends_full_load {
+            // Two field writes; free with TAA off (nothing reads them).
+            self.reset_temporal_history();
+        }
         let final_stats = self.loading_stats();
         on_progress(final_stats);
         Ok(final_stats)
@@ -2402,6 +2458,10 @@ impl AwsmRendererBuilder {
             render_texture_formats_depth_override,
         } = self;
 
+        // Reject an unsupported AA mode before any GPU work (TAA combined with
+        // MSAA / SMAA, a TAA scale outside 0.5..=1, an unsupported MSAA count).
+        anti_aliasing.validate()?;
+
         let mut phase_handler = phase_handler;
         let build_start_ms = crate::profiling::boot_clock_ms();
         let mut phase_start_ms = build_start_ms;
@@ -2497,6 +2557,16 @@ impl AwsmRendererBuilder {
         if let Some(depth_override) = render_texture_formats_depth_override {
             render_texture_formats.depth = depth_override;
         }
+        // TAA's motion-vector path is renderer state (03 §2.4): the device's
+        // at build (the debug override applies at the next
+        // `set_anti_aliasing`).
+        render_texture_formats.prep_velocity_path =
+            crate::anti_alias::velocity_path_for_device(&gpu)
+                == crate::anti_alias::TaaVelocityPath::PrepReconstruction;
+        render_texture_formats.fallback_overlay =
+            crate::anti_alias::TaaFallbackOverlay::for_storage_buffer_limit(
+                gpu.device.limits().max_storage_buffers_per_shader_stage(),
+            );
 
         // tracing::info!("Max bind groups: {}", gpu.device.limits().max_bind_groups());
         // tracing::info!(
@@ -2818,7 +2888,7 @@ impl AwsmRendererBuilder {
         // (`AwsmRenderer::ensure_picker_compiled`). Cold-boot compiles
         // 0 picker pipelines even when `features.picking == true`.
         all_shader_keys.push(shaders::ShaderCacheKey::from(
-            render_passes::lines::ShaderCacheKeyLine,
+            render_passes::lines::ShaderCacheKeyLine::default(),
         ));
         all_shader_keys.extend(
             render_passes::effects::pipeline::EffectsPipelines::shader_cache_keys_for(
@@ -3032,6 +3102,7 @@ impl AwsmRendererBuilder {
             evsm_pipeline_cache_keys,
         )?;
         render_passes.effects.pipelines.install_resolved(
+            &anti_aliasing,
             &post_processing,
             compute_keys[effects_compute_range].to_vec(),
         );
@@ -3148,6 +3219,11 @@ impl AwsmRendererBuilder {
             render_textures,
             anti_aliasing,
             render_scale: 1.0,
+            taa: crate::taa::TaaRuntime::default(),
+            taa_velocity_path_override: None,
+            taa_fallback_storage_limit_override: None,
+            taa_overlay_debug_check: false,
+            motion_check: None,
             prep_config,
             post_processing,
             picker,
@@ -3204,6 +3280,17 @@ impl AwsmRendererBuilder {
         // reserves its pipelines, and the commit compiles them all in one
         // batch (see `ComputePipelines::set_deferred`).
         _self.pipelines.set_deferred(true);
+
+        // TAA from the start: the previous-frame buffers turn on (no-op
+        // without TAA).
+        _self.sync_motion_history();
+        // ...the fallback's velocity overlay (no-op unless TAA runs on the
+        // prep-pass fallback)...
+        _self.sync_taa_overlay_pass().await?;
+        // ...and its RCAS pass when the boot config sharpens (a preset other
+        // than native). No-op without TAA or at sharpen 0.
+        _self.sync_taa_rcas().await?;
+        _self.sync_taa_dof_pre().await?;
 
         // Apply the configured registration ceiling (§2). Validated +
         // clamped in `with_bucket_config`, so this only sets the field; it
@@ -3549,6 +3636,8 @@ impl AwsmRenderer {
                     texture_pool_arrays_len: 1,
                     texture_pool_samplers_len: 1,
                     msaa_sample_count: None,
+                    reactive: false,
+                    hud_post: false,
                     mipmaps: false,
                     // Depth convention (003) — match the live feature set.
                     reverse_z: self.features.reverse_z,
@@ -3890,12 +3979,17 @@ impl AwsmRenderer {
         }
         loop {
             let post_processing = self.post_processing.clone();
+            let anti_aliasing = self.anti_aliasing.clone();
             self.drain_reserved_pool().await?;
-            if self.post_processing == post_processing {
+            if self.post_processing == post_processing && self.anti_aliasing == anti_aliasing {
                 break;
             }
             self.reconcile_material_variants()?;
             self.prewarm_pipelines().await?;
+            // TAA fell back to MSAA 4x in the drain: the lines re-key too.
+            if self.anti_aliasing != anti_aliasing {
+                self.ensure_line_pipelines_compiled().await?;
+            }
         }
 
         // The default BRDF LUT a cold commit generates in the background

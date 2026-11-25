@@ -144,6 +144,7 @@ If it's supported here, corresponding core functionality is also supported
 - [x] Anti-aliasing
   - [x] MSAA
   - [x] SMAA
+  - [x] TAA + temporal upscaling ([TAA](TAA.md))
 - [ ] SSAO
 
 ## Textures

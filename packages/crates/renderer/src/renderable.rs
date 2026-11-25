@@ -185,10 +185,11 @@ impl AwsmRenderer {
             // (matches the compiled shape of every variant pool).
             // -----------------------------------------------------------------
             let canonical_shader_id = self.materials.canonical_shader_id(routing_material);
-            let msaa = match self.anti_aliasing.msaa_sample_count {
-                Some(4) => Some(4u32),
-                _ => None,
-            };
+            let geometry_targets =
+                crate::render_passes::geometry::pipeline::GeometryTargets::from_aa(
+                    &self.anti_aliasing,
+                    &self.render_textures.formats,
+                );
             let is_masked =
                 !mesh.instanced && self.materials.alpha_cutoff(routing_material).is_some();
             // Cheap per-frame existence check (no DynamicVertexShaderInfo build /
@@ -205,7 +206,7 @@ impl AwsmRenderer {
                 self.render_passes
                     .geometry
                     .masked_custom_vertex_pipelines
-                    .get(msaa, canonical_shader_id, cull_mode)
+                    .get(geometry_targets, canonical_shader_id, cull_mode)
             } else {
                 None
             };
@@ -220,7 +221,7 @@ impl AwsmRenderer {
             let geometry_custom_vertex_render_pipeline_key =
                 if !combined_claimed && is_custom_vertex {
                     self.render_passes.geometry.custom_vertex_pipelines.get(
-                        msaa,
+                        geometry_targets,
                         canonical_shader_id,
                         cull_mode,
                     )
@@ -243,7 +244,7 @@ impl AwsmRenderer {
                 // Key on the CANONICAL id — the masked fragment is
                 // variant-independent.
                 self.render_passes.geometry.masked_pipelines.get(
-                    msaa,
+                    geometry_targets,
                     canonical_shader_id,
                     cull_mode,
                 )
@@ -266,6 +267,7 @@ impl AwsmRenderer {
                     .get_render_pipeline_key(
                         crate::render_passes::geometry::pipeline::GeometryRenderPipelineKeyOpts {
                             anti_aliasing: &self.anti_aliasing,
+                            formats: &self.render_textures.formats,
                             instancing: mesh.instanced,
                             cull_mode,
                             // Mirrors the runtime branch in
@@ -504,7 +506,49 @@ impl Renderable {
         masked: bool,
     ) -> Result<()> {
         let mesh = ctx.meshes.get(self.key)?;
-        mesh.push_geometry_pass_commands(ctx, self.key, render_pass, geometry_bind_groups, masked)
+        // The TAA geometry-target pipelines read last frame's instance
+        // transforms (the fallback's geometry pipelines do not).
+        let prev_instances =
+            ctx.render_texture_views.velocity.is_some() && !ctx.render_texture_views.prep_velocity;
+        mesh.push_geometry_pass_commands(
+            ctx,
+            self.key,
+            render_pass,
+            &geometry_bind_groups.meta,
+            masked,
+            prev_instances,
+        )
+    }
+
+    /// Pushes this renderable's draw into the TAA fallback's velocity overlay
+    /// (`render_passes::taa_overlay`): the same draw as the geometry pass
+    /// (same buffers, LOD cut and indirect arguments, so the same triangles
+    /// and ids), with the overlay's group 2.
+    pub(crate) fn push_taa_overlay_commands(
+        &self,
+        ctx: &RenderContext,
+        render_pass: &RenderPassEncoder,
+        meta: &dyn crate::render_passes::geometry::bind_group::GeometryMetaGroups,
+        custom_vertex_uv0: Option<&web_sys::GpuBuffer>,
+    ) -> Result<()> {
+        let mesh = ctx.meshes.get(self.key)?;
+        match custom_vertex_uv0 {
+            Some(uv0) => mesh.push_geometry_custom_vertex_pass_commands(
+                ctx,
+                self.key,
+                render_pass,
+                meta,
+                uv0,
+            ),
+            None => mesh.push_geometry_pass_commands(
+                ctx,
+                self.key,
+                render_pass,
+                meta,
+                self.geometry_masked_render_pipeline_key.is_some(),
+                true,
+            ),
+        }
     }
 
     /// Returns the masked (alpha-tested) geometry pipeline key, if this mesh's
@@ -542,7 +586,7 @@ impl Renderable {
             ctx,
             self.key,
             render_pass,
-            geometry_bind_groups,
+            &geometry_bind_groups.meta,
             uv0_zero_buffer,
         )
     }

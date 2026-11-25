@@ -73,6 +73,14 @@ pub const MATERIAL_MESH_META_RECEIVE_DECALS_OFFSET: usize = 18 * 4;
 /// Written by `MeshMeta::set_shadow_receiver_gate` from
 /// `transforms::update_transforms` after `LightMeshBuckets::mark_shadow_receivers`.
 pub const MATERIAL_MESH_META_SHADOW_RECEIVER_GATE_OFFSET: usize = 19 * 4;
+/// Byte offset of the TAA flags word (index 22): bit 0 temporal-reactive
+/// material, bit 1 particle mesh, bit 2 new object (patched per frame by
+/// `MeshMeta::update_new_objects`).
+pub const MATERIAL_MESH_META_TAA_FLAGS_OFFSET: usize = 22 * 4;
+
+/// Byte offset of the non-rigid flag (word 23; TAA prep-pass fallback),
+/// patched per frame by `MeshMeta::update_non_rigid_gates`.
+pub const MATERIAL_MESH_META_NON_RIGID_OFFSET: usize = 23 * 4;
 
 pub static MATERIAL_BUFFER_USAGE: LazyLock<BufferUsage> = LazyLock::new(|| {
     BufferUsage::new()
@@ -96,6 +104,13 @@ pub struct MaterialMeshMeta<'a> {
     pub materials: &'a Materials,
     pub morphs: &'a Morphs,
     pub mesh: &'a Mesh,
+    /// The surface is moving with more than its node's world matrix right
+    /// now: a custom material's vertex hook, or a skinned / geometry-morphed
+    /// / instanced mesh that deformed within the last frames
+    /// (`MeshMeta::update_non_rigid_gates` patches it per frame). Only TAA's
+    /// prep-pass fallback reads it (03 §2.4: the seed marks such meshes
+    /// reactive; prep reconstructs their node's rigid motion only).
+    pub non_rigid: bool,
 }
 
 /// Calculate the offset (in floats) to TEXCOORD_0 within the vertex attribute data.
@@ -183,6 +198,7 @@ impl<'a> MaterialMeshMeta<'a> {
             materials,
             morphs,
             mesh,
+            non_rigid,
         } = self;
 
         let mut result = [0u8; MATERIAL_MESH_META_BYTE_SIZE];
@@ -286,14 +302,21 @@ impl<'a> MaterialMeshMeta<'a> {
         // Formerly `_reserved1`.
         let alpha_cutoff = materials.alpha_cutoff(material_key).unwrap_or(0.0);
         push_u32(alpha_cutoff.to_bits());
-        // Reserved trailing u32s (indices 22-23). Formerly held the per-mesh
-        // light slice (`offset`/`count`) for the old per-mesh lighting path,
-        // removed when shading unified on the per-pixel froxel light list; kept
-        // as inert tail padding (each entry is 256-byte aligned, so removing
-        // them reclaims nothing) and to keep the populated region at a vec4
-        // multiple so `padding_4: array<vec4<u32>, _>` stays vec4-aligned.
-        push_u32(0);
-        push_u32(0);
+        // Index 22, TAA flags: bit 0 = the material is temporally reactive
+        // (plan 03 §5.2; `Materials::is_temporal_reactive`), read by the TAA
+        // reactive seed (`taa_wgsl/reactive_seed.wgsl`, as a raw word); bit 1
+        // = a particle mesh (`Mesh::taa_particles`), read by the transparent
+        // pass's reactive output; bit 2 = a new object in its first frame,
+        // patched in per frame (`MeshMeta::update_new_objects`), 0 here. The shared WGSL struct still calls it
+        // `_reserved2`.
+        push_u32(
+            u32::from(materials.is_temporal_reactive(material_key))
+                | (u32::from(mesh.taa_particles) << 1),
+        );
+        // Index 23: non-rigid surface (see `MaterialMeshMeta::non_rigid`).
+        // Read only by the TAA reactive seed in the prep-pass fallback, as a
+        // raw word; the shared WGSL struct still calls it `_reserved3`.
+        push_u32(u32::from(non_rigid));
 
         Ok(result)
     }

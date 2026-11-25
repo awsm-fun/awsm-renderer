@@ -224,11 +224,12 @@ impl AwsmRenderer {
         // projects that never use lines pay nothing.
         self.lines.kick_compile(
             &self.gpu,
-            &self.shaders,
+            &mut self.shaders,
             &mut self.bind_group_layouts,
             &mut self.pipeline_layouts,
             &self.render_textures.formats,
             self.features.depth().compare_strict(),
+            self.anti_aliasing.taa.is_some(),
         )?;
         self.lines.poll_compile(&mut self.pipelines.render)?;
 
@@ -297,6 +298,9 @@ impl AwsmRenderer {
             .pending_snapshot
             .take();
         if let Some(snapshot) = pending_snapshot {
+            // (Under TAA upscaling the counts were already scaled to output
+            // pixels when the readback was requested: see
+            // `coverage_area_scale`.)
             self.coverage.ingest(snapshot, self.frame_index);
         }
 
@@ -421,6 +425,12 @@ impl AwsmRenderer {
             &self.coverage,
             self.default_cheap_material_pixel_threshold,
         )?;
+        // TAA prep-pass fallback: flag the meshes deforming now (meta patch,
+        // same upload). No-op otherwise.
+        self.update_non_rigid_gates();
+        // TAA: flag the meshes in their first rendered frame (meta patch,
+        // same upload). No-op when TAA or `reactive_new_objects` is off.
+        self.update_new_object_flags();
 
         // (Variant reconcile + scene-pipeline compile used to run here every
         // frame — the reactive `reconcile_material_variants()` →
@@ -452,6 +462,15 @@ impl AwsmRenderer {
         self.meshes
             .morphs
             .write_gpu(&self.logging, &self.gpu, &mut self.bind_groups)?;
+        // TAA: place the previous transforms / joint matrices / morph weights
+        // in their shared previous-frame buffer for this frame's sizes (no-op
+        // when TAA is off).
+        {
+            let skins = self.meshes.skins.motion_history_mut();
+            let morphs = self.meshes.morphs.geometry.motion_history_mut();
+            self.transforms
+                .sync_motion_buffer(&self.gpu, &mut self.bind_groups, skins, morphs)?;
+        }
         laps.lap("Prep: Skins + Morphs Upload");
         // ── Light culling per-frame setup ────────────────────────
         //
@@ -531,22 +550,97 @@ impl AwsmRenderer {
         self.meshes
             .write_gpu(&self.logging, &self.gpu, &mut self.bind_groups)?;
         laps.lap("Prep: Meshes Upload");
+        // Surface / render / post sizes — read once per frame (one
+        // `getCurrentTexture().getSize()` wasm↔JS hop) and threaded through
+        // `RenderContext.{surface_size, render_size, post_size}` and the
+        // render-texture views. Fixed for the duration of the frame (set by
+        // the surface configuration). Scene-side work reads `render`,
+        // bloom / SMAA / effects / display read `post` (equal without TAA).
+        let frame_sizes = self.frame_sizes()?;
+        // TAA: apply this frame's camera jitter (when one applies) and latch
+        // the camera this frame renders with as next frame's "previous".
+        // Without jitter this leaves the uniform exactly as `set_camera`
+        // packed it. The phase count follows post / render (03 §1.1: O / R).
+        {
+            let (render_w, render_h) = frame_sizes.render;
+            let temporal = self.taa_jitter_enabled();
+            // A camera jump nobody flagged (03 §8) resets the history. It is
+            // decided before the jitter is chosen, so the cycle restarts on
+            // this frame.
+            if temporal {
+                // Scale of the translation test: the distance from the camera
+                // to the scene bounds centre, floored by their radius (O(1):
+                // the spatial index's root box). No bounds: rotation only.
+                let view_distance = match (
+                    self.scene_spatial.root_bounds(),
+                    self.camera.last_matrices.as_ref(),
+                ) {
+                    (Some((center, radius)), Some(m)) => {
+                        Some(m.position_world.distance(center).max(radius))
+                    }
+                    _ => None,
+                };
+                if self.camera.detect_jump(view_distance) {
+                    self.reset_temporal_history();
+                }
+            }
+            // A history this frame is about to (re)create (first frame, post
+            // size change; `prepare_taa_frame` does the allocation) starts
+            // empty: reset here, before the jitter, so the cycle restarts on
+            // the frame that fills it.
+            if temporal
+                && !self
+                    .render_passes
+                    .taa
+                    .as_ref()
+                    .is_some_and(|taa| taa.history_matches(frame_sizes.post))
+            {
+                self.reset_temporal_history();
+            }
+            let jitter = self.frame_jitter(render_w, frame_sizes.post.0);
+            if temporal {
+                // The jitter phase advances once per rendered frame.
+                self.taa.frame_index = self.taa.frame_index.wrapping_add(1);
+            }
+            let taa_factors =
+                self.anti_aliasing
+                    .taa
+                    .as_ref()
+                    .map(|taa| crate::camera::TaaCameraFactors {
+                        reactive_transparent: taa.tuning.reactive_transparent,
+                        reactive_material: taa.tuning.reactive_material,
+                        reactive_particles: if self.taa.particles_alpha_scaled {
+                            -taa.tuning.reactive_particles.abs()
+                        } else {
+                            taa.tuning.reactive_particles.abs()
+                        },
+                        mip_bias: crate::taa::texture_lod_bias(
+                            frame_sizes.render,
+                            frame_sizes.post,
+                            taa.tuning.mip_bias_extra,
+                        ),
+                    });
+            // TAA with a HUD: the HUD geometry pass rasterises with an
+            // unjittered twin of the camera (03 §5.4). Requested while a HUD
+            // has ever existed (sticky, like `hud_depth`); never without TAA.
+            let hud_camera = temporal && self.meshes.has_seen_hud();
+            if self.camera.sync_hud_buffer(&self.gpu, hud_camera)? {
+                self.bind_groups
+                    .mark_create(crate::bind_groups::BindGroupCreate::CameraHud);
+            }
+            self.camera.prepare_frame(
+                jitter,
+                temporal,
+                render_w as f32,
+                render_h as f32,
+                self.features.depth(),
+                taa_factors,
+                hud_camera,
+            );
+        }
         self.camera
             .write_gpu(&self.logging, &self.gpu, &self.bind_groups)?;
         laps.lap("Prep: Camera Upload");
-        // Live swap-chain size — read once per frame and threaded through
-        // `RenderContext.viewport_size`. The value is fixed for the
-        // duration of the frame (set by the surface configuration), so
-        // every pass-level caller that previously re-read it
-        // (`render_textures.views`, `update_camera`, the FrameGlobals
-        // upload below) now consults the same cached pair. Each
-        // `current_context_texture_size()` is a `getCurrentTexture().getSize()`
-        // wasm↔JS hop — cheap individually but it stacked up.
-        let surface_size = self.gpu.current_context_texture_size()?;
-        let viewport_size = (
-            crate::size::scale_extent(surface_size.0, self.render_scale),
-            crate::size::scale_extent(surface_size.1, self.render_scale),
-        );
         // FrameGlobals — renderer-wide per-frame uniform. Written after
         // Camera so it shares the same upload batch and lands before any
         // pass that reads it. Resolution comes from the live context
@@ -556,7 +650,14 @@ impl AwsmRenderer {
                 &self.logging,
                 &self.gpu,
                 self.render_textures.frame_count(),
-                [viewport_size.0, viewport_size.1],
+                [frame_sizes.render.0, frame_sizes.render.1],
+                // TAA: where the joint matrices and morph weights sit in the
+                // shared previous-frame buffer (`vec4` units), plus last
+                // frame's time. `None` with TAA off: the 0.45 upload.
+                self.anti_aliasing.taa.as_ref().map(|_| {
+                    let bases = self.transforms.motion_buffer_bases_vec4();
+                    [bases[1], bases[2]]
+                }),
             )?;
         }
         // Extras pool — flush any dirty bytes from BufferSlot
@@ -617,7 +718,7 @@ impl AwsmRenderer {
         let render_texture_views = self.render_textures.views(
             &self.gpu,
             self.anti_aliasing.clone(),
-            viewport_size,
+            frame_sizes,
             // T2.5: lazy opaque-mip-chain allocation. Once a
             // transmissive material registers, the flag is sticky
             // true and the texture grows to full mip count on the
@@ -653,8 +754,8 @@ impl AwsmRenderer {
         if let Some(hzb) = self.render_passes.hzb.as_mut() {
             if hzb.ensure_size(
                 &self.gpu,
-                render_texture_views.width,
-                render_texture_views.height,
+                render_texture_views.render_size.0,
+                render_texture_views.render_size.1,
             )? {
                 self.bind_groups
                     .mark_create(BindGroupCreate::TextureViewRecreate);
@@ -667,14 +768,21 @@ impl AwsmRenderer {
             if let Some(smaa) = self.render_passes.smaa.as_mut() {
                 if smaa.ensure_size(
                     &self.gpu,
-                    render_texture_views.width,
-                    render_texture_views.height,
+                    render_texture_views.post_size.0,
+                    render_texture_views.post_size.1,
                 )? {
                     self.bind_groups
                         .mark_create(BindGroupCreate::TextureViewRecreate);
                 }
             }
         }
+
+        // TAA upkeep — size its textures (history / out at post size, previous
+        // depth at render size), decide this frame's reset (a pending reset,
+        // incl. the camera-jump guard above, or a fresh history) and upload
+        // its params. Before the bind-group ledger runs, which rebinds what
+        // this recreated. No-op while TAA is off (the pass is `None`).
+        self.prepare_taa_frame(&render_texture_views)?;
 
         // Bloom pyramid upkeep — only when bloom is enabled (matches the
         // dispatch gate below), so a disabled bloom costs no memory or work.
@@ -690,8 +798,8 @@ impl AwsmRenderer {
             if let Some(bloom) = self.render_passes.bloom.as_mut() {
                 if bloom.ensure_size(
                     &self.gpu,
-                    render_texture_views.width,
-                    render_texture_views.height,
+                    render_texture_views.post_size.0,
+                    render_texture_views.post_size.1,
                 )? {
                     self.bind_groups
                         .mark_create(BindGroupCreate::TextureViewRecreate);
@@ -729,8 +837,10 @@ impl AwsmRenderer {
             if let Some(volumetrics) = self.render_passes.volumetrics.as_mut() {
                 if volumetrics.ensure_size(
                     &self.gpu,
-                    render_texture_views.width,
-                    render_texture_views.height,
+                    // Render size: the froxel grid is aligned with the light
+                    // culling tiles (scene pixels); effects samples it by UV.
+                    render_texture_views.render_size.0,
+                    render_texture_views.render_size.1,
                 )? {
                     self.bind_groups
                         .mark_create(BindGroupCreate::TextureViewRecreate);
@@ -749,6 +859,7 @@ impl AwsmRenderer {
                     z_near,
                     frame,
                     history_valid,
+                    self.anti_aliasing.taa.is_some(),
                 )?;
             }
         }
@@ -822,8 +933,8 @@ impl AwsmRenderer {
         // (here) and the decal classify buckets (below). Calculate
         // once so the two callers can't drift if the workgroup tile
         // size ever changes.
-        let tile_x = render_texture_views.width.div_ceil(8);
-        let tile_y = render_texture_views.height.div_ceil(8);
+        let tile_x = render_texture_views.render_size.0.div_ceil(8);
+        let tile_y = render_texture_views.render_size.1.div_ceil(8);
         let tile_count = tile_x.saturating_mul(tile_y);
 
         // Classify buckets are sized to fit the current viewport's
@@ -1060,9 +1171,11 @@ impl AwsmRenderer {
             frame_optimizations: std::cell::Cell::new(
                 crate::optimization_policy::FrameOptimizations::default(),
             ),
-            viewport_size,
-            surface_size,
+            render_size: frame_sizes.render,
+            post_size: frame_sizes.post,
+            surface_size: frame_sizes.surface,
             prep_config: &self.prep_config,
+            reactive_written: std::cell::Cell::new(false),
             // GPU timestamp handle — `None` (no slots ever allocated) unless the
             // `gpu` tier is on AND the device supports timestamp queries.
             gpu_timestamps: if self.logging.gpu.enabled() {
@@ -1075,6 +1188,35 @@ impl AwsmRenderer {
         // Reset the per-frame timestamp slot allocator (no-op when disabled).
         if let Some(ts) = ctx.gpu_timestamps {
             ts.begin_frame();
+        }
+
+        // TAA previous-frame state, frame start (03 §2.3): new / reused /
+        // reset slots get prev = current, a regrown prev keeps last frame's
+        // values. Recorded before any pass of the frame encoder (the uploads
+        // were submitted ahead of it). Records nothing unless TAA is on.
+        Self::record_motion_history(&ctx, true)?;
+        // Motion-history self-check (test hook, off by default): snapshot the
+        // prev regions as this frame's passes will read them.
+        if let Some(check) = self.motion_check.as_ref() {
+            let regions = vec![
+                {
+                    let (h, b) = self.transforms.motion_history_view();
+                    ("transforms", crate::transforms::Transforms::BYTE_SIZE, h, b)
+                },
+                {
+                    let (h, b) = self.meshes.skins.motion_history_view();
+                    ("joint_matrices", 64, h, b)
+                },
+                {
+                    let (h, b) = self.meshes.morphs.geometry.motion_history_view();
+                    ("morph_weights", 4, h, b)
+                },
+                {
+                    let (h, b) = self.instances.motion_history_view();
+                    ("instance_transforms", 64, h, b)
+                },
+            ];
+            check.capture(&self.gpu, &ctx.command_encoder, regions)?;
         }
 
         // Snapshot per-opaque-renderable info that the occlusion + indirect-
@@ -1187,7 +1329,7 @@ impl AwsmRenderer {
                 if let Some(cam) = self.camera.last_matrices.as_ref() {
                     let proj_yy = cam.projection.y_axis.y.abs();
                     if proj_yy > 1e-6 {
-                        if let Ok((_, vh)) = self.render_size() {
+                        if let Ok(vh) = self.lod_viewport_height() {
                             // Cut + compaction for EVERY resident cluster mesh; returns
                             // the diagnostics readback kick (first resident mesh, on
                             // cadence) for the async consumer further below.
@@ -1223,6 +1365,11 @@ impl AwsmRenderer {
         // 400×800 mobile viewport the wasted bandwidth is ~40 MB per
         // frame, every frame, when HUD is empty. The same skip applies to
         // the HUD transparent + HUD line passes further below.
+        // TAA: HUD meshes shaded by the opaque (visibility) path stay here
+        // and are flagged fully reactive by the seed (from `hud_depth`); the
+        // forward-shaded (transparent-pipeline) HUD pass moves after the
+        // resolve (03 §5.4, below).
+        let hud_after_taa = ctx.anti_aliasing.taa.is_some() && self.render_passes.taa.is_some();
         if !renderables.hud.is_empty() {
             let _maybe_span_guard =
                 crate::profiling::cpu_scope(&self.logging, "HUD Geometry RenderPass", true);
@@ -1372,6 +1519,16 @@ impl AwsmRenderer {
             // prep_shadow_visibility). Gated on ShadowsConfig::denoise; runs
             // before opaque reads the buffer.
             prep.render_blur(&ctx)?;
+        }
+
+        // TAA prep-pass fallback: the deforming meshes' exact vectors over
+        // the prep's rigid reconstruction (`render_passes::taa_overlay`).
+        // `None` on every other path; no render pass on a frame where no
+        // deforming mesh is visible.
+        if let Some(overlay) = self.render_passes.taa_overlay.as_ref() {
+            let _maybe_span_guard =
+                crate::profiling::cpu_scope(&self.logging, "TAA Velocity Overlay", true);
+            overlay.render(&ctx, &self.render_passes.geometry, renderables.opaque)?;
         }
 
         {
@@ -1749,7 +1906,63 @@ impl AwsmRenderer {
             || !renderables.hud.is_empty();
         let keep_color = !msaa_on || color_read_later;
         let lines_drawable = self.lines.has_drawable();
+        // TAA: seed the reactive mask from `temporal: reactive` opaque
+        // materials (03 §5.2) and from the HUD drawn with the scene (03
+        // §5.4, via `hud_depth`) at the start of the world transparent pass.
+        // Only when either exists.
+        let hud_in_scene = !renderables.hud.is_empty();
+        // 03 §5.3: SSR reflectivity adds reactivity (the seed's `ssr`
+        // variant) only while SSR runs and `reactive_ssr > 0`.
+        let k_ssr = ctx
+            .anti_aliasing
+            .taa
+            .as_ref()
+            .map(|taa| taa.tuning.reactive_ssr)
+            // The SSR pass must exist too: `ssr.enabled` flips before the
+            // lazy pass (and the opaque variants that write the reflection
+            // descriptor) are built, and until then the descriptor holds
+            // nothing of this frame.
+            .filter(|k| {
+                *k > 0.0 && ctx.post_processing.ssr.enabled && self.render_passes.ssr.is_some()
+            });
+        // TAA new objects (`reactive_new_objects`): `Some` only on a frame
+        // where a mesh carries the flag.
+        let k_new = ctx
+            .anti_aliasing
+            .taa
+            .as_ref()
+            .map(|taa| taa.tuning.reactive_new_objects)
+            .filter(|k| *k > 0.0 && self.taa.new_objects_live);
+        let reactive_seed = if ctx.anti_aliasing.taa.is_some()
+            && (self.materials.has_temporal_reactive()
+                || hud_in_scene
+                || k_ssr.is_some()
+                || k_new.is_some()
+                // Prep-pass fallback (03 §2.4): non-rigid meshes are reactive.
+                || (ctx.render_textures.formats.taa_prep_velocity(ctx.anti_aliasing) && self.meshes.meta.has_non_rigid()))
+        {
+            self.render_passes
+                .taa
+                .as_ref()
+                .and_then(|taa| taa.reactive_seed.as_ref())
+        } else {
+            None
+        };
         if let Some(hook) = before_hook {
+            // The hook draws between lines and transparents in passes of its
+            // own, so the seed gets a pass of its own too (first: it clears
+            // the mask).
+            if let Some(seed) = reactive_seed {
+                let render_pass = ctx.begin_world_transparent_pass_timed(
+                    Some("TAA Reactive Seed"),
+                    None,
+                    true,
+                    false,
+                    true,
+                )?;
+                seed.draw(&ctx, &render_pass, hud_in_scene, k_ssr, k_new)?;
+                render_pass.end();
+            }
             // Lines first, so the hook's overlays draw on top of them.
             if lines_drawable {
                 let _maybe_span_guard =
@@ -1774,7 +1987,11 @@ impl AwsmRenderer {
                     keep_color,
                 )?;
             }
-        } else if msaa_on || lines_drawable || !renderables.transparent.is_empty() {
+        } else if msaa_on
+            || lines_drawable
+            || !renderables.transparent.is_empty()
+            || reactive_seed.is_some()
+        {
             let _maybe_span_guard =
                 crate::profiling::cpu_scope(&self.logging, "Material Transparent RenderPass", true);
             let render_pass = ctx.begin_world_transparent_pass_timed(
@@ -1782,7 +1999,11 @@ impl AwsmRenderer {
                 Some("Material Transparent"),
                 keep_color,
                 blit_in_world_pass,
+                true,
             )?;
+            if let Some(seed) = reactive_seed {
+                seed.draw(&ctx, &render_pass, hud_in_scene, k_ssr, k_new)?;
+            }
             self.lines.draw(&ctx, &render_pass)?;
             self.render_passes.material_transparent.draw(
                 &ctx,
@@ -1800,12 +2021,24 @@ impl AwsmRenderer {
             }
         }
 
+        // TAA: the resolve reads the reactive mask only when a pass wrote it
+        // this frame (03 §5); otherwise it holds last frame's (or nothing).
+        if ctx.anti_aliasing.taa.is_some() {
+            if let Some(taa) = self.render_passes.taa.as_ref() {
+                taa.params
+                    .set_reactive_valid(&self.gpu, ctx.reactive_written.get())?;
+                if let Some(rcas) = taa.rcas.as_ref() {
+                    rcas.set_reactive_valid(&self.gpu, ctx.reactive_written.get())?;
+                }
+            }
+        }
+
         // HUD transparent / lit pass. Same skip-on-empty rationale as the
         // HUD geometry pass above — both attachments are LoadOp::Load on
         // the world-state textures + HUD depth, so emitting the pass
         // descriptor with zero draws still costs a full-screen tile
         // round-trip on TBR mobile GPUs.
-        if !renderables.hud.is_empty() {
+        if !renderables.hud.is_empty() && !hud_after_taa {
             let _maybe_span_guard =
                 crate::profiling::cpu_scope(&self.logging, "HUD RenderPass", true);
 
@@ -1845,11 +2078,46 @@ impl AwsmRenderer {
                     crate::profiling::cpu_scope(&self.logging, "SSR RenderPass", true);
                 ssr.render(
                     &ctx,
-                    ctx.render_texture_views.width,
-                    ctx.render_texture_views.height,
+                    ctx.render_texture_views.render_size.0,
+                    ctx.render_texture_views.render_size.1,
                     ctx.post_processing.ssr.resolution_scale < 1.0,
                 )?;
             }
+        }
+
+        // TAA resolve (03 §6): the lit, SSR-composited render-size image plus
+        // history -> `taa_out` at post size, which bloom / effects / display
+        // read from here on. Then this frame's depth is saved for the next
+        // resolve. Records nothing while TAA is off (the pass is `None`).
+        if ctx.anti_aliasing.taa.is_some() {
+            if let Some(taa) = self.render_passes.taa.as_ref() {
+                let _maybe_span_guard =
+                    crate::profiling::cpu_scope(&self.logging, "TAA RenderPass", true);
+                // Depth of field before the resolve (`TaaDofOrder::
+                // BeforeResolve`): `composite` blurred into the resolve's input.
+                if let Some(dof_pre) = taa.dof_pre.as_ref() {
+                    dof_pre.render(&ctx)?;
+                }
+                taa.render(&ctx)?;
+                // RCAS sharpening (only while `sharpen > 0`), before the HUD
+                // is drawn over the result.
+                if let Some(rcas) = taa.rcas.as_ref() {
+                    rcas.render(&ctx)?;
+                }
+            }
+        }
+
+        // TAA: the forward-shaded HUD after the resolve (03 §5.4): drawn
+        // into `taa_out` at post size with the unjittered camera (`hud_post`
+        // pipelines), so it is never accumulated and its edges do not shake.
+        // (HUD meshes shaded by the opaque path were drawn with the scene and
+        // are fully reactive instead; see the seed.)
+        if hud_after_taa && !renderables.hud.is_empty() {
+            let _maybe_span_guard =
+                crate::profiling::cpu_scope(&self.logging, "HUD RenderPass", true);
+            self.render_passes
+                .material_transparent
+                .render_hud_post(&ctx, renderables.hud)?;
         }
 
         // SMAA pre-pass — edge detection + blend-weight calculation from the
@@ -1874,8 +2142,8 @@ impl AwsmRenderer {
                     crate::profiling::cpu_scope(&self.logging, "Bloom RenderPass", true);
                 bloom.render(
                     &ctx,
-                    ctx.render_texture_views.width,
-                    ctx.render_texture_views.height,
+                    ctx.render_texture_views.post_size.0,
+                    ctx.render_texture_views.post_size.1,
                 )?;
             }
         }
@@ -1950,6 +2218,13 @@ impl AwsmRenderer {
                 None
             };
 
+        // TAA previous-frame state, frame end (03 §2.3): current -> prev,
+        // recorded after every pass that reads either buffer (only the GPU
+        // timestamp resolve follows), so next frame `prev` holds this frame's
+        // values. Only buffers uploaded since the last submitted copy; nothing
+        // unless TAA is on.
+        Self::record_motion_history(&ctx, false)?;
+
         // Record `resolveQuerySet` + copy-to-readback into the frame's encoder
         // BEFORE `finish()`. No-op unless GPU timing is on and slots were used.
         let kick_gpu_timestamps = ctx
@@ -1958,6 +2233,26 @@ impl AwsmRenderer {
             .unwrap_or(false);
 
         self.gpu.submit_commands(&ctx.command_encoder.finish());
+        // TAA previous-frame state: the copies recorded above are submitted,
+        // so their pending work (fresh slots, regrow, end copy) is done.
+        self.transforms.history_frame_submitted();
+        self.instances.history_frame_submitted();
+        self.meshes.skins.history_frame_submitted();
+        self.meshes.morphs.geometry.history_frame_submitted();
+        if let Some(check) = self.motion_check.as_mut() {
+            check.frame_submitted();
+        }
+        // TAA resolve: a submitted resolve flips the history parity and has
+        // honoured any pending reset. A frame that failed before this point
+        // redoes both.
+        if self
+            .render_passes
+            .taa
+            .as_ref()
+            .is_some_and(|taa| taa.frame_submitted())
+        {
+            self.taa.reset_pending = false;
+        }
         // The light-cull counts this frame recorded are now on the GPU.
         self.render_passes.light_culling.commit_submitted();
         laps.lap("Submit: Finish + Queue Submit");
@@ -1983,6 +2278,8 @@ impl AwsmRenderer {
         {
             let readback_buffer = coverage_buffers.readback_buffer.clone();
             let readback_size_bytes = coverage_buffers.capacity.saturating_mul(4);
+            // This frame's render-to-output area factor (TAA upscaling).
+            let area_scale = self.coverage_area_scale(&frame_sizes);
             let state = std::sync::Arc::clone(&self.coverage_readback_state);
             state.lock().unwrap().inflight = true;
             wasm_bindgen_futures::spawn_local(async move {
@@ -2000,6 +2297,10 @@ impl AwsmRenderer {
                                 return None;
                             }
                             let count = u32::from_le_bytes(bytes[base..base + 4].try_into().ok()?);
+                            let count = match area_scale {
+                                Some(scale) => (count as f64 * scale).round() as u32,
+                                None => count,
+                            };
                             Some((mesh_key, count))
                         })
                         .collect(),
@@ -2476,6 +2777,75 @@ pub(crate) struct HudResolveState {
     inflight: Option<HudResolveInflight>,
 }
 
+impl AwsmRenderer {
+    /// TAA test hook: turn the motion-history self-check on or off. While on,
+    /// every rendered frame (with TAA on) snapshots the previous-frame regions
+    /// its passes read (a GPU copy into a mappable buffer, after the
+    /// frame-start fix-ups) and the CPU mirrors of the current buffers; see
+    /// [`Self::debug_verify_motion_history`]. Debug only: it allocates and
+    /// copies every frame. Off (the default) costs nothing.
+    pub fn set_debug_motion_history_check(&mut self, on: bool) {
+        self.motion_check = on.then(crate::buffer::history::MotionHistoryDebug::default);
+    }
+
+    /// TAA test hook: verify the LAST rendered frame's previous-frame state
+    /// byte for byte. Per region (transforms, joint matrices, morph weights,
+    /// instance transforms): what the frame's shaders read as "previous" must
+    /// equal the previous rendered frame's current contents, except in the
+    /// ranges the frame marked fresh (new / reused / reset slots), which must
+    /// equal this frame's current contents. Call after `render()` with the
+    /// check on; the first frame after enabling has no previous snapshot
+    /// (`previous_available == false`, only the fresh ranges are compared).
+    /// The comparison runs on the mapped readback, so drop the renderer
+    /// borrow before awaiting.
+    pub fn debug_verify_motion_history(
+        &self,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<crate::buffer::history::MotionHistoryCheck>>>,
+    > {
+        let fut = self.motion_check.as_ref().map(|check| check.verify());
+        Box::pin(async move {
+            let fut = fut.ok_or_else(|| {
+                AwsmError::from(
+                    crate::render_textures::AwsmRenderTextureError::DebugReadback(
+                        "motion-history check is off (set_debug_motion_history_check(true))"
+                            .to_string(),
+                    ),
+                )
+            })?;
+            fut.await.map_err(|e| {
+                AwsmError::from(crate::render_textures::AwsmRenderTextureError::DebugReadback(e))
+            })
+        })
+    }
+
+    /// Records TAA's previous-frame copies into the frame encoder: the
+    /// frame-start fix-ups (`start == true`) or the end-of-frame
+    /// `current -> prev` copies. Every owner records nothing while its history
+    /// is off (TAA off).
+    fn record_motion_history(ctx: &RenderContext, start: bool) -> Result<()> {
+        let encoder = &ctx.command_encoder;
+        if start {
+            ctx.transforms.record_history_frame_start(encoder)?;
+            ctx.instances.record_history_frame_start(encoder)?;
+            ctx.meshes.skins.record_history_frame_start(encoder)?;
+            ctx.meshes
+                .morphs
+                .geometry
+                .record_history_frame_start(encoder)?;
+        } else {
+            ctx.transforms.record_history_frame_end(encoder)?;
+            ctx.instances.record_history_frame_end(encoder)?;
+            ctx.meshes.skins.record_history_frame_end(encoder)?;
+            ctx.meshes
+                .morphs
+                .geometry
+                .record_history_frame_end(encoder)?;
+        }
+        Ok(())
+    }
+}
+
 /// Context passed to render passes during a frame.
 pub struct RenderContext<'a> {
     pub gpu: &'a AwsmRendererWebGpu,
@@ -2572,25 +2942,31 @@ pub struct RenderContext<'a> {
     /// `frame_optimizations.get().gpu_occlusion = true` means "run it
     /// this frame."
     pub frame_optimizations: std::cell::Cell<crate::optimization_policy::FrameOptimizations>,
-    /// Cached `(width, height)` of the live swap-chain texture, snapped
-    /// once at the top of `render()` and stable for the whole frame.
-    /// Use this in place of repeated `gpu.current_context_texture_size()`
-    /// calls — each call crosses the wasm↔JS boundary into
-    /// `getCurrentTexture().getSize()`, which is small (~0.1–1 µs) but
-    /// happens at multiple pass-level call sites per frame.
     /// GPU timestamp handle for this frame. `None` when GPU timing is off or
     /// unsupported — passes then attach no `timestampWrites`. See
     /// [`crate::profiling::GpuTimestamps`].
     pub gpu_timestamps: Option<&'a crate::profiling::GpuTimestamps>,
-    pub viewport_size: (u32, u32),
-    /// The raw swap-chain `(width, height)` — differs from
-    /// `viewport_size` only when `render_scale != 1.0`. Only the display
-    /// pass (downsample ratio) should need it.
+    /// Scene resolution for this frame (`AwsmRenderer::render_size`), equal
+    /// to `render_texture_views.render_size`. The three sizes below are
+    /// snapped once at the top of `render()` and stable for the whole frame;
+    /// use them instead of `gpu.current_context_texture_size()` (a wasm↔JS
+    /// hop per call).
+    pub render_size: (u32, u32),
+    /// Post-processing resolution for this frame (`AwsmRenderer::post_size`),
+    /// equal to `render_texture_views.post_size`. Equal to `render_size`
+    /// without TAA.
+    pub post_size: (u32, u32),
+    /// The raw swap-chain `(width, height)`. Only the display pass
+    /// (downsample ratio, colour attachment) should need it.
     pub surface_size: (u32, u32),
     /// Plan B shared-prep config. Inert today — the prep pass is dispatched
     /// only when `render_passes.material_prep` is `Some` (i.e. when this is
     /// enabled). Threaded through so later stages can branch shading on it.
     pub prep_config: &'a crate::render_passes::material_prep::PrepPassConfig,
+    /// TAA: a pass this frame attached the reactive mask (the first one
+    /// clears it, later ones load). Read after the transparent passes to tell
+    /// the resolve whether the mask is valid. Always `false` without TAA.
+    pub reactive_written: std::cell::Cell<bool>,
 }
 
 impl<'a> RenderContext<'a> {
@@ -2615,6 +2991,13 @@ impl<'a> RenderContext<'a> {
     ///
     /// This pass loads the existing visibility attachments and world depth, allowing custom hooks
     /// to append opaque geometry before light culling/material-opaque shading.
+    ///
+    /// **TAA:** the pass has the same four visibility attachments in every AA
+    /// mode; it does not include TAA's motion-vector target. Geometry a hook
+    /// draws here therefore writes no motion vector: its pixels keep the
+    /// vector of whatever the main geometry pass drew there (zero over sky).
+    /// That is right for geometry that does not move on screen and wrong for
+    /// anything that does, which then ghosts under TAA.
     pub fn begin_world_geometry_extension_pass(
         &'a self,
         label: Option<&'a str>,
@@ -2659,11 +3042,16 @@ impl<'a> RenderContext<'a> {
 
     /// Begins a world-space transparent effect pass that targets the transparent color buffer and
     /// shared scene depth.
+    ///
+    /// Under TAA the pass has no reactive-mask attachment: what a hook draws
+    /// here is accumulated like opaque colour. A hook drawing content that
+    /// moves without motion vectors (particles, overlays) should keep it
+    /// small or draw it after the frame.
     pub fn begin_world_transparent_pass(
         &'a self,
         label: Option<&'a str>,
     ) -> Result<RenderPassEncoder> {
-        self.begin_world_transparent_pass_timed(label, None, true, false)
+        self.begin_world_transparent_pass_timed(label, None, true, false, false)
     }
 
     /// [`Self::begin_world_transparent_pass`] that also attaches a GPU
@@ -2680,12 +3068,18 @@ impl<'a> RenderContext<'a> {
     /// `starts_from_opaque` (MSAA 4x only): the opaque image was not blitted
     /// into the colour attachment, so the pass clears it instead of loading it
     /// and draws that blit before anything else.
+    ///
+    /// `reactive`: attach the TAA reactive mask as colour target 1 (when TAA
+    /// is on; ignored otherwise). Every pipeline drawn in the pass must then
+    /// write it (the renderer's own transparent and line pipelines do under
+    /// TAA). The first such pass of the frame clears it.
     pub(crate) fn begin_world_transparent_pass_timed(
         &'a self,
         label: Option<&'a str>,
         timing: Option<&'static str>,
         keep_color: bool,
         starts_from_opaque: bool,
+        reactive: bool,
     ) -> Result<RenderPassEncoder> {
         let msaa_on = self.anti_aliasing.msaa_sample_count.is_some();
         let mut color_attachment = ColorAttachment::new(
@@ -2706,11 +3100,25 @@ impl<'a> RenderContext<'a> {
             color_attachment =
                 color_attachment.with_resolve_target(&self.render_texture_views.composite);
         }
+        let mut color_attachments = vec![color_attachment];
+        if let Some(view) = self
+            .render_texture_views
+            .reactive
+            .as_ref()
+            .filter(|_| reactive)
+        {
+            let load = if self.reactive_written.replace(true) {
+                LoadOp::Load
+            } else {
+                LoadOp::Clear
+            };
+            color_attachments.push(ColorAttachment::new(view, load, StoreOp::Store));
+        }
 
         let render_pass = self.command_encoder.begin_render_pass(
             &RenderPassDescriptor {
                 label,
-                color_attachments: vec![color_attachment],
+                color_attachments,
                 depth_stencil_attachment: Some(
                     DepthStencilAttachment::new(&self.render_texture_views.depth)
                         .with_depth_load_op(LoadOp::Load)
@@ -2782,6 +3190,49 @@ impl<'a> RenderContext<'a> {
                 &RenderPassDescriptor {
                     label,
                     color_attachments: vec![color_attachment],
+                    depth_stencil_attachment: Some(
+                        DepthStencilAttachment::new(hud_depth_view)
+                            .with_depth_load_op(LoadOp::Clear)
+                            .with_depth_clear_value(self.features.depth().clear_value())
+                            .with_depth_store_op(StoreOp::Store),
+                    ),
+                    timestamp_writes: timing
+                        .and_then(|name| self.gpu_timestamps.and_then(|t| t.writes_for(name))),
+                    ..Default::default()
+                }
+                .into(),
+            )
+            .map_err(Into::into)
+    }
+
+    /// TAA: begins the HUD's lit pass after the resolve: the resolved image
+    /// (`taa_out`, or RCAS's output while sharpening is on, so the HUD is
+    /// never sharpened; post size, loaded) with the post-size HUD depth
+    /// (cleared). Only called
+    /// under TAA with HUD renderables.
+    pub(crate) fn begin_hud_post_pass_timed(
+        &'a self,
+        label: Option<&'a str>,
+        timing: Option<&'static str>,
+    ) -> Result<RenderPassEncoder> {
+        let taa = self
+            .render_passes
+            .taa
+            .as_ref()
+            .expect("begin_hud_post_pass without the TAA pass");
+        let hud_depth_view = self.render_texture_views.hud_depth_post.as_ref().expect(
+            "hud_depth_post absent at begin_hud_post_pass — invariant violated: allocated \
+             under TAA once a HUD renderable exists",
+        );
+        self.command_encoder
+            .begin_render_pass(
+                &RenderPassDescriptor {
+                    label,
+                    color_attachments: vec![ColorAttachment::new(
+                        taa.final_view(),
+                        LoadOp::Load,
+                        StoreOp::Store,
+                    )],
                     depth_stencil_attachment: Some(
                         DepthStencilAttachment::new(hud_depth_view)
                             .with_depth_load_op(LoadOp::Clear)
@@ -2891,8 +3342,8 @@ impl AwsmRenderer {
             return;
         }
         let tan_half_fov_y = 1.0 / proj_yy;
-        let viewport_h = match self.render_size() {
-            Ok((_, h)) => h as f32,
+        let viewport_h = match self.lod_viewport_height() {
+            Ok(h) => h as f32,
             Err(_) => return,
         };
         // Disjoint inline field borrows: gpu (shared) vs meshes + render_passes (mut).
@@ -2911,6 +3362,37 @@ impl AwsmRenderer {
                 tracing::warn!("cluster paging stream_paging failed: {e:?}");
             }
         }
+    }
+
+    /// The viewport height the LOD screen-space error is measured in: the
+    /// render height without TAA (as always), the OUTPUT (post) height under
+    /// TAA. Upscaling renders fewer pixels but the viewer sees the output, so
+    /// LOD must not coarsen with the render scale, and a resolution governor
+    /// changing the scale must not make LOD pop.
+    pub(crate) fn lod_viewport_height(&self) -> Result<u32> {
+        let sizes = self.frame_sizes()?;
+        Ok(if self.anti_aliasing.taa.is_some() {
+            sizes.post.1
+        } else {
+            sizes.render.1
+        })
+    }
+
+    /// `(post area / render area)` of the frame `sizes` describe, under TAA
+    /// upscaling: the factor that turns that frame's render-pixel coverage
+    /// counts into output pixels (the consumers' thresholds are about what
+    /// the viewer sees, so a mesh keeps its coverage, and its LOD, when a
+    /// resolution governor changes the render scale). Taken with the readback
+    /// REQUEST, so a snapshot that resolves frames later is scaled by its own
+    /// frame's sizes, not by the scale in force when it lands. `None` without
+    /// TAA or at native resolution (counts unchanged).
+    fn coverage_area_scale(&self, sizes: &crate::size::FrameSizes) -> Option<f64> {
+        self.anti_aliasing.taa.as_ref()?;
+        if sizes.render == sizes.post {
+            return None;
+        }
+        let area = |s: (u32, u32)| s.0.max(1) as f64 * s.1.max(1) as f64;
+        Some(area(sizes.post) / area(sizes.render))
     }
 
     /// Per-frame discrete-LOD level selection (visibility-swap). For each
@@ -2934,8 +3416,8 @@ impl AwsmRenderer {
             return;
         }
         let tan_half_fov_y = 1.0 / proj_yy;
-        let viewport_h = match self.render_size() {
-            Ok((_, h)) => h as f32,
+        let viewport_h = match self.lod_viewport_height() {
+            Ok(h) => h as f32,
             Err(_) => return,
         };
 
@@ -2979,8 +3461,9 @@ impl AwsmRenderer {
                 let prev_key = chain.key_for_level(base_key, chain.current_level);
                 let sel_key = chain.key_for_level(base_key, selected);
                 chain.current_level = selected;
-                let _ = self.set_mesh_hidden(prev_key, true);
-                let _ = self.set_mesh_hidden(sel_key, false);
+                // A level swap is the same object: not a TAA new object.
+                let _ = self.set_mesh_hidden_inner(prev_key, true, false);
+                let _ = self.set_mesh_hidden_inner(sel_key, false, false);
             }
         }
         self.lod = reg;

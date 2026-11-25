@@ -240,6 +240,9 @@ fn build_emitter_parts(
         .insert(Transform::IDENTITY, Some(instance_parent));
     let mesh = renderer.add_raw_mesh(mesh_data_to_raw(md), instance_transform, material_key)?;
     let _ = renderer.set_mesh_billboard_mode(mesh, BillboardMode::Full);
+    // TAA: nothing reprojects a particle; its pixels take the particle
+    // reactive weight (inert without TAA).
+    let _ = renderer.set_mesh_taa_particles(mesh, true);
     let _ = renderer.set_mesh_shadow_flags(
         mesh,
         MeshShadowFlags {

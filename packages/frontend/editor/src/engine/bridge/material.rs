@@ -438,12 +438,16 @@ pub fn insert_material_vc(
         // Toon doesn't carry texture slots in the editor yet.
         _ => material_to_renderer(def),
     };
-    renderer.materials.insert(
+    let key = renderer.materials.insert(
         material,
         &renderer.textures,
         &renderer.dynamic_materials,
         &renderer.extras_pool,
-    )
+    );
+    // TAA: flowing textures (and an explicit `temporal`) are reactive, the
+    // same rule as the player's loader.
+    awsm_renderer_scene_loader::material::apply_material_temporal(renderer, key, def);
+    key
 }
 
 /// Resolve + bind each enabled standard PBR texture slot onto `pbr`.

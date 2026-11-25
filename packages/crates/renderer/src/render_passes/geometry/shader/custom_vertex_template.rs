@@ -50,12 +50,16 @@ impl TryFrom<&ShaderCacheKeyGeometryCustomVertex> for ShaderTemplateGeometryCust
             instancing_transforms: value.instancing_transforms,
             meta_storage_array: value.meta_storage_array,
             msaa_samples: value.msaa_samples,
+            velocity: value.velocity,
+            mip_bias: value.mip_bias,
             dynamic_vertex_shader: Some(value.dynamic_vertex.clone()),
         };
         let fragment_key = ShaderCacheKeyGeometry {
             instancing_transforms: value.instancing_transforms,
             meta_storage_array: value.meta_storage_array,
             msaa_samples: value.msaa_samples,
+            velocity: value.velocity,
+            mip_bias: value.mip_bias,
             dynamic_vertex_shader: None,
         };
 

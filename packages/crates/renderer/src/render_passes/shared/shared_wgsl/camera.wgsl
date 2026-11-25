@@ -18,11 +18,16 @@ struct CameraRaw {
     // Used for unprojecting screen pixels to world space with better precision than per-pixel unprojection
     frustum_rays: array<vec4<f32>, 4>,
     viewport: vec4<f32>, // in pixels, x,y,width,height
-    dof_params: vec4<f32>, // x=focus_distance, y=aperture (f-stop), zw=unused
+    dof_params: vec4<f32>, // x=focus_distance, y=aperture (f-stop), zw=TAA reactive factors (0 without TAA)
     // M3 SSR temporal reprojection: PRIOR frame's unjittered view-projection.
     // END-APPENDED so every existing field offset is preserved (see camera.rs
     // BYTE_SIZE). Ignored by shaders that don't opt into temporal reprojection.
     prev_view_projection: mat4x4<f32>,
+    // TAA (see camera/buffer.rs): view-projection without the jitter.
+    view_projection_unjittered: mat4x4<f32>,
+    // xy = jitter this frame, zw = previous; render pixels.
+    jitter: vec4<f32>,
+    prev_position: vec4<f32>, // .xyz = last frame's camera position
 };
 
 // Friendly camera structure (no padding, easier to work with)
@@ -42,6 +47,10 @@ struct Camera {
     aperture: f32, // DoF aperture f-stop (lower = more blur)
     // M3 SSR temporal reprojection: PRIOR frame's unjittered view-projection.
     prev_view_proj: mat4x4<f32>,
+    view_proj_unjittered: mat4x4<f32>,
+    jitter: vec2<f32>,
+    prev_jitter: vec2<f32>,
+    prev_position: vec3<f32>,
 };
 
 // Convert from raw uniform to friendly structure
@@ -60,5 +69,9 @@ fn camera_from_raw(raw: CameraRaw) -> Camera {
     camera.focus_distance = raw.dof_params.x;
     camera.aperture = raw.dof_params.y;
     camera.prev_view_proj = raw.prev_view_projection;
+    camera.view_proj_unjittered = raw.view_projection_unjittered;
+    camera.jitter = raw.jitter.xy;
+    camera.prev_jitter = raw.jitter.zw;
+    camera.prev_position = raw.prev_position.xyz;
     return camera;
 }

@@ -126,7 +126,10 @@ fn cs_prep(@builtin(global_invocation_id) gid: vec3<u32>) {
         // Sky / no geometry — clear layer 0 (the slim shader never reads prep
         // for sky pixels, so the higher layers can be left untouched).
         textureStore(uv_out, coords, 0, vec4<f32>(0.0));
-        textureStore(vcolor_out, coords, 0, vec4<f32>(0.0));
+        textureStore(vcolor_out, coords, 0, vec4<f32>(0.0));{% if velocity %}
+        // No surface: the resolve derives the sky's vector itself.
+        textureStore(velocity_out, coords, vec4<f32>(0.0));
+{% endif +%}
         return;
     }
 
@@ -199,7 +202,60 @@ fn cs_prep(@builtin(global_invocation_id) gid: vec3<u32>) {
     let packed = compute_shadow_visibility_packed(pixel_xy, world_pos, view_z, normal);
     for (var l: u32 = 0u; l < MAX_PREP_SHADOW_LAYERS; l = l + 1u) {
         textureStore(shadow_visibility_out, coords, i32(l), packed[l]);
+    }{% if velocity %}
+
+    // ── TAA motion vector, reconstructed (prep-pass fallback, 03 §2.4) ──────
+    // P = `world_pos` above: the depth unprojected with the JITTERED inverse,
+    // i.e. the surface point this pixel sampled. P_prev = M_prev * inverse(M)
+    // * P with M / M_prev = the mesh's node world matrix now / last frame:
+    // exact for camera and rigid motion. Skinned, morphed, instanced and
+    // vertex-hook meshes get their node's rigid motion only (the reactive
+    // seed marks them). v = uv_now - uv_prev, both unjittered (G2): the
+    // geometry path's convention, so the resolve does not know which path
+    // filled the texture.
+    // Must stay inside the shadow block: it reuses `cam` / `world_pos`, and
+    // the prep variant always has shadows (the velocity tests pin that the
+    // surface branch writes the vector).
+    {
+        let t = mesh_meta.transform_offset / 16u;
+        let d = world_pos - prep_transforms[t + 3u].xyz;
+        // inverse(M): the stored inverse-transpose normal matrix N gives
+        // inverse(M3) = transpose(N) without a per-pixel inversion. (Measured
+        // against a per-pixel cofactor inverse by repetition: no difference
+        // within noise at 1920x1435, so the cheaper-in-ALU stored form.)
+        let p_obj = vec3<f32>(
+            dot(prep_transforms[t + 4u].xyz, d),
+            dot(prep_transforms[t + 5u].xyz, d),
+            dot(prep_transforms[t + 6u].xyz, d),
+        );
+        let m_prev = mat4x4<f32>(
+            prep_prev_state[t],
+            prep_prev_state[t + 1u],
+            prep_prev_state[t + 2u],
+            prep_prev_state[t + 3u],
+        );
+        // An opaque-path HUD pixel: the visibility is the HUD mesh's, but the
+        // depth is the SCENE's (the HUD has its own depth), so P is the world
+        // behind the HUD and the HUD's matrix does not move it: the static
+        // world's vector. (The resolve passes HUD pixels through anyway and
+        // keeps them out of its dilation.)
+        var world_prev = (m_prev * vec4<f32>(p_obj, 1.0)).xyz;
+        if (mesh_meta.is_hud == 1u) {
+            world_prev = world_pos;
+        }
+        let clip_now = cam.view_proj_unjittered * vec4<f32>(world_pos, 1.0);
+        let clip_prev = cam.prev_view_proj * vec4<f32>(world_prev, 1.0);
+        let v = taa_motion_vector(clip_now, clip_prev);
+        // A singular world matrix (a zero scale) makes the stored normal
+        // matrix non-finite: no vector rather than NaN.
+        let finite = all(v == v) && all(abs(v) < vec2<f32>(1.0e6));
+        textureStore(
+            velocity_out,
+            coords,
+            vec4<f32>(select(vec2<f32>(0.0), v, finite), 0.0, 0.0),
+        );
     }
+{% endif +%}
 {% endif %}
 }
 

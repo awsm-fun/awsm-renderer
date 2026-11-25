@@ -244,6 +244,34 @@ pub fn texture_color_semantics(
     (kind.is_srgb(), mip)
 }
 
+/// The renderer's TAA temporal setting for an authored material (plan 03
+/// §5.2): an explicit `temporal`, else `Reactive` when a texture slot flows
+/// (the renderer itself resolves flipbooks); `Auto` otherwise.
+pub fn material_temporal(def: &MaterialDef) -> awsm_renderer::materials::MaterialTemporal {
+    use awsm_renderer::materials::MaterialTemporal as R;
+    match def.temporal {
+        Some(awsm_renderer_scene::MaterialTemporal::Reactive) => R::Reactive,
+        Some(awsm_renderer_scene::MaterialTemporal::Stable) => R::Stable,
+        None if def.temporal_reactive() => R::Reactive,
+        None => R::Auto,
+    }
+}
+
+/// Applies [`material_temporal`] to a freshly inserted material. `Auto` (the
+/// common case) touches nothing.
+pub fn apply_material_temporal(
+    renderer: &mut awsm_renderer::AwsmRenderer,
+    key: awsm_renderer::materials::MaterialKey,
+    def: &MaterialDef,
+) {
+    let temporal = material_temporal(def);
+    if temporal != awsm_renderer::materials::MaterialTemporal::Auto {
+        if let Err(err) = renderer.set_material_temporal(key, temporal) {
+            tracing::warn!("material temporal: {err}");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

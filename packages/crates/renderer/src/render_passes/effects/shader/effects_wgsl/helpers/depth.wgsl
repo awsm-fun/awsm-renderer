@@ -55,4 +55,29 @@ fn is_sky_depth(depth: f32) -> bool {
     {% else %}
         return depth >= 1.0;
     {% endif %}
-}
+}{% if taa_post %}
+
+// TAA (03 §6): depth for OUTPUT pixel `q`. The effects pass runs at post size
+// on the resolved, unjittered image; the depth buffer is render size and
+// jittered: render pixel p holds the scene at unjittered position
+// p + 0.5 - j. The output pixel's centre sits at u = (q + 0.5) * R / O in
+// render pixels, so the render texels around it are the 2x2 at u + j - 0.5.
+// Take the NEAREST of the four (like the resolve's dilation), so a thin
+// foreground edge keeps its depth rather than the background's.
+fn load_depth_post(q: vec2<i32>) -> f32 {
+    let render = vec2<i32>(textureDimensions(depth_tex));
+    let post = vec2<f32>(textureDimensions(composite_tex));
+    let pos = (vec2<f32>(q) + 0.5) * vec2<f32>(render) / post + camera_raw.jitter.xy - 0.5;
+    let p0 = vec2<i32>(floor(pos));
+    let p_max = render - 1;
+    let d00 = textureLoad(depth_tex, clamp(p0, vec2<i32>(0), p_max), 0);
+    let d10 = textureLoad(depth_tex, clamp(p0 + vec2<i32>(1, 0), vec2<i32>(0), p_max), 0);
+    let d01 = textureLoad(depth_tex, clamp(p0 + vec2<i32>(0, 1), vec2<i32>(0), p_max), 0);
+    let d11 = textureLoad(depth_tex, clamp(p0 + vec2<i32>(1, 1), vec2<i32>(0), p_max), 0);
+    {% if reverse_z %}
+    // Reverse-Z (003): nearest = LARGEST depth.
+    return max(max(d00, d10), max(d01, d11));
+    {% else %}
+    return min(min(d00, d10), min(d01, d11));
+    {% endif %}
+}{% endif %}

@@ -101,6 +101,11 @@ pub struct ShaderTemplateTransparentMaterialIncludes {
     /// untouched. The field exists because the shared `brdf_pbr.wgsl` gates
     /// the SSR IBL-specular suppression (`ssr-spread-gate`) on it.
     pub write_ssr_descriptor: bool,
+    /// TAA (03 §7): sample textures with the LOD bias (camera
+    /// `prev_position.w`). Set for the world transparent pass under TAA (the
+    /// cache key's `reactive`; the HUD after the resolve renders at output
+    /// size and needs none). `false` keeps the pre-TAA `textureSample`.
+    pub taa_mip_bias: bool,
 }
 impl ShaderTemplateTransparentMaterialIncludes {
     /// Creates include template data from the cache key.
@@ -108,6 +113,7 @@ impl ShaderTemplateTransparentMaterialIncludes {
         Self {
             max_morph_unroll: 2,
             max_skin_unroll: 2,
+            taa_mip_bias: cache_key.reactive,
             instancing_transforms: cache_key.instancing_transforms,
             texture_pool_arrays_len: cache_key.texture_pool_arrays_len,
             texture_pool_samplers_len: cache_key.texture_pool_samplers_len,
@@ -282,6 +288,9 @@ pub struct ShaderTemplateTransparentMaterialVertex {
     /// mesh's material declared a `custom_displace_vertex` body; `false` keeps
     /// the vertex entry byte-identical to the pre-feature build.
     pub has_custom_vertex: bool,
+    /// TAA HUD after the resolve: project with the unjittered camera. See
+    /// [`ShaderCacheKeyMaterialTransparent::hud_post`].
+    pub hud_post: bool,
 }
 
 impl ShaderTemplateTransparentMaterialVertex {
@@ -315,6 +324,7 @@ impl ShaderTemplateTransparentMaterialVertex {
             // frame_globals) in the vertex entry; on only when this mesh's
             // material declared a `custom_displace_vertex` body.
             has_custom_vertex: cache_key.dynamic_vertex_shader.is_some(),
+            hud_post: cache_key.hud_post,
         }
     }
 }
@@ -352,6 +362,13 @@ pub struct ShaderTemplateTransparentMaterialFragment {
     /// (wrapped at template render time into
     /// `fn custom_shade_transparent_dynamic(input) -> TransparentShadingOutput`).
     pub dynamic_wgsl_fragment: String,
+    /// TAA: write the reactive mask too. See
+    /// [`ShaderCacheKeyMaterialTransparent::reactive`].
+    pub reactive: bool,
+    /// TAA HUD after the resolve: map the output-size `frag_pos` back to
+    /// render pixels for the transmission sample and the light-cull lookup.
+    /// See [`ShaderCacheKeyMaterialTransparent::hud_post`].
+    pub hud_post: bool,
 }
 
 impl ShaderTemplateTransparentMaterialFragment {
@@ -391,6 +408,8 @@ impl ShaderTemplateTransparentMaterialFragment {
                 .as_ref()
                 .map(|d| d.wgsl_fragment.clone())
                 .unwrap_or_default(),
+            reactive: cache_key.reactive,
+            hud_post: cache_key.hud_post,
         }
     }
 

@@ -165,6 +165,7 @@ fn sscs_enabled_shaders_validate() {
                 sscs_enabled: true,
                 sscs_step_count: step_count,
                 reverse_z: false,
+                velocity: false,
             })
             .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
             .into_source()
@@ -214,6 +215,7 @@ fn reverse_z_shadow_shaders_validate() {
             sscs_enabled: true,
             sscs_step_count: 16,
             reverse_z: true,
+            velocity: false,
         })
         .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
         .into_source()
@@ -248,6 +250,7 @@ fn reverse_z_shadow_shaders_validate() {
         sscs_enabled: false,
         sscs_step_count: 16,
         reverse_z: false,
+        velocity: false,
     })
     .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
     .into_source()
@@ -1054,6 +1057,7 @@ fn material_prep_shader_validates() {
             sscs_enabled: false,
             sscs_step_count: 16,
             reverse_z: false,
+            velocity: false,
         })
         .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
         .into_source()
@@ -1188,6 +1192,8 @@ fn transparent_first_party_key(
         texture_pool_arrays_len: 1,
         texture_pool_samplers_len: 1,
         msaa_sample_count: msaa,
+        reactive: false,
+        hud_post: false,
         mipmaps: true,
         reverse_z: false,
         base,
@@ -1250,6 +1256,193 @@ fn custom_transparent_shaders_validate() {
             naga_validate(&src, &label);
         }
     }
+}
+
+#[test]
+fn taa_reactive_transparent_and_line_shaders_validate() {
+    // TAA's transparent variant (reactive mask at @location(1)) for every
+    // shading family + a custom material, single-sampled (TAA excludes MSAA).
+    let dyn_id = MaterialShaderId::from_dynamic_raw(MaterialShaderId::DYNAMIC_START);
+    for (base, name) in [
+        (ShadingBase::Pbr, "pbr"),
+        (ShadingBase::Unlit, "unlit"),
+        (ShadingBase::Toon, "toon"),
+        (ShadingBase::Flipbook, "flipbook"),
+        (ShadingBase::Custom, "custom"),
+    ] {
+        for reactive in [false, true] {
+            let mut key = transparent_first_party_key(base, None);
+            key.reactive = reactive;
+            if base == ShadingBase::Custom {
+                key.dispatch_hash = 1;
+                key.dynamic_shader_id = Some(dyn_id);
+                key.dynamic_shader = Some(DynamicShaderInfo {
+                    shader_includes: awsm_renderer_materials::ShaderIncludes::all(),
+                    struct_decl: "struct MaterialData { _pad: u32, };".to_string(),
+                    loader_decl: "fn material_data_load(byte_offset: u32) -> MaterialData { return MaterialData(0u); }".to_string(),
+                    wgsl_fragment: "return TransparentShadingOutput(vec4<f32>(input.world_normal * 0.5 + 0.5, 0.5));".to_string(),
+                });
+            }
+            let label = format!("transparent/{name} reactive={reactive}");
+            let src = ShaderTemplateMaterialTransparent::try_from(&key)
+                .unwrap()
+                .into_source()
+                .unwrap();
+            naga_validate(&src, &label);
+            let writes = src.matches("out.reactive =").count();
+            if reactive {
+                assert!(
+                    src.contains("@location(1) reactive: f32") && writes >= 1,
+                    "{label}: must declare and write the reactive mask"
+                );
+                // One write per fragment exit: the custom-material early
+                // return, and the shared tail.
+                let exits = if base == ShadingBase::Custom { 2 } else { 1 };
+                assert_eq!(
+                    writes, exits,
+                    "{label}: one reactive write per fragment exit"
+                );
+            } else {
+                assert!(
+                    !src.contains("@location(1) reactive")
+                        && !src.contains("out.reactive")
+                        && !src.contains("dof_params.z"),
+                    "{label}: TAA-off shader must not touch the reactive mask"
+                );
+            }
+        }
+    }
+    // TAA HUD after the resolve: the unjittered projection, no reactive mask.
+    for (base, name) in [(ShadingBase::Pbr, "pbr"), (ShadingBase::Unlit, "unlit")] {
+        for hud_post in [false, true] {
+            let mut key = transparent_first_party_key(base, None);
+            key.hud_post = hud_post;
+            let label = format!("transparent/{name} hud_post={hud_post}");
+            let src = ShaderTemplateMaterialTransparent::try_from(&key)
+                .unwrap()
+                .into_source()
+                .unwrap();
+            naga_validate(&src, &label);
+            assert_eq!(
+                src.contains("camera.view_proj = camera.view_proj_unjittered;"),
+                hud_post,
+                "{label}"
+            );
+        }
+    }
+    use crate::render_passes::lines::{shader::template::ShaderTemplateLine, ShaderCacheKeyLine};
+    for reactive in [false, true] {
+        let src = ShaderTemplateLine::try_from(&ShaderCacheKeyLine { reactive })
+            .unwrap()
+            .into_source()
+            .unwrap();
+        naga_validate(&src, &format!("line reactive={reactive}"));
+        assert_eq!(src.contains("@location(1) reactive: f32"), reactive);
+        assert_eq!(src.contains("k_transparent"), reactive);
+    }
+}
+
+/// The line shader keeps its own mirror of `CameraRaw` (its view and
+/// projection). Pin that its `_padding_end` still sits where the shared
+/// struct's `dof_params` does, so the mirror stays a prefix of the real
+/// layout. TAA's line weight comes from the line uniform (`k_reactive`,
+/// `TaaTuning::reactive_lines`), not from the camera.
+#[test]
+fn line_shader_camera_mirror_reads_dof_params() {
+    use crate::render_passes::lines::{shader::template::ShaderTemplateLine, ShaderCacheKeyLine};
+    fn member_offset(module: &naga::Module, ty_name: &str, member: &str) -> u32 {
+        let (_, ty) = module
+            .types
+            .iter()
+            .find(|(_, t)| t.name.as_deref() == Some(ty_name))
+            .unwrap_or_else(|| panic!("no struct {ty_name}"));
+        match &ty.inner {
+            naga::TypeInner::Struct { members, .. } => {
+                members
+                    .iter()
+                    .find(|m| m.name.as_deref() == Some(member))
+                    .unwrap_or_else(|| panic!("{ty_name} has no {member}"))
+                    .offset
+            }
+            other => panic!("{ty_name} is not a struct: {other:?}"),
+        }
+    }
+    let shared_src = include_str!("render_passes/shared/shared_wgsl/camera.wgsl");
+    let shared = naga::front::wgsl::parse_str(shared_src).expect("camera.wgsl parses");
+    let line_src = ShaderTemplateLine::try_from(&ShaderCacheKeyLine { reactive: true })
+        .unwrap()
+        .into_source()
+        .unwrap();
+    let line = naga::front::wgsl::parse_str(&line_src).expect("line shader parses");
+    assert!(line_src.contains("out.k_transparent = line_uniform.k_reactive;"));
+    assert!(!line_src.contains("_padding_end[1].z"));
+    // `_padding_end: array<vec4<f32>, 2>`: element 1 is 16 bytes in.
+    assert_eq!(
+        member_offset(&line, "CameraRaw", "_padding_end") + 16,
+        member_offset(&shared, "CameraRaw", "dof_params"),
+        "the line shader's `_padding_end[1]` must be `CameraRaw.dof_params`"
+    );
+}
+
+#[test]
+fn taa_reactive_seed_validates_and_reads_the_right_meta_words() {
+    use crate::render_passes::taa::shader::{
+        cache_key::ShaderCacheKeyTaaReactiveSeed, template::ShaderTemplateTaaReactiveSeed,
+    };
+    let ssr_src =
+        ShaderTemplateTaaReactiveSeed::try_from(&ShaderCacheKeyTaaReactiveSeed { ssr: true })
+            .unwrap()
+            .into_source()
+            .unwrap();
+    naga_validate(&ssr_src, "taa reactive seed (ssr)");
+    assert!(ssr_src.contains("reflection_descriptor_tex"));
+    let src = ShaderTemplateTaaReactiveSeed::try_from(&ShaderCacheKeyTaaReactiveSeed::default())
+        .unwrap()
+        .into_source()
+        .unwrap();
+    naga_validate(&src, "taa reactive seed");
+    assert!(
+        !src.contains("reflection_descriptor_tex"),
+        "the plain seed must not bind the SSR descriptor"
+    );
+    // The seed reads the material meta as raw words; pin the indices to the
+    // shared struct's field order (`is_hud` = 16, the packer's temporal flag
+    // in the slot the struct calls `_reserved2` = 22).
+    let meta = include_str!("render_passes/shared/shared_wgsl/material_mesh_meta.wgsl");
+    let body = meta
+        .split("struct MaterialMeshMeta {")
+        .nth(1)
+        .and_then(|rest| rest.split('}').next())
+        .expect("MaterialMeshMeta struct");
+    let fields: Vec<&str> = body
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.starts_with("//") && l.contains(':'))
+        .map(|l| l.split(':').next().unwrap().trim())
+        .collect();
+    let index = |name: &str| fields.iter().position(|f| *f == name).unwrap();
+    assert_eq!(index("is_hud"), 16);
+    assert_eq!(index("_reserved2"), 22);
+    assert!(src.contains("const META_IS_HUD: u32 = 16u;"));
+    assert!(src.contains("const META_TEMPORAL_REACTIVE: u32 = 22u;"));
+    assert!(
+        !src.contains("switch"),
+        "Apple GPU rule: no switch in the seed"
+    );
+    // New objects (`reactive_new_objects`): bit 2 of the same word, the
+    // weight from instance bits 17-26 (`seed_instance`), and the bit is the
+    // one the meta patch sets.
+    assert!(src.contains("const NEW_OBJECT_BIT: u32 = 4u;"));
+    assert!(src.contains("let k_new = f32((input.hud_mode >> 17u) & 1023u) / 1023.0;"));
+    assert_eq!(
+        crate::meshes::meta::new_objects::TAA_FLAG_NEW_OBJECT,
+        4,
+        "the seed's NEW_OBJECT_BIT"
+    );
+    assert_eq!(
+        crate::meshes::meta::material_meta::MATERIAL_MESH_META_TAA_FLAGS_OFFSET,
+        22 * 4
+    );
 }
 
 #[test]
@@ -2469,6 +2662,7 @@ fn effects_key(
         dof,
         atmosphere,
         reverse_z,
+        taa_post: false,
     }
 }
 
@@ -2498,18 +2692,83 @@ fn effects_variants_are_valid_wgsl() {
                              bloom={bloom_phase:?} msaa={msaa} reverse_z={reverse_z}"
                         );
                         for smaa_anti_alias in [false, true] {
-                            let label = format!("{label} smaa={smaa_anti_alias}");
-                            let key = ShaderCacheKeyEffects {
-                                smaa_anti_alias,
-                                ..effects_key(atmosphere, dof, bloom_phase, msaa, reverse_z)
+                            // TAA excludes MSAA and SMAA.
+                            let taa_posts: &[bool] = if msaa || smaa_anti_alias {
+                                &[false]
+                            } else {
+                                &[false, true]
                             };
-                            let src = render_effects(&key, &label);
-                            naga_validate(&src, &label);
-                            assert!(src.contains("fn main("), "{label}: no `main`");
-                            assert_eq!(src.contains("fn dof_prepare("), dof, "{label}");
+                            for &taa_post in taa_posts {
+                                let label =
+                                    format!("{label} smaa={smaa_anti_alias} taa_post={taa_post}");
+                                let key = ShaderCacheKeyEffects {
+                                    smaa_anti_alias,
+                                    taa_post,
+                                    ..effects_key(atmosphere, dof, bloom_phase, msaa, reverse_z)
+                                };
+                                let src = render_effects(&key, &label);
+                                naga_validate(&src, &label);
+                                assert!(src.contains("fn main("), "{label}: no `main`");
+                                assert_eq!(src.contains("fn dof_prepare("), dof, "{label}");
+                                let reads_depth = dof || atmosphere != AtmospherePhase::None;
+                                assert_eq!(
+                                    src.contains("load_depth_post("),
+                                    taa_post && reads_depth,
+                                    "{label}: the post-size depth read exists exactly under TAA"
+                                );
+                            }
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+/// `load_depth_post` (TAA, effects at output size): the 2x2 render texels it
+/// reads must be the ones whose unjittered sample positions bracket the
+/// output pixel's centre, at every scale and jitter. A CPU mirror of the
+/// WGSL's index maths, pinned to the WGSL text so the two cannot drift.
+#[test]
+fn load_depth_post_reads_the_texels_around_the_output_pixel() {
+    let src = render_effects(
+        &ShaderCacheKeyEffects {
+            taa_post: true,
+            ..effects_key(
+                AtmospherePhase::Analytic,
+                true,
+                BloomPhase::None,
+                false,
+                true,
+            )
+        },
+        "effects taa_post",
+    );
+    assert!(src.contains(
+        "let pos = (vec2<f32>(q) + 0.5) * vec2<f32>(render) / post + camera_raw.jitter.xy - 0.5;"
+    ));
+    assert!(
+        src.contains("return max(max(d00, d10), max(d01, d11));"),
+        "reverse-Z keeps the nearest"
+    );
+    // Mirror (one axis; the other is the same formula).
+    let first_texel = |q: u32, render: u32, post: u32, jitter: f32| -> i32 {
+        ((q as f32 + 0.5) * render as f32 / post as f32 + jitter - 0.5).floor() as i32
+    };
+    for (render, post) in [(1920u32, 1920u32), (1286, 1920), (1114, 1920), (960, 1920)] {
+        for jitter in [-0.5f32, -0.37, -0.1, 0.0, 0.21, 0.49] {
+            for q in [1u32, 7, 333, post / 2, post - 2] {
+                let p0 = first_texel(q, render, post, jitter);
+                // Render texel p holds the scene at unjittered p + 0.5 - j.
+                let centre = (q as f32 + 0.5) * render as f32 / post as f32;
+                let lo = p0 as f32 + 0.5 - jitter;
+                let hi = lo + 1.0;
+                assert!(
+                    lo <= centre + 1e-4 && centre <= hi + 1e-4,
+                    "render {render} post {post} jitter {jitter} q {q}: texels {p0}..={} \
+                     sample {lo}..{hi} do not bracket {centre}",
+                    p0 + 1
+                );
             }
         }
     }
@@ -3026,5 +3285,838 @@ fn switches_have_a_single_exit() {
         failures.is_empty(),
         "return inside a switch (assign and return after it instead):\n{}",
         failures.join("\n")
+    );
+}
+
+/// Extracts `fn <name>(...) { ... }` (signature through the matching closing
+/// brace) from rendered WGSL.
+fn wgsl_function<'a>(src: &'a str, name: &str) -> &'a str {
+    let start = src
+        .find(&format!("fn {name}("))
+        .unwrap_or_else(|| panic!("fn {name} not found"));
+    let open = start + src[start..].find('{').expect("fn body");
+    let mut depth = 0usize;
+    for (i, c) in src[open..].char_indices() {
+        match c {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return &src[start..open + i + 1];
+                }
+            }
+            _ => {}
+        }
+    }
+    panic!("fn {name}: unbalanced braces")
+}
+
+/// TAA (plan 04, phase 1): every geometry-family variant with the motion
+/// vector target renders and validates — plain (3 shapes), masked,
+/// custom-vertex (plain + instanced) and masked + custom-vertex.
+#[test]
+fn taa_geometry_variants_validate() {
+    use crate::render_passes::geometry::shader::variant_tests::rendered_variants;
+    let variants = rendered_variants(None, true);
+    assert_eq!(variants.len(), 8, "the variant list itself changed");
+    for (label, src) in variants {
+        let label = format!("TAA {label}");
+        naga_validate(&src, &label);
+        assert!(
+            src.contains("fn apply_vertex_prev("),
+            "{label}: no previous evaluation"
+        );
+        assert!(
+            src.contains("velocity: vec2<f32>"),
+            "{label}: no velocity output"
+        );
+    }
+}
+
+/// TAA's texture LOD bias (03 §7) is in every TAA geometry variant on BOTH
+/// velocity paths: with the motion-vector target (geometry path) and without
+/// it (the prep-pass fallback, `GeometryTargets::TaaPrep`). TAA-off variants
+/// never scale the derivatives. And the fallback key is the one that gets it.
+#[test]
+fn taa_mip_bias_is_in_every_taa_geometry_variant() {
+    use crate::anti_alias::AntiAliasing;
+    use crate::render_passes::geometry::pipeline::GeometryTargets;
+    use crate::render_passes::geometry::shader::variant_tests::rendered_variants_with;
+    const SCALE: &str = "exp2(camera_raw.prev_position.w)";
+    for (velocity, mip_bias) in [(true, true), (false, true), (false, false)] {
+        for (label, src) in rendered_variants_with(None, velocity, mip_bias) {
+            let label = format!("{label} velocity={velocity} mip_bias={mip_bias}");
+            naga_validate(&src, &label);
+            assert_eq!(src.contains(SCALE), mip_bias, "{label}");
+            assert_eq!(src.contains("out.velocity"), velocity, "{label}");
+        }
+    }
+    let taa = AntiAliasing::taa(crate::taa::TaaConfig::native());
+    let geometry_path = crate::render_textures::RenderTextureFormats::defaults();
+    let mut fallback_path = crate::render_textures::RenderTextureFormats::defaults();
+    fallback_path.prep_velocity_path = true;
+    let targets = GeometryTargets::from_aa(&taa, &fallback_path);
+    assert_eq!(targets, GeometryTargets::TaaPrep);
+    assert!(targets.mip_bias() && !targets.velocity());
+    assert_eq!(targets.msaa_samples(), None);
+    let geometry = GeometryTargets::from_aa(&taa, &geometry_path);
+    assert!(geometry.mip_bias() && geometry.velocity());
+    for off in [
+        AntiAliasing::none(),
+        AntiAliasing::msaa4(),
+        AntiAliasing::smaa(),
+    ] {
+        // The renderer's path flag is irrelevant without TAA.
+        assert!(!GeometryTargets::from_aa(&off, &geometry_path).mip_bias());
+        assert!(!GeometryTargets::from_aa(&off, &fallback_path).mip_bias());
+    }
+}
+
+/// TAA zero-cost-off: no geometry variant without TAA carries any of its code
+/// (the rendered sources are also byte-identical to the pre-TAA tree; that was
+/// checked when the variant landed, this keeps the identifiers out).
+#[test]
+fn taa_off_geometry_variants_have_no_taa_code() {
+    use crate::render_passes::geometry::shader::variant_tests::rendered_variants;
+    for msaa in [None, Some(4)] {
+        for (label, src) in rendered_variants(msaa, false) {
+            // (`prev_view_proj` / `prev_position` are camera fields every
+            // shader declares; these are the geometry variant's own.)
+            for ident in [
+                "prev_state",
+                "prev_morph_weight",
+                "prev_skin_joint_matrix",
+                "prev_instance_transform",
+                "_prev(",
+                "velocity",
+                "clip_now",
+                "clip_prev",
+                "taa_motion_vector",
+                "apply_vertex_prev",
+            ] {
+                assert!(
+                    !src.contains(ident),
+                    "{label} msaa={msaa:?}: TAA-off source contains `{ident}`"
+                );
+            }
+        }
+    }
+}
+
+/// TAA motion vectors are divided PER FRAGMENT (03 §2.2): the vertex stage
+/// outputs the clip positions and the fragment divides. Dividing in the vertex
+/// stage and interpolating NDC is wrong under perspective, so pin the
+/// spelling: the divide lives in `taa_motion_vector`, the fragment calls it
+/// with the interpolated clip varyings, and the vertex stage never divides
+/// them.
+#[test]
+fn taa_motion_vector_divides_per_fragment() {
+    use crate::render_passes::geometry::shader::variant_tests::rendered_variants;
+    for (label, src) in rendered_variants(None, true) {
+        let divide = wgsl_function(&src, "taa_motion_vector");
+        assert!(
+            divide.contains("clip_now.xy / clip_now.w")
+                && divide.contains("clip_prev.xy / clip_prev.w"),
+            "{label}: the per-fragment divide moved:\n{divide}"
+        );
+        let fragment = wgsl_function(&src, "fs_main");
+        assert!(
+            fragment.contains("taa_motion_vector(input.clip_now, input.clip_prev)"),
+            "{label}: the fragment no longer divides the interpolated clip positions"
+        );
+        let vertex = wgsl_function(&src, "vert_main");
+        assert!(
+            vertex.contains("out.clip_now = camera.view_proj_unjittered *")
+                && vertex.contains("out.clip_prev = camera.prev_view_proj *"),
+            "{label}: the vertex stage must output UNJITTERED clip positions"
+        );
+        for bad in [
+            "clip_now.xy /",
+            "clip_prev.xy /",
+            "clip_now.w",
+            "clip_prev.w",
+        ] {
+            assert!(
+                !vertex.contains(bad),
+                "{label}: the vertex stage divides the motion clip positions (`{bad}`)"
+            );
+        }
+    }
+}
+
+/// The previous-frame evaluation (`motion_prev.wgsl`) copies the current
+/// morph / skin functions with only the buffer swapped. Pin that they stay
+/// copies: any change to the current ones must be mirrored, or the vectors of
+/// morphed / skinned meshes go wrong silently.
+#[test]
+fn taa_prev_functions_mirror_current() {
+    use crate::render_passes::geometry::shader::variant_tests::rendered_variants;
+    // The custom-vertex variant has every function (normal / tangent morphs
+    // are only emitted for the hook).
+    let (_, src) = rendered_variants(None, true)
+        .into_iter()
+        .find(|(label, _)| label == "custom-vertex inst=false")
+        .expect("custom-vertex variant");
+    // `buffer[X]` -> `accessor(X)` (no nested brackets in these reads).
+    fn swap_reads(src: &str, buffer: &str, accessor: &str) -> String {
+        let mut out = String::new();
+        let mut rest = src;
+        while let Some(at) = rest.find(buffer) {
+            let before = &rest[..at];
+            // Only whole identifiers (`skin_joint_matrices`, not a suffix).
+            let whole = before
+                .chars()
+                .last()
+                .is_none_or(|c| !(c.is_alphanumeric() || c == '_'));
+            let after = &rest[at + buffer.len()..];
+            if whole && after.starts_with('[') {
+                let close = after.find(']').expect("closing bracket");
+                out.push_str(before);
+                out.push_str(&format!("{accessor}({})", &after[1..close]));
+                rest = &after[close + 1..];
+            } else {
+                out.push_str(&rest[..at + buffer.len()]);
+                rest = after;
+            }
+        }
+        out.push_str(rest);
+        out
+    }
+    for (current, prev, buffer, accessor) in [
+        (
+            "apply_position_morphs",
+            "apply_position_morphs_prev",
+            "geometry_morph_weights",
+            "prev_morph_weight",
+        ),
+        (
+            "apply_normal_morphs",
+            "apply_normal_morphs_prev",
+            "geometry_morph_weights",
+            "prev_morph_weight",
+        ),
+        (
+            "apply_tangent_morphs",
+            "apply_tangent_morphs_prev",
+            "geometry_morph_weights",
+            "prev_morph_weight",
+        ),
+        (
+            "apply_position_skin",
+            "apply_position_skin_prev",
+            "skin_joint_matrices",
+            "prev_skin_joint_matrix",
+        ),
+    ] {
+        let expected = swap_reads(
+            &wgsl_function(&src, current).replacen(
+                &format!("fn {current}("),
+                &format!("fn {prev}("),
+                1,
+            ),
+            buffer,
+            accessor,
+        );
+        assert_eq!(
+            wgsl_function(&src, prev),
+            expected,
+            "{prev} no longer mirrors {current}"
+        );
+    }
+}
+
+/// Every TAA fallback velocity-overlay variant, rendered: the three plain
+/// draw shapes and a vertex-hook material, each in the shipping and the debug
+/// check variant. `(label, key, wgsl)`.
+fn taa_overlay_variants() -> Vec<(
+    String,
+    crate::render_passes::taa_overlay::shader::cache_key::ShaderCacheKeyTaaOverlay,
+    String,
+)> {
+    use crate::render_passes::geometry::shader::cache_key::DynamicVertexShaderInfo;
+    use crate::render_passes::taa_overlay::shader::{
+        cache_key::{ShaderCacheKeyTaaOverlay, TaaOverlayCustomVertex},
+        template::ShaderTemplateTaaOverlay,
+    };
+    let hook = TaaOverlayCustomVertex {
+        shader_id: MaterialShaderId::PBR,
+        dynamic_vertex: DynamicVertexShaderInfo {
+            shader_includes: Default::default(),
+            struct_decl: "struct MaterialData { amp: f32, }".to_string(),
+            loader_decl: "fn material_data_load(byte_offset: u32) -> MaterialData { \
+                          return MaterialData(bitcast<f32>(materials[byte_offset / 4u])); }"
+                .to_string(),
+            wgsl_vertex: "var out: VertexDisplaceOutput; \
+                          out.position = input.position + input.normal * input.material.amp * sin(input.globals.time); \
+                          out.normal = input.normal; out.tangent = input.tangent; return out;"
+                .to_string(),
+        },
+        texture_pool_arrays_len: 2,
+        texture_pool_samplers_len: 2,
+    };
+    let mut out = Vec::new();
+    for debug in [false, true] {
+        for (instancing, storage, custom) in [
+            (false, true, None),
+            (false, false, None),
+            (true, false, None),
+            (false, false, Some(hook.clone())),
+        ] {
+            let is_hook = custom.is_some();
+            let key = ShaderCacheKeyTaaOverlay {
+                instancing_transforms: instancing,
+                meta_storage_array: storage,
+                custom_vertex: custom,
+                debug,
+                reverse_z: true,
+            };
+            let src = ShaderTemplateTaaOverlay::try_from(&key)
+                .unwrap()
+                .into_source()
+                .unwrap();
+            out.push((
+                format!("overlay inst={instancing} storage={storage} hook={is_hook} debug={debug}"),
+                key,
+                src,
+            ));
+        }
+    }
+    out
+}
+
+/// TAA fallback velocity overlay (docs/TAA.md §3.10): every variant
+/// validates; its vertex stage is the geometry pass's TAA vertex stage
+/// verbatim (two evaluations, unjittered clip positions on both ends); the
+/// fragment divides per fragment and stores ONLY under the identity test.
+#[test]
+fn taa_overlay_variants_validate() {
+    use crate::render_passes::geometry::shader::{
+        cache_key::ShaderCacheKeyGeometry, template::ShaderTemplateGeometryVertex,
+    };
+    use askama::Template;
+    for (label, key, src) in taa_overlay_variants() {
+        naga_validate(&src, &label);
+        // The vertex stage: the geometry velocity variant's, byte for byte.
+        let vertex = ShaderTemplateGeometryVertex::new(&ShaderCacheKeyGeometry {
+            instancing_transforms: key.instancing_transforms,
+            meta_storage_array: key.meta_storage_array,
+            msaa_samples: None,
+            velocity: true,
+            mip_bias: false,
+            dynamic_vertex_shader: key.custom_vertex.as_ref().map(|c| c.dynamic_vertex.clone()),
+        })
+        .render()
+        .unwrap();
+        assert!(
+            src.contains(&vertex),
+            "{label}: vertex stage differs from the geometry pass's"
+        );
+        let vert = wgsl_function(&src, "vert_main");
+        assert!(
+            vert.contains("out.clip_now = camera.view_proj_unjittered *")
+                && vert.contains("out.clip_prev = camera.prev_view_proj *")
+                && src.contains("fn apply_vertex_prev("),
+            "{label}: no unjittered current + previous evaluation"
+        );
+        let frag = wgsl_function(&src, "fs_main");
+        let store = frag.find("textureStore(").expect("store");
+        let identity = frag.find("if (same)").expect("identity test");
+        assert!(identity < store, "{label}: store outside the identity test");
+        assert_eq!(frag.matches("textureStore(").count(), 1, "{label}");
+        assert!(
+            frag.contains("all(vis == ids) && all(bary.zw == split16(input.instance_id))"),
+            "{label}: the identity test changed"
+        );
+        assert!(
+            frag.contains("taa_motion_vector(input.clip_now, input.clip_prev)"),
+            "{label}: the fragment no longer divides the interpolated clip positions"
+        );
+        assert_eq!(src.contains("taa_overlay_check"), key.debug, "{label}");
+    }
+}
+
+/// The storage buffers each overlay variant binds (all of them visible to
+/// the vertex stage, which is where the device limit bites; the debug
+/// counters are fragment-only and read-write) match the constants behind the
+/// capability tiers, and the tiers follow the limit.
+#[test]
+fn taa_overlay_storage_buffers_fit_the_tiers() {
+    use crate::anti_alias::{
+        TaaFallbackOverlay, TAA_OVERLAY_CUSTOM_VERTEX_STORAGE_BUFFERS, TAA_OVERLAY_STORAGE_BUFFERS,
+    };
+    let mut plain_max = 0;
+    let mut hook_max = 0;
+    for (label, key, src) in taa_overlay_variants() {
+        let read_only = src.matches("var<storage, read>").count() as u32;
+        if key.custom_vertex.is_some() {
+            hook_max = hook_max.max(read_only);
+        } else {
+            plain_max = plain_max.max(read_only);
+        }
+        assert!(
+            !src.contains("var<storage, read_write>") || label.contains("debug=true"),
+            "{label}: a writable storage buffer outside the debug check"
+        );
+    }
+    assert_eq!(plain_max, TAA_OVERLAY_STORAGE_BUFFERS);
+    assert_eq!(hook_max, TAA_OVERLAY_CUSTOM_VERTEX_STORAGE_BUFFERS);
+    for (limit, tier) in [
+        (4, TaaFallbackOverlay::Off),
+        (6, TaaFallbackOverlay::Off),
+        (7, TaaFallbackOverlay::NoVertexHooks),
+        // The WebGPU default.
+        (8, TaaFallbackOverlay::NoVertexHooks),
+        (9, TaaFallbackOverlay::NoVertexHooks),
+        (10, TaaFallbackOverlay::All),
+        (16, TaaFallbackOverlay::All),
+    ] {
+        assert_eq!(
+            TaaFallbackOverlay::for_storage_buffer_limit(limit),
+            tier,
+            "limit {limit}"
+        );
+    }
+}
+
+#[test]
+fn taa_resolve_shader_validates() {
+    // The TAA resolve must naga-validate for every variant (reverse_z ×
+    // reactive). Beyond validity, pin what keeps it from ghosting (01 G2-G7,
+    // 03 §4) and the Apple GPU rules it was written to (02).
+    use crate::post_process::ToneMapping;
+    use crate::render_passes::taa::shader::{
+        cache_key::ShaderCacheKeyTaa, template::ShaderTemplateTaa,
+    };
+    for (reverse_z, reactive, tonemapping, debug_views) in [false, true].into_iter().flat_map(|z| {
+        [false, true].into_iter().flat_map(move |r| {
+            [
+                ToneMapping::None,
+                ToneMapping::KhronosNeutralPbr,
+                ToneMapping::Aces,
+            ]
+            .into_iter()
+            .flat_map(move |t| [false, true].into_iter().map(move |d| (z, r, t, d)))
+        })
+    }) {
+        for disocclusion in [
+            crate::taa::TaaDisocclusion::Depth,
+            crate::taa::TaaDisocclusion::DepthAndMotion,
+            crate::taa::TaaDisocclusion::DepthMotionAndId,
+        ] {
+            {
+                let label = format!(
+                "taa resolve reverse_z={reverse_z} reactive={reactive} tonemapping={tonemapping:?} debug_views={debug_views} disocclusion={disocclusion:?}"
+            );
+                let src = ShaderTemplateTaa::try_from(&ShaderCacheKeyTaa {
+                    reverse_z,
+                    reactive,
+                    tonemapping,
+                    debug_views,
+                    disocclusion,
+                })
+                .unwrap_or_else(|e| panic!("{label}: template build failed: {e:?}"))
+                .into_source()
+                .unwrap_or_else(|e| panic!("{label}: render failed: {e:?}"));
+                naga_validate(&src, &label);
+                assert!(
+                    src.contains("fn cs_main("),
+                    "{label}: resolve module missing `fn cs_main` entry point"
+                );
+                // Zero cost per disocclusion level: a level that is off has none
+                // of its bindings, reads or code.
+                let motion = disocclusion.motion();
+                let id = disocclusion.id();
+                for (needle, want) in [
+                    ("var prev_velocity_tex", motion),
+                    ("textureLoad(prev_velocity_tex", motion),
+                    ("var visibility_tex", id),
+                    ("var prev_visibility_tex", id),
+                    ("tile_id", id),
+                    ("fn mesh_id(", id),
+                    // `TaaTuning::edge_release`: only the id level reads it,
+                    // behind a uniform branch (off by default).
+                    ("if (params.edge_release > 0.0)", id),
+                    ("alpha = max(alpha, params.edge_release);", id),
+                ] {
+                    assert_eq!(
+                        src.contains(needle),
+                        want,
+                        "{label}: `{needle}` present must be {want}"
+                    );
+                }
+
+                // G5 — the variance clip (03 §4.6), comment-pinned in the wgsl:
+                // a mean ± γσ box in YCoCg of the TONEMAPPED current 3×3, the
+                // history CLIPPED along the line to the mean (not clamped per
+                // channel), and the clipped history is what gets blended.
+                for line in [
+                "let mean = m1 / kept;",
+                // Taps outside the image (clamped to the edge sample) take no
+                // part in the box or the reconstruction.
+                "kept += keep * inside;",
+                "let w = w0.x * w0.y * keep * inside;",
+                "let sigma = sqrt(max(m2 / kept - mean * mean, vec3<f32>(0.0)));",
+                "let box_extent = max(gamma * sigma, vec3<f32>(max(1.5e-3, quant)));",
+                "let clip_scale = max(max(over.x, max(over.y, over.z)), 1.0);",
+                "let history_clipped = max(ycocg_to_rgb(mean + to_history / clip_scale), vec3<f32>(0.0));",
+                "var result = mix(history_clipped, current, alpha);",
+            ] {
+                assert!(src.contains(line), "{label}: variance clip must contain `{line}`");
+            }
+                // Unconditional: every statement of the clip sits at the top
+                // level of cs_main (4-space indent), never inside a branch that
+                // could skip it ("no skip-the-clip-when-still shortcut").
+                for line in [
+                    "    let history_y = rgb_to_ycocg(history_rgb);",
+                    "    let over = abs(to_history) / box_extent;",
+                    "    let history_clipped = max(",
+                    "    var result = mix(history_clipped, current, alpha);",
+                ] {
+                    assert!(
+                        src.lines().any(|l| l.starts_with(line)),
+                        "{label}: `{}` must be an unconditional top-level statement",
+                        line.trim()
+                    );
+                }
+                assert!(
+                    !src.contains("clamp(history_y") && !src.contains("clamp(history_rgb, nb_"),
+                    "{label}: history must be clipped towards the mean, not clamped per channel"
+                );
+                // G11 — the box and the blend live in the working space (what
+                // the display shows): the current 3×3 and the history are moved
+                // there before the moments, the clip and the blend.
+                assert!(
+                    src.contains("let c = to_work(sanitize(textureLoad(color_tex, p, 0).rgb));")
+                        && src.contains(
+                            "tile[i] = vec4<f32>(rgb_to_ycocg(c), textureLoad(depth_tex, p, 0));"
+                        ),
+                    "{label}: the current 3×3 must be in the working space before the moments"
+                );
+                assert!(
+                    src.contains(
+                        "let history_rgb = to_work(untonemap(sample_history(uv_hist, O)));"
+                    ),
+                    "{label}: the history must be in the working space before the clip"
+                );
+                // The working space is the display's own curve for this
+                // tonemapper.
+                let curve = match tonemapping {
+                    ToneMapping::KhronosNeutralPbr => {
+                        "let new_peak = 1.0 - KN_D * KN_D / (peak + KN_D - KN_START);"
+                    }
+                    ToneMapping::Aces => {
+                        "return x * (ACES_A * x + ACES_B) / (x * (ACES_C * x + ACES_D) + ACES_E);"
+                    }
+                    ToneMapping::None => "return tonemap(c);",
+                };
+                assert!(
+                    src.contains(curve),
+                    "{label}: working space is not the display curve"
+                );
+                // The debug views exist only in their variant (their branch costs
+                // the production resolve ~0.12 ms even when never taken).
+                assert_eq!(
+                    src.contains("params.debug_view"),
+                    debug_views,
+                    "{label}: debug views must be compiled exactly in the debug variant"
+                );
+                // G2 — jitter removed where the current frame is sampled.
+                assert!(
+                    src.contains("let dxy1 = vec2<f32>(p0) + 0.5 - jitter - r_pos;"),
+                    "{label}: reconstruction must place each sample at p + 0.5 - j"
+                );
+                // The 3x3 comes from a workgroup tile: an array in WORKGROUP
+                // memory (allowed), filled before a barrier that every invocation
+                // reaches (the out-of-image return comes after it).
+                assert!(
+                    src.contains("var<workgroup> tile: array<vec4<f32>, 100>;"),
+                    "{label}: shared tile"
+                );
+                let barrier = src.find("workgroupBarrier();").expect("barrier");
+                let bounds = src
+                    .find("if (q.x >= post_dims.x || q.y >= post_dims.y) {")
+                    .expect("bounds check");
+                assert!(
+                    barrier < bounds,
+                    "{label}: the bounds-check return must follow the barrier"
+                );
+                // G4 — Catmull-Rom history (5 bilinear taps), never plain bilinear.
+                assert_eq!(
+                    src.matches("textureSampleLevel(history_prev_tex").count(),
+                    5,
+                    "{label}: history fetch must be the 5-tap Catmull-Rom"
+                );
+                // G6 / G3 — depth convention picks the nearer sample.
+                let nearer = if reverse_z {
+                    "return a > b;"
+                } else {
+                    "return a < b;"
+                };
+                assert!(src.contains(nearer), "{label}: nearer() must be `{nearer}`");
+                let sky = if reverse_z {
+                    "depth <= 0.0"
+                } else {
+                    "depth >= 1.0"
+                };
+                assert!(src.contains(sky), "{label}: sky test must be `{sky}`");
+                // The reactive axis really is structural.
+                assert_eq!(
+                    src.contains("var reactive_tex"),
+                    reactive,
+                    "{label}: reactive binding must exist exactly in the reactive variant"
+                );
+                // Single-sample depth (MSAA is off under TAA).
+                assert!(
+                    !src.contains("texture_depth_multisampled_2d"),
+                    "{label}: resolve must not bind multisampled depth"
+                );
+
+                // Apple GPU rules (02): no `switch` at all (a `return` inside one
+                // cost 19x on one quad), no loops (the 3×3 is unrolled at
+                // template time), and no per-invocation array in any function.
+                // Comments mention the rules by name, so check the code only.
+                let code: String = src
+                    .lines()
+                    .map(|l| l.split("//").next().unwrap_or(""))
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                assert!(
+                    !code.contains("switch"),
+                    "{label}: no `switch` in the resolve"
+                );
+                for kw in ["for (", "for(", "loop {", "while ("] {
+                    assert!(
+                    !code.contains(kw),
+                    "{label}: the resolve must be loop-free (found `{kw}`); unroll at template time"
+                );
+                }
+                assert_eq!(
+                    src.matches("// One tap of the unrolled 3x3").count(),
+                    9,
+                    "{label}: the 3×3 neighbourhood must be unrolled into 9 blocks"
+                );
+                let module = naga::front::wgsl::parse_str(&src).expect("validated above");
+                let functions = module
+                    .functions
+                    .iter()
+                    .map(|(_, f)| f)
+                    .chain(module.entry_points.iter().map(|ep| &ep.function));
+                for function in functions {
+                    let name = function.name.as_deref().unwrap_or("?");
+                    for (_, local) in function.local_variables.iter() {
+                        assert!(
+                            !matches!(module.types[local.ty].inner, naga::TypeInner::Array { .. }),
+                            "{label}: fn {name} declares a per-invocation array `{}`",
+                            local.name.as_deref().unwrap_or("?")
+                        );
+                    }
+                    for (_, expr) in function.expressions.iter() {
+                        if let naga::Expression::Compose { ty, .. } = expr {
+                            assert!(
+                                !matches!(module.types[*ty].inner, naga::TypeInner::Array { .. }),
+                                "{label}: fn {name} builds an array value"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn taa_rgba16float_stores_are_rounded() {
+    // Every colour the TAA passes store into an rgba16float texture goes
+    // through `taa_round_f16` first: a compute-shader store truncates on Apple
+    // GPUs, and the history is stored again every frame, so the loss
+    // accumulated into a converged image one 8-bit level too dark on 7-16% of
+    // a flat-shaded scene's pixels (docs/TAA.md §7).
+    use crate::render_passes::taa::rcas::RCAS_SHADER_SOURCE;
+    use crate::render_passes::taa::shader::{
+        cache_key::ShaderCacheKeyTaa, template::ShaderTemplateTaa,
+    };
+    let shared = include_str!("render_passes/shared/shared_wgsl/taa/f16_round.wgsl");
+    let body = |src: &str| -> String {
+        let start = src
+            .find("fn taa_round_f16(")
+            .expect("taa_round_f16 must be defined");
+        let end = start + src[start..].find("\n}").expect("function end") + 2;
+        src[start..end].to_string()
+    };
+    for (reactive, debug_views) in [(false, false), (true, false), (false, true), (true, true)] {
+        let src = ShaderTemplateTaa::try_from(&ShaderCacheKeyTaa {
+            reverse_z: true,
+            reactive,
+            tonemapping: crate::post_process::ToneMapping::KhronosNeutralPbr,
+            debug_views,
+            disocclusion: crate::taa::TaaDisocclusion::default(),
+        })
+        .unwrap()
+        .into_source()
+        .unwrap();
+        let stores: Vec<&str> = src
+            .lines()
+            .filter(|l| l.contains("textureStore("))
+            .collect();
+        assert_eq!(stores.len(), 2, "resolve: history and output stores");
+        for line in stores {
+            assert!(
+                line.contains("taa_round_f16("),
+                "resolve: unrounded rgba16float store `{}`",
+                line.trim()
+            );
+        }
+        assert_eq!(body(&src), body(shared));
+    }
+    // RCAS: the sharpened store is rounded; the HUD pass-through store copies
+    // a texel that is already a binary16 value.
+    let stores: Vec<&str> = RCAS_SHADER_SOURCE
+        .lines()
+        .filter(|l| l.contains("textureStore("))
+        .collect();
+    assert_eq!(stores.len(), 2, "rcas: pass-through and sharpened stores");
+    assert!(stores[0].contains("textureLoad(src_tex, p, 0)"));
+    assert!(stores[1].contains("taa_round_f16(out)"));
+    // rcas.wgsl is not a template, so it carries a copy: keep it identical.
+    assert_eq!(body(RCAS_SHADER_SOURCE), body(shared));
+
+    // The bit trick itself, mirrored: the nearest binary16 value (10 mantissa
+    // bits), ties up, for every value from the smallest normal half upwards.
+    fn round_f16(x: f32) -> f32 {
+        f32::from_bits((x.max(0.0).to_bits() + 0x1000) & 0xFFFF_E000)
+    }
+    let mut x = 6.2e-5f64;
+    while x < 60000.0 {
+        let e = x.log2().floor();
+        let ulp = 2f64.powf(e - 10.0);
+        let expected = ((x / ulp) + 0.5).floor() * ulp;
+        let got = round_f16(x as f32) as f64;
+        // `x as f32` rounds x first; allow that rounding to move a tie.
+        assert!(
+            (got - expected).abs() <= ulp * 1.0e-3 || ((x / ulp).fract() - 0.5).abs() < 1.0e-4,
+            "round_f16({x}) = {got}, expected {expected}"
+        );
+        assert_eq!(round_f16(got as f32) as f64, got, "idempotent");
+        assert!((got - x).abs() <= ulp * 0.5 * 1.001);
+        x *= 1.000_37;
+    }
+    assert_eq!(round_f16(0.0), 0.0);
+    assert_eq!(round_f16(-1.0), 0.0);
+    assert_eq!(round_f16(f32::INFINITY), f32::INFINITY);
+    // The largest value below 1 the history may hold stays below 1.
+    assert!(round_f16(0.9995) < 1.0);
+}
+
+#[test]
+fn taa_working_space_curves_invert() {
+    // The resolve averages in the display's working space and converts back
+    // every frame (history stored in Karis(HDR)), so the inverse must undo
+    // the curve closely, or the history drifts a little every frame. CPU
+    // mirrors of `display_curve` / `display_curve_inverse` in resolve.wgsl;
+    // the WGSL is pinned to the same formulas by
+    // `taa_resolve_shader_validates`.
+    fn max3(c: [f32; 3]) -> f32 {
+        c[0].max(c[1]).max(c[2])
+    }
+    fn min3(c: [f32; 3]) -> f32 {
+        c[0].min(c[1]).min(c[2])
+    }
+    const S: f32 = 0.76;
+    const D: f32 = 0.24;
+    const DS: f32 = 0.15;
+    fn kn(c: [f32; 3]) -> [f32; 3] {
+        let x = min3(c);
+        let offset = if x < 0.08 { x - 6.25 * x * x } else { 0.04 };
+        let r = c.map(|v| v - offset);
+        let peak = max3(r);
+        if peak < S {
+            return r;
+        }
+        let np = 1.0 - D * D / (peak + D - S);
+        let g = 1.0 - 1.0 / (DS * (peak - np) + 1.0);
+        r.map(|v| v * (np / peak) * (1.0 - g) + np * g)
+    }
+    fn kn_inv(y: [f32; 3]) -> [f32; 3] {
+        let y = y.map(|v| v.max(0.0));
+        let np = max3(y).clamp(S, 0.999_999_9);
+        let peak = D * D / (1.0 - np) - D + S;
+        let g = 1.0 - 1.0 / (DS * (peak - np) + 1.0);
+        let c = if max3(y) < S {
+            y
+        } else {
+            y.map(|v| (v - g * np) / (1.0 - g) * (peak / np.max(1e-6)))
+        };
+        let m = min3(c).max(0.0);
+        let offset = if m < 0.04 {
+            (m / 6.25).sqrt() - m
+        } else {
+            0.04
+        };
+        c.map(|v| (v + offset).max(0.0))
+    }
+    const A: f32 = 2.51;
+    const B: f32 = 0.03;
+    const C: f32 = 2.43;
+    const DD: f32 = 0.59;
+    const E: f32 = 0.14;
+    fn aces(x: [f32; 3]) -> [f32; 3] {
+        x.map(|x| x * (A * x + B) / (x * (C * x + DD) + E))
+    }
+    fn aces_inv(y: [f32; 3]) -> [f32; 3] {
+        y.map(|y| {
+            let y = y.clamp(0.0, A / C - 1e-4);
+            let qa = A - C * y;
+            let qb = B - DD * y;
+            let root = (qb * qb + 4.0 * qa * E * y).sqrt();
+            if qb > 0.0 {
+                2.0 * E * y / (qb + root).max(1e-12)
+            } else {
+                (root - qb) / (2.0 * qa)
+            }
+        })
+    }
+    // What matters is what the display shows: the curve of the round trip
+    // against the curve of the colour (a strongly compressed, saturated
+    // highlight's weakest channel is poorly conditioned in HDR but invisible
+    // after the curve). Below the knee the round trip is exact in HDR too.
+    let mut worst = (0.0f32, 0.0f32, 0.0f32);
+    for i in 0..2000 {
+        let t = i as f32 / 2000.0;
+        for c in [
+            [t * 0.1, t * 0.1, t * 0.1],
+            [t * 3.0, t * 1.0, t * 0.2],
+            [t * 40.0, t * 30.0, t * 35.0],
+            [0.01, t * 8.0, 0.5 * t],
+            [t * 0.7, t * 0.3, t * 0.05],
+        ] {
+            let (k1, a1) = (kn(kn_inv(kn(c))), kn(c));
+            let (k2, a2) = (aces(aces_inv(aces(c))), aces(c));
+            for k in 0..3 {
+                worst.0 = worst.0.max((k1[k] - a1[k]).abs());
+                worst.1 = worst.1.max((k2[k] - a2[k]).abs());
+            }
+            if max3(c) < 0.7 {
+                let back = kn_inv(kn(c));
+                for k in 0..3 {
+                    worst.2 = worst.2.max((back[k] - c[k]).abs());
+                }
+            }
+        }
+    }
+    // A thousandth of an 8-bit display level.
+    assert!(
+        worst.0 < 4e-6,
+        "Khronos neutral round trip, display space: {}",
+        worst.0
+    );
+    assert!(
+        worst.1 < 4e-6,
+        "ACES round trip, display space: {}",
+        worst.1
+    );
+    assert!(
+        worst.2 < 1e-5,
+        "Khronos neutral below the knee, HDR: {}",
+        worst.2
     );
 }

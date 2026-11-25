@@ -1,0 +1,326 @@
+name = "untitled.awsm"
+custom_materials = []
+animations = []
+
+[environment]
+skybox = "built_in_default"
+specular = "built_in_default"
+irradiance = "built_in_default"
+
+[environment.probe]
+enabled = false
+center = [
+    0.0,
+    0.0,
+    0.0,
+]
+half_extents = [
+    10.0,
+    10.0,
+    10.0,
+]
+
+[environment.stream]
+skybox = []
+specular = []
+irradiance = []
+
+[environment.rotation]
+skybox = [
+    0.0,
+    0.0,
+    0.0,
+]
+specular = [
+    0.0,
+    0.0,
+    0.0,
+]
+irradiance = [
+    0.0,
+    0.0,
+    0.0,
+]
+
+[shadows]
+sscs_enabled = false
+sscs_step_count = 16
+sscs_step_world = 0.03999999910593033
+sscs_thickness = 0.05000000074505806
+sscs_directional_darkening = 0.3499999940395355
+sscs_punctual_darkening = 0.8999999761581421
+atlas_size = 4096
+evsm_atlas_size = 2048
+evsm_exponent = 10.0
+evsm_blur_radius = 6
+max_point_shadows = 8
+point_shadow_resolution = 1024
+debug_cascade_colors = false
+
+[post_process]
+tonemapping = "khronos_neutral_pbr"
+bloom = false
+dof = false
+exposure = 0.0
+bloom_threshold = 1.0
+bloom_knee = 0.5
+bloom_intensity = 1.0
+bloom_scatter = 1.0
+
+[post_process.ssr]
+enabled = false
+intensity = 1.0
+max_distance = 100.0
+thickness = 1.0
+max_steps = 96
+spread_cutoff = 0.6000000238418579
+edge_fade = 0.03999999910593033
+resolution_scale = 0.5
+temporal = false
+temporal_weight = 0.8999999761581421
+bvh_reflections = false
+
+[post_process.atmosphere]
+mode = "off"
+color = [
+    0.5,
+    0.6000000238418579,
+    0.699999988079071,
+]
+density = 0.019999999552965164
+base_height = 0.0
+height_falloff = 0.0
+scattering_anisotropy = 0.30000001192092896
+volumetric_distance = 80.0
+volumetric_temporal = false
+
+[post_process.anti_aliasing]
+msaa = true
+smaa = false
+
+[assets.6793792d-1735-4869-be64-21cce1903d75]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+texture_encoding = "ktx2"
+lod = "none"
+
+[assets.6793792d-1735-4869-be64-21cce1903d75.source.texture.raster]
+display_name = "Material_MR · metal/rough.jpg"
+color_kind = "metallic_roughness"
+
+[assets.5c1d1ea2-4b11-4f0a-a531-6674cb00ac47]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+texture_encoding = "ktx2"
+lod = "none"
+
+[assets.5c1d1ea2-4b11-4f0a-a531-6674cb00ac47.source.texture.raster]
+display_name = "Material_MR · base color.jpg"
+color_kind = "albedo"
+
+[assets.817dbcd9-7aaf-49e3-bd38-1930168e41bd]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+lod = "cluster"
+
+[assets.817dbcd9-7aaf-49e3-bd38-1930168e41bd.source]
+mesh = "glb"
+
+[assets.80b4b651-980b-4700-8e2c-cb04b89cadb6]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+texture_encoding = "ktx2"
+lod = "none"
+
+[assets.80b4b651-980b-4700-8e2c-cb04b89cadb6.source.texture.raster]
+display_name = "Material_MR · emissive.jpg"
+color_kind = "emissive"
+
+[assets.92e5b6ec-9cf2-408a-8003-69d31b0b4364]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+texture_encoding = "ktx2"
+texture_two_channel_normal = true
+lod = "none"
+
+[assets.92e5b6ec-9cf2-408a-8003-69d31b0b4364.source.texture.raster]
+display_name = "Material_MR · normal.jpg"
+color_kind = "normal"
+
+[assets.c53250ca-e802-49ef-965d-e099dffc6788]
+gltf_material_asset_ids = []
+gltf_image_asset_ids = []
+content_hash = ""
+texture_encoding = "ktx2"
+lod = "none"
+
+[assets.c53250ca-e802-49ef-965d-e099dffc6788.source.texture.raster]
+display_name = "Material_MR · occlusion.jpg"
+color_kind = "occlusion"
+
+[mixer]
+layers = []
+
+[[nodes]]
+id = "817dbcd9-7aaf-49e3-bd38-1930168e41bd"
+name = "helmet"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    0.0,
+    0.0,
+    0.0,
+]
+rotation = [
+    0.7071067690849304,
+    0.0,
+    0.0,
+    0.7071067094802856,
+]
+scale = [
+    1.0,
+    1.0000001192092896,
+    1.0000001192092896,
+]
+
+[nodes.kind.mesh]
+mesh = "817dbcd9-7aaf-49e3-bd38-1930168e41bd"
+selected_variant = "56d6d32b-2b80-45b2-85e1-ffd871c30186"
+
+[[nodes.kind.mesh.material_variants]]
+id = "56d6d32b-2b80-45b2-85e1-ffd871c30186"
+name = "Material_MR"
+
+[nodes.kind.mesh.material_variants.instance]
+asset = "a38870a6-ed4e-47ed-a61a-2baf715263f7"
+
+[nodes.kind.mesh.material_variants.instance.inline]
+label = "Material_MR"
+base_color = [
+    1.0,
+    1.0,
+    1.0,
+    1.0,
+]
+metallic = 1.0
+roughness = 1.0
+emissive = [
+    1.0,
+    1.0,
+    1.0,
+]
+normal_scale = 1.0
+occlusion_strength = 1.0
+ssr_mask = 1.0
+double_sided = false
+vertex_colors_enabled = false
+alpha_mode = "opaque"
+shading = "pbr"
+
+[nodes.kind.mesh.material_variants.instance.inline.base_color_texture]
+asset = "5c1d1ea2-4b11-4f0a-a531-6674cb00ac47"
+
+[nodes.kind.mesh.material_variants.instance.inline.metallic_roughness_texture]
+asset = "6793792d-1735-4869-be64-21cce1903d75"
+
+[nodes.kind.mesh.material_variants.instance.inline.emissive_texture]
+asset = "80b4b651-980b-4700-8e2c-cb04b89cadb6"
+
+[nodes.kind.mesh.material_variants.instance.inline.normal_texture]
+asset = "92e5b6ec-9cf2-408a-8003-69d31b0b4364"
+
+[nodes.kind.mesh.material_variants.instance.inline.occlusion_texture]
+asset = "c53250ca-e802-49ef-965d-e099dffc6788"
+
+[nodes.kind.mesh.material_variants.instance.inline.extensions]
+
+[nodes.kind.mesh.material_variants.instance.uniform_overrides]
+
+[nodes.kind.mesh.material_variants.instance.texture_overrides]
+
+[nodes.kind.mesh.material_variants.instance.buffer_overrides]
+
+[nodes.kind.mesh.shadow]
+cast = true
+receive = true
+
+[nodes.kind.mesh.lod]
+kind = "cluster"
+
+[[nodes]]
+id = "89c2a594-c0ac-4803-8766-cf82b388fa34"
+name = "camera"
+locked = false
+visible = true
+prefab = false
+children = []
+
+[nodes.transform]
+translation = [
+    0.0,
+    0.20000000298023224,
+    3.5,
+]
+rotation = [
+    0.0,
+    0.0,
+    0.0,
+    1.0,
+]
+scale = [
+    1.0,
+    1.0,
+    1.0,
+]
+
+[nodes.kind.camera]
+near = 0.10000000149011612
+far = 200.0
+behavior = "static"
+
+[nodes.kind.camera.projection.perspective]
+fov_y_rad = 1.0471975803375244
+
+[pack]
+packs = [4485416]
+
+[pack.files]
+"assets/5c1d1ea2-4b11-4f0a-a531-6674cb00ac47.ktx2" = [
+    0,
+    2367142,
+    735912,
+]
+"assets/6793792d-1735-4869-be64-21cce1903d75.ktx2" = [
+    0,
+    3103054,
+    733330,
+]
+"assets/80b4b651-980b-4700-8e2c-cb04b89cadb6.ktx2" = [
+    0,
+    4438896,
+    46520,
+]
+"assets/817dbcd9-7aaf-49e3-bd38-1930168e41bd.glb" = [
+    0,
+    4244836,
+    194060,
+]
+"assets/92e5b6ec-9cf2-408a-8003-69d31b0b4364.ktx2" = [
+    0,
+    0,
+    2367142,
+]
+"assets/c53250ca-e802-49ef-965d-e099dffc6788.ktx2" = [
+    0,
+    3836384,
+    408452,
+]

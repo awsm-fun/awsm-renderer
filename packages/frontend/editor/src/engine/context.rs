@@ -30,7 +30,20 @@ use gloo_render::AnimationFrame;
 
 use crate::error::EditorResult;
 
-pub type RendererHandle = Arc<xutex::AsyncMutex<AwsmRenderer>>;
+/// The editor's async lock type for the renderer (and the bridge's op lock).
+///
+/// `futures::lock::Mutex`, not `xutex::AsyncMutex`: the editor cancels
+/// futures that may be queued on the renderer lock (a node's observers are
+/// dropped by `remove_node`, an `AsyncLoader` drops its previous load), and
+/// xutex 0.2.1 hands the lock directly to the next waiter on unlock, so a
+/// waiter cancelled after that handoff but before its next poll keeps the lock
+/// forever: every later `with_renderer_mut` hangs and the render loop's
+/// `try_lock` skips every frame (the contact-shadows scene, where a
+/// `new_project` is followed at once by a `delete`). The futures mutex passes
+/// the wakeup on when a woken waiter is dropped.
+pub type AsyncLock<T> = futures::lock::Mutex<T>;
+
+pub type RendererHandle = Arc<AsyncLock<AwsmRenderer>>;
 pub type CameraHandle = Arc<std::sync::Mutex<Camera>>;
 pub type RenderHooksHandle = Arc<std::sync::RwLock<Option<RenderHooks>>>;
 pub type WorkerPoolHandle = Arc<Option<WorkerPool>>;
@@ -149,7 +162,7 @@ pub async fn create_context(canvas: web_sys::HtmlCanvasElement) -> EditorResult<
     let (renderer_result, worker_pool) =
         futures::future::join(create_renderer(canvas.clone()), maybe_build_worker_pool()).await;
     let renderer = renderer_result?;
-    let renderer = Arc::new(xutex::AsyncMutex::new(renderer));
+    let renderer = Arc::new(AsyncLock::new(renderer));
     let worker_pool: WorkerPoolHandle = Arc::new(worker_pool);
 
     let camera = {
@@ -486,5 +499,49 @@ pub fn surface_commit_error(err: &impl std::fmt::Display) {
             "{msg} The newest textures are not shown until some are removed (delete the \
              texture or resize it to a size already in use, then reload the project)."
         ));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AsyncLock;
+    use futures::task::noop_waker;
+    use std::future::Future;
+    use std::task::{Context, Poll};
+
+    /// The sequence that wedged the editor under xutex: a task queues on the
+    /// lock, the holder unlocks (waking it), and the task is cancelled before
+    /// it runs again. The lock must be free afterwards.
+    #[test]
+    fn a_waiter_cancelled_after_the_unlock_does_not_keep_the_lock() {
+        let lock = AsyncLock::new(0u32);
+        let waker = noop_waker();
+        let mut cx = Context::from_waker(&waker);
+        let holder = lock.try_lock().expect("uncontended");
+        let mut waiter = Box::pin(lock.lock());
+        assert!(matches!(waiter.as_mut().poll(&mut cx), Poll::Pending));
+        drop(holder);
+        drop(waiter);
+        assert!(
+            lock.try_lock().is_some(),
+            "the cancelled waiter kept the lock"
+        );
+    }
+
+    /// With a second task still queued, the cancelled waiter's wakeup must
+    /// reach it, so it gets the lock on its next poll.
+    #[test]
+    fn a_cancelled_waiter_passes_the_lock_to_the_next_one() {
+        let lock = AsyncLock::new(0u32);
+        let waker = noop_waker();
+        let mut cx = Context::from_waker(&waker);
+        let holder = lock.try_lock().expect("uncontended");
+        let mut first = Box::pin(lock.lock());
+        let mut second = Box::pin(lock.lock());
+        assert!(matches!(first.as_mut().poll(&mut cx), Poll::Pending));
+        assert!(matches!(second.as_mut().poll(&mut cx), Poll::Pending));
+        drop(holder);
+        drop(first);
+        assert!(matches!(second.as_mut().poll(&mut cx), Poll::Ready(_)));
     }
 }

@@ -826,6 +826,9 @@ impl LoadedScene {
     /// this (this frees the hidden *templates*, but a duplicate that outlives its
     /// template's GPU buffers is undefined).
     pub fn teardown(self, renderer: &mut AwsmRenderer) {
+        // The scene leaves the screen: TAA must not blend whatever replaces it
+        // with this one's history (`docs/TAA.md` §2.7). Free with TAA off.
+        renderer.reset_temporal_history();
         // A glb-backed mesh sits on a transform its glb decode created (a
         // child of the node's transform), which nothing else records. Note
         // them before the meshes go, and free them with the other transforms.
@@ -982,14 +985,121 @@ pub fn set_node_visible(renderer: &mut AwsmRenderer, handles: &NodeHandles, visi
 /// The scene's authored anti-aliasing as renderer settings, keeping every
 /// other field of `current` (mip-mapping etc.). The loader applies this; a
 /// host can call it again to return to the authored choice after overriding.
+///
+/// An authored TAA block selects TAA and wins over `msaa` / `smaa` (the
+/// renderer rejects TAA combined with either).
 pub fn anti_aliasing_to_renderer(
     pp: &awsm_renderer_scene::PostProcessConfig,
     current: &awsm_renderer::anti_alias::AntiAliasing,
 ) -> awsm_renderer::anti_alias::AntiAliasing {
     let mut aa = current.clone();
-    aa.msaa_sample_count = pp.anti_aliasing.msaa.then_some(4);
-    aa.smaa = pp.anti_aliasing.smaa;
+    match pp.anti_aliasing.taa.as_ref() {
+        Some(taa) => {
+            aa.msaa_sample_count = None;
+            aa.smaa = false;
+            aa.taa = Some(taa_settings_to_renderer(taa));
+        }
+        None => {
+            aa.msaa_sample_count = pp.anti_aliasing.msaa.then_some(4);
+            aa.smaa = pp.anti_aliasing.smaa;
+            aa.taa = None;
+        }
+    }
     aa
+}
+
+/// Schema [`awsm_renderer_scene::TaaSettings`] → runtime
+/// [`awsm_renderer::taa::TaaConfig`]. Shared by the loader and the editor's
+/// live settings sync.
+///
+/// Sanitises what a hand-edited file may hold, so an out-of-range value can
+/// never make the renderer reject TAA (which would drop the scene to the
+/// MSAA fallback): `render_scale` is clamped to `0.5..=1.0` (non-finite →
+/// 1.0), `sharpen` to `0..=1` (non-finite → 0), and a non-finite or negative
+/// tuning value takes its default. The current-frame weights (`motion_alpha`,
+/// `motion_edge_alpha`, `edge_release` and every `reactive_*`) are also
+/// clamped to at most 1: the resolve takes the largest of them as the
+/// current frame's share, and above 1 the blend would extrapolate past the
+/// current frame (overshoot, flicker).
+pub fn taa_settings_to_renderer(
+    taa: &awsm_renderer_scene::TaaSettings,
+) -> awsm_renderer::taa::TaaConfig {
+    use awsm_renderer::taa::{TaaConfig, TaaDisocclusion, TaaTuning};
+    let t = &taa.tuning;
+    let d = TaaTuning::default();
+    // Every tuning value is a non-negative weight, width, speed or count —
+    // except the mip bias, which may be negative.
+    let pos = |v: f32, default: f32| {
+        if v.is_finite() && v >= 0.0 {
+            v
+        } else {
+            default
+        }
+    };
+    let fin = |v: f32, default: f32| if v.is_finite() { v } else { default };
+    // A current-frame weight: `pos`, then at most 1.
+    let weight = |v: f32, default: f32| pos(v, default).min(1.0);
+    TaaConfig {
+        render_scale: if taa.render_scale.is_finite() {
+            taa.render_scale.clamp(TaaConfig::MIN_RENDER_SCALE, 1.0)
+        } else {
+            1.0
+        },
+        sharpen: if taa.sharpen.is_finite() {
+            taa.sharpen.clamp(0.0, 1.0)
+        } else {
+            0.0
+        },
+        disocclusion: match taa.disocclusion {
+            awsm_renderer_scene::post_process::TaaDisocclusionSetting::Depth => {
+                TaaDisocclusion::Depth
+            }
+            awsm_renderer_scene::post_process::TaaDisocclusionSetting::DepthAndMotion => {
+                TaaDisocclusion::DepthAndMotion
+            }
+            awsm_renderer_scene::post_process::TaaDisocclusionSetting::DepthMotionAndId => {
+                TaaDisocclusion::DepthMotionAndId
+            }
+        },
+        bloom_source: match taa.bloom_source {
+            awsm_renderer_scene::post_process::TaaBloomSourceSetting::CurrentFrame => {
+                awsm_renderer::taa::TaaBloomSource::CurrentFrame
+            }
+            awsm_renderer_scene::post_process::TaaBloomSourceSetting::Resolved => {
+                awsm_renderer::taa::TaaBloomSource::Resolved
+            }
+        },
+        dof_order: match taa.dof_order {
+            awsm_renderer_scene::post_process::TaaDofOrderSetting::AfterResolve => {
+                awsm_renderer::taa::TaaDofOrder::AfterResolve
+            }
+            awsm_renderer_scene::post_process::TaaDofOrderSetting::BeforeResolve => {
+                awsm_renderer::taa::TaaDofOrder::BeforeResolve
+            }
+        },
+        tuning: TaaTuning {
+            gamma_still: pos(t.gamma_still, d.gamma_still),
+            gamma_moving: pos(t.gamma_moving, d.gamma_moving),
+            disocclusion_threshold: pos(t.disocclusion_threshold, d.disocclusion_threshold),
+            max_history_native: pos(t.max_history_native, d.max_history_native),
+            max_history_upscaling: pos(t.max_history_upscaling, d.max_history_upscaling),
+            motion_alpha: weight(t.motion_alpha, d.motion_alpha),
+            motion_alpha_speed: pos(t.motion_alpha_speed, d.motion_alpha_speed),
+            reactive_transparent: weight(t.reactive_transparent, d.reactive_transparent),
+            reactive_particles: weight(t.reactive_particles, d.reactive_particles),
+            reactive_lines: weight(t.reactive_lines, d.reactive_lines),
+            edge_release: weight(t.edge_release, d.edge_release),
+            reactive_new_objects: weight(t.reactive_new_objects, d.reactive_new_objects),
+            reactive_material: weight(t.reactive_material, d.reactive_material),
+            reactive_ssr: weight(t.reactive_ssr, d.reactive_ssr),
+            mip_bias_extra: fin(t.mip_bias_extra, d.mip_bias_extra),
+            gamma_moving_speed: pos(t.gamma_moving_speed, d.gamma_moving_speed),
+            max_history_moving: pos(t.max_history_moving, d.max_history_moving),
+            max_history_moving_speed: pos(t.max_history_moving_speed, d.max_history_moving_speed),
+            motion_edge_alpha: weight(t.motion_edge_alpha, d.motion_edge_alpha),
+            motion_edge_speed: pos(t.motion_edge_speed, d.motion_edge_speed),
+        },
+    }
 }
 
 /// Schema [`awsm_renderer_scene::PostProcessConfig`] → runtime
@@ -1102,6 +1212,15 @@ pub async fn populate_awsm_scene(
 /// switched off, and its lines/decals skipped. Runtime toggling via
 /// [`set_node_visible`] covers meshes and lights; re-showing a skipped line/decal
 /// at runtime needs the renderer to grow a per-kind hide toggle (a follow-on).
+///
+/// **Anti-aliasing:** the scene's authored AA (`post_process.anti_aliasing`,
+/// see [`anti_aliasing_to_renderer`]) is applied before the commit and
+/// REPLACES the renderer's mode, whatever the app built it with. A scene with
+/// no AA block applies the schema default, MSAA 4×, exactly as 0.45 did; a
+/// renderer built with TAA therefore leaves TAA unless the scene authored it.
+/// An authored TAA on a device without TAA's motion-vector path falls back
+/// to MSAA 4× with a warning. An app that wants its own AA (a quality
+/// setting) calls `set_anti_aliasing` + `commit_load` after the load.
 pub async fn load_scene_for_player(
     renderer: &mut AwsmRenderer,
     scene: &Scene,
@@ -1430,8 +1549,32 @@ async fn load_scene_for_player_inner(
     // setting calls `set_anti_aliasing` + `commit_load` after the load.
     let aa = anti_aliasing_to_renderer(&scene.post_process, &renderer.anti_aliasing);
     if aa != renderer.anti_aliasing {
+        let wants_taa = aa.taa.is_some();
+        let mipmap = aa.mipmap;
         if let Err(err) = renderer.set_anti_aliasing(aa).await {
-            tracing::warn!("anti-aliasing apply failed, keeping the renderer's: {err}");
+            if wants_taa {
+                // TAA could not be set up here, for ANY reason (the renderer
+                // already parked itself on MSAA 4x when the TAA pass failed to
+                // build; see `AwsmRenderer::taa_fallback_reason`): show the
+                // scene with MSAA 4×, the closest non-temporal equivalent,
+                // rather than unsmoothed or not at all. A TAA pipeline that
+                // fails later, in the commit below, falls back the same way
+                // inside `commit_load`.
+                tracing::warn!("TAA unavailable, falling back to MSAA 4x: {err}");
+                let fallback = awsm_renderer::anti_alias::AntiAliasing {
+                    mipmap,
+                    ..awsm_renderer::anti_alias::AntiAliasing::msaa4()
+                };
+                if fallback != renderer.anti_aliasing {
+                    if let Err(err) = renderer.set_anti_aliasing(fallback).await {
+                        tracing::warn!(
+                            "anti-aliasing fallback failed, keeping the renderer's: {err}"
+                        );
+                    }
+                }
+            } else {
+                tracing::warn!("anti-aliasing apply failed, keeping the renderer's: {err}");
+            }
         }
     }
 
@@ -4234,12 +4377,15 @@ async fn resolve_material(
         }
         _ => material::material_to_renderer(def),
     };
-    renderer.materials.insert(
+    let key = renderer.materials.insert(
         material,
         &renderer.textures,
         &renderer.dynamic_materials,
         &renderer.extras_pool,
-    )
+    );
+    // TAA: flowing textures (and explicit `temporal`) are reactive.
+    material::apply_material_temporal(renderer, key, def);
+    key
 }
 
 /// Bind the KHR-extension texture slots on a PBR material from the bundle,
@@ -5104,5 +5250,344 @@ mod cluster_streaming_tests {
             assert_eq!(p.lod_error, 0.0); // always-drawn frontier
             assert_eq!(p.parent_error, f32::MAX);
         }
+    }
+}
+
+#[cfg(test)]
+mod anti_aliasing_tests {
+    use super::{anti_aliasing_to_renderer, taa_settings_to_renderer};
+    use awsm_renderer::anti_alias::AntiAliasing;
+    use awsm_renderer_scene::{AntiAliasingConfig, PostProcessConfig, TaaSettings};
+
+    fn pp(aa: AntiAliasingConfig) -> PostProcessConfig {
+        PostProcessConfig {
+            anti_aliasing: aa,
+            ..PostProcessConfig::default()
+        }
+    }
+
+    /// The schema's TAA defaults are the renderer's: a scene that authors
+    /// `taa = {}` gets exactly `TaaConfig::native()`.
+    #[test]
+    fn schema_taa_defaults_match_the_renderer() {
+        assert_eq!(
+            taa_settings_to_renderer(&TaaSettings::default()),
+            awsm_renderer::taa::TaaConfig::native()
+        );
+    }
+
+    /// `name -> value` of a flat struct of f32s, from its `Debug` text, so the
+    /// schema and the renderer tuning compare FIELD BY FIELD whatever their
+    /// declaration order, and a field added to either side shows up as a
+    /// missing key rather than being skipped.
+    fn debug_fields(debug: &str) -> std::collections::BTreeMap<String, String> {
+        let inner = &debug[debug.find('{').unwrap() + 1..debug.rfind('}').unwrap()];
+        inner
+            .split(',')
+            .filter(|kv| !kv.trim().is_empty())
+            .map(|kv| {
+                let (k, v) = kv.split_once(':').unwrap();
+                (k.trim().to_string(), v.trim().to_string())
+            })
+            .collect()
+    }
+
+    /// Every authored disocclusion level reaches the renderer as itself, and a
+    /// scene file naming one loads it through the anti-aliasing path the
+    /// player and the editor's settings_sync both use.
+    #[test]
+    fn every_disocclusion_level_passes_through() {
+        use awsm_renderer::taa::TaaDisocclusion as R;
+        use awsm_renderer_scene::TaaDisocclusionSetting as S;
+        for (authored, expected) in [
+            (S::Depth, R::Depth),
+            (S::DepthAndMotion, R::DepthAndMotion),
+            (S::DepthMotionAndId, R::DepthMotionAndId),
+        ] {
+            let cfg = taa_settings_to_renderer(&TaaSettings {
+                disocclusion: authored,
+                ..TaaSettings::default()
+            });
+            assert_eq!(cfg.disocclusion, expected);
+            let aa = anti_aliasing_to_renderer(
+                &pp(AntiAliasingConfig {
+                    msaa: false,
+                    smaa: false,
+                    taa: Some(TaaSettings {
+                        disocclusion: authored,
+                        ..TaaSettings::default()
+                    }),
+                }),
+                &AntiAliasing::default(),
+            );
+            assert_eq!(aa.taa.expect("taa").disocclusion, expected);
+        }
+    }
+
+    /// Both DoF orders pass through, the names agree, and the schema's
+    /// default is the renderer's.
+    #[test]
+    fn every_dof_order_passes_through_and_defaults_agree() {
+        use awsm_renderer::taa::TaaDofOrder;
+        use awsm_renderer_scene::post_process::TaaDofOrderSetting as S;
+        for (authored, expected) in [
+            (S::AfterResolve, TaaDofOrder::AfterResolve),
+            (S::BeforeResolve, TaaDofOrder::BeforeResolve),
+        ] {
+            let cfg = taa_settings_to_renderer(&TaaSettings {
+                dof_order: authored,
+                ..TaaSettings::default()
+            });
+            assert_eq!(cfg.dof_order, expected);
+            assert_eq!(authored.as_str(), expected.as_str());
+            assert_eq!(S::from_name(authored.as_str()), Some(authored));
+        }
+        assert_eq!(
+            taa_settings_to_renderer(&TaaSettings::default()).dof_order,
+            TaaDofOrder::default()
+        );
+    }
+
+    /// The schema's default disocclusion level is the renderer's (each layer
+    /// has ONE default site).
+    #[test]
+    fn every_bloom_source_passes_through_and_defaults_agree() {
+        use awsm_renderer::taa::TaaBloomSource;
+        use awsm_renderer_scene::post_process::TaaBloomSourceSetting as S;
+        for (authored, expected) in [
+            (S::CurrentFrame, TaaBloomSource::CurrentFrame),
+            (S::Resolved, TaaBloomSource::Resolved),
+        ] {
+            let cfg = taa_settings_to_renderer(&TaaSettings {
+                bloom_source: authored,
+                ..TaaSettings::default()
+            });
+            assert_eq!(cfg.bloom_source, expected);
+            assert_eq!(authored.as_str(), expected.as_str());
+        }
+        assert_eq!(
+            taa_settings_to_renderer(&TaaSettings::default()).bloom_source,
+            TaaBloomSource::default()
+        );
+    }
+
+    #[test]
+    fn schema_disocclusion_default_is_the_renderers() {
+        assert_eq!(
+            taa_settings_to_renderer(&TaaSettings::default()).disocclusion,
+            awsm_renderer::taa::TaaDisocclusion::default()
+        );
+    }
+
+    /// A current-frame weight above 1 is clamped to 1 (above it the blend
+    /// would extrapolate); every other tuning value keeps its authored size,
+    /// and a weight in range passes unchanged.
+    #[test]
+    fn taa_weights_above_one_are_clamped() {
+        use awsm_renderer_scene::TaaTuningSettings;
+        let authored = TaaTuningSettings {
+            motion_alpha: 1.5,
+            motion_edge_alpha: 2.0,
+            edge_release: 1.25,
+            reactive_new_objects: 2.0,
+            reactive_transparent: 3.0,
+            reactive_material: 1.01,
+            reactive_particles: 7.0,
+            reactive_lines: 1.5,
+            reactive_ssr: 4.0,
+            max_history_native: 24.0,
+            motion_alpha_speed: 12.0,
+            ..TaaTuningSettings::default()
+        };
+        let t = taa_settings_to_renderer(&TaaSettings {
+            tuning: authored,
+            ..TaaSettings::default()
+        })
+        .tuning;
+        for (name, v) in [
+            ("motion_alpha", t.motion_alpha),
+            ("motion_edge_alpha", t.motion_edge_alpha),
+            ("edge_release", t.edge_release),
+            ("reactive_new_objects", t.reactive_new_objects),
+            ("reactive_transparent", t.reactive_transparent),
+            ("reactive_material", t.reactive_material),
+            ("reactive_particles", t.reactive_particles),
+            ("reactive_lines", t.reactive_lines),
+            ("reactive_ssr", t.reactive_ssr),
+        ] {
+            assert_eq!(v, 1.0, "{name}");
+        }
+        // Not weights: unchanged.
+        assert_eq!(t.max_history_native, 24.0);
+        assert_eq!(t.motion_alpha_speed, 12.0);
+        // In range: unchanged.
+        let t = taa_settings_to_renderer(&TaaSettings {
+            tuning: TaaTuningSettings {
+                edge_release: 0.5,
+                reactive_lines: 1.0,
+                ..TaaTuningSettings::default()
+            },
+            ..TaaSettings::default()
+        })
+        .tuning;
+        assert_eq!((t.edge_release, t.reactive_lines), (0.5, 1.0));
+    }
+
+    /// The schema's tuning defaults are the renderer's, field by field (the
+    /// values may change while tuning; each layer has ONE default site).
+    #[test]
+    fn schema_taa_tuning_defaults_equal_the_renderer_field_by_field() {
+        use awsm_renderer_scene::TaaTuningSettings;
+        assert_eq!(
+            debug_fields(&format!("{:?}", TaaTuningSettings::default())),
+            debug_fields(&format!("{:?}", awsm_renderer::taa::TaaTuning::default())),
+        );
+    }
+
+    /// Every authored tuning field reaches the renderer (none is silently
+    /// replaced by the shipped default): each field is moved off its default
+    /// through serde, so a new field is covered without listing it here.
+    #[test]
+    fn every_authored_taa_tuning_field_passes_through() {
+        use awsm_renderer_scene::TaaTuningSettings;
+        let mut json = serde_json::to_value(TaaTuningSettings::default()).unwrap();
+        // Moved off its default but kept in every field's valid range (the
+        // weights are clamped to at most 1).
+        for (i, v) in json.as_object_mut().unwrap().values_mut().enumerate() {
+            let d = v.as_f64().unwrap();
+            let step = 0.01 * (i as f64 + 1.0);
+            *v = serde_json::json!(if d >= 0.5 { d - step } else { d + step });
+        }
+        let authored: TaaTuningSettings = serde_json::from_value(json).unwrap();
+        let cfg = taa_settings_to_renderer(&TaaSettings {
+            tuning: authored,
+            ..TaaSettings::default()
+        });
+        assert_eq!(
+            debug_fields(&format!("{authored:?}")),
+            debug_fields(&format!("{:?}", cfg.tuning)),
+        );
+        assert_ne!(cfg.tuning, awsm_renderer::taa::TaaTuning::default());
+    }
+
+    /// Files written before a tuning field existed load unchanged: a missing
+    /// field takes the default.
+    #[test]
+    fn taa_tuning_missing_fields_take_defaults() {
+        use awsm_renderer_scene::TaaTuningSettings;
+        let t: TaaTuningSettings = toml::from_str("gamma_still = 1.5").unwrap();
+        assert_eq!(
+            t,
+            TaaTuningSettings {
+                gamma_still: 1.5,
+                ..TaaTuningSettings::default()
+            }
+        );
+    }
+
+    /// A hand-edited file can hold anything; the mapping must still be a
+    /// config the renderer accepts (`validate`), never a TAA rejection that
+    /// drops the scene to the MSAA fallback.
+    #[test]
+    fn authored_taa_values_are_sanitised() {
+        use awsm_renderer_scene::TaaTuningSettings;
+        let defaults = awsm_renderer::taa::TaaTuning::default();
+        for (scale, want) in [
+            (f32::NAN, 1.0),
+            (f32::INFINITY, 1.0),
+            (0.1, 0.5),
+            (2.0, 1.0),
+            (-1.0, 0.5),
+            (0.67, 0.67),
+        ] {
+            let cfg = taa_settings_to_renderer(&TaaSettings {
+                render_scale: scale,
+                ..TaaSettings::default()
+            });
+            assert_eq!(cfg.render_scale, want, "render_scale {scale}");
+            assert!(AntiAliasing::taa(cfg).validate().is_ok());
+        }
+        for (sharpen, want) in [(f32::NAN, 0.0), (-0.5, 0.0), (3.0, 1.0), (0.25, 0.25)] {
+            let cfg = taa_settings_to_renderer(&TaaSettings {
+                sharpen,
+                ..TaaSettings::default()
+            });
+            assert_eq!(cfg.sharpen, want, "sharpen {sharpen}");
+        }
+        let cfg = taa_settings_to_renderer(&TaaSettings {
+            tuning: TaaTuningSettings {
+                gamma_still: f32::NAN,
+                gamma_moving: -1.0,
+                max_history_native: f32::INFINITY,
+                motion_alpha: 0.3,
+                mip_bias_extra: -0.5,
+                motion_edge_alpha: -1.0,
+                max_history_moving: f32::NAN,
+                ..TaaTuningSettings::default()
+            },
+            ..TaaSettings::default()
+        });
+        assert_eq!(cfg.tuning.gamma_still, defaults.gamma_still);
+        assert_eq!(cfg.tuning.gamma_moving, defaults.gamma_moving);
+        assert_eq!(cfg.tuning.max_history_native, defaults.max_history_native);
+        assert_eq!(cfg.tuning.motion_edge_alpha, defaults.motion_edge_alpha);
+        assert_eq!(cfg.tuning.max_history_moving, defaults.max_history_moving);
+        assert_eq!(cfg.tuning.motion_alpha, 0.3, "valid values pass through");
+        assert_eq!(
+            cfg.tuning.mip_bias_extra, -0.5,
+            "the mip bias may be negative"
+        );
+        let nan_bias = taa_settings_to_renderer(&TaaSettings {
+            tuning: TaaTuningSettings {
+                mip_bias_extra: f32::NAN,
+                ..TaaTuningSettings::default()
+            },
+            ..TaaSettings::default()
+        });
+        assert_eq!(nan_bias.tuning.mip_bias_extra, defaults.mip_bias_extra);
+    }
+
+    #[test]
+    fn modes_map_to_the_renderer() {
+        let current = AntiAliasing::msaa4();
+        // Pre-TAA files: exactly as before.
+        let msaa_smaa = anti_aliasing_to_renderer(
+            &pp(AntiAliasingConfig {
+                msaa: true,
+                smaa: true,
+                taa: None,
+            }),
+            &current,
+        );
+        assert_eq!(msaa_smaa.msaa_sample_count, Some(4));
+        assert!(msaa_smaa.smaa);
+        assert!(msaa_smaa.taa.is_none());
+        // TAA wins over stale msaa / smaa flags and validates.
+        let taa = anti_aliasing_to_renderer(
+            &pp(AntiAliasingConfig {
+                msaa: true,
+                smaa: true,
+                taa: Some(TaaSettings {
+                    render_scale: 0.67,
+                    ..TaaSettings::default()
+                }),
+            }),
+            &current,
+        );
+        assert_eq!(taa.msaa_sample_count, None);
+        assert!(!taa.smaa);
+        assert_eq!(taa.taa.as_ref().map(|t| t.render_scale), Some(0.67));
+        assert!(taa.validate().is_ok());
+        assert_eq!(taa.mipmap, current.mipmap);
+        // Leaving TAA clears it.
+        let none = anti_aliasing_to_renderer(
+            &pp(AntiAliasingConfig {
+                msaa: false,
+                smaa: false,
+                taa: None,
+            }),
+            &taa,
+        );
+        assert_eq!(none, AntiAliasing::none());
     }
 }

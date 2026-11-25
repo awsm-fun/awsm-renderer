@@ -19,6 +19,8 @@ dirs = [
     "src/render_passes/display/shader",
     "src/render_passes/effects/shader",
     "src/render_passes/ssr/shader",
+    "src/render_passes/taa/shader",
+    "src/render_passes/taa_overlay/shader",
     "src/render_passes/volumetrics/shader",
     "src/render_passes/smaa/shader",
     "src/picker/shader",

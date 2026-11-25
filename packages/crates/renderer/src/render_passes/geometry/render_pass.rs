@@ -66,9 +66,13 @@ impl GeometryRenderPass {
     /// compiled at construction time. The inactive branch is filled
     /// on the first `set_anti_aliasing` flip.
     pub async fn new(ctx: &mut RenderPassInitContext<'_>) -> Result<Self> {
-        let multisampled_geometry = ctx.anti_aliasing.has_msaa_checked()?;
+        ctx.anti_aliasing.has_msaa_checked()?;
+        let targets = super::pipeline::GeometryTargets::from_aa(
+            ctx.anti_aliasing,
+            ctx.render_texture_formats,
+        );
         let bind_groups = GeometryBindGroups::new(ctx).await?;
-        let pipelines = GeometryPipelines::new(ctx, &bind_groups, multisampled_geometry).await?;
+        let pipelines = GeometryPipelines::new(ctx, &bind_groups, targets).await?;
         let masked_bind_group = GeometryMaskedBindGroup::new(ctx).await?;
         let masked_pipelines = GeometryMaskedPipelines::new(ctx, &masked_bind_group, &bind_groups)?;
         let custom_vertex_pipelines =
@@ -93,7 +97,7 @@ impl GeometryRenderPass {
         renderables: &[Renderable],
         is_hud: bool,
     ) -> Result<()> {
-        let color_attachments = if is_hud {
+        let mut color_attachments = if is_hud {
             vec![
                 ColorAttachment::new(
                     &ctx.render_texture_views.visibility_data,
@@ -142,6 +146,31 @@ impl GeometryRenderPass {
                 ),
             ]
         };
+
+        // TAA: the fifth target, motion vectors. Cleared to zero by the world
+        // pass (sky and anything not drawn: no vector; the resolve computes
+        // the sky's from depth). The HUD pass loads it and writes the HUD's
+        // own exact vectors over it (plan 04 deviation: exact evaluation
+        // instead of a v = 0 variant; phase 3 makes the HUD reactive).
+        // (Not with the prep-pass fallback: there the prep pass writes the
+        // velocity texture and the geometry pass keeps its 4 targets.)
+        let velocity = super::pipeline::GeometryTargets::from_aa(
+            ctx.anti_aliasing,
+            &ctx.render_textures.formats,
+        )
+        .velocity();
+        if let Some(view) = ctx
+            .render_texture_views
+            .velocity
+            .as_ref()
+            .filter(|_| velocity)
+        {
+            color_attachments.push(ColorAttachment::new(
+                view,
+                if is_hud { LoadOp::Load } else { LoadOp::Clear },
+                StoreOp::Store,
+            ));
+        }
 
         // T2.6: `hud_depth` is Optional — built only after the first
         // HUD-flagged mesh registers. The caller in
@@ -175,9 +204,19 @@ impl GeometryRenderPass {
             .into(),
         )?;
 
-        render_pass.set_bind_group(0, self.bind_groups.camera.get_bind_group()?, None)?;
+        // TAA with a HUD: the HUD pass rasterises with the unjittered camera
+        // twin (03 §5.4; the resolve passes HUD pixels through, so they must
+        // be jitter-free). The opaque pass then shades those pixels with the
+        // jittered inverse; half a render pixel of lighting error is not
+        // visible. Without TAA (or a HUD) this is the main camera group.
+        render_pass.set_bind_group(0, self.bind_groups.camera.get_bind_group_for(is_hud)?, None)?;
 
-        render_pass.set_bind_group(1, self.bind_groups.transforms.get_bind_group()?, None)?;
+        // The TAA variant's group 1 adds the shared previous-frame buffer.
+        render_pass.set_bind_group(
+            1,
+            self.bind_groups.transforms.get_bind_group_for(velocity)?,
+            None,
+        )?;
 
         render_pass.set_bind_group(3, self.bind_groups.animation.get_bind_group()?, None)?;
 
@@ -236,7 +275,7 @@ impl GeometryRenderPass {
             .iter()
             .any(|r| r.geometry_masked_render_pipeline_key().is_some());
         if any_masked {
-            if let Ok(masked_group0) = self.masked_bind_group.get_bind_group() {
+            if let Ok(masked_group0) = self.masked_bind_group.get_bind_group_for(is_hud) {
                 render_pass.set_bind_group(0, masked_group0, None)?;
                 let mut last_masked_key = None;
                 for renderable in renderables {
@@ -269,7 +308,7 @@ impl GeometryRenderPass {
             .iter()
             .any(|r| r.geometry_custom_vertex_render_pipeline_key().is_some());
         if any_custom_vertex {
-            if let Ok(masked_group0) = self.masked_bind_group.get_bind_group() {
+            if let Ok(masked_group0) = self.masked_bind_group.get_bind_group_for(is_hud) {
                 render_pass.set_bind_group(0, masked_group0, None)?;
                 let uv0_zero_buffer = self.custom_vertex_pipelines.uv0_zero_buffer();
                 let mut last_cv_key = None;
@@ -305,7 +344,7 @@ impl GeometryRenderPass {
                 .is_some()
         });
         if any_combined {
-            if let Ok(masked_group0) = self.masked_bind_group.get_bind_group() {
+            if let Ok(masked_group0) = self.masked_bind_group.get_bind_group_for(is_hud) {
                 render_pass.set_bind_group(0, masked_group0, None)?;
                 let uv0_zero_buffer = self.masked_custom_vertex_pipelines.uv0_zero_buffer();
                 let mut last_key = None;

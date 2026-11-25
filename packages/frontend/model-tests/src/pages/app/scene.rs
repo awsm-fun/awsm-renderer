@@ -1246,7 +1246,14 @@ impl AppScene {
                 // View and projection are decoupled: a projection switch is a
                 // cheap mode flip that keeps the orbit pose, and the aspect is
                 // the renderer's business at `set_camera` — nothing to resize.
+                let projection_before = std::mem::discriminant(&camera.params().projection);
                 camera.set_projection_mode(mode);
+                if std::mem::discriminant(&camera.params().projection) != projection_before {
+                    // A projection flip is a camera cut: TAA must not blend
+                    // across it (its jump guard sees position + direction
+                    // only). Free while TAA is off.
+                    renderer.reset_temporal_history();
+                }
                 renderer.set_camera(camera.view(), camera.params())?;
                 return Ok(());
             }
@@ -1281,7 +1288,9 @@ impl AppScene {
         new_camera.set_focus_distance(self.ctx.camera_focus_distance.get());
         apply_cam_url_override(&mut new_camera);
 
-        // Push the camera immediately so gizmo interactions work correctly
+        // Push the camera immediately so gizmo interactions work correctly.
+        // A new camera (new model, or a camera reset) is a cut for TAA.
+        renderer.reset_temporal_history();
         renderer.set_camera(new_camera.view(), new_camera.params())?;
 
         *camera_guard = Some(new_camera);

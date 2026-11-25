@@ -29,6 +29,29 @@ pub struct GeometryBindGroups {
 }
 
 impl GeometryBindGroups {
+    /// The group-1 (transforms) and group-3 (animation) layouts for the
+    /// given targets. The TAA variant's group 1 adds the shared
+    /// previous-frame buffer (`buffer::history`); its layout is created on
+    /// first use, so a renderer that never turns TAA on never creates it.
+    pub fn layout_keys(
+        &self,
+        ctx: &mut RenderPassInitContext<'_>,
+        targets: super::pipeline::GeometryTargets,
+    ) -> Result<(BindGroupLayoutKey, BindGroupLayoutKey)> {
+        if !targets.velocity() {
+            return Ok((
+                self.transforms.bind_group_layout_key,
+                self.animation.bind_group_layout_key,
+            ));
+        }
+        // Group 3 is the same: the previous joint matrices and morph weights
+        // live in the shared previous-frame buffer bound in group 1.
+        Ok((
+            self.transforms.velocity_layout_key(ctx)?,
+            self.animation.bind_group_layout_key,
+        ))
+    }
+
     /// Creates all geometry bind group layouts.
     pub async fn new(ctx: &mut RenderPassInitContext<'_>) -> Result<Self> {
         let camera = GeometryBindGroupCamera::new(ctx).await?;
@@ -50,6 +73,9 @@ pub struct GeometryBindGroupCamera {
     pub bind_group_layout_key: BindGroupLayoutKey,
     // this is set via `recreate` mechanism
     _bind_group: Option<web_sys::GpuBindGroup>,
+    /// TAA with a HUD: the same group over the unjittered camera twin
+    /// (`CameraBuffer::hud_gpu_buffer`), bound by the HUD geometry pass.
+    _hud_bind_group: Option<web_sys::GpuBindGroup>,
 }
 
 impl GeometryBindGroupCamera {
@@ -88,6 +114,7 @@ impl GeometryBindGroupCamera {
         Ok(Self {
             bind_group_layout_key,
             _bind_group: None,
+            _hud_bind_group: None,
         })
     }
 
@@ -111,6 +138,29 @@ impl GeometryBindGroupCamera {
         let bind_group = ctx.gpu.create_bind_group(&descriptor.into());
         self._bind_group = Some(bind_group);
 
+        self._hud_bind_group = match ctx.camera.hud_gpu_buffer.as_ref() {
+            Some(hud_camera) => {
+                let descriptor = BindGroupDescriptor::new(
+                    ctx.bind_group_layouts.get(self.bind_group_layout_key)?,
+                    Some("Geometry Camera (HUD)"),
+                    vec![
+                        BindGroupEntry::new(
+                            0,
+                            BindGroupResource::Buffer(BufferBinding::new(hud_camera)),
+                        ),
+                        BindGroupEntry::new(
+                            1,
+                            BindGroupResource::Buffer(BufferBinding::new(
+                                &ctx.frame_globals.gpu_buffer,
+                            )),
+                        ),
+                    ],
+                );
+                Some(ctx.gpu.create_bind_group(&descriptor.into()))
+            }
+            None => None,
+        };
+
         Ok(())
     }
 
@@ -122,6 +172,33 @@ impl GeometryBindGroupCamera {
             .as_ref()
             .ok_or_else(|| AwsmBindGroupError::NotFound("Geometry camera".to_string()))
     }
+
+    /// The camera group for a pass: the unjittered HUD twin for the HUD pass
+    /// when it exists (TAA with a HUD), else the main one.
+    pub fn get_bind_group_for(
+        &self,
+        hud: bool,
+    ) -> std::result::Result<&web_sys::GpuBindGroup, AwsmBindGroupError> {
+        match self._hud_bind_group.as_ref() {
+            Some(group) if hud => Ok(group),
+            _ => self.get_bind_group(),
+        }
+    }
+}
+
+/// One read-only storage entry. `fragment`: also visible to the fragment
+/// stage (the shape of the existing geometry-pass buffer bindings); the TAA
+/// previous-frame buffer is vertex-only, so it does not count against the
+/// fragment stage's storage-buffer limit.
+fn storage_entry(fragment: bool) -> BindGroupLayoutCacheKeyEntry {
+    BindGroupLayoutCacheKeyEntry {
+        resource: BindGroupLayoutResource::Buffer(
+            BufferBindingLayout::new().with_binding_type(BufferBindingType::ReadOnlyStorage),
+        ),
+        visibility_vertex: true,
+        visibility_fragment: fragment,
+        visibility_compute: false,
+    }
 }
 
 /// Bind group for transform buffers in the geometry pass.
@@ -130,6 +207,12 @@ pub struct GeometryBindGroupTransforms {
     pub bind_group_layout_key: BindGroupLayoutKey,
     // this is set via `recreate` mechanism
     _bind_group: Option<web_sys::GpuBindGroup>,
+    /// TAA variant layout: binding 1 = the shared previous-frame buffer
+    /// (transforms, joint matrices, morph weights). `None` until the TAA
+    /// geometry branch is first built.
+    velocity_layout_key: std::cell::Cell<Option<BindGroupLayoutKey>>,
+    /// TAA variant bind group (only while the previous-frame buffer exists).
+    _velocity_bind_group: Option<web_sys::GpuBindGroup>,
 }
 
 impl GeometryBindGroupTransforms {
@@ -157,10 +240,34 @@ impl GeometryBindGroupTransforms {
         Ok(Self {
             bind_group_layout_key,
             _bind_group: None,
+            velocity_layout_key: std::cell::Cell::new(None),
+            _velocity_bind_group: None,
         })
     }
 
-    /// Recreates the transforms bind group.
+    /// The TAA variant's layout (current + previous transforms), created on
+    /// first use.
+    pub fn velocity_layout_key(
+        &self,
+        ctx: &mut RenderPassInitContext<'_>,
+    ) -> Result<BindGroupLayoutKey> {
+        if let Some(key) = self.velocity_layout_key.get() {
+            return Ok(key);
+        }
+        let key = ctx.bind_group_layouts.get_key(
+            ctx.gpu,
+            BindGroupLayoutCacheKey {
+                // Binding 0 as in the plain layout; binding 1 (previous-frame
+                // state) is read by the vertex stage only.
+                entries: vec![storage_entry(true), storage_entry(false)],
+            },
+        )?;
+        self.velocity_layout_key.set(Some(key));
+        Ok(key)
+    }
+
+    /// Recreates the transforms bind group (and, while TAA's previous-frame
+    /// buffer exists, the TAA variant's).
     pub fn recreate(&mut self, ctx: &BindGroupRecreateContext<'_>) -> Result<()> {
         let descriptor = BindGroupDescriptor::new(
             ctx.bind_group_layouts.get(self.bind_group_layout_key)?,
@@ -174,6 +281,29 @@ impl GeometryBindGroupTransforms {
         let bind_group = ctx.gpu.create_bind_group(&descriptor.into());
         self._bind_group = Some(bind_group);
 
+        self._velocity_bind_group = match (
+            self.velocity_layout_key.get(),
+            ctx.transforms.prev_gpu_buffer(),
+        ) {
+            (Some(layout), Some(prev)) => {
+                let descriptor = BindGroupDescriptor::new(
+                    ctx.bind_group_layouts.get(layout)?,
+                    Some("Geometry Transforms (TAA)"),
+                    vec![
+                        BindGroupEntry::new(
+                            0,
+                            BindGroupResource::Buffer(BufferBinding::new(
+                                &ctx.transforms.gpu_buffer,
+                            )),
+                        ),
+                        BindGroupEntry::new(1, BindGroupResource::Buffer(BufferBinding::new(prev))),
+                    ],
+                );
+                Some(ctx.gpu.create_bind_group(&descriptor.into()))
+            }
+            _ => None,
+        };
+
         Ok(())
     }
 
@@ -184,6 +314,19 @@ impl GeometryBindGroupTransforms {
         self._bind_group
             .as_ref()
             .ok_or_else(|| AwsmBindGroupError::NotFound("Geometry transform".to_string()))
+    }
+
+    /// The bind group for `velocity` (TAA) or plain pipelines.
+    pub fn get_bind_group_for(
+        &self,
+        velocity: bool,
+    ) -> std::result::Result<&web_sys::GpuBindGroup, AwsmBindGroupError> {
+        if !velocity {
+            return self.get_bind_group();
+        }
+        self._velocity_bind_group
+            .as_ref()
+            .ok_or_else(|| AwsmBindGroupError::NotFound("Geometry transform (TAA)".to_string()))
     }
 }
 
@@ -196,6 +339,30 @@ impl GeometryBindGroupTransforms {
 /// the instanced variant keeps the legacy uniform-with-dynamic-
 /// offset binding (its instance_index ranges would otherwise
 /// collide with neighbouring meshes' meta slots).
+/// Group 2 of a geometry-family draw: the mesh meta as a storage array
+/// (non-instanced under `indirect-first-instance`) or as a uniform with a
+/// dynamic offset. The geometry pass's [`GeometryBindGroupMeta`]; the TAA
+/// velocity overlay's group 2 holds the same meta binding plus its own.
+pub trait GeometryMetaGroups {
+    fn storage_meta_group(&self)
+        -> std::result::Result<&web_sys::GpuBindGroup, AwsmBindGroupError>;
+    fn uniform_meta_group(&self)
+        -> std::result::Result<&web_sys::GpuBindGroup, AwsmBindGroupError>;
+}
+
+impl GeometryMetaGroups for GeometryBindGroupMeta {
+    fn storage_meta_group(
+        &self,
+    ) -> std::result::Result<&web_sys::GpuBindGroup, AwsmBindGroupError> {
+        self.get_storage_bind_group()
+    }
+    fn uniform_meta_group(
+        &self,
+    ) -> std::result::Result<&web_sys::GpuBindGroup, AwsmBindGroupError> {
+        self.get_uniform_bind_group()
+    }
+}
+
 #[derive(Default)]
 pub struct GeometryBindGroupMeta {
     /// Storage-array layout used by the non-instanced pipeline

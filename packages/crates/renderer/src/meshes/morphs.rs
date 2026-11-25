@@ -10,6 +10,7 @@ use super::error::{AwsmMeshError, Result};
 use crate::bind_groups::BindGroupCreate;
 use crate::bind_groups::BindGroups;
 use crate::buffer::dynamic_storage::DynamicStorageBuffer;
+use crate::buffer::history::BufferHistory;
 use crate::meshes::buffer_info::{MeshBufferGeometryMorphInfo, MeshBufferMaterialMorphInfo};
 use crate::AwsmRendererLogging;
 
@@ -83,8 +84,14 @@ impl MorphInfo for MeshBufferMaterialMorphInfo {
     }
 }
 
-static BUFFER_USAGE_WEIGHTS: LazyLock<BufferUsage> =
-    LazyLock::new(|| BufferUsage::new().with_storage().with_copy_dst());
+// COPY_SRC: the source of TAA's previous-weights copy (a usage flag only;
+// nothing is copied unless TAA is on).
+static BUFFER_USAGE_WEIGHTS: LazyLock<BufferUsage> = LazyLock::new(|| {
+    BufferUsage::new()
+        .with_storage()
+        .with_copy_dst()
+        .with_copy_src()
+});
 static BUFFER_USAGE_VALUES: LazyLock<BufferUsage> =
     LazyLock::new(|| BufferUsage::new().with_storage().with_copy_dst());
 
@@ -132,6 +139,9 @@ impl<Key: slotmap::Key, Info: MorphInfo> MorphData<Key, Info> {
             gpu_buffer_values,
             weights_uploader: crate::buffer::mapped_uploader::MappedUploader::new("Morph Weights"),
             values_uploader: crate::buffer::mapped_uploader::MappedUploader::new("Morph Values"),
+            weights_history: BufferHistory::new("Morph Weights (previous frame)"),
+            track_deformed: false,
+            deformed: Vec::new(),
         })
     }
 
@@ -360,6 +370,8 @@ impl<Key: slotmap::Key, Info: MorphInfo> MorphData<Key, Info> {
         f: impl FnOnce(&mut [f32]),
     ) -> Result<()> {
         let len = self.get_info(key).map(|info| info.targets_len())?;
+        let track = self.track_deformed;
+        let mut changed = false;
 
         self.weights.update_with_unchecked(key, |_, slice_u8| {
             // Layout is [count: f32, weight_0, .. weight_{len-1}]. Reinterpret the
@@ -380,8 +392,19 @@ impl<Key: slotmap::Key, Info: MorphInfo> MorphData<Key, Info> {
             };
 
             // The first value is the count word; expose the `len` weights after it.
-            f(&mut weights_f32[1..])
+            if track {
+                // TAA prep fallback: only a weight that changed deforms (a
+                // driver re-writing the same weights each frame does not).
+                let before = weights_f32[1..].to_vec();
+                f(&mut weights_f32[1..]);
+                changed = before[..] != weights_f32[1..];
+            } else {
+                f(&mut weights_f32[1..])
+            }
         });
+        if changed {
+            self.deformed.push(key);
+        }
 
         self.weights_dirty = true;
 
@@ -437,6 +460,14 @@ impl<Key: slotmap::Key, Info: MorphInfo> MorphData<Key, Info> {
             }
 
             self.weights_dirty = false;
+            self.weights_history.mark_written();
+        }
+        if self.weights_history.enabled() {
+            // G10: new morph instances (and relocations) have no previous
+            // weights.
+            for (offset, size) in self.weights.take_new_allocations() {
+                self.weights_history.mark_fresh(offset, size);
+            }
         }
         if self.values_dirty {
             let _maybe_span_guard = if logging.cpu.sub_frame() {
@@ -505,6 +536,86 @@ pub struct MorphData<Key: slotmap::Key, Info> {
     pub(crate) gpu_buffer_values: web_sys::GpuBuffer,
     weights_uploader: crate::buffer::mapped_uploader::MappedUploader,
     values_uploader: crate::buffer::mapped_uploader::MappedUploader,
+    /// TAA: last frame's weights (same layout and offsets as
+    /// `gpu_buffer_weights`). Only the geometry morphs enable it (material
+    /// morphs do not move vertices). Disabled, owning nothing, unless TAA is
+    /// on.
+    weights_history: BufferHistory,
+    /// TAA prep-pass fallback only (03 §2.4): record which keys were written
+    /// this frame (`take_deformed`), so a mesh is flagged non-rigid only while
+    /// it deforms. Off (nothing recorded) otherwise.
+    track_deformed: bool,
+    deformed: Vec<Key>,
+}
+
+impl<Key: slotmap::Key, Info> MorphData<Key, Info> {
+    /// Turns the previous-frame weights copy (TAA motion vectors) on or off.
+    pub(crate) fn set_motion_history(&mut self, on: bool) {
+        self.weights_history.set_enabled(on);
+        self.weights.set_track_new_allocations(on);
+    }
+
+    /// See the `track_deformed` field (TAA prep-pass fallback).
+    pub(crate) fn set_track_deformed(&mut self, on: bool) {
+        self.track_deformed = on;
+        self.deformed.clear();
+    }
+
+    /// The keys whose weights were written since the last call.
+    pub(crate) fn take_deformed(&mut self) -> Vec<Key> {
+        std::mem::take(&mut self.deformed)
+    }
+
+    /// The weights history and the current buffer's byte size, for the
+    /// shared previous-frame buffer (`Transforms::sync_motion_buffer`).
+    pub(crate) fn motion_history_mut(&mut self) -> (&mut BufferHistory, usize) {
+        let size = self.weights.raw_slice().len();
+        (&mut self.weights_history, size)
+    }
+
+    /// This morph's weights jumped: zero motion this frame.
+    pub fn reset_history(&self, key: Key) {
+        if let (Some(offset), Some(size)) =
+            (self.weights.offset(key), self.weights.allocated_size(key))
+        {
+            self.weights_history.mark_fresh(offset, size);
+        }
+    }
+
+    /// TAA frame-start fix-ups. No-op when TAA is off.
+    pub(crate) fn record_history_frame_start(
+        &self,
+        encoder: &awsm_renderer_core::command::CommandEncoder,
+    ) -> std::result::Result<(), awsm_renderer_core::error::AwsmCoreError> {
+        self.weights_history.record_frame_start(
+            encoder,
+            &self.gpu_buffer_weights,
+            self.weights.raw_slice().len(),
+        )
+    }
+
+    /// The history and the current buffer's CPU mirror (the bytes as
+    /// uploaded), for the motion-history self-check.
+    pub(crate) fn motion_history_view(&self) -> (&BufferHistory, &[u8]) {
+        (&self.weights_history, self.weights.raw_slice())
+    }
+
+    /// The frame that recorded this history's copies was submitted.
+    pub(crate) fn history_frame_submitted(&self) {
+        self.weights_history.frame_submitted();
+    }
+
+    /// TAA end-of-frame `current -> prev` copy. No-op when TAA is off.
+    pub(crate) fn record_history_frame_end(
+        &self,
+        encoder: &awsm_renderer_core::command::CommandEncoder,
+    ) -> std::result::Result<(), awsm_renderer_core::error::AwsmCoreError> {
+        self.weights_history.record_frame_end(
+            encoder,
+            &self.gpu_buffer_weights,
+            self.weights.raw_slice().len(),
+        )
+    }
 }
 
 new_key_type! {

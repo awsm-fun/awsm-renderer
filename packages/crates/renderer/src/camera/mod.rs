@@ -40,6 +40,7 @@ mod store;
 /// features, not part of the renderer's public surface.
 pub(crate) use buffer::halton;
 pub use buffer::CameraBuffer;
+pub(crate) use buffer::TaaCameraFactors;
 pub use store::{CameraKey, CameraParams, CameraProjectionParams, Cameras};
 
 use awsm_renderer_core::error::AwsmCoreError;
@@ -74,8 +75,17 @@ impl AwsmRenderer {
     /// Live surface aspect (width / height) at RENDER resolution. Guards a
     /// zero-height surface so a hidden/collapsed canvas cannot produce NaN
     /// matrices.
+    ///
+    /// Under TAA: the SURFACE's aspect. The output is the surface, and the
+    /// render size (surface × render scale, each side rounded separately)
+    /// can differ from it in aspect by a fraction of a pixel; projecting with
+    /// the render aspect would stretch the output by that much, differently
+    /// at every governor step. The jitter already uses the true render size.
     fn surface_aspect(&self) -> Result<f32> {
         let (w, h) = self.gpu.current_context_texture_size()?;
+        if self.anti_aliasing.taa.is_some() {
+            return Ok(w.max(1) as f32 / h.max(1) as f32);
+        }
         let w = crate::size::scale_extent(w, self.render_scale).max(1);
         let h = crate::size::scale_extent(h, self.render_scale).max(1);
         Ok(w as f32 / h as f32)
@@ -87,13 +97,15 @@ impl AwsmRenderer {
     pub(crate) fn update_camera(&mut self, camera_matrices: CameraMatrices) -> Result<()> {
         // Render resolution (scaled), not swap-chain: the camera uniform's
         // viewport feeds shader screen-space math, which runs at render res.
-        let (surface_w, surface_h) = self.gpu.current_context_texture_size()?;
-        let current_width = crate::size::scale_extent(surface_w, self.render_scale);
-        let current_height = crate::size::scale_extent(surface_h, self.render_scale);
+        // The render size: the supersampled size without TAA (exactly the
+        // `scale_extent(surface, render_scale)` it always was) and the TAA
+        // render size with it.
+        let surface = self.gpu.current_context_texture_size()?;
+        let (current_width, current_height) =
+            crate::size::FrameSizes::new(surface, self.scene_scale(), false).render;
 
         self.camera.update(
             camera_matrices,
-            &self.render_textures,
             current_width as f32,
             current_height as f32,
             self.features.depth(),

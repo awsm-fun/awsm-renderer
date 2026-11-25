@@ -31,14 +31,20 @@ struct LineUniform {
     width_px: f32,
     viewport_w: f32,
     viewport_h: f32,
-    _pad: f32,
+    // TAA: the reactive value per unit of alpha (`TaaTuning::reactive_lines`;
+    // 0 without TAA, read only by the reactive variant).
+    k_reactive: f32,
 };
 
 @group(0) @binding(2) var<uniform> line_uniform: LineUniform;
 
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
-    @location(0) color: vec4<f32>,
+    @location(0) color: vec4<f32>,{% if reactive %}
+    // TAA: the lines' reactive weight (`line_uniform.k_reactive`), passed
+    // down because the uniforms are bound to the vertex stage only.
+    @location(1) @interpolate(flat) k_transparent: f32,
+{% endif +%}
 };
 
 // `vertex_index` 0..4 picks the four corners of a triangle-strip quad
@@ -94,11 +100,28 @@ fn vert_main(
 
     var out: VertexOutput;
     out.clip_position = clip_pos;
-    out.color = color;
+    out.color = color;{% if reactive %}
+    out.k_transparent = line_uniform.k_reactive;
+{% endif +%}
     return out;
 }
 
+{% if reactive %}
+// TAA: colour + reactive mask (`alpha * k_transparent`, 03 §5.1; MAX
+// blended).
+struct FragmentOutput {
+    @location(0) color: vec4<f32>,
+    @location(1) reactive: f32,
+};
+
+@fragment
+fn frag_main(in: VertexOutput) -> FragmentOutput {
+    // Below 1.0: exactly 1.0 means "HUD pixel, pass through" to the resolve.
+    return FragmentOutput(in.color, min(in.color.a * in.k_transparent, 0.99));
+}
+{%- else %}
 @fragment
 fn frag_main(in: VertexOutput) -> @location(0) vec4<f32> {
     return in.color;
 }
+{%- endif %}

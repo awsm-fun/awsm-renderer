@@ -19,6 +19,7 @@ use slotmap::{new_key_type, SecondaryMap, SlotMap};
 use crate::{
     bind_groups::{BindGroupCreate, BindGroups},
     buffer::dynamic_uniform::DynamicUniformBuffer,
+    buffer::history::{BufferHistory, MotionHistoryBuffer},
     buffer::mapped_uploader::MappedUploader,
     buffer::shared_arena::{SharedArena, SlotBinding},
     meshes::skins::AwsmSkinError,
@@ -62,6 +63,58 @@ pub fn pack_world_transform(world: &Mat4) -> [u8; Transforms::BYTE_SIZE] {
 }
 
 impl AwsmRenderer {
+    /// `key` jumped (a teleport, a respawn, a hand-placed cut): for TAA, it
+    /// and everything that moves with it get zero motion this frame instead
+    /// of a motion vector across the jump (G9 / G10). Resets the transform's
+    /// whole subtree, the instance transforms of every transform in it, and
+    /// every skin with a joint in it, and marks their meshes as new objects
+    /// (`TaaTuning::reactive_new_objects`: at the new place the history is not
+    /// theirs). Call it in the frame of the jump, after setting the new
+    /// transform. No-op when TAA is off.
+    ///
+    /// Apps must call it on teleports: nothing detects an object jump, and
+    /// the camera-jump guard only covers the camera (and cannot catch a
+    /// teleport inside a world larger than the camera's distance to its
+    /// centre). A moved camera: [`AwsmRenderer::reset_temporal_history`].
+    ///
+    /// Shared-arena mode (a physics worker writes world matrices directly):
+    /// the worker cannot call this; its owner thread must, for any jump the
+    /// worker makes, in the same frame the jump is rendered. A jump it does
+    /// not report shows as one frame of fast motion, which the resolve's
+    /// rejection handles, but it is not exact.
+    pub fn reset_motion_history(&mut self, key: TransformKey) {
+        if self.anti_aliasing.taa.is_none() {
+            return;
+        }
+        let mut subtree = HashSet::new();
+        let mut stack = vec![key];
+        while let Some(k) = stack.pop() {
+            if !subtree.insert(k) {
+                continue;
+            }
+            self.transforms.reset_history(k);
+            self.instances.reset_history(k);
+            if let Some(children) = self.transforms.get_children(k) {
+                stack.extend_from_slice(children);
+            }
+        }
+        let skins: Vec<_> = self.meshes.skins.skins_with_joints(&subtree).collect();
+        for skin in skins {
+            self.meshes.skins.reset_history(skin);
+        }
+        // At its new place the history holds whatever was there, not this
+        // object: its meshes are new objects for their next drawn frame
+        // (`TaaTuning::reactive_new_objects`; no-op when that is off).
+        let meshes: Vec<_> = subtree
+            .iter()
+            .filter_map(|k| self.meshes.keys_by_transform_key(*k))
+            .flat_map(|keys| keys.iter().copied())
+            .collect();
+        for mesh in meshes {
+            self.meshes.meta.mark_new_object(mesh);
+        }
+    }
+
     /// Updates world transforms and mesh bounds from dirty transforms,
     /// plus every per-frame spatial / light-bucket / coverage hook that
     /// has to run once per render. Both `update_all()` and the editor's
@@ -265,6 +318,15 @@ pub struct Transforms {
     /// Stats from the most recent arena descent (shared mode) — exposed for
     /// the stress/hot-path proof (work tracks movers, not total slots).
     last_descend: TransformDescendStats,
+
+    /// TAA: last frame's copy of `gpu_buffer` (same 112-byte layout and
+    /// offsets; the shaders read only its model-matrix half). Disabled, and
+    /// owning nothing, unless TAA is on. See [`crate::buffer::history`].
+    history: BufferHistory,
+    /// TAA: the ONE previous-frame storage buffer the geometry pass binds:
+    /// regions for these transforms, the joint matrices and the morph weights
+    /// (see [`crate::buffer::history`] for why it is shared). Empty when off.
+    motion_buffer: MotionHistoryBuffer,
 }
 
 /// Per-frame arena-descent stats (shared mode).
@@ -285,8 +347,14 @@ struct TransformArena {
     slot_to_key: Vec<Option<TransformKey>>,
 }
 
-static BUFFER_USAGE: LazyLock<BufferUsage> =
-    LazyLock::new(|| BufferUsage::new().with_storage().with_copy_dst());
+// COPY_SRC: the source of TAA's end-of-frame previous-transform copy. A usage
+// flag only; nothing is copied unless TAA is on.
+static BUFFER_USAGE: LazyLock<BufferUsage> = LazyLock::new(|| {
+    BufferUsage::new()
+        .with_storage()
+        .with_copy_dst()
+        .with_copy_src()
+});
 
 impl Transforms {
     /// Number of live transform slots. Observability (leak/soak checks):
@@ -365,6 +433,8 @@ impl Transforms {
             arena_pack_scratch: Vec::new(),
             last_descend: TransformDescendStats::default(),
             dirty_meshes_spare: HashMap::new(),
+            history: BufferHistory::new("Transforms (previous frame)"),
+            motion_buffer: MotionHistoryBuffer::default(),
         })
     }
 
@@ -740,8 +810,112 @@ impl Transforms {
             }
 
             self.gpu_dirty = false;
+            self.history.mark_written();
+        }
+        if self.history.enabled() {
+            // G10: a new or reused slot has no previous value.
+            for (offset, size) in self.buffer.take_new_allocations() {
+                self.history.mark_fresh(offset, size);
+            }
         }
         Ok(())
+    }
+
+    /// Lays out (and on growth reallocates) the shared previous-frame buffer
+    /// for this frame's buffer sizes: transforms, then `skins` (joint
+    /// matrices), then `morphs` (geometry morph weights), each given as its
+    /// history and current byte size. Call after all three uploaded. No-op
+    /// when TAA is off.
+    pub(crate) fn sync_motion_buffer(
+        &mut self,
+        gpu: &AwsmRendererWebGpu,
+        bind_groups: &mut BindGroups,
+        skins: (&mut BufferHistory, usize),
+        morphs: (&mut BufferHistory, usize),
+    ) -> Result<()> {
+        if !self.history.enabled() {
+            return Ok(());
+        }
+        let transforms_size = self.buffer.raw_slice().len();
+        // A disabled history (prep-pass fallback) takes the minimal region.
+        let skins_size = if skins.0.enabled() { skins.1 } else { 0 };
+        let morphs_size = if morphs.0.enabled() { morphs.1 } else { 0 };
+        if self.motion_buffer.sync(
+            gpu,
+            [&mut self.history, skins.0, morphs.0],
+            [transforms_size, skins_size, morphs_size],
+        )? {
+            bind_groups.mark_create(BindGroupCreate::MotionHistoryBuffers);
+        }
+        Ok(())
+    }
+
+    /// Region bases of the shared previous-frame buffer in `vec4<f32>` units
+    /// (`[transforms, joint matrices, morph weights]`), for the shader.
+    pub(crate) fn motion_buffer_bases_vec4(&self) -> [u32; 3] {
+        self.motion_buffer.bases_vec4()
+    }
+
+    /// Turns the previous-frame copy (TAA motion vectors) on or off. Off
+    /// drops it; on allocates it at the next [`Self::write_gpu`].
+    pub(crate) fn set_motion_history(&mut self, on: bool) {
+        self.history.set_enabled(on);
+        self.buffer.set_track_new_allocations(on);
+        if !on {
+            self.motion_buffer.clear();
+        }
+    }
+
+    /// Whether the previous-frame copy is on (TAA).
+    pub(crate) fn motion_history_enabled(&self) -> bool {
+        self.history.enabled()
+    }
+
+    /// The shared previous-frame buffer (TAA on and allocated): last frame's
+    /// transforms, joint matrices and morph weights, at
+    /// [`Self::motion_buffer_bases_vec4`].
+    pub(crate) fn prev_gpu_buffer(&self) -> Option<&web_sys::GpuBuffer> {
+        self.motion_buffer.buffer()
+    }
+
+    /// This transform jumped (a teleport): its previous-frame value becomes
+    /// its current one, so it has zero motion this frame instead of a vector
+    /// across the jump. Children move with it: use
+    /// [`AwsmRenderer::reset_motion_history`] to reset a whole subtree (and
+    /// its instances and skins). No-op when TAA is off.
+    pub fn reset_history(&mut self, key: TransformKey) {
+        if let Some(offset) = self.buffer.offset(key) {
+            self.history.mark_fresh(offset, Self::BYTE_SIZE);
+        }
+    }
+
+    /// TAA frame-start fix-ups (G10, growth). No-op when TAA is off.
+    pub(crate) fn record_history_frame_start(
+        &self,
+        encoder: &awsm_renderer_core::command::CommandEncoder,
+    ) -> std::result::Result<(), AwsmCoreError> {
+        self.history
+            .record_frame_start(encoder, &self.gpu_buffer, self.buffer.raw_slice().len())
+    }
+
+    /// The history and the current buffer's CPU mirror (the bytes as
+    /// uploaded), for the motion-history self-check.
+    pub(crate) fn motion_history_view(&self) -> (&BufferHistory, &[u8]) {
+        (&self.history, self.buffer.raw_slice())
+    }
+
+    /// The frame that recorded this history's copies was submitted.
+    pub(crate) fn history_frame_submitted(&self) {
+        self.history.frame_submitted();
+    }
+
+    /// TAA end-of-frame `current -> prev` copy. No-op when TAA is off.
+    pub(crate) fn record_history_frame_end(
+        &self,
+        encoder: &awsm_renderer_core::command::CommandEncoder,
+    ) -> std::result::Result<(), AwsmCoreError> {
+        self.history
+            .record_frame_end(encoder, &self.gpu_buffer, self.buffer.raw_slice().len())
     }
 
     /// Takes and clears the list of dirty mesh transforms.
