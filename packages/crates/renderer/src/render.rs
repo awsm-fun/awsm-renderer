@@ -3283,6 +3283,27 @@ fn lod_max_axis_scale(m: &glam::Mat4) -> f32 {
     sx.max(sy).max(sz)
 }
 
+// Coverage readback runs with or without the `lod` feature, so this helper
+// lives outside the LOD-gated block below.
+impl AwsmRenderer {
+    /// `(post area / render area)` of the frame `sizes` describe, under TAA
+    /// upscaling: the factor that turns that frame's render-pixel coverage
+    /// counts into output pixels (the consumers' thresholds are about what
+    /// the viewer sees, so a mesh keeps its coverage, and its LOD, when a
+    /// resolution governor changes the render scale). Taken with the readback
+    /// REQUEST, so a snapshot that resolves frames later is scaled by its own
+    /// frame's sizes, not by the scale in force when it lands. `None` without
+    /// TAA or at native resolution (counts unchanged).
+    fn coverage_area_scale(&self, sizes: &crate::size::FrameSizes) -> Option<f64> {
+        self.anti_aliasing.taa.as_ref()?;
+        if sizes.render == sizes.post {
+            return None;
+        }
+        let area = |s: (u32, u32)| s.0.max(1) as f64 * s.1.max(1) as f64;
+        Some(area(sizes.post) / area(sizes.render))
+    }
+}
+
 #[cfg(feature = "lod")]
 impl AwsmRenderer {
     /// Geometric-error budget for discrete-LOD level selection, in screen
@@ -3376,23 +3397,6 @@ impl AwsmRenderer {
         } else {
             sizes.render.1
         })
-    }
-
-    /// `(post area / render area)` of the frame `sizes` describe, under TAA
-    /// upscaling: the factor that turns that frame's render-pixel coverage
-    /// counts into output pixels (the consumers' thresholds are about what
-    /// the viewer sees, so a mesh keeps its coverage, and its LOD, when a
-    /// resolution governor changes the render scale). Taken with the readback
-    /// REQUEST, so a snapshot that resolves frames later is scaled by its own
-    /// frame's sizes, not by the scale in force when it lands. `None` without
-    /// TAA or at native resolution (counts unchanged).
-    fn coverage_area_scale(&self, sizes: &crate::size::FrameSizes) -> Option<f64> {
-        self.anti_aliasing.taa.as_ref()?;
-        if sizes.render == sizes.post {
-            return None;
-        }
-        let area = |s: (u32, u32)| s.0.max(1) as f64 * s.1.max(1) as f64;
-        Some(area(sizes.post) / area(sizes.render))
     }
 
     /// Per-frame discrete-LOD level selection (visibility-swap). For each

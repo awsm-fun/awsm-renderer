@@ -141,6 +141,7 @@ impl AwsmRenderer {
     /// that cannot be refreshed never leaves a later target unmarked. During
     /// a load the meshes are bound but not yet wired to their geometry; their
     /// meta is written at the commit, from the class set here.
+    #[cfg(feature = "animation")]
     pub fn mark_animated_materials_reactive(
         &mut self,
         group: &crate::animation::AnimationClipGroup,
@@ -1319,6 +1320,7 @@ fn resolve_temporal_reactive(
 
 /// A material an animation clip drives, or a custom material whose uniform
 /// it drives for every instance (`SharedUniform`).
+#[cfg(feature = "animation")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AnimatedMaterialTarget {
     Material(MaterialKey),
@@ -1327,6 +1329,7 @@ pub(crate) enum AnimatedMaterialTarget {
 
 /// What [`mark_targets_reactive`] needs from the renderer (a trait so the
 /// order of marking and refreshing is testable without a GPU).
+#[cfg(feature = "animation")]
 pub(crate) trait TemporalMarkingHost {
     /// The target's temporal setting is `Auto` (not set explicitly).
     fn temporal_is_auto(&self, target: AnimatedMaterialTarget) -> bool;
@@ -1337,6 +1340,7 @@ pub(crate) trait TemporalMarkingHost {
 }
 
 /// Marks EVERY `Auto` target reactive, then refreshes the mesh meta once.
+#[cfg(feature = "animation")]
 pub(crate) fn mark_targets_reactive(
     host: &mut impl TemporalMarkingHost,
     targets: &[AnimatedMaterialTarget],
@@ -1377,6 +1381,7 @@ pub(crate) fn refresh_each<K: Copy, E>(
     (not_wired, first_err)
 }
 
+#[cfg(feature = "animation")]
 impl TemporalMarkingHost for AwsmRenderer {
     fn temporal_is_auto(&self, target: AnimatedMaterialTarget) -> bool {
         match target {
@@ -1415,7 +1420,7 @@ impl TemporalMarkingHost for AwsmRenderer {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "animation"))]
 mod animated_temporal_tests {
     use super::*;
 

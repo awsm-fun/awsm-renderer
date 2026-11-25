@@ -126,6 +126,17 @@ tasks:
     cmds:
       - cargo fmt --all -- --check
       - cargo clippy --all --all-features --tests -- -D warnings
+      - task: check-features
+
+  check-features:
+    desc: "Check awsm-renderer builds with its default features off, alone and in each combination (mirrors the CI step)."
+    cmds:
+      - |
+        set -e
+        for f in "" animation lod animation,lod; do
+          echo "▶ awsm-renderer --no-default-features ${f:+--features $f}"
+          cargo check -q -p awsm-renderer --target wasm32-unknown-unknown --no-default-features ${f:+--features $f}
+        done
 
   bump:
     desc: "Set [workspace.package].version + the internal awsm-* dep version reqs to <version>, then refresh Cargo.lock — files only, NO git/tag/publish. Idempotent: re-running at the same version makes no diff (safe to call from `publish`). Usage: task bump -- <version>"
