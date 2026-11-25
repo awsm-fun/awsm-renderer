@@ -291,15 +291,65 @@ impl Session {
             setup.visible_radius = radius;
         }
 
-        let scenario = if opts.scene.ends_with("@popin") {
+        // A DoF variant (`…@dof*`, round 4) rides on top of any other one:
+        // `bloom-post@thin@dofstill` is `@thin` with DoF and the camera held.
+        let dof_variant = scenario::dof_variant(&opts.scene);
+        let variant_scene = if dof_variant.is_some() {
+            opts.scene
+                .rsplit_once('@')
+                .map(|(head, _)| head)
+                .unwrap_or(&opts.scene)
+        } else {
+            opts.scene.as_str()
+        };
+        let mut scenario = if variant_scene.ends_with("@popin") {
             scenario::popin_scenario(&base_scene)
-        } else if opts.scene.ends_with("@popjump") {
+        } else if variant_scene.ends_with("@popjump") {
             scenario::popjump_scenario(&base_scene)
-        } else if opts.scene.ends_with("@thin") || opts.scene.ends_with("@thinstill") {
-            scenario::bloom_thin_scenario(&base_scene, opts.scene.ends_with("@thinstill"))
+        } else if variant_scene.ends_with("@thin") || variant_scene.ends_with("@thinstill") {
+            scenario::bloom_thin_scenario(&base_scene, variant_scene.ends_with("@thinstill"))
         } else {
             scenario::scenario_for(&base_scene)
         };
+        if let Some((dof, still)) = dof_variant {
+            scenario.dof = Some(dof);
+            scenario.still_camera |= still;
+            let mut pp = renderer.post_processing.clone();
+            if !pp.dof {
+                pp.dof = true;
+                renderer
+                    .set_post_processing(pp)
+                    .await
+                    .map_err(|e| anyhow!("set_post_processing (dof): {e}"))?;
+                renderer
+                    .commit_load(|_| {})
+                    .await
+                    .map_err(|e| anyhow!("commit_load (dof): {e}"))?;
+            }
+            if !renderer.post_processing.dof {
+                return Err(anyhow!("DoF did not stay on after the commit"));
+            }
+            // The circle of confusion at each named node, frame 0, output
+            // pixels (the effects pass's formula), to pick the settings by.
+            let d0 = scenario::drive(&scenario, 0, &setup);
+            let eye = d0.camera_world.w_axis.truncate();
+            let mut cocs = Vec::new();
+            for (name, local) in &setup.nodes {
+                let dist = (local.translation - eye).length();
+                cocs.push(format!(
+                    "{name}={dist:.2}m/{:.1}px",
+                    scenario::coc_px(&d0.camera_params, dist, opts.size.1)
+                ));
+            }
+            cocs.sort();
+            crate::report::log(&format!(
+                "TAA-INFO dof-coc:{}: focus {:.2} m f/{:.1}: {}",
+                opts.scene,
+                d0.camera_params.focus_distance,
+                d0.camera_params.aperture,
+                cocs.join(" ")
+            ));
+        }
         if opts.scene.ends_with("@cadence") {
             // Skin cadence gating: every skinned mesh at period 2, 4, 1, …
             // (round-robin) so some skins step every 2nd / 4th frame.

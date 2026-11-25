@@ -139,6 +139,26 @@ pub struct Scenario {
     pub emissive_gain: Vec<(&'static str, f32)>,
     /// The camera holds frame 0's pose (`…@thinstill`).
     pub still_camera: bool,
+    /// Depth of field on, with this focus and aperture (`…@dof*`, round 4,
+    /// `TaaDofOrder`).
+    pub dof: Option<DofSetup>,
+}
+
+/// Depth of field for a scenario (`<scene>@dof*`).
+#[derive(Clone, Copy, Debug)]
+pub struct DofSetup {
+    pub focus: DofFocus,
+    /// f-stop.
+    pub aperture: f32,
+}
+
+/// Where a scenario's DoF focuses, re-evaluated every frame.
+#[derive(Clone, Copy, Debug)]
+pub enum DofFocus {
+    /// A fixed distance from the camera (m).
+    Distance(f32),
+    /// The named node's distance from the camera, times this factor.
+    Node(&'static str, f32),
 }
 
 impl Scenario {
@@ -175,7 +195,47 @@ pub fn popin_scenario(base: &str) -> Scenario {
         rescaled: vec![],
         emissive_gain: vec![],
         still_camera: false,
+        dof: None,
     }
+}
+
+/// The DoF variant of `scene` (`<scene>[@variant]@dof*[still]`), if any:
+/// its focus and aperture, and whether the camera is held (`…still`). The
+/// circle of confusion per node is logged at load (`TAA-INFO dof-coc`);
+/// the settings are picked from it:
+///  - `@dof`: bright sources well out of focus (bokeh about 12 px).
+///  - `@dofslight`: slight defocus, CoC about 1-2 px over the detail.
+///  - `@dofnear`: a defocused foreground over a sharp background.
+pub fn dof_variant(scene: &str) -> Option<(DofSetup, bool)> {
+    let (head, tail) = scene.rsplit_once('@')?;
+    let base = head.split('@').next().unwrap_or(head);
+    let (tail, still) = match tail.strip_suffix("still") {
+        Some(t) => (t, true),
+        None => (tail, false),
+    };
+    let (focus, aperture) = match (base, tail) {
+        // Emitters 25-30 m away, focus 2 m: about -11.7 px.
+        ("bloom-post", "dof") => (DofFocus::Distance(2.0), 1.0),
+        // Emitters at about -1.6 px.
+        ("bloom-post", "dofslight") => (DofFocus::Distance(10.0), 1.0),
+        // Posts 4.8-5.7 m at 1.1-1.9 px, cards 2.3-2.7 px, the floor to ~5.
+        ("taa-thin", "dofslight") => (DofFocus::Distance(4.0), 1.0),
+        // Focus on the pivot: the shapes at -1.2..1.8 px.
+        ("taa-orbit", "dofslight") => (DofFocus::Node("pivot", 1.0), 0.5),
+        // Focus on the far shape; the nearer shapes and the floor blurred
+        // over it while the camera orbits and strafes.
+        ("taa-orbit", "dofnear") => (DofFocus::Node("shape-3", 1.0), 0.25),
+        // Focus on the backdrop; the wall in front of it (the shader's
+        // widest aperture, f/0.1) blurred as it slides away and back.
+        ("taa-reveal", "dofnear") => (DofFocus::Node("backdrop", 1.0), 0.1),
+        // The HUD over a defocused scene (focus 1 m in front of the camera):
+        // which DoF order blurs the HUD the way the no-TAA reference does.
+        ("taa-hud", "dof") => (DofFocus::Distance(1.0), 1.0),
+        // Cost: a busy scene with most of the frame defocused.
+        ("kitchen-sink", "dof") => (DofFocus::Distance(2.0), 1.0),
+        _ => return None,
+    };
+    Some((DofSetup { focus, aperture }, still))
 }
 
 /// `bloom-post@thin` / `bloom-post@thinstill` (round 3, `TaaBloomSource`):
@@ -200,6 +260,7 @@ pub fn bloom_thin_scenario(base: &str, still: bool) -> Scenario {
         ],
         emissive_gain: vec![("emissive-2", 25.0), ("emissive-10", 5.0)],
         still_camera: still,
+        dof: None,
     }
 }
 
@@ -228,6 +289,7 @@ pub fn scenario_for(scene: &str) -> Scenario {
         rescaled: vec![],
         emissive_gain: vec![],
         still_camera: false,
+        dof: None,
     };
     let s =
         |frames, phases: Vec<(&'static str, u32, u32)>, tracked, hud: Vec<&'static str>| Scenario {
@@ -241,6 +303,7 @@ pub fn scenario_for(scene: &str) -> Scenario {
             rescaled: vec![],
             emissive_gain: vec![],
             still_camera: false,
+            dof: None,
         };
     match scene {
         // still 0.5 s → moving 2 s → stopped 1 s → fast 1 s
@@ -356,6 +419,20 @@ pub fn world_per_pixel(params: &CameraParams, depth: f32, height_px: u32) -> f32
             2.0 * half_height / height_px as f32
         }
     }
+}
+
+/// The effects pass's signed circle of confusion (`calculate_signed_coc` in
+/// `helpers/dof.wgsl`), output pixels, for a point `depth` m away (along
+/// the view axis; a distance is close enough for picking settings).
+pub fn coc_px(params: &CameraParams, depth: f32, height_px: u32) -> f32 {
+    let CameraProjectionParams::Perspective { fov_y_rad } = params.projection else {
+        return 0.0;
+    };
+    let f = 0.012 / (fov_y_rad * 0.5).tan();
+    let a = f / params.aperture.max(0.1);
+    let s = params.focus_distance.max(0.001);
+    let coc_world = a * f * (1.0 / depth.max(1e-3) - 1.0 / s);
+    (coc_world * height_px as f32 / 0.024).clamp(-20.0, 20.0)
 }
 
 /// The drive for frame `k`.
@@ -530,6 +607,16 @@ pub fn drive(sc: &Scenario, k: u32, setup: &SceneSetup) -> FrameDrive {
             cam_world = w;
             cam_params = p;
         }
+    }
+    if let Some(dof) = sc.dof {
+        let eye = cam_world.w_axis.truncate();
+        cam_params.aperture = dof.aperture;
+        cam_params.focus_distance = match dof.focus {
+            DofFocus::Distance(d) => d,
+            DofFocus::Node(name, factor) => {
+                (setup.base(name).translation - eye).length().max(0.05) * factor
+            }
+        };
     }
     FrameDrive {
         camera_world: cam_world,

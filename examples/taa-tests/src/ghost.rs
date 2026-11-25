@@ -726,7 +726,14 @@ fn report(r: &mut Report, scene: &str, evaluated: u32, band_px_frames: u64, trac
 ///   clip cuts on some jitter phases: events repeat at the same pixels with
 ///   the 8-frame jitter cycle. That is shimmer, judged by the flicker gate,
 ///   not history of something that moved.
+///
+/// A scene's DoF variants (`taa-orbit@dofnear`, round 4) are the same scene
+/// and take its rule.
 fn verdict_is_info(scene: &str, region: usize) -> Option<&'static str> {
+    let scene = match crate::scenario::dof_variant(scene) {
+        Some(_) => scene.split('@').next().unwrap_or(scene),
+        None => scene,
+    };
     match (scene, region) {
         ("taa-orbit", 0) | ("taa-orbit", 2) => Some(
             "camera-only scene: no object leaves a trail; judged by the moving-region error vs MSAA",

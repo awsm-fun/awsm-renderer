@@ -168,6 +168,16 @@ pub fn taa_native() -> awsm_renderer::anti_alias::AntiAliasing {
             _ => TaaBloomSource::Resolved,
         };
     }
+    // `?doforder=after|before`: where DoF runs under TAA (default: the
+    // renderer's).
+    #[cfg(feature = "taa-disocclusion")]
+    if let Some(order) = crate::url_value("doforder") {
+        use awsm_renderer::taa::TaaDofOrder;
+        cfg.dof_order = match order.as_str() {
+            "before" => TaaDofOrder::BeforeResolve,
+            _ => TaaDofOrder::AfterResolve,
+        };
+    }
     TUNE.with(|c| {
         for (k, v) in c.borrow().iter() {
             // Validated in `set_tune` (experimental knobs are applied on the
