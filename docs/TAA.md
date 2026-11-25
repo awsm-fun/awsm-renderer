@@ -128,6 +128,7 @@ TAA | MSAA 4x | oracle | reference | class map, red = ghost).
 | `edge_release` 1.0 | off (0) | the one stale-history event left at the default: a resting edge released by a sub-pixel move (`taa-motion` k211, 1 px for 4 frames); `taa-motion` trail ghosts 24 → 7, events longer than one frame 1 → 0 | `k211-edge-release.png` | resolve +0.07 / +0.23 ms; still-image flicker `taa-thin` 0.301 → 0.323, `instancing-stress` 0.105 → 0.151 (both still pass, p99 unchanged) |
 | `reactive_new_objects` 1.0 | **on** | an opaque new object's silhouette fading in over what was behind it: a mesh inserted or shown again holds the background's history on its rim (no test fires when something nearer appears, and the clip keeps it there because both colours are in the box), as a Dreidel Derby coin did for about 16 frames (pass C). `taa-motion@popin` (the cube appears, still, over the checker floor): pixels more than 16 off the reference 3 frames after the pop 4,817 → 63 (17 frames after: 1,654 → 57), still-area ghost events longer than one frame 135 of 177 (longest 8 frames) → 0, still-area error 0.303 → 0.183 (MSAA 2.021) | `newobj-popin-before-after.png` | two 4-byte meta patches per new mesh (set, then cleared) and one seed draw on such frames: 2,000 meshes shown at once (`?mode=newobj-cost&clones=2000`, `kitchen-sink`, `isaac-robots`) cost no measurable CPU or GPU time at the 0.1 ms timer resolution; with nothing new, frame and resolve time are unchanged (A B × 3: resolve 1.53-1.54 / 1.55 ms `kitchen-sink`, 1.82-1.83 both `taa-thin`); the new object shows one frame without AA; nothing at all on frames where nothing appears |
 | `bloom_source: CurrentFrame` (`TaaConfig`) | **on** (`Resolved` before) | thin and small very bright sources (rims, glints, thin emissive lines) losing their bloom glow: the resolve averages in display space, which leaves such a source near white whatever its HDR value (a 1-pixel feature at 50x white reconstructs to about 0.75), so bloom read from the resolved image finds little to spread. Bloom now reads this frame's HDR render, as with no AA or MSAA. `bloom-post@thinstill`, halo around a 1-px line at HDR 50: resolved 0.3156, this frame 0.4194, reference 0.4196 (display-linear); around a 2-px glint at HDR 50: 0.2897 / 0.3318 / 0.3300. Large emitters (`bloom-post`) lost about 1.3% | `bloom-thin-source-still-k48.png` | none (same pass, another source; frame time equal or about 0.1 ms lower on `bloom-post`, equal on `kitchen-sink`). Whole-frame converged error on `bloom-post@thinstill`: 1.676 → 0.087 native, 1.686 → 0.099 at 0.67, 1.705 → 0.223 at 0.5 (MSAA 0.840, no AA 0.103). In a still image the halo of a source smaller than a pixel pulses with the 8-frame jitter cycle: frame-to-frame change inside its halo mean 1.6-3.4, p99 8-14 (0-255), the halo's brightness swinging 0.6% (1-px line) to 4.5% (2-px glint); whole-frame flicker passes (`bloom-post@thinstill` 0.086 p99 2 native, 0.114 p99 3 at 0.67, 0.161 p99 4 at 0.5). `Resolved` keeps a steady but dimmer halo (§6) |
+| `dof_order: BeforeResolve` (`TaaConfig`) | **on** (`AfterResolve` before) | depth of field blurring the resolved image. The resolve has already averaged small bright sources in display space, so their out-of-focus discs came out dimmer and narrower than without TAA (Dreidel Derby's title menorah: 18-20% less local highlight energy, 7-9% over a 128-pixel window around each cup); and the CoC, read through a 2x2 depth footprint that moves with the jitter (`load_depth_post`), changed every frame at depth edges with nothing after it to average the change, so slight defocus flickered. DoF now runs on this frame's HDR render before the resolve, the order Unreal and FidelityFX use with upscaling ("They all plug into the post-processing chain in the same location — between Depth of Field and Motion Blur", Epic, *Temporal Upscalers in Unreal Engine*; "When using Depth of Field with render upscaling, DoF should be applied at render resolution, i.e. before upscaling", AMD, *FidelityFX Depth of Field*; §3.12). Dreidel Derby title, native, fixed jitter phase: whole-frame error 0.717 → 0.309, menorah 2.48 → 0.85 (MSAA 3.12), highlight energy on three cups against the reference 91 / 93 / 98% → 100 / 101 / 100%, frozen flicker 0.255 p99 4 → 0.199 p99 3 (menorah tile 1.11 p99 16 → 0.79 p99 9), stale pixel-frames in an orbit 11,487 → 2,067 (events of 2+ frames 66 → 18, longest 8 → 5); mid-round unchanged (nothing defocused). `bloom-post@thin@dofstill` (bokeh about 12 px), disc energy: 1-px line at HDR 50 95.5 → 98.9%, 2-px glint 92.7 → 100.8%, sub-pixel glint at HDR 5 74.8 → 97.3%; `taa-thin@dofslight` (CoC 1-2 px) flicker 0.391 p99 6 (fails) → 0.198 p99 1; a defocused foreground over a sharp background (`taa-reveal@dofnear`, `taa-orbit@dofnear`): ghost events longer than one frame 223 / 533 → 0 / 1 in the trail band, 1,031 / 1,590 → 0 / 0 elsewhere (longest 59 → 2 frames). At 0.67 it is a trade: energy (Dreidel cups 96 / 93 / 97% → 105 / 101 / 100%), flicker (0.310 p99 5 → 0.248 p99 4) and cost win, whole-frame error is about 3% higher (title 1.307 → 1.351; the blur is computed at render resolution) | `dof-order-title-menorah.png` (TAA after \| TAA before \| MSAA \| reference), `dof-still-bokeh-k40.png` | cheaper, the blur runs in a pass of its own at render size: GPU frame `kitchen-sink@dof` 17.5 → 14.5 ms native, 16.3 → 8.0 ms at 0.67; Dreidel Derby title 16.18 → 16.32 ms native, 10.84 → 9.24 ms at 0.67 (mid-round equal). One render-size rgba16f target while DoF is on; nothing with DoF off |
 | `max_history_moving` 1.0 | **on** (2.0 before) | softness in motion: moving-region error `taa-motion` 2.52 → 2.20, `taa-orbit` 1.20 → 1.06; frame-to-frame change of the error on the `taa-orbit` strafe 1.21 → 1.06 (MSAA 4.00); pan worst mean 1.01 → 0.86 (2.50 → 2.33 at 0.67) | `max-history-moving-orbit-k70-before-after.png` | none (a uniform); still-image flicker unchanged |
 
 **Recommended configurations.**
@@ -139,6 +140,7 @@ TAA | MSAA 4x | oracle | reference | class map, red = ghost).
 | Camera-only motion (walkthroughs, a static world): no object moves over another, so the id test finds nothing | TAA native or Quality | `DepthAndMotion` (saves 0.07-0.18 ms) | defaults |
 | Apps that animate lines (gizmos, debug draw that moves) | TAA | default | `reactive_lines: 1.0` |
 | A zero-ghost requirement that accepts a little more shimmer on thin wires and small instances | TAA | `DepthMotionAndId` (required) | `edge_release: 1.0` |
+| Depth of field (any of the above) | TAA, any scale | default | defaults (`dof_order: BeforeResolve`; `AfterResolve` only to have a transparent-pipeline HUD blurred with the scene, as without TAA, §6) |
 | Only geometric edges matter and the content has no thin or specular detail | MSAA 4x | | |
 
 Particle meshes an app builds itself must be flagged (§5).
@@ -180,6 +182,7 @@ scale is `TaaConfig::render_scale`.
 | `render_scale` | 1.0 | Render size / output size, `0.5..=1.0`. Quantised to 0.01 (`RENDER_SCALE_STEP`); NaN becomes 1.0. |
 | `sharpen` | 0.0 | RCAS strength after the resolve, `0..=1`. 0 = no pass. |
 | `bloom_source` | `CurrentFrame` | `TaaBloomSource`: what bloom reads under TAA. `CurrentFrame`, this frame's HDR render (render size, jittered), keeps the glow of thin and small very bright sources; `Resolved`, the resolved image, gives a steady but dimmer glow for them (§1, §6). Live: bloom's prefilter rebinds, nothing recompiles. |
+| `dof_order` | `BeforeResolve` | `TaaDofOrder`: where depth of field runs while DoF is on. `BeforeResolve`, on this frame's HDR render at render size, before the resolve, which then accumulates the blurred image: out-of-focus bright sources keep their energy, slight defocus is steadier, and it is cheaper; `AfterResolve`, on the resolved image at output size (as with no AA) (§1, §3.12, §6). With DoF on a change recompiles the effects pass and builds or drops the pre-resolve pass (no history reset); with DoF off it changes nothing. |
 | `disocclusion` | `DepthMotionAndId` | `TaaDisocclusion`: which tests drop a pixel's history: `Depth`, `DepthAndMotion` (adds last frame's motion vectors), `DepthMotionAndId` (adds last frame's object id). Structural: a change rebuilds the TAA pass and restarts history. A level that is off allocates and binds nothing. |
 | `tuning` | `TaaTuning::default()` | The resolve's tuning, §2.4. |
 
@@ -406,20 +409,24 @@ GPU pass timings (`profiling`): `Taa` (the resolve), `TaaRcas` and
 - Scene schema: `post_process.anti_aliasing.taa` (`TaaSettings`:
   `render_scale`, `sharpen`, `disocclusion` (`"depth"` |
   `"depth_and_motion"` | `"depth_motion_and_id"`, the renderer's
-  `TaaDisocclusion`), `tuning` with every `TaaTuning` field; every field
+  `TaaDisocclusion`), `bloom_source` (`"current_frame"` | `"resolved"`),
+  `dof_order` (`"after_resolve"` | `"before_resolve"`), `tuning` with every
+  `TaaTuning` field; every field
   defaults to the shipped value, so a file may carry only what it changes).
   With `taa` present the loader ignores `msaa` / `smaa`.
 - `load_scene_for_player` applies the scene's anti-aliasing before its commit
   and replaces the renderer's mode. A scene with no AA block applies MSAA 4x,
   as in 0.45. An authored TAA that cannot be set up falls back to MSAA 4x with
   a warning.
-- Editor: the AA mode, preset, sharpening, disocclusion test and tuning
-  knobs are in the scene settings, saved with the project and bundle; debug
+- Editor: the AA mode, preset, sharpening, bloom source, depth-of-field
+  order, disocclusion test and tuning knobs are in the scene settings, saved with the project and bundle; debug
   views are transient. Changing the disocclusion test while TAA is on
   rebuilds the TAA pass and restarts history, like a mode change.
 - MCP: `set_anti_aliasing` (`mode: none | msaa | smaa | msaa_smaa | taa`,
   `taa_preset`, `taa_render_scale`, `taa_sharpen`, `taa_disocclusion`
-  (structural while TAA is on: `wait_render_settled` after), one flat
+  (structural while TAA is on: `wait_render_settled` after),
+  `taa_bloom_source`, `taa_dof_order` (with DoF on it recompiles the effects
+  pass: `wait_render_settled` after), one flat
   `taa_<name>` param per tuning field, `taa_debug_view`); read back with
   `get_post_process` and `get_view_options`.
 
@@ -890,18 +897,68 @@ native resolve that blurs.
 
 ```
 render size: geometry (+velocity) → shading → transparents (+reactive, seed) → composite → SSR
-TAA:         composite (R) → resolve → taa_out (O) → RCAS (optional) → HUD after resolve
-post size:   bloom → effects (haze, DoF) → display
+             → DoF (dof_order: BeforeResolve, the default)
+TAA:         composite or DoF output (R) → resolve → taa_out (O) → RCAS (optional) → HUD after resolve
+post size:   bloom → effects (haze; DoF with dof_order: AfterResolve) → display
 ```
 
 Bloom's prefilter reads `composite` (this frame's HDR render, render size)
 by default (`TaaConfig::bloom_source`), or `taa_out` with `Resolved`; effects
 (haze, DoF) and the display read `taa_out`.
 
-Haze and DoF read depth through `load_depth_post`, which maps a post pixel to
-render pixels and takes the nearest depth of the 2x2 footprint; DoF's CoC
-buffer is at post size. The picker maps the pointer through the render size.
-Under TAA, LOD screen error and coverage counts are measured in output pixels.
+**Depth of field** runs in one of two places (`TaaConfig::dof_order`):
+
+- `AfterResolve`: in the effects pass, on `taa_out`, at post
+  size. Depth is read through `load_depth_post`, which maps a post pixel to
+  render pixels and takes the nearest depth of the 2x2 footprint around its
+  unjittered position, and the CoC buffer is at post size. That footprint
+  moves with the jitter, so a pixel's CoC changes from frame to frame where
+  depth changes inside it, and nothing accumulates the change afterwards.
+- `BeforeResolve` (the default): the same DoF code (`helpers/dof.wgsl`, the TAA pass's
+  `dof_pre`) on `composite`, at render size, before the resolve. A render
+  pixel and its depth texel are the same jittered sample, so depth is read
+  directly; the CoC is in render pixels (so a disc keeps its angular size
+  at any render scale) and capped at the effects pass's 20 output pixels.
+  Its rgba16float store is rounded like the resolve's (`taa_round_f16`):
+  a truncating store, as Apple GPUs do, left 3% of a sky gradient one level
+  dark.
+  The resolve reads the blurred image instead of `composite` and
+  accumulates it like any other content: the out-of-focus disc of a small
+  bright source is spread from its full HDR value before the resolve
+  averages anything, and the CoC's frame-to-frame change is averaged by the
+  history. The effects pass compiles without DoF. Bloom's default source
+  still reads `composite`, i.e. before DoF, which is the no-AA order (bloom
+  is added after the blur, unblurred); with `Resolved` it reads the blurred
+  image. Haze is applied to the blurred colour, where the no-AA path adds
+  the pixel's own haze to it: the two differ by (blur − pixel) × (1 −
+  transmittance), only where both are present.
+  Blurred pixels carry the motion, depth and id of the surface they belong
+  to. Where a defocused foreground spreads over a farther surface, the
+  colour moves with the foreground while the vectors are the far
+  surface's, and no disocclusion test sees it. The variance clip holds it:
+  the blurred neighbourhood is smooth, so its box is tight. Measured with a
+  foreground blurred 4-6 px moving over an in-focus background
+  (`taa-reveal@dofnear`, `taa-orbit@dofnear`), adding the foreground's
+  coverage to the current frame's weight (0.5, 1.0) removed one 2-frame
+  event and nothing else, so the resolve is unchanged. The pass and its
+  target exist only while TAA is on, DoF is on and the order is
+  `BeforeResolve`.
+
+This is the order Unreal Engine and AMD FidelityFX use with temporal
+upscaling. Epic's documentation of its temporal upscalers ("Temporal
+Upscalers in Unreal Engine", dev.epicgames.com) says they "all plug into
+the post-processing chain in the same location — between Depth of Field and
+Motion Blur", and that DoF's blur "minimizes noise coming into the scene
+color input". AMD's FidelityFX Depth of Field manual (gpuopen.com) says:
+"When using Depth of Field with render upscaling, DoF should be applied at
+render resolution, i.e. before upscaling", and, for TAA without upscaling,
+"place DoF after TAA in the frame", because "the blur effect will amplify any
+temporal instability in the input". We did not verify Unreal's ordering
+against its engine source (it needs an Epic account), only against the
+documentation.
+
+The picker maps the pointer through the render size. Under TAA, LOD screen
+error and coverage counts are measured in output pixels.
 
 ### 3.13 Cost when off
 
@@ -1090,11 +1147,38 @@ measure flicker too).
     respawned coin's spawn glow (which the game fades out over about 20
     frames) was absent under TAA while no AA, MSAA and the reference
     showed it; the coin's rim itself was right from its first frame.
-  - **Depth of field** reads the resolved image and cannot take the
-    jittered frame (its in-focus parts would show no AA): out-of-focus
-    highlights are dimmer than the reference. On Dreidel Derby's title
-    screen the brightest defocused menorah cups have 18-20% less energy
-    (MSAA about 7%, no AA none), with no streak and nothing out of place.
+  - **Depth of field** runs before the resolve by default
+    (`TaaDofOrder::BeforeResolve`, §1, §3.12), on this frame's HDR render,
+    so out-of-focus highlights keep their energy. With `AfterResolve` it
+    reads the resolved image: on Dreidel Derby's title screen the
+    brightest defocused menorah cups then have 7-9% less energy (18-20% in
+    the earlier, window-based measurement), with no streak and nothing out
+    of place, and slightly defocused edges flicker (§1).
+- **Depth of field before the resolve, below render scale 1.** The blur is
+  computed at render resolution, so its speckle is coarser and blurred
+  silhouettes are a little less exact: whole-frame error on Dreidel Derby's
+  title at 0.67 is 1.351 against 1.307 with `AfterResolve` (the
+  out-of-focus highlights themselves are closer: menorah 3.96 against 4.64).
+  A sub-render-pixel bright source out of focus can also come out a few
+  percent too bright (the first title cup 105%, a 1-px line on
+  `bloom-post@thin@dofstill` 111%): its disc carries the energy of the
+  render samples that hit it, and over the 8-frame jitter cycle a feature
+  0.67 render pixels wide is hit by 5 or 6 of the 8 phases (0.63 or 0.75
+  instead of 0.67); the reference averages 64. The same quantisation drops
+  isolated sub-render-pixel features in sharp images (next item). With
+  `AfterResolve` the same disc loses 4-9% instead.
+- **A transparent-pipeline HUD is not blurred by depth of field** with the
+  default `BeforeResolve`: it is drawn after the resolve, at output size,
+  and the blur ran before it. With no AA (and with `AfterResolve`) the
+  effects pass blurs it by the depth of the scene behind it. Deliberate: a
+  HUD should stay sharp. Opaque-path HUD meshes are in the HDR render and are
+  blurred as with no AA (`taa-hud@dof`, error against the reference on the
+  panel 0.834, no AA 1.012).
+- **A transparent-pipeline HUD does not bloom** with the default bloom
+  source (`CurrentFrame`): it is drawn after the resolve and bloom reads the
+  HDR render from before it. With no AA, MSAA, and TAA with `Resolved` a
+  bright HUD element (above the bloom threshold) glows. Opaque-path HUD
+  meshes bloom as before.
 - **Upscaled thin detail.** Isolated features smaller than a render pixel
   still drop out of a still image sometimes: 4.3% at 0.67, 7.3% at 0.58,
   14.5% at 0.5.
@@ -1429,6 +1513,26 @@ Synthetic scenes, GPU frame median (ms; delta against no AA):
   bit-exact), the slope slack from raw depth (no gain), the floor only on
   bright boxes (not exact).
 - RCAS (`TaaRcas`): 0.165-0.203 ms.
+- Depth of field by `dof_order` (GPU frame, A B × 3, every rep within
+  0.07 ms; `kitchen-sink@dof` has most of the frame at the widest disc,
+  `bloom-post@thin@dofstill` all of it out of focus):
+
+  | Scene | `AfterResolve` native / 0.67 | `BeforeResolve` native / 0.67 | DoF off native / 0.67 |
+  |---|--:|--:|--:|
+  | `kitchen-sink@dof` | 17.52-17.59 / 16.30-16.38 | 14.47-14.56 / 7.96-8.02 | 6.44-6.53 / 5.14-5.26 |
+  | `bloom-post@thin@dofstill` | 15.11-15.16 / 14.27-14.33 | 12.05-12.11 / 5.83-5.87 | |
+
+  Before the resolve the blur runs at render size (0.45 of the pixels at
+  0.67) in its own pass, without the effects pass's post-size depth
+  remapping, and is about 3 ms cheaper even at native here. DoF itself is
+  the expensive part on such frames (8-11 ms at 1920x1435 with the widest
+  discs over most of the frame, after the resolve), so a game that blurs
+  much of its frame gains most from `BeforeResolve` with upscaling. With DoF
+  off the two orders compile and dispatch the same: `kitchen-sink` 6.44-6.53
+  either way. In Dreidel Derby (paced, 3 runs; mid-round / title): native
+  `AfterResolve` 12.99 / 16.18 ms, `BeforeResolve` 13.04 / 16.32; 0.67
+  8.36 / 10.84 and 8.23 / 9.24. Mid-round nothing is defocused (the play
+  lens is f/64) and the frames are bit-identical between the orders.
 - Reactive seed: no timestamp of its own; round 1 bounded it at 0.03-0.04 ms
   by repeat-N.
 - Forced fallback (`PrepReconstruction`, with the velocity overlay) against
@@ -1609,17 +1713,30 @@ What the events are, from the frames:
   the reference show its bloom halo (82 rising to 155 towards the rim on
   frame 690, bare table 76), and TAA at `dbf594df` shows none (71-79). The
   cause is the next item's; `TaaConfig::bloom_source` (§1, §6) is the fix.
-- **Remaining, title: out-of-focus highlights are dimmer.** Every flagged
-  pixel on the defocused menorah is darker than the reference, none brighter
-  where a highlight used to be, so nothing lags or trails. The resolve
-  averages a pixel with its neighbours in display space, which is what stops
-  thin highlights flickering, and a very bright thin highlight loses most of
-  its energy above white there; depth of field then spreads the smaller
-  energy: 18-20% less local highlight energy than the reference on the
-  brightest cups (MSAA loses about 7%, no AA none).
+- **Title: out-of-focus highlights were dimmer; fixed by `dof_order`.**
+  With depth of field after the resolve every flagged pixel on the
+  defocused menorah was darker than the reference, none brighter where a
+  highlight used to be, so nothing lagged or trailed: the resolve averages
+  in display space, a very bright thin highlight loses its energy above
+  white there, and DoF then spread the smaller energy (18-20% less local
+  highlight energy on the brightest cups; MSAA about 7%, no AA none). With
+  DoF before the resolve (`BeforeResolve`, now the default; fixed jitter
+  phase, pass D): frozen title error 0.717 → 0.309 (MSAA 1.322, no AA
+  1.172), the menorah 2.48 → 0.85 (MSAA 3.12, no AA 2.34), highlight energy
+  in a 128-pixel window on three cups 1051 / 1306 / 696 → 1153 / 1417 / 710
+  (reference 1150 / 1408 / 710), frozen flicker 0.255 p99 4 → 0.199 p99 3
+  (menorah tile 1.11 p99 16 → 0.79 p99 9), title orbit stale pixel-frames
+  11,487 → 2,067 (events of 2+ frames 66 → 18, longest 8 → 5). The
+  in-focus table differs by at most 2 levels between the orders. At 0.67:
+  title error 1.307 → 1.351, menorah 4.64 → 3.96, cups 1104 / 1308 / 692 →
+  1210 / 1421 / 707, flicker 0.310 p99 5 → 0.248 p99 4 (§6). The game's
+  HUD is a DOM overlay and identical in every mode. Evidence:
+  `title-bokeh-after-vs-before-x4.gif` (report, pass D),
+  `docs/taa/dof-order-title-menorah.png`.
 - **A staged nudge** (the player's dreidel pushed 30 pixels while touching
   two others): one 2-frame event of 19 pixels; no edge left behind.
 
 So in the game there is no pixel showing an object where it no longer is.
-What differs from the reference for more than one frame is energy in
-effects that run after the resolve (§6).
+What differed from the reference for more than one frame was energy in
+effects that ran after the resolve: bloom (now `bloom_source`) and depth of
+field (now `dof_order`; §6).

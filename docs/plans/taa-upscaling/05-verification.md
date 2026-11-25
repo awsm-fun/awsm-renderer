@@ -201,7 +201,9 @@ Resolve time may be spent where it buys visible quality.
 Three rounds. Earlier records are in git history (`2da7b171`, `8582017d`).
 This is the state at renderer `ec35a6fd` plus the new-object flag
 (`reactive_new_objects`, `dbf594df`) and bloom's source
-(`TaaBloomSource::CurrentFrame`, this patch set), which leave every other
+(`TaaBloomSource::CurrentFrame`) and depth of field before the resolve
+(`TaaDofOrder::BeforeResolve`, round 4; the nine scenes have DoF off, and
+with DoF off its captures are bit-identical), which leave every other
 line of this section unchanged (the nine ghost-track scenes, flicker, stop /
 cut / converged / pan; TAA off 36/36). Later commits change the harness and
 docs only. Harness `examples/taa-tests`, M1 Max, Chrome, DPR 2, 960x720
@@ -281,6 +283,21 @@ and 0.3318 against 0.3300. Reported, not gated: in a still image the halo
 ring of a source smaller than a pixel changes frame to frame by mean
 1.6-3.4, p99 8-14 at the jitter period, above the flicker gate's p99 of 4
 in that region (whole-frame flicker 0.086, p99 2: PASS). `docs/TAA.md` §6.
+
+Depth of field (round 4, `TaaDofOrder`): the harness's `<scene>@dof*`
+variants turn DoF on with a focus and aperture per scene (the CoC per node is
+logged). With DoF after the resolve (the previous behaviour) out-of-focus
+bright sources were dim (`bloom-post@thin@dofstill`, disc energy 95.5 /
+92.7 / 74.8% of the reference for a 1-px line, a 2-px glint and a sub-pixel
+glint), slight defocus failed the flicker gate (`taa-thin@dofslight`, CoC
+1-2 px: 0.391 p99 6), and a defocused foreground over a sharp background
+ghosted (`taa-reveal@dofnear` / `taa-orbit@dofnear`: 223 / 533 trail-band
+events longer than one frame, up to 59 frames). With DoF before the resolve
+(now the default): 98.9 / 100.8 / 97.3%, 0.198 p99 1, 0 / 1 events (2
+frames), every other DoF scene at its no-DoF level. With DoF on and the
+order `AfterResolve`, and with DoF off in either order, captures are
+bit-identical to `a2bfa3e9` (18/18 and 10/10). Dreidel Derby: `docs/TAA.md`
+§7.7.
 
 By disocclusion level, trail-band events longer than one frame on
 `taa-motion` / `prefab-skinned-morph` / `anim-skinned` / `taa-skin` /

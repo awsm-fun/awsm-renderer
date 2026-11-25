@@ -349,13 +349,18 @@ heightmaps (`displace_from_texture { node, url, strength }`). See the
   blocks (patch semantics). `atmosphere_mode` is three-way — `off` / `fog`
   (analytic) / `volumetric` (froxel, light shafts) — not an enable plus a
   style flag: volumetric REPLACES fog, since both describe the same air.
-- `set_anti_aliasing { mode?, taa_preset?, taa_render_scale?, taa_sharpen?, taa_disocclusion?, taa_<tuning>?, taa_debug_view? }`:
+- `set_anti_aliasing { mode?, taa_preset?, taa_render_scale?, taa_sharpen?, taa_disocclusion?, taa_bloom_source?, taa_dof_order?, taa_<tuning>?, taa_debug_view? }`:
   `mode` is `none` / `msaa` / `smaa` / `msaa_smaa` / `taa` (exclusive; a mode
   change recompiles, so `wait_render_settled` after). `taa_preset` is
   `native` (1.0) / `quality` (0.67) / `balanced` (0.58) / `performance` (0.5).
   `taa_disocclusion` is `depth` / `depth_and_motion` / `depth_motion_and_id`
   (the default): which tests drop a pixel's history; each level costs more
   than the one before, and a change while TAA is on rebuilds the TAA pass
+  (`wait_render_settled` after). `taa_bloom_source` is `current_frame` (the
+  default: this frame's HDR render, thin bright sources keep their glow) /
+  `resolved`. `taa_dof_order` is `before_resolve` (the default: depth of field
+  on this frame's HDR render, before the resolve) / `after_resolve` (on the
+  resolved image); with DoF on a change recompiles the effects pass
   (`wait_render_settled` after). The other TAA settings and every tuning knob
   are live (no recompile, no history reset); `taa_debug_view` is transient. Saved on
   `post_process.anti_aliasing`; read back with `get_post_process` and
