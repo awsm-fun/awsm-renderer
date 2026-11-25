@@ -16,7 +16,10 @@ impl AwsmRenderer {
         view: Mat4,
         camera_params: CameraParams,
     ) -> crate::error::Result<()> {
+        #[cfg(feature = "animation")]
         self.update_animations(global_time_delta_ms)?;
+        #[cfg(not(feature = "animation"))]
+        let _ = global_time_delta_ms;
         // `update_transforms` owns all per-frame renderer-side
         // bookkeeping (frame_index bump, BVH refit, light-bucket
         // rebuild, shadow-receiver flagging, debug invariants). The

@@ -40,3 +40,14 @@ jobs:
 
       - name: cargo test
         run: cargo test --all-features
+
+      # Consumers may turn the renderer's default features off (e.g. a lean
+      # app without animation or LOD): every combination must still build.
+      - name: feature combinations (awsm-renderer)
+        run: |
+          set -e
+          for f in "" animation lod animation,lod; do
+            echo "::group::--no-default-features --features '$f'"
+            cargo check -p awsm-renderer --target wasm32-unknown-unknown --no-default-features ${f:+--features $f}
+            echo "::endgroup::"
+          done
