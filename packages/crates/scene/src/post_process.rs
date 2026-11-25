@@ -235,6 +235,11 @@ pub struct TaaTuningSettings {
     /// resting edge released by a sub-pixel move). 0 = off; 1.0 removes that
     /// last ghost at some still-image flicker on thin wires.
     pub edge_release: f32,
+    /// Current-frame weight on every pixel of a mesh in its first rendered
+    /// frame (inserted, or shown again after being hidden): a new object
+    /// starts from a history of itself, not of what was behind it. 1.0
+    /// (default); 0 = off.
+    pub reactive_new_objects: f32,
 }
 
 impl Default for TaaTuningSettings {
@@ -259,6 +264,7 @@ impl Default for TaaTuningSettings {
             motion_edge_alpha: 1.0,
             motion_edge_speed: 0.5,
             edge_release: 0.0,
+            reactive_new_objects: 1.0,
         }
     }
 }

@@ -20,7 +20,10 @@
 // clear depth 1.0 (forward Z), 2 = HUD with clear depth 0.0 (reverse Z);
 // bits 2-12 are k_ssr in 1/1024 steps (`ssr` variant only); bit 16 marks
 // non-rigid meshes (TAA's prep-pass fallback, 03 §2.4: their vectors are the
-// node's rigid motion only, so they get `NON_RIGID_REACTIVE`).
+// node's rigid motion only, so they get `NON_RIGID_REACTIVE`); bits 17-26
+// are k_new in 1/1023 steps: meshes in their first rendered frame (meta word
+// 22 bit 2, `TaaTuning::reactive_new_objects`) get it, so a new object
+// starts from a history of itself, not of what was behind it.
 //
 // Colour target 0 is attached by the pass; the pipeline blends it to keep
 // the destination.
@@ -46,6 +49,7 @@ const META_TEMPORAL_REACTIVE: u32 = 22u;
 const META_NON_RIGID: u32 = 23u;
 const NON_RIGID_BIT: u32 = 65536u;
 const NON_RIGID_REACTIVE: f32 = 0.5;
+const NEW_OBJECT_BIT: u32 = 4u;
 
 struct SeedVertex {
     @builtin(position) position: vec4<f32>,
@@ -89,6 +93,12 @@ fn frag_main(input: SeedVertex) -> SeedOutput {
     if ((input.hud_mode & NON_RIGID_BIT) != 0u
         && material_mesh_meta_words[base + META_NON_RIGID] != 0u) {
         reactive = max(reactive, NON_RIGID_REACTIVE);
+    }
+    let k_new = f32((input.hud_mode >> 17u) & 1023u) / 1023.0;
+    if (k_new > 0.0
+        && (material_mesh_meta_words[base + META_TEMPORAL_REACTIVE] & NEW_OBJECT_BIT) != 0u
+        && material_mesh_meta_words[base + META_IS_HUD] == 0u) {
+        reactive = max(reactive, k_new);
     }
 {% if ssr %}
     let k_ssr = f32((input.hud_mode >> 2u) & 2047u) / 1024.0;

@@ -1713,7 +1713,9 @@ fn anti_aliasing_section() -> Dom {
                      alpha on lines; 1 for animated lines (in the editor it also covers the \
                      grid, gizmo and wireframe overlays). Edge release (depth + motion + \
                      object only): current weight where an object just left the pixel's \
-                     neighbourhood; 1 removes the last ghost at some shimmer on thin wires.",
+                     neighbourhood; 1 removes the last ghost at some shimmer on thin wires. \
+                     Reactive (new objects): every pixel of a mesh in its first frame (inserted \
+                     or shown again), so it does not fade in over what was behind it.",
                 ),
                 (
                     "TAA debug view",
@@ -1885,6 +1887,15 @@ fn anti_aliasing_section() -> Dom {
                 ..Default::default()
             }
         }))
+        .child(weight_knob(
+            "TAA reactive (new objects)",
+            t.reactive_new_objects,
+            0.25,
+            |v| TaaTuningPatch {
+                reactive_new_objects: Some(v),
+                ..Default::default()
+            },
+        ))
         .child(weight_knob(
             "TAA reactive (SSR)",
             t.reactive_ssr,

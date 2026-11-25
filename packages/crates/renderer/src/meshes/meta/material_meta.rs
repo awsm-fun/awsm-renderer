@@ -73,6 +73,10 @@ pub const MATERIAL_MESH_META_RECEIVE_DECALS_OFFSET: usize = 18 * 4;
 /// Written by `MeshMeta::set_shadow_receiver_gate` from
 /// `transforms::update_transforms` after `LightMeshBuckets::mark_shadow_receivers`.
 pub const MATERIAL_MESH_META_SHADOW_RECEIVER_GATE_OFFSET: usize = 19 * 4;
+/// Byte offset of the TAA flags word (index 22): bit 0 temporal-reactive
+/// material, bit 1 particle mesh, bit 2 new object (patched per frame by
+/// `MeshMeta::update_new_objects`).
+pub const MATERIAL_MESH_META_TAA_FLAGS_OFFSET: usize = 22 * 4;
 
 /// Byte offset of the non-rigid flag (word 23; TAA prep-pass fallback),
 /// patched per frame by `MeshMeta::update_non_rigid_gates`.
@@ -302,7 +306,8 @@ impl<'a> MaterialMeshMeta<'a> {
         // (plan 03 §5.2; `Materials::is_temporal_reactive`), read by the TAA
         // reactive seed (`taa_wgsl/reactive_seed.wgsl`, as a raw word); bit 1
         // = a particle mesh (`Mesh::taa_particles`), read by the transparent
-        // pass's reactive output. The shared WGSL struct still calls it
+        // pass's reactive output; bit 2 = a new object in its first frame,
+        // patched in per frame (`MeshMeta::update_new_objects`), 0 here. The shared WGSL struct still calls it
         // `_reserved2`.
         push_u32(
             u32::from(materials.is_temporal_reactive(material_key))

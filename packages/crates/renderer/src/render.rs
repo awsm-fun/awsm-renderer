@@ -428,6 +428,9 @@ impl AwsmRenderer {
         // TAA prep-pass fallback: flag the meshes deforming now (meta patch,
         // same upload). No-op otherwise.
         self.update_non_rigid_gates();
+        // TAA: flag the meshes in their first rendered frame (meta patch,
+        // same upload). No-op when TAA or `reactive_new_objects` is off.
+        self.update_new_object_flags();
 
         // (Variant reconcile + scene-pipeline compile used to run here every
         // frame — the reactive `reconcile_material_variants()` →
@@ -1922,10 +1925,19 @@ impl AwsmRenderer {
             .filter(|k| {
                 *k > 0.0 && ctx.post_processing.ssr.enabled && self.render_passes.ssr.is_some()
             });
+        // TAA new objects (`reactive_new_objects`): `Some` only on a frame
+        // where a mesh carries the flag.
+        let k_new = ctx
+            .anti_aliasing
+            .taa
+            .as_ref()
+            .map(|taa| taa.tuning.reactive_new_objects)
+            .filter(|k| *k > 0.0 && self.taa.new_objects_live);
         let reactive_seed = if ctx.anti_aliasing.taa.is_some()
             && (self.materials.has_temporal_reactive()
                 || hud_in_scene
                 || k_ssr.is_some()
+                || k_new.is_some()
                 // Prep-pass fallback (03 §2.4): non-rigid meshes are reactive.
                 || (ctx.render_textures.formats.taa_prep_velocity(ctx.anti_aliasing) && self.meshes.meta.has_non_rigid()))
         {
@@ -1948,7 +1960,7 @@ impl AwsmRenderer {
                     false,
                     true,
                 )?;
-                seed.draw(&ctx, &render_pass, hud_in_scene, k_ssr)?;
+                seed.draw(&ctx, &render_pass, hud_in_scene, k_ssr, k_new)?;
                 render_pass.end();
             }
             // Lines first, so the hook's overlays draw on top of them.
@@ -1990,7 +2002,7 @@ impl AwsmRenderer {
                 true,
             )?;
             if let Some(seed) = reactive_seed {
-                seed.draw(&ctx, &render_pass, hud_in_scene, k_ssr)?;
+                seed.draw(&ctx, &render_pass, hud_in_scene, k_ssr, k_new)?;
             }
             self.lines.draw(&ctx, &render_pass)?;
             self.render_passes.material_transparent.draw(
@@ -3444,8 +3456,9 @@ impl AwsmRenderer {
                 let prev_key = chain.key_for_level(base_key, chain.current_level);
                 let sel_key = chain.key_for_level(base_key, selected);
                 chain.current_level = selected;
-                let _ = self.set_mesh_hidden(prev_key, true);
-                let _ = self.set_mesh_hidden(sel_key, false);
+                // A level swap is the same object: not a TAA new object.
+                let _ = self.set_mesh_hidden_inner(prev_key, true, false);
+                let _ = self.set_mesh_hidden_inner(sel_key, false, false);
             }
         }
         self.lod = reg;

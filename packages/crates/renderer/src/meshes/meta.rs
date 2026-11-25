@@ -2,6 +2,7 @@
 
 pub mod geometry_meta;
 pub mod material_meta;
+pub mod new_objects;
 
 use awsm_renderer_core::{buffers::BufferDescriptor, renderer::AwsmRendererWebGpu};
 
@@ -70,6 +71,14 @@ pub struct MeshMeta {
     /// it covers that deformed this frame, vertex hooks always). Rebuilt by
     /// `update_non_rigid_gates`.
     overlay_draws: std::collections::HashSet<MeshKey>,
+    /// TAA "new object" flags (`TaaTuning::reactive_new_objects`): which
+    /// meshes are in their first rendered frame. Marked only while
+    /// `new_objects_on` (TAA on, weight above 0).
+    new_objects: new_objects::NewObjects,
+    new_objects_on: bool,
+    /// Material-meta word 22 (the TAA flags) as last written in full, so the
+    /// per-frame new-object patch can set and clear its bit.
+    taa_flags: slotmap::SecondaryMap<MeshKey, u32>,
 }
 
 /// Which non-rigid meshes the TAA fallback's velocity overlay gives exact
@@ -155,6 +164,9 @@ impl MeshMeta {
             non_rigid_gated: 0,
             non_rigid_clock: 0,
             overlay_draws: std::collections::HashSet::new(),
+            new_objects: new_objects::NewObjects::default(),
+            new_objects_on: false,
+            taa_flags: slotmap::SecondaryMap::new(),
         })
     }
 
@@ -237,8 +249,24 @@ impl MeshMeta {
         } else {
             self.non_rigid.remove(mesh_key);
         }
+        let new_entry = !self.material_buffers.contains_key(mesh_key);
+        let off = material_meta::MATERIAL_MESH_META_TAA_FLAGS_OFFSET;
+        let taa_flags = u32::from_le_bytes([
+            meta_data[off],
+            meta_data[off + 1],
+            meta_data[off + 2],
+            meta_data[off + 3],
+        ]);
         self.material_buffers.update(mesh_key, &meta_data);
         self.material_dirty = true;
+        self.taa_flags.insert(mesh_key, taa_flags);
+        if new_entry && self.new_objects_on {
+            self.new_objects.mark(mesh_key);
+        }
+        if self.new_objects.is_live(mesh_key) {
+            // A full rewrite during the mesh's first frame keeps the flag.
+            self.write_taa_flags(mesh_key, taa_flags | new_objects::TAA_FLAG_NEW_OBJECT);
+        }
 
         // Seed the gate cache with the initial packed value
         // (`MaterialMeshMeta::to_bytes` writes `1u` into the
@@ -420,6 +448,70 @@ impl MeshMeta {
             self.non_rigid_gated -= 1;
         }
         self.overlay_draws.remove(&mesh_key);
+        self.new_objects.remove(mesh_key);
+        self.taa_flags.remove(mesh_key);
+    }
+
+    /// TAA: a mesh became visible again (`set_mesh_hidden(false)` on a
+    /// hidden mesh): flag it as new for its next frame. No-op while the new
+    /// object weight is off.
+    pub fn mark_new_object(&mut self, mesh_key: MeshKey) {
+        if self.new_objects_on && self.material_buffers.contains_key(mesh_key) {
+            self.new_objects.mark(mesh_key);
+        }
+    }
+
+    /// The meshes marked as new and not yet flagged (see
+    /// [`Self::update_new_objects`]).
+    pub fn pending_new_objects(&self) -> impl Iterator<Item = MeshKey> + '_ {
+        self.new_objects.pending()
+    }
+
+    /// The meshes marked or flagged as new (whose bounds the frame step
+    /// reads).
+    pub fn new_object_candidates(&self) -> impl Iterator<Item = MeshKey> + '_ {
+        self.new_objects.candidates()
+    }
+
+    /// TAA, once per frame before the meta upload: flag the marked meshes
+    /// that draw this frame (their first frame) and unflag last frame's
+    /// (material-meta word 22, bit 2). `enabled`: TAA on and
+    /// `reactive_new_objects` above 0; `reset`: this frame's resolve discards
+    /// all history anyway; `state`: whether a marked mesh draws this frame.
+    /// Returns whether any mesh is flagged this frame (the reactive seed must
+    /// draw). O(marked + flag changes).
+    pub fn update_new_objects(
+        &mut self,
+        enabled: bool,
+        reset: bool,
+        state: impl Fn(MeshKey) -> new_objects::NewObjectState,
+        bounds: impl Fn(MeshKey) -> Option<new_objects::Bounds>,
+    ) -> bool {
+        if !enabled && !self.new_objects_on && !self.new_objects.any_live() {
+            return false;
+        }
+        self.new_objects_on = enabled;
+        let step = self.new_objects.advance(enabled, reset, state, bounds);
+        for key in step.clear {
+            if let Some(flags) = self.taa_flags.get(key).copied() {
+                self.write_taa_flags(key, flags);
+            }
+        }
+        for key in step.set {
+            if let Some(flags) = self.taa_flags.get(key).copied() {
+                self.write_taa_flags(key, flags | new_objects::TAA_FLAG_NEW_OBJECT);
+            }
+        }
+        self.new_objects.any_live()
+    }
+
+    fn write_taa_flags(&mut self, mesh_key: MeshKey, flags: u32) {
+        self.material_buffers.update_offset(
+            mesh_key,
+            material_meta::MATERIAL_MESH_META_TAA_FLAGS_OFFSET,
+            &flags.to_le_bytes(),
+        );
+        self.material_dirty = true;
     }
 
     /// Whether any live mesh is flagged non-rigid right now (see

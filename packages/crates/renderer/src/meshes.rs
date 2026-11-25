@@ -172,12 +172,30 @@ impl AwsmRenderer {
         Ok((new_transform_key, new_mesh_keys))
     }
 
-    /// Sets mesh visibility state.
+    /// Sets mesh visibility state. Under TAA, showing a hidden mesh again
+    /// counts as a new object for its next frame
+    /// (`TaaTuning::reactive_new_objects`): what its pixels held meanwhile
+    /// is not its history.
     pub fn set_mesh_hidden(&mut self, mesh_key: MeshKey, hidden: bool) -> crate::error::Result<()> {
+        self.set_mesh_hidden_inner(mesh_key, hidden, true)
+    }
+
+    /// `set_mesh_hidden`; `new_object: false` for a discrete-LOD swap (the
+    /// level shown replaces the same object, whose history is still right).
+    pub(crate) fn set_mesh_hidden_inner(
+        &mut self,
+        mesh_key: MeshKey,
+        hidden: bool,
+        new_object: bool,
+    ) -> crate::error::Result<()> {
         let mesh = self.meshes.get_mut(mesh_key)?;
+        let shown = mesh.hidden && !hidden;
         mesh.hidden = hidden;
         self.meshes.bvh_tlas_revision += 1;
         self.sync_spatial_for_mesh(mesh_key);
+        if shown && new_object {
+            self.meshes.meta.mark_new_object(mesh_key);
+        }
         Ok(())
     }
 

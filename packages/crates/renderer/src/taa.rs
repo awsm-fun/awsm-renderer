@@ -243,6 +243,20 @@ pub struct TaaTuning {
     /// would extrapolate past the current frame; the scene loader clamps
     /// authored values to `0..=1`).
     pub edge_release: f32,
+    /// Reactive value on every pixel of a mesh in its first rendered frame
+    /// (inserted, or shown again after `set_mesh_hidden(true)`): its pixels
+    /// hold the history of whatever was there before, which no test can
+    /// reject (nothing nearer was there) and the clip keeps on its rim (both
+    /// colours are in the box), so a new object's silhouette fades in over
+    /// the history length. 1.0 (default): the new object shows only itself
+    /// on its first frame (one frame without AA there), then accumulates
+    /// its own history. 0 = off, and zero cost (no flags kept, no seed
+    /// draws). A discrete-LOD swap does not count; instances appended to an
+    /// existing instanced mesh are not covered. `docs/TAA.md` §1, §3.6.
+    /// A current-frame weight: values above 1 are not meaningful (the blend
+    /// would extrapolate past the current frame; the scene loader clamps
+    /// authored values to `0..=1`).
+    pub reactive_new_objects: f32,
     /// Reactive value written for materials flagged `temporal: reactive`.
     /// A current-frame weight: values above 1 are not meaningful (the blend
     /// would extrapolate past the current frame; the scene loader clamps
@@ -298,6 +312,7 @@ impl Default for TaaTuning {
             reactive_particles: 1.0,
             reactive_lines: 0.3,
             edge_release: 0.0,
+            reactive_new_objects: 1.0,
             reactive_material: 0.2,
             reactive_ssr: 0.0,
             mip_bias_extra: 0.0,
@@ -395,6 +410,9 @@ pub struct TaaRuntime {
     pub(crate) frame_index: u32,
     /// Set by a reset; the next resolve ignores history, then clears it.
     pub(crate) reset_pending: bool,
+    /// This frame, at least one mesh carries the "new object" meta flag
+    /// (`TaaTuning::reactive_new_objects`): the reactive seed draws.
+    pub(crate) new_objects_live: bool,
     pub(crate) debug_view: TaaDebugView,
     pub(crate) jitter_override: Option<JitterOverride>,
     /// Diagnostic views beyond [`TaaDebugView`] (ids 10+ in the resolve
@@ -542,6 +560,99 @@ impl TaaRuntime {
 }
 
 impl AwsmRenderer {
+    /// TAA, once per frame before the meta upload: flag the meshes in their
+    /// first rendered frame for the reactive seed
+    /// (`TaaTuning::reactive_new_objects`). Nothing is flagged on a frame
+    /// whose resolve discards all history anyway (a reset, a load), and
+    /// nothing is kept or drawn while TAA or the weight is off.
+    pub(crate) fn update_new_object_flags(&mut self) {
+        let enabled = self
+            .anti_aliasing
+            .taa
+            .as_ref()
+            .is_some_and(|taa| taa.tuning.reactive_new_objects > 0.0);
+        let reset = self.taa.reset_pending;
+        // Which marked meshes draw this frame: shown, with the geometry and
+        // pipeline `collect_renderables` needs (a live add has no geometry
+        // until its `commit_load`; a mesh whose pipeline is still compiling
+        // is skipped). Those not drawable yet stay marked.
+        use crate::meshes::meta::new_objects::NewObjectState;
+        let states: std::collections::HashMap<crate::meshes::MeshKey, NewObjectState> = self
+            .meshes
+            .meta
+            .pending_new_objects()
+            .map(|key| (key, self.new_object_state(key)))
+            .collect();
+        // World bounds of the flagged meshes (a flagged mesh that jumps right
+        // after its first frame keeps the flag: shown a frame before it is
+        // posed at its new place). Not borrowed across the meta update.
+        let bounds: std::collections::HashMap<
+            crate::meshes::MeshKey,
+            crate::meshes::meta::new_objects::Bounds,
+        > = self
+            .meshes
+            .meta
+            .new_object_candidates()
+            .filter_map(|key| {
+                let aabb = self.meshes.get(key).ok()?.world_aabb.as_ref()?;
+                Some((
+                    key,
+                    crate::meshes::meta::new_objects::Bounds {
+                        center: (aabb.min + aabb.max) * 0.5,
+                        radius: (aabb.max - aabb.min).length() * 0.5,
+                    },
+                ))
+            })
+            .collect();
+        self.taa.new_objects_live = self.meshes.meta.update_new_objects(
+            enabled,
+            reset,
+            |key| states.get(&key).copied().unwrap_or(NewObjectState::Drop),
+            |key| bounds.get(&key).copied(),
+        );
+    }
+
+    /// See [`Self::update_new_object_flags`]: mirrors the routing of
+    /// `collect_renderables` (frustum culling aside: a mesh off-screen at its
+    /// first frame shows its first pixels through camera or object motion,
+    /// with vectors).
+    fn new_object_state(
+        &self,
+        key: crate::meshes::MeshKey,
+    ) -> crate::meshes::meta::new_objects::NewObjectState {
+        use crate::meshes::meta::new_objects::NewObjectState;
+        let Ok(mesh) = self.meshes.get(key) else {
+            return NewObjectState::Drop;
+        };
+        if mesh.hidden || mesh.hud {
+            return NewObjectState::Drop;
+        }
+        let material = mesh.material_key;
+        let transparent = self.materials.is_transparency_pass(material);
+        let ready = if mesh.has_visibility_geometry
+            && !(transparent && mesh.has_transparency_geometry)
+        {
+            self.render_passes
+                .material_opaque
+                .pipelines
+                .get_compute_pipeline_key(&self.anti_aliasing, self.materials.shader_id(material))
+                .is_some()
+        } else if mesh.has_transparency_geometry {
+            self.render_passes
+                .material_transparent
+                .pipelines
+                .get_render_pipeline_key(key)
+                .is_some()
+        } else {
+            false
+        };
+        if ready {
+            NewObjectState::Drawable
+        } else {
+            NewObjectState::Wait
+        }
+    }
+
     /// Harness diagnostics: selects a resolve debug view by its raw shader
     /// id. Ids 10 and up are internal views with no [`TaaDebugView`] name:
     /// 10 = previous depth / expected previous depth (0.5 = equal, darker =

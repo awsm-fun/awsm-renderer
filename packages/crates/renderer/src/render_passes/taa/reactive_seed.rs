@@ -198,12 +198,15 @@ impl TaaReactiveSeed {
     /// reactive attachment). `hud`: the HUD geometry pass ran this frame, so
     /// `hud_depth` marks the HUD's pixels. `k_ssr`: `Some` (> 0) when SSR ran
     /// this frame and reflections add reactivity (the `ssr` variant).
+    /// `k_new`: `Some` (> 0) when a mesh is in its first rendered frame
+    /// (`TaaTuning::reactive_new_objects`, meta word 22 bit 2).
     pub fn draw(
         &self,
         ctx: &RenderContext,
         render_pass: &RenderPassEncoder,
         hud: bool,
         k_ssr: Option<f32>,
+        k_new: Option<f32>,
     ) -> Result<()> {
         let variant = if k_ssr.is_some() {
             &self.ssr
@@ -223,6 +226,7 @@ impl TaaReactiveSeed {
             ctx.render_textures
                 .formats
                 .taa_prep_velocity(ctx.anti_aliasing),
+            k_new,
         );
         for _ in 0..self.debug_repeat.get().max(1) {
             render_pass.draw_with_instance_count_and_first_vertex_and_first_instance(
@@ -250,12 +254,13 @@ impl TaaReactiveSeed {
 /// The draw's first instance, the seed's per-draw constants (see the
 /// shader): bits 0-1 the HUD mode (0 none, 1 forward Z, 2 reverse Z), bits
 /// 2-12 `k_ssr` in 1/1024 steps, bit 16 "mark non-rigid meshes" (the
-/// prep-pass fallback).
+/// prep-pass fallback), bits 17-26 `k_new` (new objects) in 1/1023 steps.
 pub(crate) fn seed_instance(
     hud: bool,
     reverse_z: bool,
     k_ssr: Option<f32>,
     non_rigid: bool,
+    k_new: Option<f32>,
 ) -> u32 {
     let hud_mode = match (hud, reverse_z) {
         (false, _) => 0,
@@ -263,7 +268,8 @@ pub(crate) fn seed_instance(
         (true, true) => 2,
     };
     let k = (k_ssr.unwrap_or(0.0).clamp(0.0, 1.0) * 1024.0).round() as u32;
-    hud_mode | (k << 2) | (u32::from(non_rigid) << 16)
+    let k_new = (k_new.unwrap_or(0.0).clamp(0.0, 1.0) * 1023.0).round() as u32;
+    hud_mode | (k << 2) | (u32::from(non_rigid) << 16) | (k_new << 17)
 }
 
 fn layout_cache_key(ssr: bool) -> BindGroupLayoutCacheKey {
@@ -311,14 +317,36 @@ mod tests {
 
     #[test]
     fn seed_instance_packs_hud_mode_and_k_ssr() {
-        assert_eq!(seed_instance(false, false, None, false), 0);
-        assert_eq!(seed_instance(true, false, None, false), 1);
-        assert_eq!(seed_instance(true, true, None, false), 2);
-        assert_eq!(seed_instance(false, false, Some(0.25), false) >> 2, 256);
-        assert_eq!(seed_instance(true, true, Some(0.5), false), 2 | (512 << 2));
+        assert_eq!(seed_instance(false, false, None, false, None), 0);
+        assert_eq!(seed_instance(true, false, None, false, None), 1);
+        assert_eq!(seed_instance(true, true, None, false, None), 2);
+        assert_eq!(
+            seed_instance(false, false, Some(0.25), false, None) >> 2,
+            256
+        );
+        assert_eq!(
+            seed_instance(true, true, Some(0.5), false, None),
+            2 | (512 << 2)
+        );
         // k_ssr (bits 2-12) never reaches the non-rigid bit.
-        assert_eq!(seed_instance(false, false, Some(1.0), false) & (1 << 16), 0);
-        assert_eq!(seed_instance(false, false, Some(1.0), true) >> 16, 1);
+        assert_eq!(
+            seed_instance(false, false, Some(1.0), false, None) & (1 << 16),
+            0
+        );
+        assert_eq!(seed_instance(false, false, Some(1.0), true, None) >> 16, 1);
+        // k_new in bits 17-26, clear of k_ssr and the non-rigid bit.
+        assert_eq!(
+            seed_instance(false, false, None, false, Some(1.0)) >> 17,
+            1023
+        );
+        assert_eq!(
+            seed_instance(false, false, Some(1.0), true, Some(0.5)) >> 17,
+            512
+        );
+        assert_eq!(
+            seed_instance(false, false, Some(1.0), true, Some(1.0)) & ((1 << 17) - 1),
+            seed_instance(false, false, Some(1.0), true, None)
+        );
     }
 
     #[test]

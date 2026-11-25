@@ -67,8 +67,10 @@ impl AwsmRenderer {
     /// and everything that moves with it get zero motion this frame instead
     /// of a motion vector across the jump (G9 / G10). Resets the transform's
     /// whole subtree, the instance transforms of every transform in it, and
-    /// every skin with a joint in it. Call it in the frame of the jump, after
-    /// setting the new transform. No-op when TAA is off.
+    /// every skin with a joint in it, and marks their meshes as new objects
+    /// (`TaaTuning::reactive_new_objects`: at the new place the history is not
+    /// theirs). Call it in the frame of the jump, after setting the new
+    /// transform. No-op when TAA is off.
     ///
     /// Apps must call it on teleports: nothing detects an object jump, and
     /// the camera-jump guard only covers the camera (and cannot catch a
@@ -99,6 +101,17 @@ impl AwsmRenderer {
         let skins: Vec<_> = self.meshes.skins.skins_with_joints(&subtree).collect();
         for skin in skins {
             self.meshes.skins.reset_history(skin);
+        }
+        // At its new place the history holds whatever was there, not this
+        // object: its meshes are new objects for their next drawn frame
+        // (`TaaTuning::reactive_new_objects`; no-op when that is off).
+        let meshes: Vec<_> = subtree
+            .iter()
+            .filter_map(|k| self.meshes.keys_by_transform_key(*k))
+            .flat_map(|keys| keys.iter().copied())
+            .collect();
+        for mesh in meshes {
+            self.meshes.meta.mark_new_object(mesh);
         }
     }
 

@@ -1429,6 +1429,20 @@ fn taa_reactive_seed_validates_and_reads_the_right_meta_words() {
         !src.contains("switch"),
         "Apple GPU rule: no switch in the seed"
     );
+    // New objects (`reactive_new_objects`): bit 2 of the same word, the
+    // weight from instance bits 17-26 (`seed_instance`), and the bit is the
+    // one the meta patch sets.
+    assert!(src.contains("const NEW_OBJECT_BIT: u32 = 4u;"));
+    assert!(src.contains("let k_new = f32((input.hud_mode >> 17u) & 1023u) / 1023.0;"));
+    assert_eq!(
+        crate::meshes::meta::new_objects::TAA_FLAG_NEW_OBJECT,
+        4,
+        "the seed's NEW_OBJECT_BIT"
+    );
+    assert_eq!(
+        crate::meshes::meta::material_meta::MATERIAL_MESH_META_TAA_FLAGS_OFFSET,
+        22 * 4
+    );
 }
 
 #[test]
