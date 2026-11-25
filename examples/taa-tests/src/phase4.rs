@@ -304,6 +304,124 @@ pub async fn governor_hitch_mode(p: &Params, r: &mut Report) {
     }
 }
 
+/// `?mode=newobj-cost&scenes=a,b` (round 3, `reactive_new_objects`): the
+/// worst case of the new-object flags, every mesh of the scene shown at
+/// once. Every 60 frames all visible meshes are hidden for one frame and
+/// then shown again (all of them new objects on the next frame, cleared on
+/// the one after). CPU `render()` and GPU frame per frame; the report gives
+/// the steady medians and, per show, the show frame and the three after.
+/// Run with `tune=reactive_new_objects:0` and `:1` to price the flags;
+/// `clones=N` adds N copies of the first visible mesh (many meshes at once).
+pub async fn newobj_cost_mode(p: &Params, r: &mut Report) {
+    use awsm_renderer::debug::TimingTier;
+    use awsm_renderer::profiling;
+    let scenes = if !p.scenes_given {
+        vec!["kitchen-sink".to_string()]
+    } else {
+        p.scenes.clone()
+    };
+    for scene in scenes {
+        let res: Result<String> = async {
+            let mut s = Session::open(opts(p, &scene, Aa::Taa)).await?;
+            s.renderer.logging.gpu = TimingTier::Frame;
+            // `clones=N`: N extra copies of the first visible mesh (same
+            // place), to make the worst case many meshes at once.
+            let clones: usize = crate::url_value("clones")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0);
+            if clones > 0 {
+                let src = s
+                    .renderer
+                    .meshes
+                    .iter()
+                    .find(|(_, m)| !m.hidden)
+                    .map(|(k, _)| k)
+                    .ok_or_else(|| anyhow!("no visible mesh to clone"))?;
+                for _ in 0..clones {
+                    s.renderer
+                        .clone_mesh(src)
+                        .map_err(|e| anyhow!("clone_mesh: {e}"))?;
+                }
+            }
+            let shown: Vec<awsm_renderer::meshes::MeshKey> = s
+                .renderer
+                .meshes
+                .iter()
+                .filter(|(_, m)| !m.hidden)
+                .map(|(k, _)| k)
+                .collect();
+            for _ in 0..60 {
+                s.render_next()?;
+                gpu_idle(&s.renderer).await;
+            }
+            let mut gpu = Vec::new();
+            let mut cpu = Vec::new();
+            let mut shows = Vec::new();
+            let mut last = profiling::gpu_frame_timing()
+                .map(|t| (t.count, t.total_ms))
+                .unwrap_or((0, 0.0));
+            for i in 0..300u32 {
+                if i % 60 == 10 {
+                    for k in &shown {
+                        let _ = s.renderer.set_mesh_hidden(*k, true);
+                    }
+                }
+                if i % 60 == 11 {
+                    for k in &shown {
+                        let _ = s.renderer.set_mesh_hidden(*k, false);
+                    }
+                    shows.push(i as usize);
+                }
+                let t0 = crate::now_ms();
+                s.render_next()?;
+                let t1 = crate::now_ms();
+                gpu_idle(&s.renderer).await;
+                crate::session::sleep_ms(4).await;
+                let now = profiling::gpu_frame_timing()
+                    .map(|t| (t.count, t.total_ms))
+                    .unwrap_or(last);
+                let dc = now.0.saturating_sub(last.0);
+                gpu.push(if dc > 0 { (now.1 - last.1) / dc as f64 } else { f64::NAN });
+                last = now;
+                cpu.push(t1 - t0);
+                set_hud(&format!("taa-tests: newobj-cost {scene} {i}"));
+            }
+            s.renderer.logging.gpu = TimingTier::Off;
+            s.destroy();
+            let median = |v: &[f64]| {
+                let mut x: Vec<f64> = v.iter().copied().filter(|f| f.is_finite()).collect();
+                x.sort_by(|a, b| a.total_cmp(b));
+                x.get(x.len() / 2).copied().unwrap_or(f64::NAN)
+            };
+            let steady: Vec<usize> = (0..gpu.len()).filter(|i| i % 60 >= 20).collect();
+            let gm = median(&steady.iter().map(|i| gpu[*i]).collect::<Vec<_>>());
+            let cm = median(&steady.iter().map(|i| cpu[*i]).collect::<Vec<_>>());
+            let mut rows = Vec::new();
+            for st in &shows {
+                let g: Vec<String> = (0..4).map(|d| format!("{:.2}", gpu.get(st + d).copied().unwrap_or(f64::NAN))).collect();
+                let c: Vec<String> = (0..4).map(|d| format!("{:.2}", cpu.get(st + d).copied().unwrap_or(f64::NAN))).collect();
+                rows.push(format!("show @{st}: GPU [{}] ms, CPU render() [{}] ms", g.join(", "), c.join(", ")));
+            }
+            Ok(format!(
+                "{} meshes shown at once every 60 frames at {}x{}; steady median GPU frame {gm:.3} ms, CPU render() {cm:.3} ms; {}",
+                shown.len(),
+                p.size.0,
+                p.size.1,
+                rows.join("; ")
+            ))
+        }
+        .await;
+        match res {
+            Ok(d) => r.info(&format!("newobj-cost:{scene}"), &d),
+            Err(e) => r.emit(
+                &format!("newobj-cost:{scene}"),
+                false,
+                &format!("error: {e:#}"),
+            ),
+        }
+    }
+}
+
 /// `?mode=sharpen-sweep&values=0,0.15,0.25,0.35` (taa-thin, `?scale=`,
 /// default 0.67): per RCAS strength, the converged error at k40 against the
 /// full-resolution reference and the static flicker; images stored.

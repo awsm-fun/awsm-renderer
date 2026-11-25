@@ -131,6 +131,9 @@ pub fn untracked_moving_nodes(scene: &str) -> Option<Vec<String>> {
     }
     match crate::session::base_scene_name(scene) {
         "taa-skin" => Some(vec!["fox".into(), "morph-cube".into()]),
+        // The pop-in cube: its pixels' content changes when it appears (the
+        // oracle restarts there), though nothing moves.
+        _ if scene.ends_with("@popin") || scene.ends_with("@popjump") => Some(vec!["cube".into()]),
         _ => None,
     }
 }

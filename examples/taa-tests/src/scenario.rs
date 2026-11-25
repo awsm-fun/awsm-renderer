@@ -41,7 +41,7 @@ pub struct SceneSetup {
 }
 
 impl SceneSetup {
-    fn base(&self, name: &str) -> Transform {
+    pub(crate) fn base(&self, name: &str) -> Transform {
         self.nodes.get(name).cloned().unwrap_or_default()
     }
 
@@ -127,6 +127,12 @@ pub struct Scenario {
     pub tracked: Option<(&'static str, Vec3)>,
     /// Nodes the harness flags as HUD meshes after load (`set_mesh_hud`).
     pub hud_nodes: Vec<&'static str>,
+    /// Nodes hidden from load until the given frame, then shown
+    /// (`set_mesh_hidden`): a pop-in (`<scene>@popin`).
+    pub appear: Vec<(&'static str, u32)>,
+    /// Nodes moved by an offset from their scripted place on one frame only
+    /// (`<scene>@popjump`: shown far away a frame before they are posed).
+    pub displaced: Vec<(&'static str, u32, Vec3)>,
 }
 
 impl Scenario {
@@ -146,6 +152,34 @@ impl Scenario {
     }
 }
 
+/// `taa-motion@popin` (round 3, `TaaTuning::reactive_new_objects`): the
+/// cube is hidden until k12 and then appears, still, over the checker floor
+/// (taa-motion's still phase: nothing moves, the camera neither). Its
+/// silhouette is a new object's: what its pixels held is the floor's
+/// history. 30 frames.
+pub fn popin_scenario(base: &str) -> Scenario {
+    Scenario {
+        scene: base.to_string(),
+        frames: 30,
+        phases: vec![("hidden", 0, 12), ("shown", 12, 30)],
+        tracked: None,
+        hud_nodes: vec![],
+        appear: vec![("cube", 12)],
+        displaced: vec![],
+    }
+}
+
+/// `taa-motion@popjump`: as `@popin`, but the cube is shown at k12 3 m to
+/// the side (on screen, over the floor) and posed in place at k13, the way an app's
+/// visibility command can land a frame before the matching pose (Dreidel
+/// Derby's respawned coins). No `reset_motion_history` for the jump.
+pub fn popjump_scenario(base: &str) -> Scenario {
+    Scenario {
+        displaced: vec![("cube", 12, Vec3::new(3.0, 0.0, 0.0))],
+        ..popin_scenario(base)
+    }
+}
+
 /// The scenario for a scene. Unknown scenes (the existing test scenes, used
 /// for the TAA-off baseline) get the generic slow orbit.
 pub fn scenario_for(scene: &str) -> Scenario {
@@ -155,6 +189,8 @@ pub fn scenario_for(scene: &str) -> Scenario {
         phases,
         tracked: None,
         hud_nodes: vec![],
+        appear: vec![],
+        displaced: vec![],
     };
     let s =
         |frames, phases: Vec<(&'static str, u32, u32)>, tracked, hud: Vec<&'static str>| Scenario {
@@ -163,6 +199,8 @@ pub fn scenario_for(scene: &str) -> Scenario {
             phases,
             tracked,
             hud_nodes: hud,
+            appear: vec![],
+            displaced: vec![],
         };
     match scene {
         // still 0.5 s → moving 2 s → stopped 1 s → fast 1 s

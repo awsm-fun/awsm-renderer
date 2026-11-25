@@ -306,6 +306,8 @@ pub fn boot() -> Result<(), JsValue> {
             #[cfg(feature = "taa-phase4")]
             "governor-hitch" => phase4::governor_hitch_mode(&p, &mut r).await,
             #[cfg(feature = "taa-phase4")]
+            "newobj-cost" => phase4::newobj_cost_mode(&p, &mut r).await,
+            #[cfg(feature = "taa-phase4")]
             "sharpen-sweep" => phase4::sharpen_sweep_mode(&p, &mut r).await,
             #[cfg(feature = "taa-phase4")]
             "upscale-sweep" => phase4::upscale_sweep_mode(&p, &mut r).await,

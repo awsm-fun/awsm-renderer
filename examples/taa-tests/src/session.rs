@@ -291,7 +291,13 @@ impl Session {
             setup.visible_radius = radius;
         }
 
-        let scenario = scenario::scenario_for(&base_scene);
+        let scenario = if opts.scene.ends_with("@popin") {
+            scenario::popin_scenario(&base_scene)
+        } else if opts.scene.ends_with("@popjump") {
+            scenario::popjump_scenario(&base_scene)
+        } else {
+            scenario::scenario_for(&base_scene)
+        };
         if opts.scene.ends_with("@cadence") {
             // Skin cadence gating: every skinned mesh at period 2, 4, 1, …
             // (round-robin) so some skins step every 2nd / 4th frame.
@@ -435,6 +441,21 @@ impl Session {
             .map_err(|e| anyhow!("update_animations: {e}"))?;
         self.particles.tick(r, (dt_ms / 1000.0) as f32);
         let drive = scenario::drive(&self.scenario, k, &self.setup);
+        // Pop-ins: hidden until their frame, then shown (transitions only, so
+        // a frozen re-render changes nothing).
+        for (name, at) in &self.scenario.appear {
+            let h = self
+                .handles
+                .get(*name)
+                .ok_or_else(|| anyhow!("scenario pop-in node `{name}` not in scene"))?;
+            for mesh in &h.meshes {
+                let hidden = k < *at;
+                if r.meshes.get(*mesh).is_ok_and(|m| m.hidden != hidden) {
+                    r.set_mesh_hidden(*mesh, hidden)
+                        .map_err(|e| anyhow!("set_mesh_hidden {name}: {e}"))?;
+                }
+            }
+        }
         for (name, tr) in &drive.transforms {
             let h = self
                 .handles
@@ -442,6 +463,31 @@ impl Session {
                 .ok_or_else(|| anyhow!("scenario node `{name}` not in scene"))?;
             r.transforms
                 .set_local(h.transform, tr.clone())
+                .map_err(|e| anyhow!("set_local {name}: {e}"))?;
+        }
+        // One-frame displacements (`@popjump`).
+        for (name, at, offset) in &self.scenario.displaced {
+            if k != *at {
+                continue;
+            }
+            let h = self
+                .handles
+                .get(*name)
+                .ok_or_else(|| anyhow!("scenario displaced node `{name}` not in scene"))?;
+            let base = drive
+                .transforms
+                .iter()
+                .find(|(n, _)| n == name)
+                .map(|(_, t)| t.clone())
+                .unwrap_or_else(|| self.setup.base(name));
+            r.transforms
+                .set_local(
+                    h.transform,
+                    awsm_renderer::transforms::Transform {
+                        translation: base.translation + *offset,
+                        ..base
+                    },
+                )
                 .map_err(|e| anyhow!("set_local {name}: {e}"))?;
         }
         for (name, weights) in &drive.morphs {
