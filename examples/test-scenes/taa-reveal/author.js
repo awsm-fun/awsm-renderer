@@ -1,4 +1,4 @@
-// test-scene: taa-reveal (docs/plans/taa-upscaling/05-verification.md §1)
+// test-scene: taa-reveal (docs/plans/taa-final-round/verification.md §1)
 // A dark wall in front of a high-contrast striped backdrop. The TAA harness
 // (scenario `taa-reveal`) slides the node `wall` 3 m to the right over 1 s,
 // holds 0.5 s, slides it back over 1 s, then holds: the backdrop behind it is

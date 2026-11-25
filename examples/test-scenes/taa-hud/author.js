@@ -1,4 +1,4 @@
-// test-scene: taa-hud (docs/plans/taa-upscaling/05-verification.md §1)
+// test-scene: taa-hud (docs/plans/taa-final-round/verification.md §1)
 // HUD meshes over a moving world. The world: textured shapes on a checker
 // floor. The HUD: `hud-panel` (a dark translucent-looking slab) and
 // `hud-marker` (a bright small box), placed in front of the authored camera.

@@ -1,6 +1,6 @@
 # examples/taa-tests — the TAA test harness
 
-The numeric half of [`docs/plans/taa-upscaling/05-verification.md`](../../docs/plans/taa-upscaling/05-verification.md):
+The numeric half of [`docs/plans/taa-final-round/verification.md`](../../docs/plans/taa-final-round/verification.md):
 deterministic playback of test-scene bundles, bit-exact frame capture, the
 jittered ground-truth reference, the image metrics, and the TAA-off pixel
 baseline. Every check prints one machine-readable line (player-tests

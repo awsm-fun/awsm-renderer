@@ -1,5 +1,3 @@
-Draft: not released.
-
 # Release notes 0.46
 
 ## 0.46.0
@@ -214,11 +212,17 @@ is crisp and stair-stepped; opaque-path HUD is soft below scale 1; instances
 of one mesh share an object id, so contact between them is judged by depth
 and motion only.
 
-## Outstanding before release
+## Default, and what comes next
 
-- The decision on what remains at the default configuration: four small
-  events in the test scenes and the bloom pulse
-  (`docs/plans/taa-upscaling/05-verification.md`, Results).
-- The Android device check (`docs/checklist-android.md`): the 32 B/sample
-  path has only been forced on an M1, not run on a device that needs it.
-- The default stays MSAA 4× until that decision.
+The default anti-aliasing stays MSAA 4× in 0.46: TAA is opt-in
+(`AntiAliasing::taa(..)`, or `taa` in a scene's AA block). A final TAA round
+is planned in `docs/plans/taa-final-round/`. It covers:
+
+- a temporally stable bloom source;
+- new-object handling for transparents and appended instances;
+- the depth-of-field order below scale 1;
+- full re-verification;
+- making TAA native the default for new scenes.
+
+The Android device check of the 32 B/sample path (`docs/checklist-android.md`)
+is still open; that path has so far only been forced on an M1.

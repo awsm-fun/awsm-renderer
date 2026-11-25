@@ -1,4 +1,4 @@
-// test-scene: taa-skin (docs/plans/taa-upscaling/05-verification.md §1)
+// test-scene: taa-skin (docs/plans/taa-final-round/verification.md §1)
 // A skinned walk cycle (Fox, glTF sample, its Walk clip) and a morph-target
 // cube (AnimatedMorphCube) side by side under a still authored camera. The
 // Fox walks by its own clip, advanced by the TAA harness with the fixed 1/60 s

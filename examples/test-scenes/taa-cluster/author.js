@@ -1,4 +1,4 @@
-// test-scene: taa-cluster (docs/plans/taa-upscaling/05-verification.md §4.1)
+// test-scene: taa-cluster (docs/plans/taa-final-round/verification.md §4.1)
 // Cluster-LOD ("virtual geometry") coverage for the motion-vector gate: the
 // committed lod-nanite bundle carries no .clusters.bin, so the cluster path
 // never ran in the player. This scene is DamagedHelmet with its LOD kind set

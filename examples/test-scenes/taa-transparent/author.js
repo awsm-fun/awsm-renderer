@@ -1,4 +1,4 @@
-// test-scene: taa-transparent (docs/plans/taa-upscaling/05-verification.md §1)
+// test-scene: taa-transparent (docs/plans/taa-final-round/verification.md §1)
 // Things with no correct motion vector, in front of a MOVING background:
 // a blended particle fountain, a glass (transmission) sphere, a UV-flow
 // "water" plane, and fat lines. The TAA harness (scenario `taa-transparent`)

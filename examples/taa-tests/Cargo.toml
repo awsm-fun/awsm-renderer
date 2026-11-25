@@ -1,7 +1,7 @@
 [package]
 name = "awsm-renderer-taa-tests-example"
 publish = false # test harness, not released to crates.io
-description = "TAA test harness (docs/plans/taa-upscaling/05-verification.md): deterministic fixed-timestep playback of test-scene bundles through the player loader, bit-exact swap-chain capture, the jittered ground-truth reference, the image metrics, and the TAA-off pixel baseline. Prints one machine-readable TAA-TEST line per check."
+description = "TAA test harness (docs/plans/taa-final-round/verification.md): deterministic fixed-timestep playback of test-scene bundles through the player loader, bit-exact swap-chain capture, the jittered ground-truth reference, the image metrics, and the TAA-off pixel baseline. Prints one machine-readable TAA-TEST line per check."
 edition.workspace = true
 version.workspace = true
 license.workspace = true

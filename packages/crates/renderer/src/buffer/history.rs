@@ -1,5 +1,5 @@
 //! Previous-frame copies of GPU buffers, for TAA motion vectors
-//! (`docs/plans/taa-upscaling/03-design.md` §2.3).
+//! (`docs/TAA.md` §3.4).
 //!
 //! A [`BufferHistory`] mirrors one "current" GPU buffer (world transforms,
 //! instance transforms, joint matrices, morph weights) into a *region* of a

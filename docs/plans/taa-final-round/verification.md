@@ -1,4 +1,4 @@
-# 05 — Verification
+# TAA verification: the gates
 
 TAA looks fine on a still screenshot even when it is broken. Every test here
 involves motion, and every pass / fail is a number. Static screenshots and
@@ -190,7 +190,7 @@ Resolve time may be spent where it buys visible quality.
 3. **`Rejection`.** Should that pixel have been clipped (B) or flagged as
    disoccluded (G)? If not, check γ (G5) and τ (G6).
 4. **`HistoryLength`.** `n` should drop where history is being clipped. If it
-   stays high, `n_next` is wrong (03 §4.8).
+   stays high, `n_next` is wrong (`docs/TAA.md` §3.5).
 5. **`Reactive`.** Is it a transparent, particle or moving texture that isn't
    flagged (G8)?
 6. Only then the blend parameters, and re-run every test in §4, because they

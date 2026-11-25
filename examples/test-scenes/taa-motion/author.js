@@ -1,4 +1,4 @@
-// test-scene: taa-motion (docs/plans/taa-upscaling/05-verification.md §1)
+// test-scene: taa-motion (docs/plans/taa-final-round/verification.md §1)
 // A checker-textured orange cube over a high-contrast checker floor, seen by
 // a STILL authored camera. The motion is NOT authored here: the TAA harness
 // (examples/taa-tests, scenario `taa-motion`) drives the node named `cube`

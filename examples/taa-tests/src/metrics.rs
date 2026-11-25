@@ -1,4 +1,4 @@
-//! Image metrics for the TAA gates (docs/plans/taa-upscaling/05-verification.md §4).
+//! Image metrics for the TAA gates (docs/plans/taa-final-round/verification.md §4).
 //!
 //! Everything here is pure Rust over **display-encoded RGBA8** images (what the
 //! swap chain holds after tonemapping + sRGB encoding), so it is unit-tested

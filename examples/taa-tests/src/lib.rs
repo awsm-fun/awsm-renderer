@@ -1,4 +1,4 @@
-//! TAA test harness (docs/plans/taa-upscaling/05-verification.md).
+//! TAA test harness (docs/plans/taa-final-round/verification.md).
 //!
 //! Loads test-scene bundles through the real player loader, plays each
 //! scene's scripted scenario with a fixed 1/60 s timestep on a fixed-size

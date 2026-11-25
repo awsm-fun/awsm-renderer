@@ -1,4 +1,4 @@
-// test-scene: taa-vertex-hook (docs/plans/taa-upscaling/05-verification.md §4.1)
+// test-scene: taa-vertex-hook (docs/plans/taa-final-round/verification.md §4.1)
 // A mesh whose vertices move ONLY through a time-driven custom vertex hook
 // (`wgsl_vertex`): `wave`, a 3 × 1.5 m plane, 96 × 24 segments, floating at
 // 0.5 m, displaced by a travelling sine wave (amplitude 0.15 m, 2 waves / m,

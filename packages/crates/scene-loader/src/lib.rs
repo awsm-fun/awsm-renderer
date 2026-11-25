@@ -827,7 +827,7 @@ impl LoadedScene {
     /// template's GPU buffers is undefined).
     pub fn teardown(self, renderer: &mut AwsmRenderer) {
         // The scene leaves the screen: TAA must not blend whatever replaces it
-        // with this one's history (taa-upscaling 03 §8). Free with TAA off.
+        // with this one's history (`docs/TAA.md` §2.7). Free with TAA off.
         renderer.reset_temporal_history();
         // A glb-backed mesh sits on a transform its glb decode created (a
         // child of the node's transform), which nothing else records. Note

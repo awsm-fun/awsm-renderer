@@ -1,4 +1,4 @@
-// test-scene: taa-cut (docs/plans/taa-upscaling/05-verification.md §1)
+// test-scene: taa-cut (docs/plans/taa-final-round/verification.md §1)
 // Three authored cameras (`cam-a`, `cam-b`, `cam-c`) on one textured scene;
 // the TAA harness (scenario `taa-cut`) CUTS between them every 2 s (calling
 // `reset_temporal_history` on the cut frame) and teleports the node

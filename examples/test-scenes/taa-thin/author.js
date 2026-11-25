@@ -1,4 +1,4 @@
-// test-scene: taa-thin (docs/plans/taa-upscaling/05-verification.md §1)
+// test-scene: taa-thin (docs/plans/taa-final-round/verification.md §1)
 // Everything that flickers or shimmers: a thin-wire fence, alpha-masked leaf
 // cards, a very fine checker floor running to a grazing angle (moiré), and a
 // clearcoat box with sharp highlights. The TAA harness (scenario `taa-thin`)

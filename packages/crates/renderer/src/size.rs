@@ -60,7 +60,7 @@ pub fn scale_extent(extent: u32, render_scale: f32) -> u32 {
 /// 0.45 behaviour (supersampling included: bloom and effects run at the
 /// supersampled size and display downsamples). With TAA the resolve writes
 /// surface-sized output, so `post == surface` while `render` may shrink
-/// (`docs/plans/taa-upscaling/03-design.md` §0, §6).
+/// (`docs/TAA.md` §3.1, §3.12).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FrameSizes {
     pub surface: (u32, u32),
@@ -174,7 +174,7 @@ mod tests {
     }
 
     /// Every render-texture consumer reads the render size or the post size
-    /// explicitly (taa-upscaling plan, phase 0). The compiler does most of the
+    /// explicitly (TAA phase 0). The compiler does most of the
     /// work: `RenderTextureViews` has no plain `width`/`height`, only
     /// `render_size` and `post_size`, and `RenderContext` has no
     /// `viewport_size`. This scan stops either from coming back, and stops new

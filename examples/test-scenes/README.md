@@ -90,7 +90,7 @@ ship `author.js` + `verify.md` and are checked by following the recipe in
 | `aa-edges` | MSAA / SMAA view toggles on a crisp diagonal silhouette | `msaa` and `smaa` both visibly smoother than `no-aa` on the same framed edges |
 | `env-bc6h-spheres` | BC6H environment cubemaps (skybox/specular/irradiance), skybox ray reconstruction, the `--ibl-ld` roughness ladder; doubles as the MSAA silhouette probe | skybox tracks camera direction; metals blur monotonically with roughness; 0 flickering px static-camera, and ~55% RMS error reduction vs a supersampled reference along silhouettes |
 
-### TAA scenes (`taa-*`, docs/plans/taa-upscaling/05-verification.md §1)
+### TAA scenes (`taa-*`, docs/plans/taa-final-round/verification.md §1)
 
 Played by the TAA harness ([`examples/taa-tests`](../taa-tests/README.md)), not
 judged by eye: each scene's motion is a fixed-timestep script in the harness

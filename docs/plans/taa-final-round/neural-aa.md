@@ -1,6 +1,6 @@
-# 06 — Neural AA without special hardware (investigation)
+# Neural AA without special hardware (investigation, future)
 
-**Status:** research only (2026-11-23). Not part of the TAA plan's phases.
+**Status:** research only (2026-11-23). Out of scope for the final TAA round; kept for a later investigation. Classic TAA shipped in 0.46.
 
 The question: can awsm-renderer get an AI-based anti-aliasing (or upscaling)
 like DLAA or FSR's ML modes, **without depending on vendor hardware**? That
@@ -25,7 +25,7 @@ couldn't be confirmed.
   DX12 / Vulkan backends.
   ([FSR 3](https://gpuopen.com/fsr3/),
   [FSR2 repo](https://github.com/GPUOpen-Effects/FidelityFX-FSR2))
-  In other words, FSR Native AA is the same kind of thing as 01–05 of this plan.
+  In other words, FSR Native AA is the same kind of thing as the classic TAA in `docs/TAA.md`.
 - **FSR 4 / "Redstone"** is ML-based. It launched requiring RDNA 4 (FP8); an
   INT8 "FSR 4.1" for RDNA 3 followed in mid-2026. AMD-only, shipped as a
   driver / DLL. Source including INT8 models was briefly published under MIT
@@ -109,7 +109,7 @@ published network**. So:
   the shader ALUs.
 - **A tiny network that steers the classic resolve might.** It wouldn't
   produce pixels. Per pixel, at reduced resolution, it would predict the few
-  numbers 03 §4 tunes by hand: the blend weight, how hard to clip, maybe a
+  numbers the resolve (`docs/TAA.md` §3.5) tunes by hand: the blend weight, how hard to clip, maybe a
   small filter. The classic resolve then does the per-pixel work at full
   resolution. This is close to what the KIT paper and Arm NSS do (they predict
   kernels and parameters, not colours), but much smaller.
@@ -135,10 +135,10 @@ Model Gym (Apache-2.0, needs CUDA) is a ready-made starting point.
 
 ## Recommended path
 
-1. **Ship classic TAA (01–05).** Everything below depends on it: motion
+1. **Ship classic TAA** (done in 0.46). Everything below depends on it: motion
    vectors, the reactive mask, history, the reference capture and the tests.
    For the resolve, Arm ASR and FSR 2 are the MIT-licensed references worth
-   reading. Their structure matches 03 §4.
+   reading. Their structure matches the resolve (`docs/TAA.md` §3.5).
 2. **Add a capture mode** that writes training data: inputs and the
    supersampled reference, from the test scenes and from games (Dreidel Derby
    is a good one: fast rotation and sharp highlights).

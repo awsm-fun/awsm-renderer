@@ -1,4 +1,4 @@
-//! Temporal anti-aliasing resolve (plan `docs/plans/taa-upscaling`, 03 §3-§4).
+//! Temporal anti-aliasing resolve (`docs/TAA.md` §3.5).
 //!
 //! Self-contained like SSR / SMAA: own bind groups, pipeline, params uniform
 //! and textures (history pair, output, previous depth). It runs right after

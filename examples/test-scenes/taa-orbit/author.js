@@ -1,4 +1,4 @@
-// test-scene: taa-orbit (docs/plans/taa-upscaling/05-verification.md §1)
+// test-scene: taa-orbit (docs/plans/taa-final-round/verification.md §1)
 // A STATIC textured scene; only the camera moves, driven by the TAA harness
 // (examples/taa-tests, scenario `taa-orbit`) from the authored `camera`:
 // still 0.5 s, orbit 30°/s about `pivot` for 2 s, strafe right at 1 px/frame

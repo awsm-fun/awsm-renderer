@@ -62,7 +62,7 @@ thread_local! {
     /// What drove the view on the previous frame: the scene Camera node in
     /// use (`None` = the free camera) and whether its projection was
     /// orthographic. A change is a camera cut, which resets the renderer's
-    /// temporal history (TAA, taa-upscaling 03 §8 / G9): its camera-jump guard
+    /// temporal history (TAA, `docs/TAA.md` §2.7 / G9): its camera-jump guard
     /// sees only position and direction, so it would miss a switch between
     /// cameras that happen to sit close together, or a projection flip.
     static LAST_VIEW_SOURCE: std::cell::Cell<Option<(Option<NodeId>, bool)>> =

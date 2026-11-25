@@ -8,9 +8,11 @@ samples.
 
 This document is the reference: when to use which anti-aliasing mode, the
 API, how the resolve works, what an app has to do, the known limits, and what
-was measured. The design and the phase plan it came from are in
-`docs/plans/taa-upscaling/` until that folder is removed; everything needed
-after that is here.
+was measured. The original design and phase plan are in git history
+(`57a3ef94:docs/plans/taa-upscaling/`). The gates, the reasoning behind each
+default, what was tried and rejected, and the remaining work are in
+[`docs/plans/taa-final-round/`](plans/taa-final-round/README.md) until that
+round ships.
 
 ## Contents
 
@@ -95,9 +97,15 @@ The facts, as measured (§7):
   `taa-motion` frames where even the oracle is above it, the trail maximum
   (as written, and on a few frames as restated), the transparent trails as
   written, the resolve and native-frame cost targets
-  (`docs/plans/taa-upscaling/05-verification.md`, Results).
+  (`docs/plans/taa-final-round/verification.md`, Results). The cost targets
+  were later replaced by "cheaper than MSAA 4x in Dreidel Derby", which is
+  met; the trail gates that no one-sample method can reach were restated
+  against the oracle and MSAA (verification.md).
 
-The default was left at MSAA 4x for that last reason.
+In 0.46 the default stays MSAA 4x: the bloom pulse in still images (§6) had
+not been judged by eye, and the default flip belongs with the final round
+(`docs/plans/taa-final-round/`). The recommendation is TAA native as the
+default for new scenes, with files that have no AA block keeping MSAA 4x.
 
 TAA needs no particular device feature: devices that cannot take the fifth
 geometry target get motion vectors from the prep pass instead (§3.10). If a
@@ -1236,7 +1244,7 @@ Hardware and method unless noted: M1 Max, Chrome, the `taa-tests` harness
 (`examples/taa-tests`) on the `taa-*` scenes of `examples/test-scenes`, 960x720,
 fixed timestep and seeds. Colour errors are mean absolute differences on the
 tonemapped, display-encoded image in 0-255 units. Gate thresholds are the
-ones in `docs/plans/taa-upscaling/05-verification.md`, unrelaxed unless
+ones in `docs/plans/taa-final-round/verification.md`, unrelaxed unless
 stated. Unless a row says otherwise, every number is from the round-2
 renderer `34b6dc92` (the resolve of §3.5) with the shipped tuning, harness
 `e82b11e7`, Chrome 158 at DPR 2. The display-linear reference decides (§7.1); the Karis-weighted one is shown
