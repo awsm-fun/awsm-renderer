@@ -30,16 +30,16 @@ GPU frame time, M1 Max, Chrome):
 
 | | Title error | Mid-round error | In motion | Mid-round frame | Title frame |
 |---|--:|--:|--:|--:|--:|
-| No AA | 1.172 | 2.014 | 2.01 | 10.82 ms | 14.20 ms |
-| SMAA | 1.127 | 1.750 | 1.75 | 11.19 ms | 14.80 ms |
-| MSAA 4× | 1.322 | 1.918 | 1.93 | 15.25 ms | 19.67 ms |
-| TAA native | 1.020 | 0.428 | 0.83 | 13.38 ms | 16.62 ms |
-| TAA 0.67 | 1.437 | 0.855 | 1.54 | 8.51 ms | 11.06 ms |
+| No AA | 1.172 | 2.014 | 2.01 | 10.69 ms | 13.99 ms |
+| SMAA | 1.127 | 1.750 | 1.75 | | |
+| MSAA 4× | 1.322 | 1.918 | 1.93 | 14.97 ms | 19.38 ms |
+| TAA native | 0.311 | 0.337 | 0.75 | 13.12 ms | 16.56 ms |
+| TAA 0.67 | 1.351 | | | 8.62 ms | 9.50 ms |
 
 TAA native is closer to the reference than every other mode, still and in
-motion, and 1.9 ms (mid-round) and 3.1 ms (title) cheaper than MSAA 4×. It
-costs 2.5 ms more than no AA: about 2 ms of that is the resolve, a fixed cost
-per output pixel. TAA 0.67 is cheaper than no AA.
+motion, and 1.9 ms (mid-round) and 2.8 ms (title) cheaper than MSAA 4×. It
+costs about 2.5 ms more than no AA: about 2 ms of that is the resolve, a
+fixed cost per output pixel. TAA 0.67 is cheaper than no AA.
 
 The resolve costs 1.5-1.8 ms at 1920×1435 output at the default disocclusion
 level (1.2-1.3 at the cheapest). With TAA off, pixels are identical to 0.45
@@ -65,6 +65,15 @@ The default stays MSAA 4× for now.
   object, then contact between two objects and on moving surfaces. A level
   that is off costs nothing. Costs and a recommended-configuration table:
   `docs/TAA.md` §1.
+- **Bloom and depth of field under TAA.** The resolve averages in display
+  space, so a very bright thin highlight loses its energy above white
+  there. Bloom therefore reads this frame's HDR render
+  (`TaaConfig::bloom_source`, default `CurrentFrame`), and depth of field
+  runs before the resolve, at render size (`TaaConfig::dof_order`, default
+  `BeforeResolve`; the order Unreal's temporal upscalers and AMD's
+  FidelityFX guidance use when upscaling). Both keep the old behaviour as
+  an option. In Dreidel Derby they take the title screen from 1.020 to
+  0.311.
 - **New objects** (`TaaTuning::reactive_new_objects`, default 1.0): an
   opaque mesh in its first drawn frame, shown again after being hidden, or
   jumping into place within a few frames of that, starts from a history of
@@ -104,7 +113,8 @@ The default stays MSAA 4× for now.
   `TaaDebugView`, `JitterOverride`, `history_cap`, `still_gamma`,
   `texture_lod_bias`, the jitter helpers.
 - `AntiAliasing::{none, msaa4, smaa, taa}` constructors; `AntiAliasing.taa`.
-- `awsm_renderer::taa::TaaDisocclusion`; `TaaTuning::{reactive_particles,
+- `awsm_renderer::taa::{TaaDisocclusion, TaaBloomSource, TaaDofOrder}`;
+  `TaaConfig::{bloom_source, dof_order}`; `TaaTuning::{reactive_particles,
   reactive_lines, reactive_new_objects, edge_release}`; `AwsmRenderer::set_mesh_taa_particles`
   (flag particle meshes an app builds itself; the scene loader flags its
   emitters), `taa_debug_variant_ready`, `taa_fallback_overlay`,
@@ -192,10 +202,12 @@ moving silhouette is one sample, for any history method; an object that
 rests over a pixel and is then nudged can leave a one-pixel edge for a few
 frames (`edge_release` removes it at a small flicker cost); a 1-2 pixel
 highlight moving with an object can sit half a pixel off for two frames;
-very bright thin highlights lose energy in the resolve, so out-of-focus
-highlights are a little dimmer than with MSAA (bloom reads the current
-frame instead, `TaaConfig::bloom_source`, at the price of a slight pulse of
-the glow around sub-pixel bright sources in a still image);
+the glow around a sub-pixel bright source can pulse slightly at the jitter
+period in a still image (bloom reads the jittered frame); at render scales
+below 1 depth of field is computed at render size (whole-frame error about
+3% higher than with DoF after the resolve, bokeh energy, flicker and cost
+better); with these defaults a HUD drawn in the transparent pass is not blurred by depth of
+field and does not bloom under TAA;
 glass, water and lines have no motion vectors and lag behind a moving
 background; moving textured surfaces are smooth and slightly soft where MSAA
 is crisp and stair-stepped; opaque-path HUD is soft below scale 1; instances
@@ -204,8 +216,9 @@ and motion only.
 
 ## Outstanding before release
 
-- The decision on the four remaining ghost events at the default
-  configuration (`docs/plans/taa-upscaling/05-verification.md`, Results).
+- The decision on what remains at the default configuration: four small
+  events in the test scenes and the bloom pulse
+  (`docs/plans/taa-upscaling/05-verification.md`, Results).
 - The Android device check (`docs/checklist-android.md`): the 32 B/sample
   path has only been forced on an M1, not run on a device that needs it.
 - The default stays MSAA 4× until that decision.
