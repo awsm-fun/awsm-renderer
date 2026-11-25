@@ -974,21 +974,25 @@ measure flicker too).
     (§2.4), at a still-image flicker cost, and is off by default.
   - `taa-skin`, `taa-reveal`, `prefab-skinned-morph`, `anim-skinned`,
     `particles`: no trail or still-area event longer than one frame.
-  - `taa-transparent`: no still-area event longer than one frame; two trail
-    events of two frames, both on particle sprite edges
-    (`docs/taa/transp-trail-k101.png`). Particles take `reactive_particles`
-    1.0, stored as 252/255 = 0.988 in the `r8unorm` mask, just under the
-    classifier's "alpha ≥ 0.99 = this frame only" cut, so these pixels count
-    as kept history although they show (almost) only this frame's one
-    jittered sample: TAA shows the backdrop where the 64-sample reference
-    shows part of a sprite, and the sprite where the reference shows mostly
-    backdrop, never the sprite where it was. Not stale history.
+  - `taa-transparent`, `particles`: no trail or still-area event longer
+    than one frame. (With the classifier's earlier "this frame only" cut of
+    alpha ≥ 0.99, `taa-transparent` showed two 2-frame trail events on
+    particle sprite edges, `docs/taa/transp-trail-k101.png`: a particle at
+    `reactive_particles` 1.0 reads 252/255 = 0.988 in the `r8unorm` mask and
+    was counted as kept history although it shows this frame's one jittered
+    sample, the backdrop where the reference shows part of a sprite and the
+    reverse, never the sprite where it was. The cut is 0.985 since; §7.2.)
   - `taa-thin` (a still-image flicker stress scene with moving parts): 3
     trail events of two frames, on the 1-2 px light rim of the moving red
-    block, which TAA renders about half a pixel off its true position
-    (`docs/taa/thin-trail-k212.png`): a thin moving feature, like a wire,
-    not stale history (TAA is never redder than the reference behind the
-    block). Still-area events of 2-4 frames that repeat at the same pixels
+    block (`docs/taa/thin-trail-k212.png`). The pixels are dilated and blend
+    history fetched through a neighbour that moves with them (no relative
+    motion), so neither the disocclusion tests nor the clip can tell it from
+    correct history; TAA places the rim about half a pixel off for two
+    frames, never redder than the reference behind the block. Fetching
+    through the pixel's own vector instead removed two of the three but
+    doubled `taa-thin`'s still-image flicker (0.300 → 0.587, p99 12);
+    restricted to relative motion it was flicker-neutral but no longer
+    touched them. They stay, as a thin-moving-feature limit like a wire's. Still-area events of 2-4 frames that repeat at the same pixels
     with the 8-frame jitter cycle (sub-pixel wires whose history the clip
     cuts on some jitter phases; `docs/taa/thin-static-flicker.png`). That is
     still-image shimmer, measured by the flicker gate (0.300, passes), not
@@ -1162,7 +1166,10 @@ burst frame).
 MSAA where it moves; events follow a pixel along its motion). Events longer
 than one frame / all events (longest), and `ghost-region`: TAA's mean error
 over the region against MSAA 4x's and the oracle's, at the default
-`DepthMotionAndId`:
+`DepthMotionAndId`. "History kept" is alpha < 0.985 (raw view 15): every
+reactive value is capped at 0.99 because 1.0 marks a HUD pixel, so a fully
+reactive pixel stores 252/255 = 0.988 in the `r8unorm` mask and shows this
+frame only. The cut was 0.99 until the final record, which gives both:
 
 | Scene | Trail band | Static areas | Region error, trail band: TAA / MSAA / no AA | Static: TAA / MSAA / no AA |
 |---|---|---|---|---|
@@ -1171,9 +1178,9 @@ over the region against MSAA 4x's and the oracle's, at the default
 | `taa-skin` | 0 / 5 | 0 / 4 | 0.938 / 0.813 / 0.388 | 0.046 / 0.022 / 0.017 |
 | `prefab-skinned-morph` | 0 / 2 | 0 / 0 | 0.704 / 0.913 / 1.525 | 0.030 / 0.007 / 0.011 |
 | `anim-skinned` | 0 / 2 | 0 / 0 | 0.992 / 1.006 / 2.020 | 0.030 / 0.008 / 0.014 |
-| `particles` | 0 / 6 | 0 / 34 | 0.892 / 0.795 / 1.790 | 0.030 / 0.008 / 0.014 |
-| `taa-transparent` | 2 / 109 (2): particle edges, §6 | 0 / 305 | 0.437 / 0.653 / 0.981 | 0.273 / 2.364 / 2.476 |
-| `taa-thin` | 3 / 91 (2): a thin moving rim, §6 | INFO 448 / 5614 (4): jitter-cycle shimmer | 2.786 / 14.762 / 14.780 | 0.514 / 5.008 / 5.667 |
+| `particles` | 0 / 0 (0.99 cut: 0 / 6) | 0 / 0 (0 / 34) | 0.892 / 0.795 / 1.790 | 0.030 / 0.008 / 0.014 |
+| `taa-transparent` | 0 / 5 (0.99 cut: 2 / 109, particle edges, §6) | 0 / 65 (0 / 305) | 0.437 / 0.653 / 0.981 | 0.273 / 2.364 / 2.476 |
+| `taa-thin` | 3 / 91 (2): a thin moving rim, §6 | INFO 448 / 5562 (4): jitter-cycle shimmer | 2.786 / 14.762 / 14.780 | 0.514 / 5.008 / 5.667 |
 | `taa-orbit` | INFO (camera only) | INFO | 0.415 / 3.928 / 3.912 | 0.142 / 1.571 / 1.563 |
 
 `ghost-region` passes on every verdict region (TAA ≤ the larger of MSAA's
@@ -1182,7 +1189,8 @@ on `taa-skin`'s and `particles`' trail bands and on the static areas of the
 skinned and particle scenes, where every mode is within 0.05 of the
 reference and the oracle itself reads 0.11-0.30.
 
-Per level, trail-band events longer than one frame (`taa-motion` /
+The other rows are the same at both cuts within a few events. Per level
+(0.99 cut), trail-band events longer than one frame (`taa-motion` /
 `prefab-skinned-morph` / `anim-skinned` / `taa-skin` / `taa-thin`):
 `Depth` 266 / 2 / 1 / 17 / 105, `DepthAndMotion` 26 / 1 / 1 / 0 / 8,
 `DepthMotionAndId` 1 / 0 / 0 / 0 / 3.
