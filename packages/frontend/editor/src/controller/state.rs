@@ -4020,6 +4020,7 @@ impl EditorController {
                 taa_render_scale,
                 taa_sharpen,
                 taa_disocclusion,
+                taa_bloom_source,
                 taa_tuning,
                 taa_debug_view,
             } => {
@@ -4066,6 +4067,10 @@ impl EditorController {
                 if let Some(level) = taa_disocclusion {
                     knobs.disocclusion = level;
                 }
+                // Live: bloom's prefilter rebinds, nothing recompiles.
+                if let Some(src) = taa_bloom_source {
+                    knobs.bloom_source = src;
+                }
                 if let Some(patch) = taa_tuning {
                     patch.apply(&mut knobs.tuning);
                 }
@@ -4099,6 +4104,7 @@ impl EditorController {
                     taa_render_scale: Some(prev_knobs.render_scale),
                     taa_sharpen: Some(prev_knobs.sharpen),
                     taa_disocclusion: Some(prev_knobs.disocclusion),
+                    taa_bloom_source: Some(prev_knobs.bloom_source),
                     taa_tuning: Some(awsm_renderer_editor_protocol::TaaTuningPatch::replace(
                         &prev_knobs.tuning,
                     )),

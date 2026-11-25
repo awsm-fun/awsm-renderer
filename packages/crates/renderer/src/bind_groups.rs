@@ -915,7 +915,17 @@ impl BindGroups {
                     // In TAA mode bloom reads the resolve's output (RCAS's
                     // while sharpening is on) instead of
                     // `composite` (cheap JS-handle clone, as for SMAA below).
-                    let taa_out = render_passes.taa.as_ref().map(|t| t.final_view().clone());
+                    // Unless `TaaConfig::bloom_source` says this frame's HDR
+                    // render (`composite`): see `TaaBloomSource`.
+                    let resolved =
+                        ctx.anti_aliasing.taa.as_ref().is_some_and(|t| {
+                            t.bloom_source == crate::taa::TaaBloomSource::Resolved
+                        });
+                    let taa_out = render_passes
+                        .taa
+                        .as_ref()
+                        .filter(|_| resolved)
+                        .map(|t| t.final_view().clone());
                     if let Some(bloom) = render_passes.bloom.as_mut() {
                         // Split-borrow: bind_groups (mut) vs texture/params (shared).
                         let crate::render_passes::bloom::render_pass::BloomRenderPass {

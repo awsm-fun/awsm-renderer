@@ -905,6 +905,9 @@ pub enum EditorCommand {
         /// | `depth_motion_and_id`). Structural while TAA is on.
         #[serde(default)]
         taa_disocclusion: Option<crate::TaaDisocclusionSetting>,
+        /// What bloom reads under TAA (`current_frame` | `resolved`). Live.
+        #[serde(default)]
+        taa_bloom_source: Option<crate::TaaBloomSourceSetting>,
         #[serde(default)]
         taa_tuning: Option<crate::TaaTuningPatch>,
         /// TAA debug view (transient, never persisted or undone).

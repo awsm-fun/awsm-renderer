@@ -1543,6 +1543,7 @@ fn anti_aliasing_section() -> Dom {
                             taa_render_scale: None,
                             taa_sharpen: None,
                             taa_disocclusion: None,
+                            taa_bloom_source: None,
                             taa_tuning: None,
                             taa_debug_view: None,
                         })
@@ -1619,6 +1620,26 @@ fn anti_aliasing_section() -> Dom {
                         TaaDebugViewName::ALL.into_iter().find(|n| n.as_str() == v)
                     {
                         dispatch_aa(None, None, None, None, None, None, Some(view));
+                    }
+                }
+            }
+        }).await;
+    }));
+
+    // Bloom source: a select riding a Mutable like the disocclusion level
+    // (live, no recompile).
+    let bloom_source = Mutable::new(knobs.bloom_source.as_str().to_string());
+    spawn_local(clone!(bloom_source => async move {
+        let mut first = true;
+        bloom_source.signal_cloned().for_each(move |v| {
+            let fire = !first;
+            first = false;
+            async move {
+                if fire {
+                    if let Some(src) =
+                        awsm_renderer_editor_protocol::TaaBloomSourceSetting::from_name(&v)
+                    {
+                        dispatch_bloom_source(src);
                     }
                 }
             }
@@ -1759,6 +1780,16 @@ fn anti_aliasing_section() -> Dom {
                 .step(0.05)
                 .on_change(|v| dispatch_aa(None, None, None, Some(v as f32), None, None, None))
                 .render(),
+        ))
+        .child(row(
+            "TAA bloom source",
+            select(
+                bloom_source,
+                vec![
+                    ("current_frame".to_string(), "This frame (HDR)".to_string()),
+                    ("resolved".to_string(), "Resolved image".to_string()),
+                ],
+            ),
         ))
         .child(row(
             "TAA disocclusion test",
@@ -1969,8 +2000,31 @@ fn dispatch_aa(
                 taa_render_scale,
                 taa_sharpen,
                 taa_disocclusion,
+                taa_bloom_source: None,
                 taa_tuning,
                 taa_debug_view,
+            })
+            .await
+        {
+            Toast::error(format!("Anti-aliasing: {e}"));
+        }
+    });
+}
+
+/// Dispatch a change of TAA's bloom source (`SetAntiAliasing`, that field
+/// only).
+fn dispatch_bloom_source(src: awsm_renderer_editor_protocol::TaaBloomSourceSetting) {
+    spawn_local(async move {
+        if let Err(e) = controller()
+            .dispatch(EditorCommand::SetAntiAliasing {
+                mode: None,
+                taa_preset: None,
+                taa_render_scale: None,
+                taa_sharpen: None,
+                taa_disocclusion: None,
+                taa_bloom_source: Some(src),
+                taa_tuning: None,
+                taa_debug_view: None,
             })
             .await
         {

@@ -310,7 +310,15 @@ impl AwsmRenderer {
         // reset); the resolve's params and the frame sizes follow the new
         // config on the next frame.
         if self.anti_aliasing.same_structure(&aa) && !path_changed {
+            let bloom_source_changed = self.anti_aliasing.taa.as_ref().map(|t| t.bloom_source)
+                != aa.taa.as_ref().map(|t| t.bloom_source);
             self.anti_aliasing = aa;
+            // Bloom's source moves between `composite` and `taa_out`: its
+            // prefilter bind group only.
+            if bloom_source_changed {
+                self.bind_groups
+                    .mark_create(crate::bind_groups::BindGroupCreate::TextureViewRecreate);
+            }
             // Sharpening on <-> off builds / drops the RCAS pass (its own
             // pipeline only; the frame's pipelines are untouched).
             self.sync_taa_rcas().await?;

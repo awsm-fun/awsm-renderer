@@ -117,6 +117,10 @@ pub struct TaaSettings {
     /// level costs more than the one before; changing it rebuilds the TAA
     /// pass and restarts history. Costs and the recommendation: docs/TAA.md.
     pub disocclusion: TaaDisocclusionSetting,
+    /// What bloom reads under TAA (`"current_frame"` | `"resolved"`): this
+    /// frame's HDR render keeps the glow of thin and small very bright
+    /// sources; the resolved image loses most of it. See docs/TAA.md.
+    pub bloom_source: TaaBloomSourceSetting,
     /// Resolve tuning. Default = the shipped tuning.
     pub tuning: TaaTuningSettings,
 }
@@ -127,8 +131,47 @@ impl Default for TaaSettings {
             render_scale: 1.0,
             sharpen: 0.0,
             disocclusion: TaaDisocclusionSetting::default(),
+            bloom_source: TaaBloomSourceSetting::default(),
             tuning: TaaTuningSettings::default(),
         }
+    }
+}
+
+/// What bloom reads while TAA is on. Mirrors
+/// `awsm_renderer::taa::TaaBloomSource` (same default; a scene-loader test
+/// pins the two together). Live: no recompile, no history reset.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "snake_case")]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub enum TaaBloomSourceSetting {
+    /// This frame's HDR render, as with no AA or MSAA: thin and small very
+    /// bright sources keep their glow (in a still image, the glow of a
+    /// source smaller than a pixel pulses slightly with the jitter). The
+    /// default.
+    #[default]
+    CurrentFrame,
+    /// The resolved image: a steady glow, but thin and small very bright
+    /// sources lose part of it.
+    Resolved,
+}
+
+impl TaaBloomSourceSetting {
+    /// Both sources.
+    pub const ALL: [TaaBloomSourceSetting; 2] = [Self::CurrentFrame, Self::Resolved];
+
+    /// The schema / wire name (`"current_frame"`, `"resolved"`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::CurrentFrame => "current_frame",
+            Self::Resolved => "resolved",
+        }
+    }
+
+    /// The source with that schema / wire name.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|d| d.as_str() == name)
     }
 }
 
@@ -664,6 +707,7 @@ gamma_moving = 0.6
                     render_scale: 0.58,
                     sharpen: 0.25,
                     disocclusion: TaaDisocclusionSetting::Depth,
+                    bloom_source: TaaBloomSourceSetting::CurrentFrame,
                     tuning: TaaTuningSettings {
                         max_history_native: 12.0,
                         ..TaaTuningSettings::default()

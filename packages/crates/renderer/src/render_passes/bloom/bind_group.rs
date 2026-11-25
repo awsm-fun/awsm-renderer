@@ -121,8 +121,10 @@ impl BloomBindGroups {
     /// live composite / bloom render-texture views, and the params uniform.
     /// Called on viewport resize and any `TextureViewRecreate` event.
     ///
-    /// `taa_out` is the TAA resolve's output when TAA is on: bloom then
-    /// prefilters it (post size) instead of `composite`.
+    /// `taa_out` is the TAA resolve's output when TAA is on and
+    /// `TaaConfig::bloom_source` is `Resolved`: bloom then prefilters it
+    /// (post size) instead of `composite` (this frame's HDR render, render
+    /// size; the prefilter samples by UV, so either size works).
     pub fn recreate(
         &mut self,
         ctx: &BindGroupRecreateContext<'_>,

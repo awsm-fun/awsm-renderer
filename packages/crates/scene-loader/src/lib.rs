@@ -1061,6 +1061,14 @@ pub fn taa_settings_to_renderer(
                 TaaDisocclusion::DepthMotionAndId
             }
         },
+        bloom_source: match taa.bloom_source {
+            awsm_renderer_scene::post_process::TaaBloomSourceSetting::CurrentFrame => {
+                awsm_renderer::taa::TaaBloomSource::CurrentFrame
+            }
+            awsm_renderer_scene::post_process::TaaBloomSourceSetting::Resolved => {
+                awsm_renderer::taa::TaaBloomSource::Resolved
+            }
+        },
         tuning: TaaTuning {
             gamma_still: pos(t.gamma_still, d.gamma_still),
             gamma_moving: pos(t.gamma_moving, d.gamma_moving),
@@ -5310,6 +5318,27 @@ mod anti_aliasing_tests {
 
     /// The schema's default disocclusion level is the renderer's (each layer
     /// has ONE default site).
+    #[test]
+    fn every_bloom_source_passes_through_and_defaults_agree() {
+        use awsm_renderer::taa::TaaBloomSource;
+        use awsm_renderer_scene::post_process::TaaBloomSourceSetting as S;
+        for (authored, expected) in [
+            (S::CurrentFrame, TaaBloomSource::CurrentFrame),
+            (S::Resolved, TaaBloomSource::Resolved),
+        ] {
+            let cfg = taa_settings_to_renderer(&TaaSettings {
+                bloom_source: authored,
+                ..TaaSettings::default()
+            });
+            assert_eq!(cfg.bloom_source, expected);
+            assert_eq!(authored.as_str(), expected.as_str());
+        }
+        assert_eq!(
+            taa_settings_to_renderer(&TaaSettings::default()).bloom_source,
+            TaaBloomSource::default()
+        );
+    }
+
     #[test]
     fn schema_disocclusion_default_is_the_renderers() {
         assert_eq!(

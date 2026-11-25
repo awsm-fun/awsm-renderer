@@ -34,6 +34,43 @@ pub struct TaaConfig {
     /// [`TaaDisocclusion`] and `docs/TAA.md` §3.5 for what each level fixes
     /// and costs.
     pub disocclusion: TaaDisocclusion,
+    /// What bloom reads under TAA: this frame's HDR render or the resolved
+    /// image. See [`TaaBloomSource`] and `docs/TAA.md` §1, §6.
+    pub bloom_source: TaaBloomSource,
+}
+
+/// What bloom's prefilter reads while TAA is on (`docs/TAA.md` §1, §6).
+///
+/// The resolve averages in the display's own space (G11), which compresses
+/// everything above white: a thin or small very bright source (a rim, a
+/// glint, a thin emissive line) mixed with darker neighbours in the 3x3
+/// reconstruction or the history comes out near white whatever its HDR
+/// value (a 1-pixel feature at 50x white reconstructs to about 0.75), so
+/// bloom finds almost nothing to spread. A large bright area keeps its HDR
+/// (bright averages with bright).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum TaaBloomSource {
+    /// This frame's HDR render (`composite`, jittered, at render size), as
+    /// with no AA or MSAA: bloom keeps the full energy of small bright
+    /// sources, and averaged over the jitter its halo is the reference's.
+    /// The default. In a still image the halo of a source smaller than a
+    /// pixel pulses with the 8-frame jitter cycle (a few percent of the
+    /// halo; `docs/TAA.md` §6).
+    #[default]
+    CurrentFrame,
+    /// The resolved image (`taa_out`): a steady halo, but thin or small very
+    /// bright sources lose 12-25% of it (more for thinner ones).
+    Resolved,
+}
+
+impl TaaBloomSource {
+    /// The name the scene format and the editor use.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::CurrentFrame => "current_frame",
+            Self::Resolved => "resolved",
+        }
+    }
 }
 
 /// The disocclusion tests the resolve compiles (`docs/TAA.md` §3.5, step 5;
@@ -95,6 +132,7 @@ impl TaaConfig {
             sharpen: 0.0,
             tuning: TaaTuning::default(),
             disocclusion: TaaDisocclusion::default(),
+            bloom_source: TaaBloomSource::default(),
         }
     }
 
@@ -105,6 +143,7 @@ impl TaaConfig {
             sharpen: preset.sharpen(),
             tuning: TaaTuning::default(),
             disocclusion: TaaDisocclusion::default(),
+            bloom_source: TaaBloomSource::default(),
         }
     }
 
