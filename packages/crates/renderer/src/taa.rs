@@ -250,9 +250,12 @@ pub struct TaaTuning {
     /// colours are in the box), so a new object's silhouette fades in over
     /// the history length. 1.0 (default): the new object shows only itself
     /// on its first frame (one frame without AA there), then accumulates
-    /// its own history. 0 = off, and zero cost (no flags kept, no seed
-    /// draws). A discrete-LOD swap does not count; instances appended to an
-    /// existing instanced mesh are not covered. `docs/TAA.md` §1, §3.6.
+    /// its own history. Opaque meshes only (the seed reads the surface in
+    /// the visibility target; a transparent mesh gets `reactive_transparent`
+    /// per unit of alpha as before). 0 = off: no marks, patches or seed
+    /// draws (each mesh's meta word is still cached, 4 bytes). A
+    /// discrete-LOD swap does not count; instances appended to an existing
+    /// instanced mesh are not covered. `docs/TAA.md` §1, §3.6, §6.
     /// A current-frame weight: values above 1 are not meaningful (the blend
     /// would extrapolate past the current frame; the scene loader clamps
     /// authored values to `0..=1`).
@@ -629,23 +632,49 @@ impl AwsmRenderer {
         }
         let material = mesh.material_key;
         let transparent = self.materials.is_transparency_pass(material);
-        let ready = if mesh.has_visibility_geometry
-            && !(transparent && mesh.has_transparency_geometry)
-        {
-            self.render_passes
+        // Opaque route only: the seed reads the meta of the surface in the
+        // visibility target, so a transparent-route mesh can never carry the
+        // flag onto a pixel (it gets `reactive_transparent` per unit of alpha
+        // from the transparent pass instead). Not marked, not patched.
+        if !(mesh.has_visibility_geometry && !(transparent && mesh.has_transparency_geometry)) {
+            return if mesh.has_transparency_geometry {
+                NewObjectState::Drop
+            } else {
+                // No geometry yet (a live add before its commit).
+                NewObjectState::Wait
+            };
+        }
+        // The two pipelines `collect_renderables` needs for it to put pixels
+        // in the visibility target and shade them: the geometry raster
+        // pipeline (the same key it looks up; the masked / custom-vertex
+        // variants fall back to it) and the material compute pipeline.
+        let cull_mode = if mesh.double_sided {
+            awsm_renderer_core::pipeline::primitive::CullMode::None
+        } else {
+            awsm_renderer_core::pipeline::primitive::CullMode::Back
+        };
+        let raster = self
+            .render_passes
+            .geometry
+            .pipelines
+            .get_render_pipeline_key(
+                crate::render_passes::geometry::pipeline::GeometryRenderPipelineKeyOpts {
+                    anti_aliasing: &self.anti_aliasing,
+                    formats: &self.render_textures.formats,
+                    instancing: mesh.instanced,
+                    cull_mode,
+                    meta_storage_array: !mesh.instanced
+                        && self.features.indirect_first_instance_enabled(),
+                },
+            )
+            .is_ok();
+        let ready = raster
+            && self
+                .render_passes
                 .material_opaque
                 .pipelines
                 .get_compute_pipeline_key(&self.anti_aliasing, self.materials.shader_id(material))
-                .is_some()
-        } else if mesh.has_transparency_geometry {
-            self.render_passes
-                .material_transparent
-                .pipelines
-                .get_render_pipeline_key(key)
-                .is_some()
-        } else {
-            false
-        };
+                .is_some();
         if ready {
             NewObjectState::Drawable
         } else {

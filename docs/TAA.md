@@ -129,7 +129,7 @@ TAA | MSAA 4x | oracle | reference | class map, red = ghost).
 | `reactive_particles` 1.0 | **on** | particle sprites' soft skirts kept a stale colour for up to 32 frames | | none: the reactive value was already written |
 | `reactive_lines` 1.0 | off (0.3) | the faint double behind an animated line (lines have no vectors): `taa-transparent` moving-region ghost pixel-frames 184,562 → 15,633 | `lines-k123-before-after.png` (0.3 → 1.0), `leftover-transp-k123.png` | no GPU time; still lines alias: `taa-transparent` still-image flicker 0.291 → 0.372, p99 3 → 4 (fails 05's p99 < 4), hence off by default |
 | `edge_release` 1.0 | off (0) | the one stale-history event left at the default: a resting edge released by a sub-pixel move (`taa-motion` k211, 1 px for 4 frames); `taa-motion` trail ghosts 24 → 7, events longer than one frame 1 → 0 | `k211-edge-release.png` | resolve +0.07 / +0.23 ms; still-image flicker `taa-thin` 0.301 → 0.323, `instancing-stress` 0.105 → 0.151 (both still pass, p99 unchanged) |
-| `reactive_new_objects` 1.0 | **on** | a new object's silhouette fading in over what was behind it: a mesh inserted or shown again holds the background's history on its rim (no test fires when something nearer appears, and the clip keeps it there because both colours are in the box), as a Dreidel Derby coin did for about 16 frames (pass C). `taa-motion@popin` (the cube appears, still, over the checker floor): pixels more than 16 off the reference 3 frames after the pop 4,817 → 63 (17 frames after: 1,654 → 57), still-area ghost events longer than one frame 135 of 177 (longest 8 frames) → 0, still-area error 0.303 → 0.183 (MSAA 2.021) | `newobj-popin-before-after.png` | two 4-byte meta patches per new mesh (set, then cleared) and one seed draw on such frames: 2,000 meshes shown at once (`?mode=newobj-cost&clones=2000`, `kitchen-sink`, `isaac-robots`) cost no measurable CPU or GPU time at the 0.1 ms timer resolution; with nothing new, frame and resolve time are unchanged (A B × 3: resolve 1.53-1.54 / 1.55 ms `kitchen-sink`, 1.82-1.83 both `taa-thin`); the new object shows one frame without AA; nothing at all on frames where nothing appears |
+| `reactive_new_objects` 1.0 | **on** | an opaque new object's silhouette fading in over what was behind it: a mesh inserted or shown again holds the background's history on its rim (no test fires when something nearer appears, and the clip keeps it there because both colours are in the box), as a Dreidel Derby coin did for about 16 frames (pass C). `taa-motion@popin` (the cube appears, still, over the checker floor): pixels more than 16 off the reference 3 frames after the pop 4,817 → 63 (17 frames after: 1,654 → 57), still-area ghost events longer than one frame 135 of 177 (longest 8 frames) → 0, still-area error 0.303 → 0.183 (MSAA 2.021) | `newobj-popin-before-after.png` | two 4-byte meta patches per new mesh (set, then cleared) and one seed draw on such frames: 2,000 meshes shown at once (`?mode=newobj-cost&clones=2000`, `kitchen-sink`, `isaac-robots`) cost no measurable CPU or GPU time at the 0.1 ms timer resolution; with nothing new, frame and resolve time are unchanged (A B × 3: resolve 1.53-1.54 / 1.55 ms `kitchen-sink`, 1.82-1.83 both `taa-thin`); the new object shows one frame without AA; nothing at all on frames where nothing appears |
 | `max_history_moving` 1.0 | **on** (2.0 before) | softness in motion: moving-region error `taa-motion` 2.52 → 2.20, `taa-orbit` 1.20 → 1.06; frame-to-frame change of the error on the `taa-orbit` strafe 1.21 → 1.06 (MSAA 4.00); pan worst mean 1.01 → 0.86 (2.50 → 2.33 at 0.67) | `max-history-moving-orbit-k70-before-after.png` | none (a uniform); still-image flicker unchanged |
 
 **Recommended configurations.**
@@ -241,7 +241,7 @@ output pixels per frame.
 | `reactive_particles` | 1.0 | Reactive value on every pixel a particle mesh covers, whatever the sprite's alpha (meshes flagged by `set_mesh_taa_particles`; the scene loader flags every emitter). Nothing reprojects a particle (§3.6) | | Particles and their soft skirts keep some history (trails behind them) |
 | `reactive_lines` | 0.3 | Reactive value per unit of alpha written by lines (§3.6). Lines have no motion vectors | An app that animates lines raises it to 1.0: no faint double behind a moving line, but aliased line edges | Steadier still lines, longer double behind moving ones |
 | `edge_release` | 0.0 (off) | `DepthMotionAndId` only: the current-frame weight of a pixel whose history came from a 2x2 that held an object now absent from its 3x3 (§3.5 step 5, "resting-edge release") | 1.0 removes the last measured trail ghost (a 1-px, 4-frame event on `taa-motion`), but raises still-image flicker where a thin wire or small instance was hit by one jitter phase's sample and by no current one (§6) | |
-| `reactive_new_objects` | 1.0 | Reactive value on every pixel of a mesh in its first rendered frame: inserted, or shown again with `set_mesh_hidden(false)` (§3.6). A discrete-LOD swap does not count; instances appended to an existing instanced mesh are not covered | | Off (0): a new object's rim fades in over the background's history for about the history length |
+| `reactive_new_objects` | 1.0 | Reactive value on every pixel of an opaque mesh in its first rendered frame: inserted, or shown again with `set_mesh_hidden(false)` (§3.6). A discrete-LOD swap does not count; transparent meshes and instances appended to an existing instanced mesh are not covered (§6) | | Off (0): a new object's rim fades in over the background's history for about the history length |
 | `reactive_material` | 0.2 | Reactive value of materials resolved `Reactive` (§2.6) | Less smearing of animated colour, more aliasing on those surfaces | More smearing |
 | `reactive_ssr` | 0.0 | Extra reactivity from SSR reflectivity | For mirrors that trail under camera motion | |
 | `mip_bias_extra` | 0.0 | Added to `log2(render_scale)` for the texture LOD bias | Blurrier textures | Sharper textures, more shimmer (−0.5 raised flicker p99 from 4 to 6 at 0.67) |
@@ -739,9 +739,21 @@ trust, 1 = ignore. The resolve takes the max over the same 3x3.
   of an existing mesh, a discrete-LOD or cluster-LOD level swap (the same
   object), the frame of a history reset (a load, a cut: everything resets
   anyway), and instances appended to an existing instanced mesh (they share
-  its meta). Two 4-byte meta patches per new mesh (set, then cleared the
-  next frame) and the seed draw on those frames; with the weight at 0
-  nothing is kept or drawn.
+  its meta), and transparent-route meshes: the seed reads the meta of the
+  surface in the visibility target, which a transparent mesh is not in
+  (it gets `reactive_transparent` per unit of alpha from the transparent
+  pass, as before). Drawable means what `collect_renderables` needs to
+  put the mesh's pixels in the visibility target and shade them: shown,
+  its visibility geometry, the geometry raster pipeline and the material
+  compute pipeline. A new mesh that moves by more than its own size per
+  frame in its first 6 frames is flagged on each such frame. Two 4-byte
+  meta patches per new mesh (set, then cleared the next frame) and the
+  seed draw on those frames; with the weight at 0 nothing is marked,
+  patched or drawn (each mesh's flags word is still cached on the CPU,
+  4 bytes per mesh, TAA on or off). In the editor, a kind edit
+  (`apply_kind`: a material variant, a mesh parameter) re-inserts the
+  object's meshes, so the edited object shows one frame without AA per
+  edit.
 - Every reactive value is capped at 0.99. Exactly 1.0 means "HUD" (§3.8).
 - Content drawn through the public transparent-pass hook writes no reactive
   value.
@@ -1039,6 +1051,8 @@ measure flicker too).
   mesh's meta): a spawned instance's rim fades in over the background for
   about the history length, as a new mesh did before round 3's flag. Spawn
   such things as their own mesh, or mark them reactive, if it shows.
+  Transparent meshes that appear are not new objects either (§3.6): they
+  fade in through `reactive_transparent` (0.3 per unit of alpha).
 - **Transparent and line trails.** Glass, UV-flow water and lines over a
   moving background trail for every AA mode, TAA included (§7.2). Their
   reactive weights (0.3) trade some of that for still-image stability. On
