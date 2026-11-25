@@ -127,6 +127,7 @@ TAA | MSAA 4x | oracle | reference | class map, red = ghost).
 | `reactive_lines` 1.0 | off (0.3) | the faint double behind an animated line (lines have no vectors): `taa-transparent` moving-region ghost pixel-frames 184,562 → 15,633 | `lines-k123-before-after.png` (0.3 → 1.0), `leftover-transp-k123.png` | no GPU time; still lines alias: `taa-transparent` still-image flicker 0.291 → 0.372, p99 3 → 4 (fails 05's p99 < 4), hence off by default |
 | `edge_release` 1.0 | off (0) | the one stale-history event left at the default: a resting edge released by a sub-pixel move (`taa-motion` k211, 1 px for 4 frames); `taa-motion` trail ghosts 24 → 7, events longer than one frame 1 → 0 | `k211-edge-release.png` | resolve +0.07 / +0.23 ms; still-image flicker `taa-thin` 0.301 → 0.323, `instancing-stress` 0.105 → 0.151 (both still pass, p99 unchanged) |
 | `reactive_new_objects` 1.0 | **on** | an opaque new object's silhouette fading in over what was behind it: a mesh inserted or shown again holds the background's history on its rim (no test fires when something nearer appears, and the clip keeps it there because both colours are in the box), as a Dreidel Derby coin did for about 16 frames (pass C). `taa-motion@popin` (the cube appears, still, over the checker floor): pixels more than 16 off the reference 3 frames after the pop 4,817 → 63 (17 frames after: 1,654 → 57), still-area ghost events longer than one frame 135 of 177 (longest 8 frames) → 0, still-area error 0.303 → 0.183 (MSAA 2.021) | `newobj-popin-before-after.png` | two 4-byte meta patches per new mesh (set, then cleared) and one seed draw on such frames: 2,000 meshes shown at once (`?mode=newobj-cost&clones=2000`, `kitchen-sink`, `isaac-robots`) cost no measurable CPU or GPU time at the 0.1 ms timer resolution; with nothing new, frame and resolve time are unchanged (A B × 3: resolve 1.53-1.54 / 1.55 ms `kitchen-sink`, 1.82-1.83 both `taa-thin`); the new object shows one frame without AA; nothing at all on frames where nothing appears |
+| `bloom_source: CurrentFrame` (`TaaConfig`) | **on** (`Resolved` before) | thin and small very bright sources (rims, glints, thin emissive lines) losing their bloom glow: the resolve averages in display space, which leaves such a source near white whatever its HDR value (a 1-pixel feature at 50x white reconstructs to about 0.75), so bloom read from the resolved image finds little to spread. Bloom now reads this frame's HDR render, as with no AA or MSAA. `bloom-post@thinstill`, halo around a 1-px line at HDR 50: resolved 0.3156, this frame 0.4194, reference 0.4196 (display-linear); around a 2-px glint at HDR 50: 0.2897 / 0.3318 / 0.3300. Large emitters (`bloom-post`) lost about 1.3% | `bloom-thin-source-still-k48.png` | none (same pass, another source; frame time equal or about 0.1 ms lower on `bloom-post`, equal on `kitchen-sink`). Whole-frame converged error on `bloom-post@thinstill`: 1.676 → 0.087 native, 1.686 → 0.099 at 0.67, 1.705 → 0.223 at 0.5 (MSAA 0.840, no AA 0.103). In a still image the halo of a source smaller than a pixel pulses with the 8-frame jitter cycle: frame-to-frame change inside its halo mean 1.6-3.4, p99 8-14 (0-255), the halo's brightness swinging 0.6% (1-px line) to 4.5% (2-px glint); whole-frame flicker passes (`bloom-post@thinstill` 0.086 p99 2 native, 0.114 p99 3 at 0.67, 0.161 p99 4 at 0.5). `Resolved` keeps a steady but dimmer halo (§6) |
 | `max_history_moving` 1.0 | **on** (2.0 before) | softness in motion: moving-region error `taa-motion` 2.52 → 2.20, `taa-orbit` 1.20 → 1.06; frame-to-frame change of the error on the `taa-orbit` strafe 1.21 → 1.06 (MSAA 4.00); pan worst mean 1.01 → 0.86 (2.50 → 2.33 at 0.67) | `max-history-moving-orbit-k70-before-after.png` | none (a uniform); still-image flicker unchanged |
 
 **Recommended configurations.**
@@ -178,6 +179,7 @@ scale is `TaaConfig::render_scale`.
 |---|--:|---|
 | `render_scale` | 1.0 | Render size / output size, `0.5..=1.0`. Quantised to 0.01 (`RENDER_SCALE_STEP`); NaN becomes 1.0. |
 | `sharpen` | 0.0 | RCAS strength after the resolve, `0..=1`. 0 = no pass. |
+| `bloom_source` | `CurrentFrame` | `TaaBloomSource`: what bloom reads under TAA. `CurrentFrame`, this frame's HDR render (render size, jittered), keeps the glow of thin and small very bright sources; `Resolved`, the resolved image, gives a steady but dimmer glow for them (§1, §6). Live: bloom's prefilter rebinds, nothing recompiles. |
 | `disocclusion` | `DepthMotionAndId` | `TaaDisocclusion`: which tests drop a pixel's history: `Depth`, `DepthAndMotion` (adds last frame's motion vectors), `DepthMotionAndId` (adds last frame's object id). Structural: a change rebuilds the TAA pass and restarts history. A level that is off allocates and binds nothing. |
 | `tuning` | `TaaTuning::default()` | The resolve's tuning, §2.4. |
 
@@ -892,6 +894,10 @@ TAA:         composite (R) → resolve → taa_out (O) → RCAS (optional) → H
 post size:   bloom → effects (haze, DoF) → display
 ```
 
+Bloom's prefilter reads `composite` (this frame's HDR render, render size)
+by default (`TaaConfig::bloom_source`), or `taa_out` with `Resolved`; effects
+(haze, DoF) and the display read `taa_out`.
+
 Haze and DoF read depth through `load_depth_post`, which maps a post pixel to
 render pixels and takes the nearest depth of the 2x2 footprint; DoF's CoC
 buffer is at post size. The picker maps the pointer through the render size.
@@ -1063,6 +1069,32 @@ measure flicker too).
   transparent trail lines are INFO and above MSAA and no AA (band under the
   content 26.6 at the worst frame, the content's own trail 11.5), because
   the reactive pixels show this frame's render-resolution image.
+- **Very bright thin highlights lose energy in the resolve.** The resolve
+  averages in the display's own space (§3.5, G11), which compresses values
+  above white: a highlight or emissive detail thinner than a few pixels,
+  averaged with darker neighbours in the 3x3 reconstruction or the history,
+  comes out near white whatever its HDR value. The displayed pixel is
+  right (it is saturated either way); what reads its HDR energy after the
+  resolve is not:
+  - **Bloom** reads this frame's HDR render by default
+    (`TaaBloomSource::CurrentFrame`), which keeps the full glow (§1). Its
+    cost is a pulse at the jitter period in a still image around sources
+    smaller than a pixel: inside the halo ring of such a source the
+    frame-to-frame change is mean 1.6-3.4, p99 8-14 (0-255; above the
+    flicker gate's p99 4 locally, though the whole frame passes), the
+    halo's brightness swinging 0.6-4.5% over the 8 frames; in motion it is
+    lost in the image's own change. `Resolved` gives a steady halo that is
+    12-25% dimmer around thin sources. The follow-up that would give both:
+    a temporal blend of bloom reprojected with TAA's vectors (about half a
+    day; +0.03-0.05 ms). In Dreidel Derby, with the resolved source, a
+    respawned coin's spawn glow (which the game fades out over about 20
+    frames) was absent under TAA while no AA, MSAA and the reference
+    showed it; the coin's rim itself was right from its first frame.
+  - **Depth of field** reads the resolved image and cannot take the
+    jittered frame (its in-focus parts would show no AA): out-of-focus
+    highlights are dimmer than the reference. On Dreidel Derby's title
+    screen the brightest defocused menorah cups have 18-20% less energy
+    (MSAA about 7%, no AA none), with no streak and nothing out of place.
 - **Upscaled thin detail.** Isolated features smaller than a render pixel
   still drop out of a still image sometimes: 4.3% at 0.67, 7.3% at 0.58,
   14.5% at 0.5.

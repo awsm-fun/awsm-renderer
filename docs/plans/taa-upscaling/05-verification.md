@@ -199,8 +199,12 @@ Resolve time may be spent where it buys visible quality.
 ## Results
 
 Three rounds. Earlier records are in git history (`2da7b171`, `8582017d`).
-This is the state at renderer `ec35a6fd` (later commits change the harness
-and docs only). Harness `examples/taa-tests`, M1 Max, Chrome, DPR 2, 960x720
+This is the state at renderer `ec35a6fd` plus the new-object flag
+(`reactive_new_objects`, `dbf594df`) and bloom's source
+(`TaaBloomSource::CurrentFrame`, this patch set), which leave every other
+line of this section unchanged (the nine ghost-track scenes, flicker, stop /
+cut / converged / pan; TAA off 36/36). Later commits change the harness and
+docs only. Harness `examples/taa-tests`, M1 Max, Chrome, DPR 2, 960x720
 (cost at 1920x1435), fixed timestep and seeds, every frame. Display-linear
 decides (§3); the Karis-weighted number is beside it where the verdict
 differs. Every original line still emits with its original threshold.
@@ -256,6 +260,27 @@ has moved away:
   them, about half a pixel off. Fetching through the pixel's own vector
   removes two of them and doubles the scene's still-image flicker (0.300 →
   0.587, p99 12).
+
+New objects (round 3, `reactive_new_objects`, default 1.0): a mesh shown
+for the first time, or again after being hidden, held the history of what
+was behind it, which no test rejects (nothing nearer was there) and the
+clip keeps on its silhouette. On `taa-motion@popin` (the cube appears,
+still, over the checker floor), weight 0 → 1: still-area ghost events longer
+than one frame 135 → 0, pixels more than 16 off the reference three frames
+after the pop 4,817 → 63, still-area error 0.303 → 0.183 (MSAA 2.021). On
+`taa-motion@popjump` (shown a frame before it is posed in place, as Dreidel
+Derby's respawned coins are) the flag fires again on the jump frame. In
+Dreidel Derby the coin's rim matches the reference from its first frame.
+
+Bloom from very bright thin sources (round 3, `TaaBloomSource`): with bloom
+reading the resolved image, the glow around a 1-px line at HDR 50 was 25%
+below the reference and around a 2-px glint 12% (`bloom-post@thinstill`),
+and a respawned Dreidel Derby coin's spawn glow was absent. Bloom now reads
+this frame's HDR render (default): 0.4194 against the reference's 0.4196
+and 0.3318 against 0.3300. Reported, not gated: in a still image the halo
+ring of a source smaller than a pixel changes frame to frame by mean
+1.6-3.4, p99 8-14 at the jitter period, above the flicker gate's p99 of 4
+in that region (whole-frame flicker 0.086, p99 2: PASS). `docs/TAA.md` §6.
 
 By disocclusion level, trail-band events longer than one frame on
 `taa-motion` / `prefab-skinned-morph` / `anim-skinned` / `taa-skin` /
