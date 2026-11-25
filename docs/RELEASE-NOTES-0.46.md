@@ -18,31 +18,35 @@ Measured on the `taa-thin` test scene (M1 Max, Chrome; mean error against a
 
 | | Error |
 |---|--:|
-| No AA | 6.078 |
-| SMAA | 5.269 |
-| MSAA 4× | 5.309 |
-| TAA native | 1.449 |
-| TAA 0.67 | 2.991 |
-| TAA 0.5 | 5.759 |
+| No AA | 6.274 |
+| SMAA | 5.268 |
+| MSAA 4× | 5.525 |
+| TAA native | 0.560 |
+| TAA 0.67 | 1.254 |
+| TAA 0.5 | 2.679 |
 
-In Dreidel Derby (1920×1435, mid-round), TAA native has half of MSAA's error
-against the same kind of reference (0.873 against 1.864); on its title screen
-it is only narrowly better (1.217 against 1.310).
+In Dreidel Derby (1920×1435; mean error against a 64-sample reference, and
+GPU frame time, M1 Max, Chrome):
 
-GPU frame time at 1920×1435 (M1 Max, Chrome):
-
-| | No AA | MSAA 4× | TAA native | TAA 0.67 | TAA 0.5 |
+| | Title error | Mid-round error | In motion | Mid-round frame | Title frame |
 |---|--:|--:|--:|--:|--:|
-| Dreidel Derby mid-round (unpaced) | 10.74 ms | 14.77 ms | 12.22 ms | 7.30 ms | 6.16 ms |
-| `kitchen-sink` | 4.81 ms | 5.71 ms | 5.98 ms | 4.92 ms | 4.56 ms |
-| `taa-thin` | 3.71 ms | 6.04 ms | 4.97 ms | 3.34 ms | 2.71 ms |
+| No AA | 1.172 | 2.014 | 2.01 | 10.82 ms | 14.20 ms |
+| SMAA | 1.127 | 1.750 | 1.75 | 11.19 ms | 14.80 ms |
+| MSAA 4× | 1.322 | 1.918 | 1.93 | 15.25 ms | 19.67 ms |
+| TAA native | 1.020 | 0.428 | 0.83 | 13.38 ms | 16.62 ms |
+| TAA 0.67 | 1.437 | 0.855 | 1.54 | 8.51 ms | 11.06 ms |
 
-The resolve costs 1.03-1.17 ms at 1920×1435 output. With TAA off, frame time
-is unchanged against 0.45 (within ±0.114 ms on the test scenes; Dreidel Derby
-no AA 10.64 against 10.67 ms). Details and the remaining gaps:
+TAA native is closer to the reference than every other mode, still and in
+motion, and 1.9 ms (mid-round) and 3.1 ms (title) cheaper than MSAA 4×. It
+costs 2.5 ms more than no AA: about 2 ms of that is the resolve, a fixed cost
+per output pixel. TAA 0.67 is cheaper than no AA.
+
+The resolve costs 1.5-1.8 ms at 1920×1435 output at the default disocclusion
+level (1.2-1.3 at the cheapest). With TAA off, pixels are identical to 0.45
+and frame time is unchanged (within ±0.107 ms on the test scenes). Details:
 `docs/TAA.md` §7.6.
 
-The default stays MSAA 4×: not every verification gate is met.
+The default stays MSAA 4× for now.
 
 ## New
 
@@ -50,8 +54,23 @@ The default stays MSAA 4×: not every verification gate is met.
   the shading, specular and sub-pixel aliasing MSAA cannot reach. Motion
   vectors come from a fifth geometry target with the previous frame's vertex
   evaluation (camera, object, instance, skin, morph and vertex-hook motion),
-  or, on devices with 32 bytes per sample, from the prep pass (camera and
-  rigid motion; deforming meshes are made reactive there).
+  or, on devices with 32 bytes per sample, from the prep pass plus a small
+  overlay pass that redraws only the meshes that deformed this frame, so
+  they get exact vectors there too. The resolve averages in the display's
+  own space (exposure and tonemapper applied), which is what makes a
+  converged image match a supersampled one.
+- **Disocclusion levels** (`TaaConfig::disocclusion`): `Depth`,
+  `DepthAndMotion`, `DepthMotionAndId` (the default). Each adds a test that
+  catches history the one before cannot: the contact line under a moving
+  object, then contact between two objects and on moving surfaces. A level
+  that is off costs nothing. Costs and a recommended-configuration table:
+  `docs/TAA.md` §1.
+- **New objects** (`TaaTuning::reactive_new_objects`, default 1.0): an
+  opaque mesh in its first drawn frame, shown again after being hidden, or
+  jumping into place within a few frames of that, starts from a history of
+  itself instead of fading in over what was behind it.
+  `reset_motion_history(key)` marks the subtree the same way: call it when
+  an object teleports.
 - **Temporal upscaling**: `TaaConfig::render_scale` `0.5..=1.0`, presets
   `TaaPreset::{Native, Quality (0.67), Balanced (0.58), Performance (0.5)}`,
   optional RCAS sharpening (`sharpen`, 0.25 in the upscaling presets).
@@ -59,6 +78,8 @@ The default stays MSAA 4×: not every verification gate is met.
   compile or a history reset: the lever for a resolution governor.
 - **Reactive mask**: transparents, particles, lines and materials whose
   colour changes over time distrust their history instead of trailing.
+  Particles, lines and other transparents each have their own weight
+  (`reactive_particles`, `reactive_lines`, `reactive_transparent`).
   Materials get `MaterialTemporal::{Auto, Stable, Reactive}`
   (`set_material_temporal`, `set_custom_material_temporal`, and `temporal`
   in scene files).
@@ -83,6 +104,11 @@ The default stays MSAA 4×: not every verification gate is met.
   `TaaDebugView`, `JitterOverride`, `history_cap`, `still_gamma`,
   `texture_lod_bias`, the jitter helpers.
 - `AntiAliasing::{none, msaa4, smaa, taa}` constructors; `AntiAliasing.taa`.
+- `awsm_renderer::taa::TaaDisocclusion`; `TaaTuning::{reactive_particles,
+  reactive_lines, reactive_new_objects, edge_release}`; `AwsmRenderer::set_mesh_taa_particles`
+  (flag particle meshes an app builds itself; the scene loader flags its
+  emitters), `taa_debug_variant_ready`, `taa_fallback_overlay`,
+  `set_taa_fallback_storage_limit_override`.
 - `AwsmRenderer`: `set_taa_render_scale`, `taa_render_scale`,
   `reset_temporal_history`, `reset_motion_history`, `set_taa_debug_view`,
   `taa_debug_view`, `taa_velocity_path`, `set_taa_velocity_path_override`,
@@ -112,6 +138,15 @@ Struct literals that list every field need the new one:
   gained `temporal: Option<MaterialTemporal>`, so a full literal needs
   `temporal: None`. `MaterialDef` gained the same field; literals using
   `..Default::default()` are unaffected.
+
+Bug fixes that change behaviour outside TAA:
+
+- Decals are no longer cut off after the render size shrinks in a session
+  (a smaller viewport, or TAA's render scale). Present since 0.45.
+- The editor no longer wedges (nothing draws, renderer commands hang) when a
+  node is deleted while its observer waits for the renderer.
+- The "point-light shadow cube pool exhausted" warning is logged once per
+  overflow, not every frame.
 
 For code that reaches into render internals:
 
@@ -152,23 +187,25 @@ For code that reaches into render internals:
 
 ## Known limits
 
-See `docs/TAA.md` §6. In short: trails at the silhouette of moving objects
-on the first uncovered frames, and over particles and transparents; contact
-pixels; soft opaque-path HUD below scale 1; thin detail lost at 0.5 (73% of
-isolated sub-pixel features); materials that read the frame clock are always
-reactive unless marked `temporal: stable`; the 32-byte fallback does not see
-skin, morph, vertex-hook or per-instance motion. Several verification gates
-are not met; the list is in `docs/plans/taa-upscaling/05-verification.md`,
-"Results".
+See `docs/TAA.md` §6. In short: a pixel's first uncovered frame behind a
+moving silhouette is one sample, for any history method; an object that
+rests over a pixel and is then nudged can leave a one-pixel edge for a few
+frames (`edge_release` removes it at a small flicker cost); a 1-2 pixel
+highlight moving with an object can sit half a pixel off for two frames;
+very bright thin highlights lose energy in the resolve, so out-of-focus
+highlights are a little dimmer than with MSAA (bloom reads the current
+frame instead, `TaaConfig::bloom_source`, at the price of a slight pulse of
+the glow around sub-pixel bright sources in a still image);
+glass, water and lines have no motion vectors and lag behind a moving
+background; moving textured surfaces are smooth and slightly soft where MSAA
+is crisp and stair-stepped; opaque-path HUD is soft below scale 1; instances
+of one mesh share an object id, so contact between them is judged by depth
+and motion only.
 
 ## Outstanding before release
 
+- The decision on the four remaining ghost events at the default
+  configuration (`docs/plans/taa-upscaling/05-verification.md`, Results).
 - The Android device check (`docs/checklist-android.md`): the 32 B/sample
-  fallback has only been forced on an M1, not run on a device that needs it.
-- The frame-cost targets that are not met: the resolve at 1.03-1.17 ms
-  against 0.6 ms, and Dreidel Derby mid-round TAA native at 12.1-12.2 ms
-  against 11.5 ms. TAA 0.67 meets its 7.5 ms target only when the game draws
-  on every refresh (7.30 ms); at the game's own 60 fps pacing on a 120 Hz
-  display the GPU clocks down between frames and it reads 8.43 ms.
-- The verification gates listed as not met in
-  `docs/plans/taa-upscaling/05-verification.md`, Results.
+  path has only been forced on an M1, not run on a device that needs it.
+- The default stays MSAA 4× until that decision.

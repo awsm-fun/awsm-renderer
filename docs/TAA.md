@@ -49,19 +49,16 @@ better):
 | SMAA | 5.268 | | | |
 | None | 6.274 | | | |
 
-> **TODO (lead, Dreidel Derby pass B):** the Dreidel table below and the
-> Dreidel numbers in the mode table and the bullets are round 1's.
-
 The same measurement in the real game (Dreidel Derby at 1920x1435, a frozen
 frame after 32 frames; §7.7):
 
 | | Title screen | Mid-round |
 |---|--:|--:|
-| TAA native | 1.217 | 0.873 |
-| TAA 0.67 | 1.761 | 1.538 |
-| MSAA 4x | 1.310 | 1.864 |
-| SMAA | 1.114 | 1.675 |
-| None | 1.167 | 1.885 |
+| TAA native | 1.020 | 0.428 |
+| TAA 0.67 | 1.437 | 0.855 |
+| MSAA 4x | 1.322 | 1.918 |
+| SMAA | 1.127 | 1.750 |
+| None | 1.172 | 2.014 |
 
 So, in short:
 
@@ -85,15 +82,15 @@ So, in short:
 The facts, as measured (§7):
 
 - **Quality against MSAA 4x.** TAA native has the lower error on `taa-thin`
-  (0.559 against 5.525), in Dreidel Derby mid-round (0.873 against 1.864;
-  **TODO (lead, pass B)**) and on 9 of the 10 other converged test scenes. It
+  (0.560 against 5.525), in Dreidel Derby (title 1.020 against 1.322, mid-round 0.428
+  against 1.918, in motion 0.79-0.87 against 1.92-1.94; §7.7) and on 9 of the 10 other converged test scenes. It
   is level on `taa-skin` (0.174 against 0.173).
 - **Cost against MSAA 4x.** TAA native is cheaper on two of the four synthetic
   scenes (`instancing-stress` −0.72 ms, `taa-thin` −0.45 ms) and in Dreidel
-  Derby mid-round (−2.6 ms; **TODO (lead, pass B)**), and dearer on the other
+  Derby (mid-round −1.9 ms, title −3.1 ms; §7.6), and dearer on the other
   two (`kitchen-sink` +0.71 ms, `ssr` +1.03 ms). TAA 0.67 is cheaper than MSAA
   everywhere it was measured (−0.10 to −2.24 ms on the synthetic scenes,
-  −7.4 ms in Dreidel Derby mid-round, unpaced).
+  −6.9 ms in Dreidel Derby mid-round, unpaced).
 - **Gates.** Not every verification gate is met: the trail mean on the two
   `taa-motion` frames where even the oracle is above it, the trail maximum
   (as written, and on a few frames as restated), the transparent trails as
@@ -1083,10 +1080,11 @@ measure flicker too).
   material whose WGSL reads `frame_globals` as reactive, even when the time
   dependence is a subtle twinkle. Those surfaces keep less history and look
   more aliased, most visibly at upscaled scales on high-contrast silhouettes.
-  In Dreidel Derby every dreidel body is such a material, and the bodies hold
-  most of TAA's remaining mid-round error (§7.7). Remedy: `temporal: stable`
-  on materials whose time dependence is subtle. **TODO (lead, pass B):**
-  re-check the Dreidel Derby claim against the final §7.7.
+  Remedy: `temporal: stable` on materials whose time dependence is subtle.
+  Measure before using it: in Dreidel Derby every dreidel body is such a
+  material, and marking them all stable changed nothing (round 2's head:
+  mid-round 0.421 against 0.427; in motion 0.935 / 0.820 against
+  0.935 / 0.830).
 - **The resolve costs 1.54 ms** (1.83 ms on `taa-thin`) at 1920x1435
   output with the default `DepthMotionAndId`; 1.47 / 1.64 ms at
   `DepthAndMotion`, 1.23 / 1.30 ms at `Depth` (§1, "Choosing the TAA
@@ -1367,9 +1365,9 @@ GPUs overlap pass timestamps.
 | Velocity target + second vertex evaluation (+ seed, + previous-velocity and previous-visibility copies) | ≤ 0.2 ms | 0.15-0.19 ms, `taa-thin` 0.25, ±0.05 (TAA − no AA − resolve, N=32) | at the target except `taa-thin` |
 | Resolve, native 1920x1435 | ≤ 0.6 ms | 1.53-1.55 ms, `taa-thin` 1.83 ms (frame and pass-timestamp slopes, N=8 and N=32) | not met (about 2.5-3x); the bar became "cheaper than MSAA 4x in Dreidel Derby" |
 | Resolve, 0.67 → 1920x1435 | ≤ 0.6 ms | 1.46-1.48 ms, `taa-thin` 1.72-1.73 ms (the resolve runs at output size) | not met |
-| Dreidel Derby mid-round, TAA native | ≤ 11.5 ms | **TODO (lead, pass C)** | |
-| Dreidel Derby mid-round, TAA 0.67 | ≤ 7.5 ms | **TODO (lead, pass C)** | |
-| TAA off | unchanged | synthetic scenes within ±0.053 ms of the round-2 build (12 configurations, A B × 3, mixed signs), which was within ±0.107 ms of 0.45; 36 baseline captures bit-identical; Dreidel Derby **TODO (lead, pass C)** | met |
+| Dreidel Derby mid-round, TAA native | ≤ 11.5 ms | 13.38 ms (MSAA 4x 15.25, no AA 10.82) | not met as written; the bar became "cheaper than MSAA 4x": met, by 1.87 ms mid-round and 3.05 ms on the title |
+| Dreidel Derby mid-round, TAA 0.67 | ≤ 7.5 ms | 8.51 ms paced, 8.32 unpaced | not met as written; 6.7 ms cheaper than MSAA and 2.3 ms cheaper than no AA |
+| TAA off | unchanged | synthetic scenes within ±0.053 ms of the round-2 build (12 configurations, A B × 3, mixed signs), which was within ±0.107 ms of 0.45; 36 baseline captures bit-identical; Dreidel Derby no AA / MSAA / SMAA bit-identical to the 0.45.0 build (title and mid-round) and within 0.07 ms of it | met |
 
 Synthetic scenes, GPU frame median (ms; delta against no AA):
 
@@ -1424,67 +1422,172 @@ game's own stats: the renderer's whole-frame GPU timestamp span, averaged over
 
 | | Mid-round paced | Mid-round unpaced | Title paced | Title unpaced |
 |---|--:|--:|--:|--:|
-| 0.45 no AA | 10.67 | 10.74 | 13.88 | 14.04 |
-| 0.45 MSAA 4x | 14.74 | 14.80 | 19.37 | 19.21 |
-| No AA | 10.64 | 10.74 | 13.86 | 13.98 |
-| MSAA 4x | 14.75 | 14.77 | 19.35 | 19.15 |
-| TAA native | 12.13 | 12.22 | 15.43 | 15.45 |
-| TAA 0.67 | 8.43 | 7.30 | 10.28 | 10.31 |
-| TAA 0.5 | 8.17 | 6.16 | 8.97 | 8.60 |
+| 0.45 no AA | 10.75 | 10.88 | 14.24 | 14.19 |
+| 0.45 MSAA 4x | 15.24 | 15.24 | 19.65 | 19.66 |
+| 0.45 SMAA | 11.14 | 11.22 | 14.84 | 14.77 |
+| No AA | 10.82 | 10.83 | 14.20 | 14.16 |
+| MSAA 4x | 15.25 | 15.20 | 19.67 | 19.68 |
+| SMAA | 11.19 | 11.21 | 14.80 | 14.74 |
+| TAA native | 13.38 | 13.33 | 16.62 | 16.53 |
+| TAA 0.67 | 8.51 | 8.32 | 11.06 | 11.03 |
+| TAA 0.5 | 7.87 | 6.44 | 9.22 | 9.21 |
+
+Renderer `ec35a6fd`, a natural-size window on the built-in display at DPR 2
+and 120 Hz, the game's resolution slider at 80%. The whole session read
+0.1-0.4 ms above the session before it, the 0.45 rows included, so compare
+within the table. With TAA off the game costs what it did on 0.45 (within
+0.07 ms) and its frames are bit-identical.
+
+Per disocclusion level (paced, 3 runs; mid-round / title):
+
+| | `Depth` | `DepthAndMotion` | `DepthMotionAndId` |
+|---|--:|--:|--:|
+| TAA native | 12.69 / 16.05 | 13.14 / 16.27 | 13.33 / 16.63 |
+| TAA 0.67 | 8.03 / 10.56 | 8.28 / 10.87 | 8.56 / 11.17 |
+
+**Why native TAA costs 2.5 ms more than no AA here, and saves only 1.9 ms
+against MSAA.** TAA native shades every pixel once, as no AA does, and then
+adds its own work; it does not make the scene cheaper to draw. Measured in the
+game (mid-round / title; TAA native minus no AA = 2.56 / 2.42 ms):
+
+| Part | Cost | How measured |
+|---|--:|---|
+| Resolve | 2.05 / 2.06 ms | the resolve repeated 8 times, slope |
+| Velocity target, previous-frame vertex evaluation, previous depth / velocity / id copies | 0.3-0.5 ms | the remainder |
+| Reactive seed | ≤ 0.003 / 0.023 ms | the seed repeated 8 times |
+| Reactive content (every material marked stable; particles hidden) | −0.12 / 0.00 ms; no measurable change | against TAA |
+
+The resolve is a fixed cost per output pixel: about 15 texture loads for the
+3x3 and the tile, 5 bilinear history taps, the disocclusion tests' footprint
+loads and two stores, for 2.76 million pixels. It reads 2.05 ms inside the
+game's frame and 1.5 ms on the synthetic scenes. MSAA 4x costs this game
+4.4 ms mid-round, so TAA native recovers 1.9 ms of that; on a scene where
+MSAA is cheap, TAA native is the dearer of the two (`kitchen-sink`, `ssr`
+above). The saving comes from the render scale: at 0.67 the scene is shaded on
+45% of the pixels and the frame is 6.7 ms below MSAA and 2.3 ms below no AA.
+`Depth` is 0.6 ms cheaper than the default level and brings back the
+contact-line ghosts (§1).
 
 Run-to-run spread 0.03-0.1 ms (0.3-0.6 ms for the paced 0.67 and 0.5 runs).
-Load average 1.4-2.8 during every run, with only the browser's GPU and
-renderer processes and the window server above 5% CPU.
 
 **Paced and unpaced.** The display runs at 120 Hz. The game halves its frame
 rate to 60 fps when its smoothed GPU time exceeds 7.17 ms (0.86 of the
 refresh period), so every mode above ran at 60 fps. A frame that takes 7-8 ms
 in a 16.7 ms period leaves the GPU idle for half the time, and the GPU clocks
-down between frames: the cheap modes then read 1.1-2.0 ms high (0.67: 8.43
-paced against 7.30 unpaced; 0.5: 8.17 against 6.16), with a wider spread. The
-modes that keep the GPU busy (no AA, MSAA, TAA native) read the same either
-way, within 0.1 ms. "Unpaced" is a scratch switch that draws on every refresh
-(0.67 and 0.5 then run at 120 fps, TAA native at 82, no AA at 93, MSAA at 68);
-those numbers are closer to the real GPU cost of the cheap modes.
+down between frames: the cheap modes then read high when paced (0.5: 7.87
+paced against 6.44 unpaced), with a wider spread. The modes that keep the GPU
+busy read the same either way, within 0.1 ms. "Unpaced" is a scratch switch
+that draws on every refresh; those numbers are closer to the real GPU cost of
+the cheap modes.
+
+**As a player gets it** (the game's own default sizing and resolution
+governor, one paced run each, renderer `34b6dc92`; title / mid-round): no AA
+12.36 / 11.50 ms (the governor raised the canvas from 1560x1166 to 1800x1346
+on the title), MSAA 13.58 / 10.90 at 1560x1166, TAA native 10.66 / 8.85 at
+1560x1166, TAA 0.67 10.42 / 8.87 (the governor raised it to 1920x1435).
 
 ### 7.7 Converged quality in Dreidel Derby
 
 The 05 §4.3 gate on the game itself: Dreidel Derby (scratch build of the game
-with debug hooks, renderer `0d878578`), canvas 1920x1435, the title screen
-and a mid-round frame.
+with debug hooks, renderer `ec35a6fd`; the ghost hunt repeated at
+`685d8a91` and, on a fixed jitter phase, at `dbf594df`), canvas 1920x1435, the title screen, a mid-round frame, and
+frames captured in motion.
 
 - **Freeze.** The app's poses and camera are no longer read, clips and
   particles advance by 0, and the frame time is pinned. Two captures of the
   same frozen frame were bit-identical, with no AA and with TAA native after
   32 frames from two separate resets (max difference 0, both scenes).
 - **Reference.** 64 frames with no AA and the camera jitter
-  `jitter_offset(i, 64)`, 6 frames per phase, accumulated by the harness's own
-  reference code (`examples/taa-tests/src/reference.rs`). Captures are
-  lossless swap-chain readbacks. The Karis and display-linear references
-  differ by 0.114 (title) and 0.224 (mid-round).
+  `jitter_offset(i, 64)`, accumulated by the harness's own reference code
+  (`examples/taa-tests/src/reference.rs`). Captures are lossless swap-chain
+  readbacks. For a frame in motion the game is frozen at that frame and the
+  reference built there.
 
-Mean error against the reference (Karis; linear in parentheses):
+Mean error against the reference (display-linear, which decides; Karis in
+parentheses):
 
-| Mode | Title | Mid-round |
-|---|--:|--:|
-| MSAA 4x | 1.310 (1.335) | 1.864 (1.877) |
-| SMAA | 1.114 (1.128) | 1.675 (1.705) |
-| No AA | 1.167 (1.188) | 1.885 (1.936) |
-| TAA native, 32 frames | 1.217 (1.264) | 0.873 (0.921) |
-| TAA 0.67, 32 frames | 1.761 (1.789) | 1.538 (1.517) |
-| TAA 0.67, 64 frames | 1.844 (1.873) | 1.615 (1.595) |
-| TAA 0.67 with sharpening 0.25 (INFO) | 1.713 (1.740) | 1.417 (1.398) |
+| Mode | Title | Mid-round | In motion, frame 700 | Frame 780 |
+|---|--:|--:|--:|--:|
+| MSAA 4x | 1.322 (1.295) | 1.918 (1.903) | 1.936 | 1.918 |
+| SMAA | 1.127 (1.112) | 1.750 (1.716) | 1.751 | 1.750 |
+| No AA | 1.172 (1.154) | 2.014 (1.956) | 2.012 | 2.014 |
+| TAA native, 32 frames | 1.020 (1.004) | 0.428 (0.532) | 0.866 | 0.793 |
+| TAA native, `DepthAndMotion` | 1.020 | 0.428 | 0.863 | 0.788 |
+| TAA 0.67, 32 frames | 1.437 (1.426) | 0.855 (0.933) | 1.594 | 1.476 |
+| TAA 0.67, 64 frames | 1.434 | 0.837 | | |
+| TAA 0.67 with sharpening 0.25 (INFO) | 1.429 | 0.923 | | |
+| TAA 0.5 (INFO) | 1.915 | 1.391 | | |
 
 **Verdict: PASS** (TAA native below MSAA 4x) on both scenes in both spaces,
-with these caveats:
+and below SMAA and no AA as well, still and in motion. Round 1 read 1.217 on
+the title (above SMAA and no AA) and 0.873 mid-round; the difference is the
+store rounding and the display-space resolve (§7.1).
 
-- On the title screen the margin is narrow (1.217 against 1.310), and TAA is
-  above SMAA (1.114) and no AA (1.167) there. About 30% of TAA's error sits
-  on the menorah's candle flames and brass highlights; its other edges are
-  clean, while MSAA's and no AA's error is spread over every edge.
-- Mid-round, TAA's error is half of MSAA's. What remains sits mostly on the
-  dreidel bodies (a material that reads the frame clock, so always reactive)
-  and the candle flames.
-- TAA 0.67 is below MSAA mid-round but above it on the title screen.
-- TAA 0.67 after 64 frames is slightly worse than after 32 in both scenes
-  (+0.08). Not investigated.
+- TAA 0.67 is below MSAA mid-round and in motion, and above it on the title
+  screen (1.437 against 1.322).
+- The disocclusion level does not change a frozen frame; it shows only in
+  motion.
+
+**Ghost hunt in motion.** 24 consecutive frames (mid-round 688-711, title
+159-182), each against its own reference. There is no oracle in the game, so
+the test is: a pixel is stale when TAA's error is well above both MSAA's and
+no AA's, the reference changed there within 4 frames, and TAA kept its
+history.
+
+| TAA native | Stale pixel-frames | Pixels stale 2+ frames | Longest | Events of 2+ frames |
+|---|--:|--:|--:|--:|
+| Mid-round, round 2's head (`34b6dc92`) | 4,276 | 862 | 11 | 24 |
+| Mid-round, `ec35a6fd` | 526 | 83 | 4 | 2 |
+| Mid-round, `685d8a91` (new objects) | 515 | 82 | 4 | 1 |
+| Mid-round, `dbf594df`, fixed phase | 596 | 119 | 4 | 1 |
+| Title, round 2's head | 18,246 | 2,636 | 14 | 138 |
+| Title, `ec35a6fd` | 14,662 | 1,901 | 14 | 109 |
+| Title, `685d8a91` | 15,646 | 1,980 | 12 | 97 |
+| Mid-round, TAA 0.67, `ec35a6fd` | 2,845 | 567 | 5 | 22 |
+| Title, TAA 0.67, `ec35a6fd` | 38,402 | 6,601 | 10 | 314 |
+
+**Caveat: jitter phase.** The jitter index advances on every drawn frame,
+the frozen ones before a sequence included, so each capture session of the
+game started on one of the 8 jitter phases: three sessions of one build
+differed on about 500,000 pixels. Every row above except the fixed-phase one
+is a statistic over one arbitrary phase, and the moving-frame errors in the
+quality table are too; differences of a few percent between builds are
+within that noise (the same build read 658 and 596 stale pixel-frames on two
+phases). The frozen-frame errors, the frame times and the no AA / MSAA /
+SMAA comparisons are not affected. The fixed-phase row resets the history on
+the first advanced frame; two such sessions are bit-identical. The harness
+(`examples/taa-tests`) always starts from a reset.
+
+What the events are, from the frames:
+
+- **Gone: the trail.** Round 2's worst event, a band about 1 pixel wide
+  behind a dreidel sliding past a letter tile for 17 frames (no pixel more
+  than 6), is not there at the default level or at `DepthAndMotion`.
+- **Fixed: a coin that pops in.** The game shows a respawned coin one frame
+  before it moves it into place and never resets its motion history, so the
+  coin started on the history of what was behind it. `reactive_new_objects`
+  (§1) flags the coin on the frame it first draws and again on the frame it
+  jumps: on the fixed-phase run the coin's pixels are flagged on frame 690
+  only and read a history of one frame from frame 691. In the coin's tile,
+  pixels more than 32 levels off the reference on frames 690-693: TAA 56 /
+  56 / 54 / 73, no AA 88 / 84 / 82 / 84, MSAA 67 / 61 / 65 / 56.
+- **Remaining, mid-round: the coin's spawn glow is missing.** The one event
+  still counted is the strip just outside the coin's bright rim. The game
+  gives a new coin a glow that fades over about 20 frames; no AA, MSAA and
+  the reference show its bloom halo (82 rising to 155 towards the rim on
+  frame 690, bare table 76), and TAA at `dbf594df` shows none (71-79). The
+  cause is the next item's; `TaaConfig::bloom_source` (§1, §6) is the fix.
+- **Remaining, title: out-of-focus highlights are dimmer.** Every flagged
+  pixel on the defocused menorah is darker than the reference, none brighter
+  where a highlight used to be, so nothing lags or trails. The resolve
+  averages a pixel with its neighbours in display space, which is what stops
+  thin highlights flickering, and a very bright thin highlight loses most of
+  its energy above white there; depth of field then spreads the smaller
+  energy: 18-20% less local highlight energy than the reference on the
+  brightest cups (MSAA loses about 7%, no AA none).
+- **A staged nudge** (the player's dreidel pushed 30 pixels while touching
+  two others): one 2-frame event of 19 pixels; no edge left behind.
+
+So in the game there is no pixel showing an object where it no longer is.
+What differs from the reference for more than one frame is energy in
+effects that run after the resolve (§6).
