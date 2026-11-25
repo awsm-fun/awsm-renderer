@@ -295,6 +295,8 @@ impl Session {
             scenario::popin_scenario(&base_scene)
         } else if opts.scene.ends_with("@popjump") {
             scenario::popjump_scenario(&base_scene)
+        } else if opts.scene.ends_with("@thin") || opts.scene.ends_with("@thinstill") {
+            scenario::bloom_thin_scenario(&base_scene, opts.scene.ends_with("@thinstill"))
         } else {
             scenario::scenario_for(&base_scene)
         };
@@ -322,6 +324,26 @@ impl Session {
                 renderer
                     .set_mesh_hud(*mesh, true)
                     .map_err(|e| anyhow!("set_mesh_hud: {e}"))?;
+            }
+        }
+        // Emissive gains (`bloom-post@thin`), once at load.
+        for (name, gain) in &scenario.emissive_gain {
+            let h = handles
+                .get(*name)
+                .ok_or_else(|| anyhow!("scenario emissive node `{name}` not in scene"))?;
+            for mesh in &h.meshes {
+                let key = renderer
+                    .meshes
+                    .get(*mesh)
+                    .map_err(|e| anyhow!("mesh {name}: {e}"))?
+                    .material_key;
+                renderer.update_material(key, |m| {
+                    if let awsm_renderer::materials::Material::Pbr(p) = m {
+                        for c in p.emissive_factor.iter_mut() {
+                            *c *= *gain;
+                        }
+                    }
+                });
             }
         }
         let particles = ParticleDriver::new(&loaded);
@@ -463,6 +485,23 @@ impl Session {
                 .ok_or_else(|| anyhow!("scenario node `{name}` not in scene"))?;
             r.transforms
                 .set_local(h.transform, tr.clone())
+                .map_err(|e| anyhow!("set_local {name}: {e}"))?;
+        }
+        // Rescaled nodes (`bloom-post@thin`), every frame.
+        for (name, scale) in &self.scenario.rescaled {
+            let h = self
+                .handles
+                .get(*name)
+                .ok_or_else(|| anyhow!("scenario rescaled node `{name}` not in scene"))?;
+            let base = self.setup.base(name);
+            r.transforms
+                .set_local(
+                    h.transform,
+                    awsm_renderer::transforms::Transform {
+                        scale: *scale,
+                        ..base
+                    },
+                )
                 .map_err(|e| anyhow!("set_local {name}: {e}"))?;
         }
         // One-frame displacements (`@popjump`).

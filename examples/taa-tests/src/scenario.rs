@@ -133,6 +133,12 @@ pub struct Scenario {
     /// Nodes moved by an offset from their scripted place on one frame only
     /// (`<scene>@popjump`: shown far away a frame before they are posed).
     pub displaced: Vec<(&'static str, u32, Vec3)>,
+    /// Nodes given this scale every frame (`bloom-post@thin`).
+    pub rescaled: Vec<(&'static str, Vec3)>,
+    /// Nodes whose PBR emissive factor is multiplied by this at load.
+    pub emissive_gain: Vec<(&'static str, f32)>,
+    /// The camera holds frame 0's pose (`…@thinstill`).
+    pub still_camera: bool,
 }
 
 impl Scenario {
@@ -166,6 +172,34 @@ pub fn popin_scenario(base: &str) -> Scenario {
         hud_nodes: vec![],
         appear: vec![("cube", 12)],
         displaced: vec![],
+        rescaled: vec![],
+        emissive_gain: vec![],
+        still_camera: false,
+    }
+}
+
+/// `bloom-post@thin` / `bloom-post@thinstill` (round 3, `TaaBloomSource`):
+/// the bloom scene with its emissive spheres made thin and small: `emissive-2`
+/// a thin line about 1 px thick at HDR ~50 (red), `emissive-5` a glint
+/// smaller than a pixel at HDR ~5, `emissive-10` a glint about 2 px across at
+/// HDR ~50. Bloom as authored. The generic slow orbit, or (`thinstill`) the
+/// camera held at frame 0.
+pub fn bloom_thin_scenario(base: &str, still: bool) -> Scenario {
+    Scenario {
+        scene: base.to_string(),
+        frames: 120,
+        phases: vec![("orbit", 0, 120)],
+        tracked: None,
+        hud_nodes: vec![],
+        appear: vec![],
+        displaced: vec![],
+        rescaled: vec![
+            ("emissive-2", Vec3::new(4.0, 0.03, 0.03)),
+            ("emissive-5", Vec3::splat(0.025)),
+            ("emissive-10", Vec3::splat(0.07)),
+        ],
+        emissive_gain: vec![("emissive-2", 25.0), ("emissive-10", 5.0)],
+        still_camera: still,
     }
 }
 
@@ -191,6 +225,9 @@ pub fn scenario_for(scene: &str) -> Scenario {
         hud_nodes: vec![],
         appear: vec![],
         displaced: vec![],
+        rescaled: vec![],
+        emissive_gain: vec![],
+        still_camera: false,
     };
     let s =
         |frames, phases: Vec<(&'static str, u32, u32)>, tracked, hud: Vec<&'static str>| Scenario {
@@ -201,6 +238,9 @@ pub fn scenario_for(scene: &str) -> Scenario {
             hud_nodes: hud,
             appear: vec![],
             displaced: vec![],
+            rescaled: vec![],
+            emissive_gain: vec![],
+            still_camera: false,
         };
     match scene {
         // still 0.5 s → moving 2 s → stopped 1 s → fast 1 s
@@ -326,6 +366,8 @@ pub fn drive(sc: &Scenario, k: u32, setup: &SceneSetup) -> FrameDrive {
     let mut teleports = Vec::new();
     let mut morphs = Vec::new();
     let t = time_at(k) as f32;
+    // A held camera (`…@thinstill`): every scripted pose as at frame 0.
+    let k = if sc.still_camera { 0 } else { k };
 
     match sc.scene.as_str() {
         "taa-motion" => {

@@ -158,6 +158,16 @@ pub fn taa_native() -> awsm_renderer::anti_alias::AntiAliasing {
             _ => TaaDisocclusion::DepthMotionAndId,
         };
     }
+    // `?bloomsrc=current|resolved`: what bloom reads under TAA (default: the
+    // renderer's).
+    #[cfg(feature = "taa-disocclusion")]
+    if let Some(src) = crate::url_value("bloomsrc") {
+        use awsm_renderer::taa::TaaBloomSource;
+        cfg.bloom_source = match src.as_str() {
+            "current" => TaaBloomSource::CurrentFrame,
+            _ => TaaBloomSource::Resolved,
+        };
+    }
     TUNE.with(|c| {
         for (k, v) in c.borrow().iter() {
             // Validated in `set_tune` (experimental knobs are applied on the
